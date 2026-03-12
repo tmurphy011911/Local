@@ -1,0 +1,36 @@
+*.iml
+.kotlin
+.gradle
+**/build/
+xcuserdata
+!src/**/build/
+local.properties
+.idea
+.DS_Store
+captures
+.externalNativeBuild
+.cxx
+*.xcodeproj/*
+!*.xcodeproj/project.pbxproj
+!*.xcodeproj/xcshareddata/
+!*.xcodeproj/project.xcworkspace/
+!*.xcworkspace/contents.xcworkspacedata
+**/xcshareddata/WorkspaceSettings.xcsettings
+node_modules/
+
+# Secrets / env files
+.env
+.env.*
+*.key
+.claude/
+
+# Script output
+scripts/crawl_results.json
+upsert_errors*
+
+# Stray files with keys in names
+SUPABASE_SERVICE_KEY=*
+node
+
+# HTML prototypes
+*.html
