@@ -1,0 +1,51 @@
+name: Monthly — Discover Venues, Fix URLs & Rank
+
+on:
+  schedule:
+    - cron: '0 8 1 * *'  # 8am UTC / 3am EST on the 1st of each month
+  workflow_dispatch: {}
+
+jobs:
+  discover-venues:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Discover New Venues (Google Places)
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node discover_venues_google.js
+
+  fix-venue-urls:
+    runs-on: ubuntu-latest
+    needs: discover-venues
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Fix Venue URLs
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node fix_venue_urls.js
+
+  rank-venues:
+    runs-on: ubuntu-latest
+    needs: fix-venue-urls
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Rank Venues (Claude)
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node rank_venues.js

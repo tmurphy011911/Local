@@ -1,0 +1,36 @@
+name: Weekly — Crawl Venues & Classify Events
+
+on:
+  schedule:
+    - cron: '0 9 * * 0'  # 9am UTC / 4am EST every Sunday
+  workflow_dispatch: {}
+
+jobs:
+  crawl-venues:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Crawl All Venues
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node run_crawls.js
+
+  classify-events:
+    runs-on: ubuntu-latest
+    needs: crawl-venues
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Classify & Tag Events
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node classify_events.js

@@ -1,0 +1,34 @@
+name: Daily — Ticketmaster Sync & Deactivate Past Events
+
+on:
+  schedule:
+    - cron: '0 8 * * *'  # 8am UTC / 3am EST daily
+  workflow_dispatch: {}
+
+jobs:
+  ticketmaster-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Ticketmaster Sync
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node ticketmaster_sync.js
+
+  deactivate-past-events:
+    runs-on: ubuntu-latest
+    needs: ticketmaster-sync
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Deactivate Past Events
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node deactivate_past_events.js
