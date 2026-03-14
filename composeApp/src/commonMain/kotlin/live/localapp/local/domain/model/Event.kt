@@ -1,7 +1,7 @@
 @file:Suppress("DEPRECATION")
 package live.localapp.local.domain.model
 
-import kotlin.time.Clock
+// Clock imported fully-qualified below to avoid kotlin.time.Clock conflict
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -58,7 +58,7 @@ data class Event(
                 val instant = Instant.parse(s)
                 val tz = TimeZone.currentSystemDefault()
                 val local = instant.toLocalDateTime(tz)
-                val now = Clock.System.now().toLocalDateTime(tz)
+                val now = kotlin.time.Clock.System.now().toLocalDateTime(tz)
 
                 val hour = local.hour
                 val minute = local.minute
@@ -70,10 +70,10 @@ data class Event(
                 }
                 val time = if (minute == 0) "$displayHour$amPm" else "$displayHour:${minute.toString().padStart(2, '0')}$amPm"
 
-                // Calculate day difference
-                val eventDayOfYear = local.dayOfYear + local.year * 366
-                val todayDayOfYear = now.dayOfYear + now.year * 366
-                val dayDiff = eventDayOfYear - todayDayOfYear
+                // Calculate day difference using epoch days
+                val eventDate = local.date
+                val todayDate = now.date
+                val dayDiff = (eventDate.toEpochDays() - todayDate.toEpochDays()).toInt()
 
                 val dayLabel = when {
                     dayDiff == 0 -> "Today"

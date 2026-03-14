@@ -72,7 +72,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.datetime.Clock
+// Clock used fully-qualified to avoid kotlin.time.Clock conflict
 import kotlinx.datetime.DateTimeUnit
 import kotlinx.datetime.DayOfWeek
 import kotlinx.datetime.LocalDate
@@ -1154,7 +1154,7 @@ private fun DatePickerGrid(
     onSelect: (isoDate: String, displayLabel: String) -> Unit,
 ) {
     val tz = TimeZone.currentSystemDefault()
-    val today = Clock.System.now().toLocalDateTime(tz).date
+    val today = kotlin.time.Clock.System.now().toLocalDateTime(tz).date
 
     // Calculate the first selectable date
     val firstDate = if (startFromDate != null) {

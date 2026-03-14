@@ -3,7 +3,6 @@ package live.localapp.local.data.repository
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.query.Order
-import kotlin.time.Clock
 import kotlin.time.Duration.Companion.days
 import kotlinx.datetime.DateTimeUnit
 import kotlinx.datetime.DayOfWeek
@@ -425,7 +424,7 @@ class CarouselRepositoryImpl(
         // ── Subcategory "This Month" carousel (positioned after dynamic for depth) ──
         if (filter is EventFilter.Category) {
             val displayName = categoryDisplayName(filter.value)
-            val cutoff = Clock.System.now().plus(30.days).toString()
+            val cutoff = kotlin.time.Clock.System.now().plus(30.days).toString()
             val topEvents = filtered
                 .filter { (it.startAt ?: "") <= cutoff && it.id !in seenEventIds }
                 .take(carouselDisplayLimit)
@@ -476,7 +475,7 @@ class CarouselRepositoryImpl(
                         "this_month" -> 30
                         else -> 7
                     }
-                    val cutoff = Clock.System.now().plus(days.days).toString()
+                    val cutoff = kotlin.time.Clock.System.now().plus(days.days).toString()
                     pool.filter { (it.startAt ?: "") <= cutoff }
                 }
             }
@@ -485,7 +484,7 @@ class CarouselRepositoryImpl(
                 else -> pool
             }
             "top10_weekly" -> {
-                val cutoff = Clock.System.now().plus(7.days).toString()
+                val cutoff = kotlin.time.Clock.System.now().plus(7.days).toString()
                 val weekPool = pool.filter { (it.startAt ?: "") <= cutoff }
                 rankForColdStart(weekPool, prefs, maxResults = carouselDisplayLimit)
             }
@@ -1094,10 +1093,10 @@ class CarouselRepositoryImpl(
     /** How many events to show per carousel after dedup */
     private val carouselDisplayLimit = 30
 
-    private fun nowIso(): String = Clock.System.now().toString()
+    private fun nowIso(): String = kotlin.time.Clock.System.now().toString()
 
     private fun daysFromNowIso(n: Int): String =
-        Clock.System.now().plus(n.days).toString()
+        kotlin.time.Clock.System.now().plus(n.days).toString()
 
     /**
      * Returns the ISO timestamp for Monday 00:00:00 after the next Sunday.
@@ -1105,7 +1104,7 @@ class CarouselRepositoryImpl(
      */
     private fun endOfNextSundayIso(): String {
         val tz = TimeZone.currentSystemDefault()
-        val todayDate = Clock.System.now().toLocalDateTime(tz).date
+        val todayDate = kotlin.time.Clock.System.now().toLocalDateTime(tz).date
         val today = todayDate.dayOfWeek
         val daysUntilSunday = when (today) {
             DayOfWeek.SUNDAY -> 0
@@ -1128,7 +1127,7 @@ class CarouselRepositoryImpl(
      */
     private fun startOfNextFridayIso(): String {
         val tz = TimeZone.currentSystemDefault()
-        val todayDate = Clock.System.now().toLocalDateTime(tz).date
+        val todayDate = kotlin.time.Clock.System.now().toLocalDateTime(tz).date
         val today = todayDate.dayOfWeek
         val daysUntilFriday = when (today) {
             DayOfWeek.FRIDAY, DayOfWeek.SATURDAY, DayOfWeek.SUNDAY -> 0
@@ -1500,7 +1499,7 @@ class CarouselRepositoryImpl(
         if (startAt == null) return 0.3 // default for events with no date
         return try {
             val eventInstant = Instant.parse(startAt)
-            val now = Clock.System.now()
+            val now = kotlin.time.Clock.System.now()
             val daysAway = (eventInstant - now).inWholeDays.toDouble().coerceAtLeast(0.0)
             // Exponential decay: 1.0 today, ~0.5 at 7 days, ~0.1 at 30 days
             1.0 / (1.0 + daysAway / 7.0)
