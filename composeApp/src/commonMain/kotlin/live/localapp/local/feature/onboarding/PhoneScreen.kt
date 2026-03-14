@@ -61,8 +61,12 @@ private fun formatPhone(raw: String): String {
 
 @Composable
 fun PhoneScreen(
+    firstName: String,
+    lastName: String,
     phoneNumber: String,
     phoneState: PhoneState,
+    onFirstNameChange: (String) -> Unit,
+    onLastNameChange: (String) -> Unit,
     onPhoneChange: (String) -> Unit,
     onSubmit: () -> Unit,
     onLookupResult: (PhoneState) -> Unit,
@@ -156,7 +160,7 @@ fun PhoneScreen(
                         Spacer(Modifier.height(32.dp))
 
                         Text(
-                            "Enter your",
+                            "Almost there",
                             style = TextStyle(
                                 fontFamily = AppFonts.Heading,
                                 fontWeight = FontWeight.Black,
@@ -166,7 +170,7 @@ fun PhoneScreen(
                             ),
                         )
                         Text(
-                            "phone number",
+                            "create your account",
                             style = TextStyle(
                                 fontFamily = AppFonts.Heading,
                                 fontWeight = FontWeight.Black,
@@ -190,7 +194,95 @@ fun PhoneScreen(
                             ),
                         )
 
-                        Spacer(Modifier.height(32.dp))
+                        Spacer(Modifier.height(24.dp))
+
+                        // Name inputs
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            // First name
+                            BasicTextField(
+                                value = firstName,
+                                onValueChange = onFirstNameChange,
+                                textStyle = TextStyle(
+                                    fontFamily = AppFonts.Body,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 16.sp,
+                                    color = AppColors.Ink,
+                                ),
+                                cursorBrush = SolidColor(AppColors.Coral),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                                singleLine = true,
+                                decorationBox = { innerTextField ->
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(52.dp)
+                                            .background(AppColors.White, RoundedCornerShape(16.dp))
+                                            .border(2.5.dp, AppColors.Pebble, RoundedCornerShape(16.dp))
+                                            .padding(horizontal = 14.dp),
+                                        contentAlignment = Alignment.CenterStart,
+                                    ) {
+                                        if (firstName.isEmpty()) {
+                                            Text(
+                                                "First name",
+                                                style = TextStyle(
+                                                    fontFamily = AppFonts.Body,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    fontSize = 16.sp,
+                                                    color = AppColors.Pebble,
+                                                ),
+                                            )
+                                        }
+                                        innerTextField()
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                            )
+
+                            // Last name
+                            BasicTextField(
+                                value = lastName,
+                                onValueChange = onLastNameChange,
+                                textStyle = TextStyle(
+                                    fontFamily = AppFonts.Body,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 16.sp,
+                                    color = AppColors.Ink,
+                                ),
+                                cursorBrush = SolidColor(AppColors.Coral),
+                                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                                singleLine = true,
+                                decorationBox = { innerTextField ->
+                                    Box(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .height(52.dp)
+                                            .background(AppColors.White, RoundedCornerShape(16.dp))
+                                            .border(2.5.dp, AppColors.Pebble, RoundedCornerShape(16.dp))
+                                            .padding(horizontal = 14.dp),
+                                        contentAlignment = Alignment.CenterStart,
+                                    ) {
+                                        if (lastName.isEmpty()) {
+                                            Text(
+                                                "Last name",
+                                                style = TextStyle(
+                                                    fontFamily = AppFonts.Body,
+                                                    fontWeight = FontWeight.ExtraBold,
+                                                    fontSize = 16.sp,
+                                                    color = AppColors.Pebble,
+                                                ),
+                                            )
+                                        }
+                                        innerTextField()
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                            )
+                        }
+
+                        Spacer(Modifier.height(16.dp))
 
                         // Phone input
                         Row(

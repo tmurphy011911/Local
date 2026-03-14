@@ -59,6 +59,8 @@ data class OnboardingState(
     val selectedCategories: Set<String> = emptySet(),
     val isPersonalised: Boolean = false,
     val savedEvents: List<SavedEvent> = emptyList(),
+    val firstName: String = "",
+    val lastName: String = "",
     val phoneNumber: String = "",
     val phoneState: PhoneState = PhoneState.ENTRY,
     val notifTickets: Boolean = true,
@@ -271,6 +273,8 @@ class OnboardingViewModel(
 
                 val prefs = UserPreferences(
                     id = "",
+                    firstName = s.firstName.trim().ifEmpty { null },
+                    lastName = s.lastName.trim().ifEmpty { null },
                     phone = s.phoneNumber.filter { it.isDigit() }.ifEmpty { null },
                     city = "boston",
                     userLat = s.userLat,
@@ -289,6 +293,14 @@ class OnboardingViewModel(
             }
             onSaved()
         }
+    }
+
+    fun updateFirstName(value: String) {
+        _state.update { it.copy(firstName = value) }
+    }
+
+    fun updateLastName(value: String) {
+        _state.update { it.copy(lastName = value) }
     }
 
     fun updatePhoneNumber(value: String) {

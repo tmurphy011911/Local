@@ -15,6 +15,9 @@ data class VenueDto(
     val latitude: Double? = null,
     val longitude: Double? = null,
     @SerialName("image_url") val imageUrl: String? = null,
+    @SerialName("photo_url") val photoUrl: String? = null,
+    val description: String? = null,
+    @SerialName("public_interest_rank") val publicInterestRank: Int? = null,
 )
 
 fun VenueDto.toDomain(): Venue = Venue(
@@ -27,4 +30,7 @@ fun VenueDto.toDomain(): Venue = Venue(
     latitude = latitude,
     longitude = longitude,
     imageUrl = imageUrl,
+    photoUrl = photoUrl,
+    description = description,
+    publicInterestRank = publicInterestRank,
 )

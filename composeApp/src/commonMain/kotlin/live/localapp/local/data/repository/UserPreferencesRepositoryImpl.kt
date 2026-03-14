@@ -11,6 +11,8 @@ import live.localapp.local.domain.repository.UserPreferencesRepository
 @Serializable
 private data class UserProfileDto(
     val id: String? = null,
+    @SerialName("first_name") val firstName: String? = null,
+    @SerialName("last_name") val lastName: String? = null,
     val phone: String? = null,
     val city: String = "boston",
     @SerialName("user_lat") val userLat: Double? = null,
@@ -44,6 +46,8 @@ class UserPreferencesRepositoryImpl(
 
         val dto = UserProfileDto(
             id = existingId,
+            firstName = prefs.firstName,
+            lastName = prefs.lastName,
             phone = prefs.phone,
             city = prefs.city,
             userLat = prefs.userLat,
@@ -94,6 +98,8 @@ class UserPreferencesRepositoryImpl(
 
             UserPreferences(
                 id = dto.id ?: userId,
+                firstName = dto.firstName,
+                lastName = dto.lastName,
                 phone = dto.phone,
                 city = dto.city,
                 userLat = dto.userLat,

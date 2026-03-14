@@ -134,8 +134,12 @@ fun OnboardingScreen(
                         onBack = { viewModel.onBackFromNotifications() },
                     )
                     OnboardingStep.PHONE -> PhoneScreen(
+                        firstName = state.firstName,
+                        lastName = state.lastName,
                         phoneNumber = state.phoneNumber,
                         phoneState = state.phoneState,
+                        onFirstNameChange = viewModel::updateFirstName,
+                        onLastNameChange = viewModel::updateLastName,
                         onPhoneChange = viewModel::updatePhoneNumber,
                         onSubmit = { viewModel.submitPhone() },
                         onLookupResult = viewModel::onPhoneLookupResult,

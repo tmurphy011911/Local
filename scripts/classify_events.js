@@ -2,16 +2,17 @@
  * classify_events.js — AI-powered event reclassification and tagging
  *
  * Pulls all active events from Supabase, sends them to Claude in batches
- * for category correction and rich sub-tagging, then writes corrections back.
+ * for parent category (upcoming/always_on), subcategory, sub-subcategory,
+ * and rich tagging, then writes corrections back.
  *
- * The original Ticketmaster category/subcategory are preserved in
+ * The original category/subcategory are preserved in
  * `original_category` and `original_subcategory` columns so you can revert.
  *
  * Usage:
- *   ANTHROPIC_API_KEY=sk-... SUPABASE_SERVICE_KEY=ey... node scripts/classify_events.js
+ *   node scripts/classify_events.js
  *
  * Revert (undo all AI classifications):
- *   SUPABASE_SERVICE_KEY=ey... node scripts/classify_events.js --revert
+ *   node scripts/classify_events.js --revert
  *
  * Optional:
  *   DRY_RUN=1          — preview changes without writing to DB
@@ -31,31 +32,51 @@ const REVERT_MODE = process.argv.includes("--revert");
 
 // ── Valid categories and tags ──
 
-const VALID_CATEGORIES = [
-  "music", "sports", "arts", "comedy", "nightlife", "outdoors", "food", "other",
-];
+const VALID_PARENT_CATEGORIES = ["upcoming", "always_on"];
 
 const VALID_SUBCATEGORIES = [
+  "music", "arts", "theatre", "food", "comedy", "sports",
+  "museums", "tours", "libraries", "outdoors", "for-kids", "other",
+  "no-public-interest",
+];
+
+const VALID_SUB_SUBCATEGORIES = [
   // music
   "rock", "pop", "hip-hop", "r&b", "jazz", "blues", "country", "folk",
   "classical", "electronic", "latin", "reggae", "alternative", "metal", "indie",
+  "singer-songwriter", "cover-band", "tribute", "orchestra", "choir", "world-music",
+  // arts
+  "gallery", "visual-arts", "photography", "sculpture", "street-art", "craft",
+  "spoken-word", "literary", "film", "dance", "opera",
+  // theatre
+  "musical", "drama", "improv", "sketch", "puppet-show", "dinner-theatre",
+  // food
+  "farmers-market", "food-tour", "tasting", "cooking-class", "pop-up",
+  "brunch", "dinner", "beer", "wine", "cocktail", "coffee",
+  // comedy
+  "standup", "improv-comedy", "open-mic", "roast", "variety-show", "magic",
   // sports
   "basketball", "hockey", "baseball", "football", "soccer", "tennis", "golf",
-  "wrestling", "boxing", "mma", "college-sports", "minor-league",
-  // arts
-  "theatre", "dance", "museum", "gallery", "film", "opera", "literary",
-  "photography", "visual-arts", "family", "circus",
-  // comedy
-  "standup", "improv", "sketch",
-  // nightlife
-  "dj", "karaoke", "drag", "club-night",
+  "wrestling", "boxing", "mma", "college-sports", "minor-league", "running",
+  "fitness", "volleyball", "lacrosse", "rugby", "esports",
+  // museums
+  "art-museum", "science-museum", "history-museum", "exhibit", "planetarium",
+  // tours
+  "walking-tour", "boat-tour", "ghost-tour", "food-tour", "brewery-tour",
+  "historical-tour", "architecture-tour",
+  // libraries
+  "book-club", "reading", "author-event", "workshop", "study-group",
   // outdoors
-  "outdoor", "hiking", "running", "fitness", "sailing", "cycling",
-  // food
-  "farmers-market", "food-tour", "tasting", "cooking-class",
+  "hiking", "cycling", "kayaking", "fishing", "camping", "climbing",
+  "sailing", "skiing", "beach", "nature-walk", "bird-watching",
+  "cleanup", "gardening",
+  // for-kids
+  "storytime", "craft-kids", "science-kids", "music-kids", "theatre-kids",
+  "outdoor-play", "sports-kids", "camp",
   // other
-  "workshop", "lecture", "networking", "college", "community", "wellness",
-  "podcast", "fundraiser", "holiday", "religious", "administrative",
+  "workshop", "lecture", "networking", "community", "wellness",
+  "charity", "religious", "holiday", "market", "fair", "convention",
+  "meetup", "open-house", "volunteer", "fundraiser",
 ];
 
 const VALID_TAGS = [
@@ -92,8 +113,8 @@ async function main() {
 
   if (REVERT_MODE) return await revertClassifications();
 
-  console.log(`🏷️  Event Classifier — city: ${CITY}, batch size: ${BATCH_SIZE}`);
-  if (DRY_RUN) console.log("🔍 DRY RUN — no database writes\n");
+  console.log(`Event Classifier — city: ${CITY}, batch size: ${BATCH_SIZE}`);
+  if (DRY_RUN) console.log("DRY RUN — no database writes\n");
 
   // 1. Fetch all future events
   const events = await fetchAllEvents();
@@ -125,19 +146,21 @@ async function main() {
                         original.subcategory !== c.subcategory;
         const hasTags = c.tags && c.tags.length > 0;
 
-        if (changed || hasTags) {
+        if (changed || hasTags || c.sub_subcategory) {
           updates.push({
             id: c.id,
             category: c.category,
             subcategory: c.subcategory,
+            sub_subcategory: c.sub_subcategory,
             tags: c.tags || [],
           });
 
           if (changed) {
             batchChanges++;
             console.log(
-              `  ✏️  "${original.title}" @ ${original.venue_name}` +
+              `  "${original.title}" @ ${original.venue_name}` +
               `\n      ${original.category}/${original.subcategory || "null"} → ${c.category}/${c.subcategory || "null"}` +
+              (c.sub_subcategory ? ` / ${c.sub_subcategory}` : "") +
               (hasTags ? `\n      tags: [${c.tags.join(", ")}]` : "")
             );
           }
@@ -154,7 +177,7 @@ async function main() {
 
     } catch (err) {
       totalErrors++;
-      console.error(`  ❌ Batch ${batchNum} failed:`, err.message);
+      console.error(`  Batch ${batchNum} failed:`, err.message);
     }
 
     // Small delay between batches to avoid rate limits
@@ -163,7 +186,7 @@ async function main() {
     }
   }
 
-  console.log(`\n════════════════════════════════════════`);
+  console.log(`\n========================================`);
   console.log(`Done. Recategorized: ${totalChanged}, Tagged: ${totalTagged}, Errors: ${totalErrors}`);
   if (DRY_RUN) console.log("(DRY RUN — nothing was written)");
 }
@@ -177,7 +200,6 @@ async function fetchAllEvents() {
 
   while (true) {
     const now = new Date().toISOString();
-    // Try with original_* columns first, fall back without them
     let selectCols = "id,title,description,category,subcategory,venue_name,venue_city,is_free,source,original_category,original_subcategory";
     let url = `${SUPABASE_URL}/rest/v1/events?city=eq.${CITY}&start_at=gte.${now}&select=${selectCols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
 
@@ -233,30 +255,49 @@ async function classifyBatch(events) {
   const prompt = `You are an expert event classifier for a local event discovery app in the Boston metro area.
 
 For each event below, determine:
-1. The correct **category** (one of: ${VALID_CATEGORIES.join(", ")})
-2. The correct **subcategory** (one of: ${VALID_SUBCATEGORIES.join(", ")}, or null)
-3. Up to 5 **tags** from this list: ${VALID_TAGS.join(", ")}
+1. The correct **category** (parent type — one of: ${VALID_PARENT_CATEGORIES.join(", ")})
+2. The correct **subcategory** (one of: ${VALID_SUBCATEGORIES.join(", ")})
+3. An optional **sub_subcategory** for deeper personalization (one of: ${VALID_SUB_SUBCATEGORIES.join(", ")}, or null)
+4. Up to 5 **tags** from this list: ${VALID_TAGS.join(", ")}
+
+CATEGORY RULES (this is the most important classification):
+- **upcoming**: Events with a specific scheduled date that customers would NOT expect to see repeating regularly. Concerts, one-off shows, specific game days, special exhibits, festivals, galas, etc.
+- **always_on**: Events that run multiple times per day, daily, weekly, or monthly. Things customers can rely on being available regularly — tours, book clubs, weekly cleanups, volunteer shifts, recurring trivia nights, farmers markets, museum general admission, recurring fitness classes, weekly open mics, etc.
+
+SUBCATEGORY RULES:
+- "music" — concerts, live music, DJ sets, music festivals
+- "arts" — galleries, visual arts, photography, film screenings, dance performances
+- "theatre" — plays, musicals, improv shows, drama
+- "food" — food tours, tastings, cooking classes, farmers markets, pop-ups, dining events
+- "comedy" — standup, comedy shows, roasts
+- "sports" — games, matches, races, fitness events
+- "museums" — museum visits, exhibits, science centers, planetariums
+- "tours" — walking tours, boat tours, ghost tours, historical tours
+- "libraries" — book clubs, author events, library programs, readings
+- "outdoors" — hiking, cycling, kayaking, beach events, nature walks, cleanups, gardening
+- "for-kids" — storytime, kids camps, children's theatre, kids science, outdoor play
+- "other" — workshops, lectures, networking, community events, wellness, charity, religious, markets
+- "no-public-interest" — events that no member of the general public would be excited to discover and attend. Examples: private country club events, varsity/JV sports practices, internal corporate meetings, school committee meetings, private member-only gatherings, government abutters meetings, HOA meetings, staff trainings, etc. If a random person browsing the app would not want to attend, classify it here.
 
 IMPORTANT classification rules:
-- Film screenings, movie showings, and matinees are category "arts", subcategory "film" — NOT music or comedy
-- A venue's default classification is often WRONG. "The Center for Arts in Natick" labels everything as comedy. "Cabot Theatre" labels everything as music. Classify by the EVENT content, not the venue.
-- Guitar concerts, tribute bands, and named musicians are "music" even if at a comedy venue
-- "Oscar Nominated Shorts" are film screenings, not comedy
-- Open mic nights are "nightlife" unless specifically a comedy open mic
-- Government meetings, abutters meetings, BERDO workshops are "other"/"administrative"
-- Kids science shows are "arts"/"family"
-- Recurring events like trivia, farmers markets, walking tours should get the "recurring" tag
+- Film screenings and movie showings are "arts" with sub_subcategory "film"
+- A venue's default classification is often WRONG. Classify by the EVENT content, not the venue.
+- ANY event with "vs" or "vs." in the title is almost certainly "sports" — games, matches, competitions. Never classify these as music/arts/etc.
+- Pro Boston sports teams (Celtics, Bruins, Red Sox, Patriots, Revolution) are ALWAYS subcategory "sports". Bruins = hockey, Celtics = basketball, Red Sox = baseball, Patriots = football, Revolution = soccer.
 - Pro Boston sports (Celtics, Bruins, Red Sox, Patriots, Revolution) should get "pro-sports" tag
-- Events at premium venues (TD Garden, Fenway, House of Blues, Wang Theatre) should get relevant tags
 - Free events should get the "free" tag
 - Events good for families should get "family-friendly"
+- Recurring events should get the "recurring" tag — this is KEY for always_on classification
 - Use "boston-essential" sparingly for truly iconic Boston experiences
 - Use "hidden-gem" for unique, lesser-known events worth discovering
+- Kids-focused events should be subcategory "for-kids" even if they could fit another category
 
 Respond with a JSON array. Each element must have:
 - "id": the event ID (string)
-- "category": corrected category (string)
-- "subcategory": corrected subcategory (string or null)
+- "category": "upcoming" or "always_on" (string)
+- "subcategory": one of the valid subcategories (string)
+- "sub_subcategory": deeper classification or null (string or null)
+- "team_name": for sports events, the team name exactly as commonly known (e.g. "Boston Bruins", "Northeastern Huskies", "Worcester Red Sox"). null for non-sports events or sports events not tied to a specific team (string or null)
 - "tags": array of tag strings (max 5)
 
 ONLY output the JSON array, no other text.
@@ -296,10 +337,12 @@ ${JSON.stringify(eventsForPrompt, null, 2)}`;
     // Validate
     return results.map(r => ({
       id: r.id,
-      category: VALID_CATEGORIES.includes(r.category) ? r.category : null,
+      category: VALID_PARENT_CATEGORIES.includes(r.category) ? r.category : null,
       subcategory: r.subcategory && VALID_SUBCATEGORIES.includes(r.subcategory) ? r.subcategory : null,
+      sub_subcategory: r.sub_subcategory && VALID_SUB_SUBCATEGORIES.includes(r.sub_subcategory) ? r.sub_subcategory : null,
+      team_name: r.team_name || null,
       tags: Array.isArray(r.tags) ? r.tags.filter(t => VALID_TAGS.includes(t)).slice(0, 5) : [],
-    })).filter(r => r.category !== null); // skip if category invalid
+    })).filter(r => r.category !== null && r.subcategory !== null);
   } catch (err) {
     throw new Error(`Failed to parse Claude response: ${err.message}\nResponse: ${text.slice(0, 500)}`);
   }
@@ -316,11 +359,18 @@ async function writeUpdates(updates, originalEvents) {
       const original = originalEvents.find(e => e.id === u.id);
       const url = `${SUPABASE_URL}/rest/v1/events?id=eq.${u.id}`;
 
-      // Save original Ticketmaster values (only if not already saved from a prior run)
       const body = {
         category: u.category,
         subcategory: u.subcategory,
       };
+
+      if (u.sub_subcategory) {
+        body.sub_subcategory = u.sub_subcategory;
+      }
+
+      if (u.team_name) {
+        body.team_name = u.team_name;
+      }
 
       // Preserve original values for revert — only set if not already saved
       if (original && !original.original_category) {
@@ -346,7 +396,7 @@ async function writeUpdates(updates, originalEvents) {
       if (!res.ok) {
         const errBody = await res.text();
         // If new columns don't exist yet, retry with just category/subcategory
-        if (errBody.includes("original_category") || errBody.includes("tags")) {
+        if (errBody.includes("original_category") || errBody.includes("tags") || errBody.includes("sub_subcategory")) {
           const fallback = {
             category: u.category,
             subcategory: u.subcategory,
@@ -375,10 +425,9 @@ async function writeUpdates(updates, originalEvents) {
 // ── Revert all AI classifications ──
 
 async function revertClassifications() {
-  console.log(`⏪ Reverting AI classifications for city: ${CITY}`);
-  if (DRY_RUN) console.log("🔍 DRY RUN — no database writes\n");
+  console.log(`Reverting AI classifications for city: ${CITY}`);
+  if (DRY_RUN) console.log("DRY RUN — no database writes\n");
 
-  // Fetch events that have been AI-classified (original_category is not null)
   const allClassified = [];
   const pageSize = 1000;
   let offset = 0;
@@ -434,6 +483,7 @@ async function revertClassifications() {
         body: JSON.stringify({
           category: ev.original_category,
           subcategory: ev.original_subcategory,
+          sub_subcategory: null,
           original_category: null,
           original_subcategory: null,
           tags: null,
@@ -448,7 +498,7 @@ async function revertClassifications() {
     }));
   }
 
-  console.log(`\nReverted ${reverted} events back to original Ticketmaster categories.`);
+  console.log(`\nReverted ${reverted} events back to original categories.`);
 }
 
 main().catch(err => { console.error(err); process.exit(1); });

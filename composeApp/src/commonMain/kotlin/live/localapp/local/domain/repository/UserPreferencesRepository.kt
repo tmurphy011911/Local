@@ -2,6 +2,8 @@ package live.localapp.local.domain.repository
 
 data class UserPreferences(
     val id: String,
+    val firstName: String? = null,
+    val lastName: String? = null,
     val phone: String? = null,
     val city: String = "boston",
     val userLat: Double? = null,

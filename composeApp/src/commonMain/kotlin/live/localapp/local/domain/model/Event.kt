@@ -1,6 +1,7 @@
 @file:Suppress("DEPRECATION")
 package live.localapp.local.domain.model
 
+import kotlin.time.Clock
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -11,6 +12,7 @@ data class Event(
     val description: String?,
     val category: String,
     val subcategory: String?,
+    val subSubcategory: String? = null,
     val imageUrl: String?,
     val startAt: String?,
     val endAt: String?,
@@ -21,11 +23,13 @@ data class Event(
     val venueName: String?,
     val venueAddress: String?,
     val venueCity: String,
+    val venueState: String? = null,
     val venueLat: Double?,
     val venueLng: Double?,
     val city: String,
     val source: String? = null,
     val distanceMiles: Double? = null,
+    val venueDescription: String? = null,
 ) {
     val priceDisplay: String
         get() = when {
@@ -54,9 +58,8 @@ data class Event(
                 val instant = Instant.parse(s)
                 val tz = TimeZone.currentSystemDefault()
                 val local = instant.toLocalDateTime(tz)
-                val monthNames = arrayOf("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
-                val month = monthNames[local.monthNumber - 1]
-                val day = local.dayOfMonth
+                val now = Clock.System.now().toLocalDateTime(tz)
+
                 val hour = local.hour
                 val minute = local.minute
                 val amPm = if (hour < 12) "am" else "pm"
@@ -66,7 +69,26 @@ data class Event(
                     else -> hour
                 }
                 val time = if (minute == 0) "$displayHour$amPm" else "$displayHour:${minute.toString().padStart(2, '0')}$amPm"
-                "$month $day, $time"
+
+                // Calculate day difference
+                val eventDayOfYear = local.dayOfYear + local.year * 366
+                val todayDayOfYear = now.dayOfYear + now.year * 366
+                val dayDiff = eventDayOfYear - todayDayOfYear
+
+                val dayLabel = when {
+                    dayDiff == 0 -> "Today"
+                    dayDiff == 1 -> "Tomorrow"
+                    dayDiff in 2..6 -> {
+                        val dayNames = arrayOf("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+                        dayNames[local.dayOfWeek.ordinal]
+                    }
+                    else -> {
+                        val monthNames = arrayOf("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+                        "${monthNames[local.monthNumber - 1]} ${local.dayOfMonth}"
+                    }
+                }
+
+                "$dayLabel, $time"
             } catch (_: Exception) {
                 ""
             }

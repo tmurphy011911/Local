@@ -10,6 +10,7 @@ import live.localapp.local.domain.repository.EventRepository
 import live.localapp.local.domain.repository.OnboardingRepository
 import live.localapp.local.domain.repository.UserPreferencesRepository
 import live.localapp.local.feature.onboarding.OnboardingViewModel
+import live.localapp.local.ui.chat.ChatViewModel
 import live.localapp.local.ui.home.HomeViewModel
 import org.koin.dsl.module
 
@@ -20,5 +21,6 @@ val appModule = module {
     single<OnboardingRepository> { OnboardingRepositoryImpl(get()) }
     single<UserPreferencesRepository> { UserPreferencesRepositoryImpl(get()) }
     single { HomeViewModel(get(), get()) }
+    single { ChatViewModel() }
     factory { OnboardingViewModel(get(), get()) }
 }

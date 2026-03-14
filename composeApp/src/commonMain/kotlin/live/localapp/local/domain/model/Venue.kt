@@ -10,4 +10,7 @@ data class Venue(
     val latitude: Double?,
     val longitude: Double?,
     val imageUrl: String?,
+    val photoUrl: String? = null,
+    val description: String? = null,
+    val publicInterestRank: Int? = null,
 )

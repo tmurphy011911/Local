@@ -9,6 +9,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import live.localapp.local.domain.model.CarouselSection
 import live.localapp.local.domain.repository.CarouselRepository
+import live.localapp.local.domain.repository.CategoryInfo
 import live.localapp.local.domain.repository.SegmentMode
 import live.localapp.local.domain.repository.UserPreferences
 import live.localapp.local.domain.repository.UserPreferencesRepository
@@ -23,8 +24,10 @@ data class HomeUiState(
     val streakDays: Int = 2,
     val selectedSegment: HomeSegment = HomeSegment.UPCOMING,
     val selectedCategory: String = "foryou",
+    val availableCategories: List<CategoryInfo> = emptyList(),
     val carousels: List<CarouselSection> = emptyList(),
     val isLoading: Boolean = false,
+    val isRefreshing: Boolean = false,
     val error: String? = null,
     val userPreferences: UserPreferences? = null,
 )
@@ -61,8 +64,15 @@ class HomeViewModel(
         val current = _uiState.value
         if (current.userLat != lat || current.userLng != lng) {
             _uiState.update { it.copy(userLat = lat, userLng = lng) }
+            carouselRepository.invalidateCaches()
             loadCarousels()
         }
+    }
+
+    fun debugSetLocation(lat: Double, lng: Double, name: String) {
+        _uiState.update { it.copy(userLat = lat, userLng = lng, locationName = name) }
+        carouselRepository.invalidateCaches()
+        loadCarousels()
     }
 
     fun selectSegment(segment: HomeSegment) {
@@ -72,10 +82,16 @@ class HomeViewModel(
 
     fun selectCategory(category: String) {
         _uiState.update { it.copy(selectedCategory = category) }
+        loadCarousels(loadCategories = false)
+    }
+
+    fun refresh() {
+        carouselRepository.invalidateCaches()
+        _uiState.update { it.copy(isRefreshing = true) }
         loadCarousels()
     }
 
-    private fun loadCarousels() {
+    private fun loadCarousels(loadCategories: Boolean = true) {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
             try {
@@ -85,15 +101,35 @@ class HomeViewModel(
                     HomeSegment.UPCOMING -> SegmentMode.UPCOMING
                     HomeSegment.ALWAYS_ON -> SegmentMode.ALWAYS_ON
                 }
+
+                // Only fetch categories when segment changes or on first load
+                val categories = if (loadCategories || state.availableCategories.isEmpty()) {
+                    carouselRepository.getAvailableCategories(
+                        segment = segment,
+                        userPreferences = state.userPreferences,
+                    )
+                } else {
+                    state.availableCategories
+                }
+
                 val carousels = carouselRepository.getCarousels(
                     userLat = state.userLat,
                     userLng = state.userLng,
                     segment = segment,
                     category = if (category == "foryou") null else category,
+                    userPreferences = state.userPreferences,
+                    locationName = state.locationName,
                 )
-                _uiState.update { it.copy(carousels = carousels, isLoading = false) }
+                _uiState.update {
+                    it.copy(
+                        availableCategories = categories,
+                        carousels = carousels,
+                        isLoading = false,
+                        isRefreshing = false,
+                    )
+                }
             } catch (e: Exception) {
-                _uiState.update { it.copy(error = e.message, isLoading = false) }
+                _uiState.update { it.copy(error = e.message, isLoading = false, isRefreshing = false) }
             }
         }
     }

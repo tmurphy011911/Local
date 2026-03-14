@@ -23,6 +23,7 @@ private data class EventSummaryDto(
     @SerialName("venue_lat") val venueLat: Double? = null,
     @SerialName("venue_lng") val venueLng: Double? = null,
     val category: String,
+    val subcategory: String? = null,
 )
 
 class OnboardingRepositoryImpl(
@@ -35,7 +36,7 @@ class OnboardingRepositoryImpl(
         userLng: Double,
     ): OnboardingData {
         val events = supabaseClient.from("events")
-            .select(columns = Columns.list("id", "venue_city", "venue_name", "venue_lat", "venue_lng", "category")) {
+            .select(columns = Columns.list("id", "venue_city", "venue_name", "venue_lat", "venue_lng", "category", "subcategory")) {
                 filter { eq("city", city) }
             }
             .decodeList<EventSummaryDto>()
@@ -72,7 +73,7 @@ class OnboardingRepositoryImpl(
             .sortedBy { it.distanceMiles ?: Double.MAX_VALUE }
 
         val categoryCounts = events
-            .groupBy { it.category.lowercase() }
+            .groupBy { (it.subcategory ?: "other").lowercase() }
             .mapValues { it.value.size }
 
         return OnboardingData(
@@ -107,7 +108,7 @@ class OnboardingRepositoryImpl(
         val filtered = if (categories.isNullOrEmpty()) {
             events
         } else {
-            events.filter { it.category.lowercase() in categories }
+            events.filter { (it.subcategory ?: "other").lowercase() in categories }
         }
 
         return filtered

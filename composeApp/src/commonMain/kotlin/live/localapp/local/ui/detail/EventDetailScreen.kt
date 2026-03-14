@@ -173,6 +173,32 @@ fun EventDetailScreen(
                     )
                 }
 
+                // Venue description from Google Places
+                if (!event.venueDescription.isNullOrBlank() && event.venueName != null) {
+                    Spacer(Modifier.height(20.dp))
+                    Text(
+                        "About ${event.venueName}",
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp,
+                            color = AppColors.Ink3,
+                            letterSpacing = 0.3.sp,
+                        ),
+                    )
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        event.venueDescription,
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp,
+                            color = AppColors.Ink2,
+                            lineHeight = 22.sp,
+                        ),
+                    )
+                }
+
                 Spacer(Modifier.height(24.dp))
             }
         }
@@ -236,7 +262,7 @@ private fun HeroImage(
 
         // Category pill
         Text(
-            event.category,
+            (event.subcategory ?: event.category).replaceFirstChar { it.uppercase() },
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(start = 20.dp, bottom = 16.dp)

@@ -24,16 +24,14 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.window.Dialog
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Bolt
-import androidx.compose.material.icons.outlined.Category
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.LocalDining
-import androidx.compose.material.icons.outlined.LocalLibrary
 import androidx.compose.material.icons.outlined.Map
-import androidx.compose.material.icons.outlined.Museum
 import androidx.compose.material.icons.outlined.MusicNote
 import androidx.compose.material.icons.outlined.Nightlife
 import androidx.compose.material.icons.outlined.Notifications
@@ -43,29 +41,37 @@ import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Send
 import androidx.compose.material.icons.outlined.SportsScore
 import androidx.compose.material.icons.outlined.TheaterComedy
-import androidx.compose.material.icons.outlined.Tour
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Brush
 import coil3.compose.AsyncImage
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import live.localapp.local.Config
 import live.localapp.local.domain.model.CarouselSection
+import live.localapp.local.domain.repository.CategoryInfo
 import live.localapp.local.domain.model.Event
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
@@ -84,66 +90,117 @@ private fun String.toTitleCase(): String {
     }.joinToString(" ")
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event) -> Unit = {}) {
+fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event) -> Unit = {}, onConciergeClick: () -> Unit = {}) {
     val state by viewModel.uiState.collectAsState()
+    var showDebugMenu by remember { mutableStateOf(false) }
+
+    if (showDebugMenu) {
+        DebugMenuDialog(
+            onDismiss = { showDebugMenu = false },
+            onMockLocation = { lat, lng, name ->
+                viewModel.debugSetLocation(lat, lng, name)
+                showDebugMenu = false
+            },
+            onSetUserState = { userState ->
+                // TODO: wire to user state management
+                showDebugMenu = false
+            },
+        )
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
             .background(AppColors.Snow),
     ) {
-        HomeHeader(state)
+        HomeHeader(state, onDebugOpen = { showDebugMenu = true })
 
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .verticalScroll(rememberScrollState()),
+        PullToRefreshBox(
+            isRefreshing = state.isRefreshing,
+            onRefresh = { viewModel.refresh() },
+            modifier = Modifier.fillMaxSize(),
         ) {
-            GreetingSection(state)
-            AiConciergeCard()
-            SegmentedControl(state, viewModel)
-            CategoryRow(state, viewModel)
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
+            ) {
+                GreetingSection(state)
+                AiConciergeCard(onClick = onConciergeClick)
+                SegmentedControl(state, viewModel)
+                CategoryRow(state, viewModel)
 
-            if (state.isLoading) {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("Loading events...", style = AppType.PlanMeta)
+                if (state.isLoading && !state.isRefreshing) {
+                    Box(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("Loading events...", style = AppType.PlanMeta)
+                    }
+                } else if (state.carousels.isEmpty() && state.error != null) {
+                    EmptyState(
+                        title = "Something went wrong",
+                        subtitle = "Pull down to try again",
+                    )
+                } else if (state.carousels.isEmpty() && !state.isLoading) {
+                    EmptyState(
+                        title = "No events found",
+                        subtitle = "Try a different category or check back later",
+                    )
+                } else {
+                    val isForYou = state.selectedCategory == "foryou"
+                    state.carousels.forEach { section ->
+                        key(section.slug) {
+                            CarouselSectionView(section, onEventClick, showTags = isForYou)
+                        }
+                    }
                 }
-            } else if (state.carousels.isEmpty() && state.error != null) {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("Could not load events", style = AppType.PlanMeta)
-                }
-            } else if (state.carousels.isEmpty()) {
-                Box(
-                    modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text("No events found", style = AppType.PlanMeta)
-                }
-            } else {
-                state.carousels.forEach { section ->
-                    CarouselSectionView(section, onEventClick)
-                }
+
+                PlansSection()
+                Spacer(Modifier.height(24.dp))
             }
-
-            PlansSection()
-            Spacer(Modifier.height(24.dp))
         }
+    }
+}
+
+@Composable
+private fun EmptyState(title: String, subtitle: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 60.dp, horizontal = 40.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            text = title,
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 17.sp,
+                color = AppColors.Ink,
+            ),
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = subtitle,
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = FontWeight.Normal,
+                fontSize = 14.sp,
+                color = AppColors.Ink3,
+            ),
+        )
     }
 }
 
 // ── Dynamic Carousel Section ──
 
 @Composable
-private fun CarouselSectionView(section: CarouselSection, onEventClick: (Event) -> Unit) {
+private fun CarouselSectionView(section: CarouselSection, onEventClick: (Event) -> Unit, showTags: Boolean = true) {
     SectionHeader(section.title)
-    EventCardRow(section.events, onEventClick)
+    EventCardRow(section.events, onEventClick, showTags = showTags)
 }
 
 // ── Segmented Control ──
@@ -220,131 +277,122 @@ private fun SegmentButton(
 
 // ── Category Row ──
 
-private data class CategoryTile(
-    val id: String,
-    val label: String,
-    val icon: ImageVector,
-    val activeBg: Color,
-    val activeBorder: Color,
-    val inactiveBgStart: Color,
-    val inactiveBgEnd: Color,
-)
+private const val ICON_BASE = "${Config.SUPABASE_URL}/storage/v1/object/public/category-icons"
 
-private val upcomingCategories = listOf(
-    CategoryTile("foryou", "For You", Icons.Outlined.AutoAwesome, AppColors.Coral, AppColors.CoralDk, Color(0xFFFFF3F1), Color(0xFFFFE4DF)),
-    CategoryTile("music", "Music", Icons.Outlined.MusicNote, AppColors.Plum, AppColors.PlumDk, Color(0xFFF6F0FF), Color(0xFFEDE0FF)),
-    CategoryTile("arts", "Arts", Icons.Outlined.Palette, AppColors.Sage, AppColors.SageDk, Color(0xFFF0FDF7), Color(0xFFD5F5E8)),
-    CategoryTile("theatre", "Theatre", Icons.Outlined.TheaterComedy, AppColors.Sun, AppColors.SunDk, Color(0xFFFFFAF0), Color(0xFFFFF0CC)),
-    CategoryTile("food", "Food", Icons.Outlined.LocalDining, AppColors.Orange, AppColors.OrangeDk, Color(0xFFFFF5EE), Color(0xFFFFE8D5)),
-    CategoryTile("sports", "Sports", Icons.Outlined.SportsScore, AppColors.Sky, AppColors.SkyDk, Color(0xFFEEF5FF), Color(0xFFDCEEFF)),
-    CategoryTile("other", "Other", Icons.Outlined.Category, AppColors.Plum, AppColors.PlumDk, Color(0xFFF6F0FF), Color(0xFFEDE0FF)),
-)
-
-private val alwaysOnCategories = listOf(
-    CategoryTile("foryou", "For You", Icons.Outlined.AutoAwesome, AppColors.Coral, AppColors.CoralDk, Color(0xFFFFF3F1), Color(0xFFFFE4DF)),
-    CategoryTile("museums", "Museums", Icons.Outlined.Museum, AppColors.Sage, AppColors.SageDk, Color(0xFFF0FDF7), Color(0xFFD5F5E8)),
-    CategoryTile("tours", "Tours", Icons.Outlined.Tour, AppColors.Orange, AppColors.OrangeDk, Color(0xFFFFF5EE), Color(0xFFFFE8D5)),
-    CategoryTile("libraries", "Libraries", Icons.Outlined.LocalLibrary, AppColors.Sky, AppColors.SkyDk, Color(0xFFEEF5FF), Color(0xFFDCEEFF)),
-    CategoryTile("food", "Food", Icons.Outlined.LocalDining, AppColors.Sun, AppColors.SunDk, Color(0xFFFFFAF0), Color(0xFFFFF0CC)),
-    CategoryTile("locations", "Locations", Icons.Outlined.Place, AppColors.Coral, AppColors.CoralDk, Color(0xFFFFF3F1), Color(0xFFFFE4DF)),
+private val forYouTile = CategoryInfo(
+    id = "foryou",
+    label = "For You",
+    iconUrl = "$ICON_BASE/foryou.png",
+    eventCount = 0,
 )
 
 @Composable
 private fun CategoryRow(state: HomeUiState, viewModel: HomeViewModel) {
-    val categories = if (state.selectedSegment == HomeSegment.UPCOMING) upcomingCategories else alwaysOnCategories
+    val categories = remember(state.availableCategories) {
+        listOf(forYouTile) + state.availableCategories
+    }
+    val scrollState = rememberScrollState()
+    val density = LocalDensity.current
+    val selectedIndex = categories.indexOfFirst { it.id == state.selectedCategory }.coerceAtLeast(0)
 
-    Row(
+    // Item width in px: 64dp per item
+    val itemWidthPx = with(density) { 64.dp.toPx() }
+
+    // Auto-scroll to center the selected category
+    LaunchedEffect(selectedIndex, state.selectedSegment) {
+        val targetCenter = (selectedIndex * itemWidthPx + itemWidthPx / 2).toInt()
+        val viewportCenter = scrollState.viewportSize / 2
+        val scrollTo = (targetCenter - viewportCenter).coerceIn(0, scrollState.maxValue)
+        scrollState.animateScrollTo(scrollTo)
+    }
+
+    Column(
         modifier = Modifier
-            .padding(top = 14.dp)
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+            .fillMaxWidth()
+            .background(Color.White),
     ) {
-        categories.forEach { cat ->
-            val isActive = cat.id == state.selectedCategory
-            CategoryTileItem(
-                tile = cat,
-                isActive = isActive,
-                onClick = { viewModel.selectCategory(cat.id) },
-            )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(scrollState)
+                .padding(horizontal = 10.dp)
+                .padding(top = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            categories.forEach { cat ->
+                val isActive = cat.id == state.selectedCategory
+                CategoryTileItem(
+                    tile = cat,
+                    isActive = isActive,
+                    onClick = { viewModel.selectCategory(cat.id) },
+                )
+            }
         }
+
+        // Bottom border line
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(1.5.dp)
+                .background(Color(0xFFEBEBEB)),
+        )
     }
 }
 
 @Composable
 private fun CategoryTileItem(
-    tile: CategoryTile,
+    tile: CategoryInfo,
     isActive: Boolean,
     onClick: () -> Unit,
 ) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
-    val offsetY by animateFloatAsState(
-        targetValue = if (isPressed) 3f else 0f,
-        animationSpec = tween(80),
+    val scale by animateFloatAsState(
+        targetValue = if (isActive) 1.08f else 1f,
+        animationSpec = tween(150),
     )
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
+            .width(64.dp)
             .clickable(
-                interactionSource = interactionSource,
+                interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = onClick,
             ),
     ) {
-        Box(modifier = Modifier.graphicsLayer { translationY = offsetY * density }) {
-            // Shadow
-            Box(
-                modifier = Modifier
-                    .size(68.dp)
-                    .offset(y = if (!isPressed) 3.dp else 1.dp)
-                    .background(
-                        if (isActive) tile.activeBorder else AppColors.Pebble,
-                        AppShapes.CategoryBox,
-                    ),
-            )
+        AsyncImage(
+            model = tile.iconUrl,
+            contentDescription = tile.label,
+            modifier = Modifier
+                .size(50.dp)
+                .graphicsLayer { scaleX = scale; scaleY = scale },
+            contentScale = ContentScale.Fit,
+        )
 
-            // Box
-            Box(
-                modifier = Modifier
-                    .size(68.dp)
-                    .then(
-                        if (isActive) {
-                            Modifier.background(tile.activeBg, AppShapes.CategoryBox)
-                        } else {
-                            Modifier.background(
-                                Brush.linearGradient(listOf(tile.inactiveBgStart, tile.inactiveBgEnd)),
-                                AppShapes.CategoryBox,
-                            )
-                        },
-                    )
-                    .border(
-                        2.dp,
-                        if (isActive) tile.activeBorder else AppColors.Pebble,
-                        AppShapes.CategoryBox,
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    tile.icon,
-                    contentDescription = tile.label,
-                    modifier = Modifier.size(28.dp),
-                    tint = if (isActive) AppColors.White else AppColors.Ink3,
-                )
-            }
-        }
-
-        Spacer(Modifier.height(7.dp))
+        Spacer(Modifier.height(5.dp))
 
         Text(
             tile.label,
             style = TextStyle(
                 fontFamily = AppFonts.Body,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 11.sp,
-                color = AppColors.Ink3,
+                fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Bold,
+                fontSize = 12.sp,
+                color = if (isActive) AppColors.Ink else AppColors.Ink3,
             ),
+            maxLines = 1,
+        )
+
+        Spacer(Modifier.height(10.dp))
+
+        // Bottom indicator bar
+        Box(
+            modifier = Modifier
+                .width(64.dp)
+                .height(2.5.dp)
+                .background(
+                    if (isActive) AppColors.Ink else Color.Transparent,
+                    RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp),
+                ),
         )
     }
 }
@@ -352,25 +400,14 @@ private fun CategoryTileItem(
 // ── Section Header ──
 
 @Composable
-private fun SectionHeader(title: String, link: String = "See all ->") {
-    Row(
+private fun SectionHeader(title: String) {
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp)
             .padding(top = 18.dp, bottom = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.SpaceBetween,
     ) {
         Text(title, style = AppType.SectionTitle)
-        Text(
-            link,
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 12.sp,
-                color = AppColors.Coral,
-            ),
-        )
     }
 }
 
@@ -378,9 +415,12 @@ private fun SectionHeader(title: String, link: String = "See all ->") {
 
 private data class EventCardData(
     val title: String,
+    val venueName: String,
     val date: String,
+    val city: String,
     val distance: String,
     val tag: String,
+    val showTag: Boolean = true,
     val isFree: Boolean = false,
     val imageUrl: String?,
     val bgStart: Color,
@@ -400,7 +440,7 @@ private fun EventCard(data: EventCardData, onClick: () -> Unit = {}) {
     Box(
         modifier = Modifier
             .width(156.dp)
-            .height(192.dp)
+            .height(212.dp)
             .graphicsLayer { translationY = offsetY * density },
     ) {
         // Shadow
@@ -415,7 +455,7 @@ private fun EventCard(data: EventCardData, onClick: () -> Unit = {}) {
         Column(
             modifier = Modifier
                 .width(156.dp)
-                .height(192.dp)
+                .height(212.dp)
                 .background(AppColors.White, AppShapes.CardMedium)
                 .border(2.dp, AppColors.Pebble, AppShapes.CardMedium)
                 .clip(AppShapes.CardMedium)
@@ -446,17 +486,19 @@ private fun EventCard(data: EventCardData, onClick: () -> Unit = {}) {
                     Icon(data.icon, contentDescription = null, modifier = Modifier.size(32.dp), tint = AppColors.Ink3.copy(alpha = 0.5f))
                 }
 
-                // Tag pill
-                Text(
-                    data.tag,
-                    modifier = Modifier
-                        .align(Alignment.TopStart)
-                        .padding(7.dp)
-                        .background(AppColors.White, AppShapes.Pill)
-                        .border(1.5.dp, AppColors.Pebble, AppShapes.Pill)
-                        .padding(horizontal = 7.dp, vertical = 2.dp),
-                    style = AppType.LabelMicro.copy(color = AppColors.Ink2),
-                )
+                // Tag pill — only shown on "For You" tab
+                if (data.showTag) {
+                    Text(
+                        data.tag,
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(7.dp)
+                            .background(AppColors.White, AppShapes.Pill)
+                            .border(1.5.dp, AppColors.Pebble, AppShapes.Pill)
+                            .padding(horizontal = 7.dp, vertical = 2.dp),
+                        style = AppType.LabelMicro.copy(color = AppColors.Ink2),
+                    )
+                }
 
                 // Heart button
                 Box(
@@ -485,11 +527,24 @@ private fun EventCard(data: EventCardData, onClick: () -> Unit = {}) {
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                 )
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
+
+                Column {
+                    // Venue name
+                    if (data.venueName.isNotEmpty()) {
+                        Text(
+                            data.venueName,
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 11.sp,
+                                color = AppColors.Ink3,
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+
+                    // Date
                     if (data.date.isNotEmpty()) {
                         Text(
                             data.date,
@@ -502,20 +557,16 @@ private fun EventCard(data: EventCardData, onClick: () -> Unit = {}) {
                             maxLines = 1,
                         )
                     }
-                    if (data.distance.isNotEmpty()) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(start = 4.dp),
-                        ) {
-                            Icon(
-                                Icons.Outlined.Place,
-                                contentDescription = null,
-                                modifier = Modifier.size(11.dp),
-                                tint = AppColors.Ink3,
-                            )
-                            Spacer(Modifier.width(2.dp))
+
+                    // City + distance
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (data.city.isNotEmpty()) {
                             Text(
-                                data.distance,
+                                data.city,
                                 style = TextStyle(
                                     fontFamily = AppFonts.Body,
                                     fontWeight = FontWeight.SemiBold,
@@ -523,7 +574,33 @@ private fun EventCard(data: EventCardData, onClick: () -> Unit = {}) {
                                     color = AppColors.Ink3,
                                 ),
                                 maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
                             )
+                        }
+                        if (data.distance.isNotEmpty()) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                modifier = Modifier.padding(start = 4.dp),
+                            ) {
+                                Icon(
+                                    Icons.Outlined.Place,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(11.dp),
+                                    tint = AppColors.Ink3,
+                                )
+                                Spacer(Modifier.width(2.dp))
+                                Text(
+                                    data.distance,
+                                    style = TextStyle(
+                                        fontFamily = AppFonts.Body,
+                                        fontWeight = FontWeight.SemiBold,
+                                        fontSize = 11.sp,
+                                        color = AppColors.Ink3,
+                                    ),
+                                    maxLines = 1,
+                                )
+                            }
                         }
                     }
                 }
@@ -533,7 +610,7 @@ private fun EventCard(data: EventCardData, onClick: () -> Unit = {}) {
 }
 
 @Composable
-private fun EventCardRow(events: List<Event>, onEventClick: (Event) -> Unit) {
+private fun EventCardRow(events: List<Event>, onEventClick: (Event) -> Unit, showTags: Boolean = true) {
     Row(
         modifier = Modifier
             .horizontalScroll(rememberScrollState())
@@ -541,7 +618,7 @@ private fun EventCardRow(events: List<Event>, onEventClick: (Event) -> Unit) {
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         events.forEach { event ->
-            EventCard(data = event.toCardData(), onClick = { onEventClick(event) })
+            EventCard(data = event.toCardData(showTag = showTags), onClick = { onEventClick(event) })
         }
     }
 }
@@ -570,19 +647,35 @@ private fun categoryIcon(category: String): ImageVector = when (category.lowerca
     else -> Icons.Outlined.AutoAwesome
 }
 
-private fun Event.toCardData(): EventCardData {
-    val (bgS, bgE) = categoryColors(category)
+private fun Event.toCardData(showTag: Boolean = true): EventCardData {
+    val displaySubcategory = formatSubcategoryDisplay(subcategory ?: category)
+    val colorKey = subcategory ?: category
+    val (bgS, bgE) = categoryColors(colorKey)
     return EventCardData(
         title = title.toTitleCase(),
+        venueName = venueName ?: "",
         date = dateDisplay,
+        city = buildString {
+            append(venueCity.replaceFirstChar { it.uppercase() })
+            val state = venueState?.uppercase()
+            if (state != null && state != "MA") {
+                append(", $state")
+            }
+        },
         distance = distanceDisplay,
-        tag = category,
+        tag = displaySubcategory,
+        showTag = showTag,
         isFree = isFree,
         imageUrl = imageUrl,
         bgStart = bgS,
         bgEnd = bgE,
-        icon = categoryIcon(category),
+        icon = categoryIcon(colorKey),
     )
+}
+
+private fun formatSubcategoryDisplay(key: String): String = when (key.lowercase()) {
+    "for-kids" -> "For Kids"
+    else -> key.split("-").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
 }
 
 // ── Plans Section ──
@@ -690,7 +783,7 @@ private fun GreetingSection(state: HomeUiState) {
 // ── AI Concierge Card ──
 
 @Composable
-private fun AiConciergeCard() {
+private fun AiConciergeCard(onClick: () -> Unit = {}) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val offsetY by animateFloatAsState(
@@ -728,7 +821,7 @@ private fun AiConciergeCard() {
                 .clickable(
                     interactionSource = interactionSource,
                     indication = null,
-                    onClick = {},
+                    onClick = onClick,
                 )
                 .padding(16.dp),
         ) {
@@ -840,7 +933,7 @@ private fun AiConciergeCard() {
 // ── Header ──
 
 @Composable
-private fun HomeHeader(state: HomeUiState) {
+private fun HomeHeader(state: HomeUiState, onDebugOpen: () -> Unit = {}) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -853,7 +946,15 @@ private fun HomeHeader(state: HomeUiState) {
                 .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(modifier = Modifier.weight(1f)) {
+            Row(
+                modifier = Modifier
+                    .weight(1f)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onDebugOpen,
+                    ),
+            ) {
                 Text("lo", style = AppType.Logo)
                 Text("c", style = AppType.Logo.copy(color = AppColors.Coral))
                 Text("al", style = AppType.Logo)
@@ -953,5 +1054,151 @@ private fun HomeHeader(state: HomeUiState) {
                 .height(2.dp)
                 .background(AppColors.Mist),
         )
+    }
+}
+
+// ── Debug Menu ──
+
+private data class MockLocation(val name: String, val lat: Double, val lng: Double)
+
+private val MOCK_LOCATIONS = listOf(
+    // Massachusetts
+    MockLocation("Boston, MA", 42.3601, -71.0589),
+    MockLocation("Cambridge, MA", 42.3736, -71.1097),
+    MockLocation("Worcester, MA", 42.2626, -71.8023),
+    MockLocation("Springfield, MA", 42.1015, -72.5898),
+    MockLocation("Lowell, MA", 42.6334, -71.3162),
+    MockLocation("New Bedford, MA", 41.6362, -70.9342),
+    MockLocation("Pittsfield, MA", 42.4501, -73.2454),
+    MockLocation("Cape Cod, MA", 41.6688, -70.2962),
+    MockLocation("Northampton, MA", 42.3251, -72.6412),
+    MockLocation("Salem, MA", 42.5195, -70.8967),
+    // Out of state
+    MockLocation("Providence, RI", 41.8240, -71.4128),
+    MockLocation("New York, NY", 40.7128, -74.0060),
+    MockLocation("Philadelphia, PA", 39.9526, -75.1652),
+)
+
+@Composable
+private fun DebugMenuDialog(
+    onDismiss: () -> Unit,
+    onMockLocation: (lat: Double, lng: Double, name: String) -> Unit,
+    onSetUserState: (String) -> Unit,
+) {
+    Dialog(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(20.dp))
+                .background(AppColors.White)
+                .padding(20.dp)
+                .verticalScroll(rememberScrollState()),
+        ) {
+            // Header
+            Text(
+                "Debug Menu",
+                style = TextStyle(
+                    fontFamily = AppFonts.Heading,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp,
+                    color = AppColors.Ink,
+                ),
+            )
+
+            Spacer(Modifier.height(16.dp))
+
+            // ── User State ──
+            Text(
+                "USER STATE",
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 10.sp,
+                    color = AppColors.Ink3,
+                    letterSpacing = 1.sp,
+                ),
+            )
+            Spacer(Modifier.height(8.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("New User", "Returning", "Existing").forEach { label ->
+                    Box(
+                        modifier = Modifier
+                            .background(AppColors.Mist, RoundedCornerShape(10.dp))
+                            .clickable { onSetUserState(label.lowercase()) }
+                            .padding(horizontal = 14.dp, vertical = 8.dp),
+                    ) {
+                        Text(
+                            label,
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = AppColors.Ink,
+                            ),
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+
+            // ── Mock Location ──
+            Text(
+                "MOCK LOCATION",
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 10.sp,
+                    color = AppColors.Ink3,
+                    letterSpacing = 1.sp,
+                ),
+            )
+            Spacer(Modifier.height(8.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                MOCK_LOCATIONS.forEach { loc ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable { onMockLocation(loc.lat, loc.lng, loc.name) }
+                            .background(AppColors.Snow)
+                            .padding(horizontal = 14.dp, vertical = 10.dp),
+                    ) {
+                        Text(
+                            loc.name,
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp,
+                                color = AppColors.Ink,
+                            ),
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(16.dp))
+
+            // Close button
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(AppColors.Coral)
+                    .clickable { onDismiss() }
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "Close",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = AppColors.White,
+                    ),
+                )
+            }
+        }
     }
 }

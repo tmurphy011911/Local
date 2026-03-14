@@ -132,6 +132,7 @@ function normalizeEvent(tm) {
     venue_name: venue?.name || null,
     venue_address: venue?.address?.line1 || null,
     venue_city: venue?.city?.name || "Boston",
+    venue_state: venue?.state?.stateCode || null,
     venue_lat: venue?.location?.latitude
       ? parseFloat(venue.location.latitude)
       : null,

@@ -279,6 +279,7 @@ function normalizeEvent(event, venue) {
     venue_name: venue.name,
     venue_address: null,
     venue_city: venue.city,
+    venue_state: venue.state || "MA",
     venue_lat: venue.lat ? parseFloat(venue.lat) : null,
     venue_lng: venue.lng ? parseFloat(venue.lng) : null,
     source: "crawl",
