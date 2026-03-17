@@ -1,9 +1,12 @@
 /**
  * classify_events.js — AI-powered event reclassification and tagging
  *
- * Pulls all active events from Supabase, sends them to Claude in batches
- * for parent category (upcoming/always_on), subcategory, sub-subcategory,
- * and rich tagging, then writes corrections back.
+ * Uses the Anthropic Message Batches API for scalable, async classification.
+ * Pulls all active events from Supabase, submits them to Claude as a batch,
+ * polls for completion, then writes corrections back.
+ *
+ * Only classifies events that haven't been classified yet (no sub_subcategory
+ * or tags), unless FORCE=1 is set.
  *
  * The original category/subcategory are preserved in
  * `original_category` and `original_subcategory` columns so you can revert.
@@ -15,18 +18,23 @@
  *   node scripts/classify_events.js --revert
  *
  * Optional:
- *   DRY_RUN=1          — preview changes without writing to DB
+ *   DRY_RUN=1          — preview batch submission without sending
  *   CITY=boston         — city to classify (default: boston)
- *   BATCH_SIZE=50       — events per Claude call (default: 50)
+ *   BATCH_SIZE=50      — events per Claude request within the batch (default: 50)
+ *   FORCE=1            — re-classify already-classified events
+ *   POLL_INTERVAL=60   — seconds between status checks (default: 60)
  */
 
 const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
-const MODEL = "claude-sonnet-4-20250514";
+const MODEL = "claude-sonnet-4-6";
+const API_BASE = "https://api.anthropic.com/v1";
 
 let ANTHROPIC_API_KEY, SUPABASE_SERVICE_KEY;
 const CITY = process.env.CITY || "boston";
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "50", 10);
 const DRY_RUN = process.env.DRY_RUN === "1";
+const FORCE = process.env.FORCE === "1";
+const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "60", 10) * 1000;
 
 const REVERT_MODE = process.argv.includes("--revert");
 
@@ -101,158 +109,10 @@ const VALID_TAGS = [
   "boston-essential", "hidden-gem",
 ];
 
-// ── Main ──
+// ── Prompt builder ──
 
-async function main() {
-  const secrets = await getSecrets(["ANTHROPIC_API_KEY"]);
-  ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
-  SUPABASE_SERVICE_KEY = secrets.SUPABASE_SERVICE_KEY;
-
-  if (!REVERT_MODE && !ANTHROPIC_API_KEY) { console.error("Missing ANTHROPIC_API_KEY"); process.exit(1); }
-  if (!SUPABASE_SERVICE_KEY) { console.error("Missing SUPABASE_SERVICE_KEY"); process.exit(1); }
-
-  if (REVERT_MODE) return await revertClassifications();
-
-  console.log(`Event Classifier — city: ${CITY}, batch size: ${BATCH_SIZE}`);
-  if (DRY_RUN) console.log("DRY RUN — no database writes\n");
-
-  // 1. Fetch all future events
-  const events = await fetchAllEvents();
-  console.log(`Fetched ${events.length} future events\n`);
-  if (events.length === 0) return;
-
-  // 2. Process in batches
-  let totalChanged = 0;
-  let totalTagged = 0;
-  let totalErrors = 0;
-
-  for (let i = 0; i < events.length; i += BATCH_SIZE) {
-    const batch = events.slice(i, i + BATCH_SIZE);
-    const batchNum = Math.floor(i / BATCH_SIZE) + 1;
-    const totalBatches = Math.ceil(events.length / BATCH_SIZE);
-    console.log(`\n── Batch ${batchNum}/${totalBatches} (${batch.length} events) ──`);
-
-    try {
-      const classifications = await classifyBatch(batch);
-
-      let batchChanges = 0;
-      const updates = [];
-
-      for (const c of classifications) {
-        const original = batch.find(e => e.id === c.id);
-        if (!original) continue;
-
-        const changed = original.category !== c.category ||
-                        original.subcategory !== c.subcategory;
-        const hasTags = c.tags && c.tags.length > 0;
-
-        if (changed || hasTags || c.sub_subcategory) {
-          updates.push({
-            id: c.id,
-            category: c.category,
-            subcategory: c.subcategory,
-            sub_subcategory: c.sub_subcategory,
-            tags: c.tags || [],
-          });
-
-          if (changed) {
-            batchChanges++;
-            console.log(
-              `  "${original.title}" @ ${original.venue_name}` +
-              `\n      ${original.category}/${original.subcategory || "null"} → ${c.category}/${c.subcategory || "null"}` +
-              (c.sub_subcategory ? ` / ${c.sub_subcategory}` : "") +
-              (hasTags ? `\n      tags: [${c.tags.join(", ")}]` : "")
-            );
-          }
-        }
-      }
-
-      if (!DRY_RUN && updates.length > 0) {
-        await writeUpdates(updates, batch);
-      }
-
-      totalChanged += batchChanges;
-      totalTagged += updates.length;
-      console.log(`  Batch: ${batchChanges} recategorized, ${updates.length} tagged`);
-
-    } catch (err) {
-      totalErrors++;
-      console.error(`  Batch ${batchNum} failed:`, err.message);
-    }
-
-    // Small delay between batches to avoid rate limits
-    if (i + BATCH_SIZE < events.length) {
-      await new Promise(r => setTimeout(r, 1000));
-    }
-  }
-
-  console.log(`\n========================================`);
-  console.log(`Done. Recategorized: ${totalChanged}, Tagged: ${totalTagged}, Errors: ${totalErrors}`);
-  if (DRY_RUN) console.log("(DRY RUN — nothing was written)");
-}
-
-// ── Fetch all future events ──
-
-async function fetchAllEvents() {
-  const allEvents = [];
-  const pageSize = 1000;
-  let offset = 0;
-
-  while (true) {
-    const now = new Date().toISOString();
-    let selectCols = "id,title,description,category,subcategory,venue_name,venue_city,is_free,source,original_category,original_subcategory";
-    let url = `${SUPABASE_URL}/rest/v1/events?city=eq.${CITY}&start_at=gte.${now}&select=${selectCols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
-
-    let res = await fetch(url, {
-      headers: {
-        apikey: SUPABASE_SERVICE_KEY,
-        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-      },
-    });
-
-    // If original_* columns don't exist yet, retry without them
-    if (!res.ok) {
-      const errText = await res.text();
-      if (errText.includes("original_category")) {
-        selectCols = "id,title,description,category,subcategory,venue_name,venue_city,is_free,source";
-        url = `${SUPABASE_URL}/rest/v1/events?city=eq.${CITY}&start_at=gte.${now}&select=${selectCols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
-        res = await fetch(url, {
-          headers: {
-            apikey: SUPABASE_SERVICE_KEY,
-            Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-          },
-        });
-        if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${await res.text()}`);
-      } else {
-        throw new Error(`Fetch failed: ${res.status} ${errText}`);
-      }
-    }
-
-    const rows = await res.json();
-    allEvents.push(...rows);
-
-    if (rows.length < pageSize) break;
-    offset += pageSize;
-  }
-
-  return allEvents;
-}
-
-// ── Classify a batch with Claude ──
-
-async function classifyBatch(events) {
-  const eventsForPrompt = events.map(e => ({
-    id: e.id,
-    title: e.title,
-    description: (e.description || "").slice(0, 200),
-    current_category: e.category,
-    current_subcategory: e.subcategory,
-    venue_name: e.venue_name,
-    venue_city: e.venue_city,
-    is_free: e.is_free,
-  }));
-
-  const prompt = `You are an expert event classifier for a local event discovery app in the Boston metro area.
+function buildPrompt(eventsForPrompt) {
+  return `You are an expert event classifier for a local event discovery app in the Boston metro area.
 
 For each event below, determine:
 1. The correct **category** (parent type — one of: ${VALID_PARENT_CATEGORIES.join(", ")})
@@ -304,48 +164,265 @@ ONLY output the JSON array, no other text.
 
 Events to classify:
 ${JSON.stringify(eventsForPrompt, null, 2)}`;
+}
 
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
+// ── Main ──
+
+async function main() {
+  const secrets = await getSecrets(["ANTHROPIC_API_KEY"]);
+  ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
+  SUPABASE_SERVICE_KEY = secrets.SUPABASE_SERVICE_KEY;
+
+  if (!REVERT_MODE && !ANTHROPIC_API_KEY) { console.error("Missing ANTHROPIC_API_KEY"); process.exit(1); }
+  if (!SUPABASE_SERVICE_KEY) { console.error("Missing SUPABASE_SERVICE_KEY"); process.exit(1); }
+
+  if (REVERT_MODE) return await revertClassifications();
+
+  console.log(`Event Classifier (Batch API) — city: ${CITY}, batch size: ${BATCH_SIZE}`);
+  if (DRY_RUN) console.log("DRY RUN — no API calls\n");
+  if (FORCE) console.log("FORCE — re-classifying all events\n");
+
+  // 1. Fetch events to classify
+  const events = await fetchAllEvents();
+  console.log(`Fetched ${events.length} future events`);
+
+  // 2. Filter to unclassified events (unless FORCE)
+  const toClassify = FORCE
+    ? events
+    : events.filter(e => !e.sub_subcategory && (!e.tags || e.tags.length === 0));
+  console.log(`${toClassify.length} events need classification${FORCE ? " (forced)" : ""}\n`);
+  if (toClassify.length === 0) return;
+
+  // 3. Build batch requests — one per chunk of BATCH_SIZE events
+  const chunks = [];
+  for (let i = 0; i < toClassify.length; i += BATCH_SIZE) {
+    chunks.push(toClassify.slice(i, i + BATCH_SIZE));
+  }
+  console.log(`Submitting ${chunks.length} requests in one batch\n`);
+
+  const batchRequests = chunks.map((chunk, i) => ({
+    custom_id: `chunk-${i}`,
+    params: {
+      model: MODEL,
+      max_tokens: 8192,
+      messages: [{
+        role: "user",
+        content: buildPrompt(chunk.map(e => ({
+          id: e.id,
+          title: e.title,
+          description: (e.description || "").slice(0, 200),
+          current_category: e.category,
+          current_subcategory: e.subcategory,
+          venue_name: e.venue_name,
+          venue_city: e.venue_city,
+          is_free: e.is_free,
+        }))),
+      }],
+    },
+  }));
+
+  if (DRY_RUN) {
+    console.log(`Would submit batch with ${batchRequests.length} requests (${toClassify.length} events)`);
+    console.log("DRY RUN — nothing sent");
+    return;
+  }
+
+  // 4. Submit the batch
+  const batchId = await submitBatch(batchRequests);
+  console.log(`Batch submitted: ${batchId}`);
+
+  // 5. Poll until complete
+  const batchResult = await pollBatch(batchId);
+  console.log(`\nBatch complete — succeeded: ${batchResult.request_counts.succeeded}, errored: ${batchResult.request_counts.errored}, expired: ${batchResult.request_counts.expired}`);
+
+  // 6. Stream results and write to DB
+  await processResults(batchId, chunks, events);
+}
+
+// ── Batch API helpers ──
+
+async function submitBatch(requests) {
+  const res = await fetch(`${API_BASE}/messages/batches`, {
     method: "POST",
     headers: {
       "x-api-key": ANTHROPIC_API_KEY,
       "anthropic-version": "2023-06-01",
       "content-type": "application/json",
     },
-    body: JSON.stringify({
-      model: MODEL,
-      max_tokens: 8192,
-      messages: [{ role: "user", content: prompt }],
-    }),
+    body: JSON.stringify({ requests }),
   });
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(`Claude API error ${res.status}: ${body}`);
+    throw new Error(`Batch creation failed (${res.status}): ${body}`);
   }
 
   const data = await res.json();
-  const text = data.content[0].text.trim();
+  return data.id;
+}
 
-  // Extract JSON from response (handle markdown code blocks)
-  let jsonStr = text;
-  const codeBlockMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/);
-  if (codeBlockMatch) jsonStr = codeBlockMatch[1].trim();
+async function pollBatch(batchId) {
+  let polls = 0;
+  while (true) {
+    await new Promise(r => setTimeout(r, POLL_INTERVAL));
+    polls++;
 
-  try {
-    const results = JSON.parse(jsonStr);
-    // Validate
-    return results.map(r => ({
-      id: r.id,
-      category: VALID_PARENT_CATEGORIES.includes(r.category) ? r.category : null,
-      subcategory: r.subcategory && VALID_SUBCATEGORIES.includes(r.subcategory) ? r.subcategory : null,
-      sub_subcategory: r.sub_subcategory && VALID_SUB_SUBCATEGORIES.includes(r.sub_subcategory) ? r.sub_subcategory : null,
-      team_name: r.team_name || null,
-      tags: Array.isArray(r.tags) ? r.tags.filter(t => VALID_TAGS.includes(t)).slice(0, 5) : [],
-    })).filter(r => r.category !== null && r.subcategory !== null);
-  } catch (err) {
-    throw new Error(`Failed to parse Claude response: ${err.message}\nResponse: ${text.slice(0, 500)}`);
+    const res = await fetch(`${API_BASE}/messages/batches/${batchId}`, {
+      headers: {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+      },
+    });
+
+    if (!res.ok) {
+      console.error(`  Poll error (${res.status}), retrying...`);
+      continue;
+    }
+
+    const data = await res.json();
+    const counts = data.request_counts;
+    console.log(
+      `  [${polls}] status: ${data.processing_status} — ` +
+      `processing: ${counts.processing}, succeeded: ${counts.succeeded}, ` +
+      `errored: ${counts.errored}, expired: ${counts.expired}`
+    );
+
+    if (data.processing_status === "ended") return data;
   }
+}
+
+async function processResults(batchId, chunks, allEvents) {
+  const res = await fetch(`${API_BASE}/messages/batches/${batchId}/results`, {
+    headers: {
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+  });
+
+  if (!res.ok) {
+    throw new Error(`Failed to fetch results (${res.status}): ${await res.text()}`);
+  }
+
+  const text = await res.text();
+  const lines = text.split("\n").filter(Boolean);
+
+  let totalChanged = 0;
+  let totalTagged = 0;
+  let totalErrors = 0;
+
+  for (const line of lines) {
+    const result = JSON.parse(line);
+    const chunkIndex = parseInt(result.custom_id.replace("chunk-", ""), 10);
+    const chunk = chunks[chunkIndex];
+
+    if (result.result.type !== "succeeded") {
+      totalErrors++;
+      console.error(`  ${result.custom_id} failed: ${result.result.type}`);
+      if (result.result.error) console.error(`    ${result.result.error.message}`);
+      continue;
+    }
+
+    // Parse Claude's response
+    const responseText = result.result.message.content[0].text.trim();
+    let jsonStr = responseText;
+    const codeBlockMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) jsonStr = codeBlockMatch[1].trim();
+
+    let classifications;
+    try {
+      classifications = JSON.parse(jsonStr);
+    } catch (err) {
+      totalErrors++;
+      console.error(`  ${result.custom_id} — JSON parse error: ${err.message}`);
+      continue;
+    }
+
+    // Validate and collect updates
+    const updates = [];
+    let batchChanges = 0;
+
+    for (const c of classifications) {
+      const validated = {
+        id: c.id,
+        category: VALID_PARENT_CATEGORIES.includes(c.category) ? c.category : null,
+        subcategory: c.subcategory && VALID_SUBCATEGORIES.includes(c.subcategory) ? c.subcategory : null,
+        sub_subcategory: c.sub_subcategory && VALID_SUB_SUBCATEGORIES.includes(c.sub_subcategory) ? c.sub_subcategory : null,
+        team_name: c.team_name || null,
+        tags: Array.isArray(c.tags) ? c.tags.filter(t => VALID_TAGS.includes(t)).slice(0, 5) : [],
+      };
+
+      if (!validated.category || !validated.subcategory) continue;
+
+      const original = chunk.find(e => e.id === validated.id);
+      if (!original) continue;
+
+      const changed = original.category !== validated.category ||
+                      original.subcategory !== validated.subcategory;
+
+      if (changed || validated.tags.length > 0 || validated.sub_subcategory) {
+        updates.push(validated);
+        if (changed) batchChanges++;
+      }
+    }
+
+    if (updates.length > 0) {
+      await writeUpdates(updates, chunk);
+    }
+
+    totalChanged += batchChanges;
+    totalTagged += updates.length;
+    console.log(`  ${result.custom_id}: ${batchChanges} recategorized, ${updates.length} tagged`);
+  }
+
+  console.log(`\n========================================`);
+  console.log(`Done. Recategorized: ${totalChanged}, Tagged: ${totalTagged}, Errors: ${totalErrors}`);
+}
+
+// ── Fetch all future events ──
+
+async function fetchAllEvents() {
+  const allEvents = [];
+  const pageSize = 1000;
+  let offset = 0;
+
+  while (true) {
+    const now = new Date().toISOString();
+    let selectCols = "id,title,description,category,subcategory,sub_subcategory,tags,venue_name,venue_city,is_free,source,original_category,original_subcategory";
+    let url = `${SUPABASE_URL}/rest/v1/events?city=eq.${CITY}&start_at=gte.${now}&select=${selectCols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
+
+    let res = await fetch(url, {
+      headers: {
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      },
+    });
+
+    // If new columns don't exist yet, retry without them
+    if (!res.ok) {
+      const errText = await res.text();
+      if (errText.includes("original_category") || errText.includes("sub_subcategory") || errText.includes("tags")) {
+        selectCols = "id,title,description,category,subcategory,venue_name,venue_city,is_free,source";
+        url = `${SUPABASE_URL}/rest/v1/events?city=eq.${CITY}&start_at=gte.${now}&select=${selectCols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
+        res = await fetch(url, {
+          headers: {
+            apikey: SUPABASE_SERVICE_KEY,
+            Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+          },
+        });
+        if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${await res.text()}`);
+      } else {
+        throw new Error(`Fetch failed: ${res.status} ${errText}`);
+      }
+    }
+
+    const rows = await res.json();
+    allEvents.push(...rows);
+
+    if (rows.length < pageSize) break;
+    offset += pageSize;
+  }
+
+  return allEvents;
 }
 
 // ── Write updates back to Supabase ──
