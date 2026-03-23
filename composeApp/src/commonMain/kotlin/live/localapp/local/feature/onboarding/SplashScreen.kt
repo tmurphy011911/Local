@@ -59,6 +59,7 @@ fun SplashScreen(onComplete: () -> Unit) {
     var loadingVisible by remember { mutableStateOf(false) }
     var readyVisible by remember { mutableStateOf(false) }
     var tapEnabled by remember { mutableStateOf(false) }
+    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
 
     val progress by animateFloatAsState(
         targetValue = progressTarget,
@@ -74,10 +75,11 @@ fun SplashScreen(onComplete: () -> Unit) {
         loadingVisible = true
         progressTarget = 1f
 
-        // Word flip
+        // Word flip with haptic
         repeat(WORDS.size - 1) {
             delay(850)
             wordIndex++
+            haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
         }
 
         delay(600)

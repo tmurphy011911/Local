@@ -19,18 +19,16 @@
  *
  * Optional:
  *   DRY_RUN=1          — preview batch submission without sending
- *   CITY=boston         — city to classify (default: boston)
  *   BATCH_SIZE=50      — events per Claude request within the batch (default: 50)
  *   FORCE=1            — re-classify already-classified events
  *   POLL_INTERVAL=60   — seconds between status checks (default: 60)
  */
 
 const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
-const MODEL = "claude-sonnet-4-6";
+const MODEL = "claude-haiku-4-5-20251001";
 const API_BASE = "https://api.anthropic.com/v1";
 
 let ANTHROPIC_API_KEY, SUPABASE_SERVICE_KEY;
-const CITY = process.env.CITY || "boston";
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "50", 10);
 const DRY_RUN = process.env.DRY_RUN === "1";
 const FORCE = process.env.FORCE === "1";
@@ -112,7 +110,7 @@ const VALID_TAGS = [
 // ── Prompt builder ──
 
 function buildPrompt(eventsForPrompt) {
-  return `You are an expert event classifier for a local event discovery app in the Boston metro area.
+  return `You are an expert event classifier for a local event discovery app.
 
 For each event below, determine:
 1. The correct **category** (parent type — one of: ${VALID_PARENT_CATEGORIES.join(", ")})
@@ -178,7 +176,7 @@ async function main() {
 
   if (REVERT_MODE) return await revertClassifications();
 
-  console.log(`Event Classifier (Batch API) — city: ${CITY}, batch size: ${BATCH_SIZE}`);
+  console.log(`Event Classifier (Batch API) — all metros, batch size: ${BATCH_SIZE}`);
   if (DRY_RUN) console.log("DRY RUN — no API calls\n");
   if (FORCE) console.log("FORCE — re-classifying all events\n");
 
@@ -388,7 +386,7 @@ async function fetchAllEvents() {
   while (true) {
     const now = new Date().toISOString();
     let selectCols = "id,title,description,category,subcategory,sub_subcategory,tags,venue_name,venue_city,is_free,source,original_category,original_subcategory";
-    let url = `${SUPABASE_URL}/rest/v1/events?city=eq.${CITY}&start_at=gte.${now}&select=${selectCols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
+    let url = `${SUPABASE_URL}/rest/v1/events?start_at=gte.${now}&select=${selectCols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
 
     let res = await fetch(url, {
       headers: {
@@ -402,7 +400,7 @@ async function fetchAllEvents() {
       const errText = await res.text();
       if (errText.includes("original_category") || errText.includes("sub_subcategory") || errText.includes("tags")) {
         selectCols = "id,title,description,category,subcategory,venue_name,venue_city,is_free,source";
-        url = `${SUPABASE_URL}/rest/v1/events?city=eq.${CITY}&start_at=gte.${now}&select=${selectCols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
+        url = `${SUPABASE_URL}/rest/v1/events?start_at=gte.${now}&select=${selectCols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
         res = await fetch(url, {
           headers: {
             apikey: SUPABASE_SERVICE_KEY,
@@ -502,7 +500,7 @@ async function writeUpdates(updates, originalEvents) {
 // ── Revert all AI classifications ──
 
 async function revertClassifications() {
-  console.log(`Reverting AI classifications for city: ${CITY}`);
+  console.log("Reverting AI classifications for all metros");
   if (DRY_RUN) console.log("DRY RUN — no database writes\n");
 
   const allClassified = [];
@@ -510,7 +508,7 @@ async function revertClassifications() {
   let offset = 0;
 
   while (true) {
-    const url = `${SUPABASE_URL}/rest/v1/events?city=eq.${CITY}&original_category=not.is.null&select=id,title,category,subcategory,original_category,original_subcategory&order=id.asc&limit=${pageSize}&offset=${offset}`;
+    const url = `${SUPABASE_URL}/rest/v1/events?original_category=not.is.null&select=id,title,category,subcategory,original_category,original_subcategory&order=id.asc&limit=${pageSize}&offset=${offset}`;
     const res = await fetch(url, {
       headers: {
         apikey: SUPABASE_SERVICE_KEY,

@@ -1,4 +1,4 @@
-name: Daily — Ticketmaster Sync & Deactivate Past Events
+name: Daily — Event Sync & Deactivate Past Events
 
 on:
   schedule:
@@ -19,9 +19,22 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node ticketmaster_sync.js
 
+  eventbrite-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Eventbrite Sync
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node eventbrite_sync.js
+
   deactivate-past-events:
     runs-on: ubuntu-latest
-    needs: ticketmaster-sync
+    needs: [ticketmaster-sync, eventbrite-sync]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

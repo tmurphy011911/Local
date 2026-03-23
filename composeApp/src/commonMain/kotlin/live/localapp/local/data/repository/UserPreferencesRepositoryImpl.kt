@@ -3,6 +3,7 @@ package live.localapp.local.data.repository
 import com.russhwolf.settings.Settings
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.postgrest.query.Order
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import live.localapp.local.domain.repository.UserPreferences
@@ -115,6 +116,108 @@ class UserPreferencesRepositoryImpl(
         } catch (_: Exception) {
             null
         }
+    }
+
+    override suspend fun recoverProfile(): String? {
+        return try {
+            // Find the most recent completed onboarding profile
+            val dto = supabaseClient.from("user_profiles")
+                .select {
+                    filter { eq("onboarding_complete", true) }
+                    order("id", Order.DESCENDING)
+                    limit(1)
+                }
+                .decodeSingleOrNull<UserProfileDto>()
+                ?: return null
+
+            val userId = dto.id ?: return null
+            // Re-cache locally
+            settings.putString(KEY_USER_ID, userId)
+            settings.putBoolean(KEY_ONBOARDING_COMPLETE, true)
+            dto.userLat?.let { settings.putDouble(KEY_USER_LAT, it) }
+            dto.userLng?.let { settings.putDouble(KEY_USER_LNG, it) }
+            userId
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    override suspend fun profileExistsForAuthId(authUserId: String): Boolean {
+        return try {
+            val dto = supabaseClient.from("user_profiles")
+                .select {
+                    filter { eq("id", authUserId) }
+                }
+                .decodeSingleOrNull<UserProfileDto>()
+            dto != null && dto.onboardingComplete
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    override suspend fun recoverProfileByAuthId(authUserId: String): String? {
+        return try {
+            val dto = supabaseClient.from("user_profiles")
+                .select {
+                    filter { eq("id", authUserId) }
+                }
+                .decodeSingleOrNull<UserProfileDto>()
+                ?: return null
+
+            if (!dto.onboardingComplete) return null
+
+            // Re-cache locally
+            settings.putString(KEY_USER_ID, authUserId)
+            settings.putBoolean(KEY_ONBOARDING_COMPLETE, true)
+            dto.userLat?.let { settings.putDouble(KEY_USER_LAT, it) }
+            dto.userLng?.let { settings.putDouble(KEY_USER_LNG, it) }
+            authUserId
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    override suspend fun savePreferencesWithId(id: String, prefs: UserPreferences): String {
+        val dto = UserProfileDto(
+            id = id,
+            firstName = prefs.firstName,
+            lastName = prefs.lastName,
+            phone = prefs.phone,
+            city = prefs.city,
+            userLat = prefs.userLat,
+            userLng = prefs.userLng,
+            selectedNeighborhoods = prefs.selectedNeighborhoods,
+            selectedVenues = prefs.selectedVenues,
+            selectedCategories = prefs.selectedCategories,
+            notifTickets = prefs.notifTickets,
+            notifNearby = prefs.notifNearby,
+            notifVenues = prefs.notifVenues,
+            onboardingComplete = true,
+        )
+
+        // Check if row exists already
+        val existing = try {
+            supabaseClient.from("user_profiles")
+                .select { filter { eq("id", id) } }
+                .decodeSingleOrNull<UserProfileDto>()
+        } catch (_: Exception) { null }
+
+        if (existing != null) {
+            supabaseClient.from("user_profiles")
+                .update(dto) { filter { eq("id", id) } }
+        } else {
+            supabaseClient.from("user_profiles")
+                .insert(dto) { select() }
+                .decodeSingle<UpsertResult>()
+        }
+
+        // Cache locally
+        settings.putString(KEY_USER_ID, id)
+        settings.putBoolean(KEY_ONBOARDING_COMPLETE, true)
+        prefs.userLat?.let { settings.putDouble(KEY_USER_LAT, it) }
+        prefs.userLng?.let { settings.putDouble(KEY_USER_LNG, it) }
+
+        return id
     }
 
     override fun clearLocal() {

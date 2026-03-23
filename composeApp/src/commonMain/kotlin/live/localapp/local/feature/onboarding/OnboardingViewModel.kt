@@ -98,6 +98,15 @@ class OnboardingViewModel(
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(OnboardingState())
+
+    /** Supabase auth user ID, set when user authenticates before onboarding. */
+    private var authUserId: String? = null
+
+    fun setAuthUserId(id: String) {
+        authUserId = id
+        // Skip the splash step since it already played before auth
+        _state.update { it.copy(splashComplete = true, currentStep = OnboardingStep.LOCATION) }
+    }
     val state: StateFlow<OnboardingState> = _state.asStateFlow()
 
     // ── Navigation ──
@@ -181,11 +190,11 @@ class OnboardingViewModel(
     }
 
     fun onNotificationsNext() {
-        _state.update { it.copy(currentStep = OnboardingStep.PHONE) }
+        // Notifications is the last step — onComplete is called from OnboardingScreen
     }
 
     fun onSkipNotifications() {
-        _state.update { it.copy(currentStep = OnboardingStep.PHONE) }
+        // Notifications is the last step — onComplete is called from OnboardingScreen
     }
 
     // ── Back navigation ──
@@ -272,7 +281,7 @@ class OnboardingViewModel(
                     .map { it.name }
 
                 val prefs = UserPreferences(
-                    id = "",
+                    id = authUserId ?: "",
                     firstName = s.firstName.trim().ifEmpty { null },
                     lastName = s.lastName.trim().ifEmpty { null },
                     phone = s.phoneNumber.filter { it.isDigit() }.ifEmpty { null },
@@ -287,7 +296,14 @@ class OnboardingViewModel(
                     notifVenues = s.notifVenues,
                     onboardingComplete = true,
                 )
-                userPreferencesRepository.savePreferences(prefs)
+
+                // If we have an auth user ID, save with that specific ID
+                val uid = authUserId
+                if (uid != null) {
+                    userPreferencesRepository.savePreferencesWithId(uid, prefs)
+                } else {
+                    userPreferencesRepository.savePreferences(prefs)
+                }
             } catch (_: Exception) {
                 // Save failed — continue anyway, preferences will be lost
             }
@@ -395,7 +411,13 @@ class OnboardingViewModel(
             "comedy" -> Icons.Outlined.TheaterComedy
             "outdoors" -> Icons.Outlined.Park
             "nightlife" -> Icons.Outlined.NightsStay
+            "theatre" -> Icons.Outlined.TheaterComedy
+            "museums" -> Icons.Outlined.Place
+            "tours" -> Icons.Outlined.Place
+            "libraries" -> Icons.Outlined.Star
+            "for-kids" -> Icons.Outlined.Star
             "film" -> Icons.Outlined.Movie
+            "other" -> Icons.Outlined.Star
             else -> Icons.Outlined.Star
         }
 
@@ -407,9 +429,14 @@ class OnboardingViewModel(
             "comedy" -> "Comedy"
             "outdoors" -> "Outdoors"
             "nightlife" -> "Nightlife"
+            "theatre" -> "Theatre"
+            "museums" -> "Museums"
+            "tours" -> "Tours"
+            "libraries" -> "Libraries"
+            "for-kids" -> "For Kids"
             "film" -> "Film"
             "other" -> "Other"
-            else -> key.replaceFirstChar { it.uppercase() }
+            else -> key.split("-").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
         }
 
         fun categorySubtitle(key: String): String = when (key.lowercase()) {

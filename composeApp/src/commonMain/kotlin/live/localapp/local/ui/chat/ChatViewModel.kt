@@ -3,37 +3,57 @@ package live.localapp.local.ui.chat
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-
-// ── Enums ──
-
-enum class ChatMode { NONE, SINGLE, ITINERARY }
-enum class MessageRole { AI, USER }
-
-enum class ChatStage {
-    INTAKE_DURATION,
-    INTAKE_PEOPLE,
-    INTAKE_DATE,          // single-day date selection
-    INTAKE_DATE_START,    // multi-day: pick start date
-    INTAKE_DATE_END,      // multi-day: pick end date (max 7 days from start)
-    SINGLE_GATHERING,
-    SINGLE_RESULTS,
-    ITIN_GATHERING,
-    ITIN_PRE_DAY,
-    ITIN_DAY_VIEW,
-    ITIN_DONE,
-}
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
+import live.localapp.local.data.remote.AiChip
+import live.localapp.local.data.remote.AiResponseEnvelope
+import live.localapp.local.data.remote.ClaudeApiService
+import live.localapp.local.data.remote.ClaudeMessage
+import live.localapp.local.data.remote.ClaudeResponse
+import live.localapp.local.data.remote.claudeTools
+import live.localapp.local.data.remote.toDomain
+import kotlinx.datetime.toLocalDateTime
+import live.localapp.local.Config
+import live.localapp.local.domain.model.Event
+import live.localapp.local.domain.repository.EventRepository
+import live.localapp.local.domain.model.Plan
+import live.localapp.local.domain.model.PlanDay
+import live.localapp.local.domain.model.PlanSlot
+import live.localapp.local.domain.model.PlanTravel
+import live.localapp.local.domain.repository.PlanRepository
+import live.localapp.local.domain.repository.UserPreferences
+import live.localapp.local.domain.repository.UserPreferencesRepository
+import live.localapp.local.domain.repository.VenueRepository
+import io.ktor.client.HttpClient
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 // ── Message models ──
+
+enum class MessageRole { AI, USER }
 
 sealed interface MessageContent {
     data class Text(val text: String) : MessageContent
     data class DayCardRef(val dayIndex: Int) : MessageContent
-    data class SingleResultsRef(val bucket: String) : MessageContent
+    data class DayCardSnapshot(val day: ItineraryDay, val dayIndex: Int, val totalDays: Int) : MessageContent
+    data class MultiDayPlanRef(val dayCount: Int) : MessageContent
     data class SummaryRef(val dummy: Unit = Unit) : MessageContent
     data class ProgressRef(val dummy: Unit = Unit) : MessageContent
 }
@@ -60,6 +80,9 @@ data class ItinerarySlot(
     val detail: String,
     val price: String,
     val isFree: Boolean,
+    val imageUrl: String? = null,
+    val eventId: String? = null,
+    val isCustom: Boolean = false,
 )
 
 data class TravelInfo(
@@ -70,30 +93,9 @@ data class TravelInfo(
 data class ItineraryDay(
     val label: String,
     val shortName: String,
-    val slots: List<ItinerarySlot>,
+    val slots: List<ItinerarySlot> = emptyList(),
     val isApproved: Boolean = false,
     val travel: List<TravelInfo> = emptyList(),
-)
-
-// ── Single mode models ──
-
-data class SinglePick(
-    val emoji: String,
-    val name: String,
-    val detail: String,
-    val price: String,
-    val tag: String,
-)
-
-data class SingleMention(
-    val emoji: String,
-    val name: String,
-    val detail: String,
-)
-
-data class SingleResults(
-    val picks: List<SinglePick>,
-    val mentions: List<SingleMention>,
 )
 
 // ── UI State ──
@@ -101,249 +103,152 @@ data class SingleResults(
 data class ChatUiState(
     val messages: List<ChatMessage> = emptyList(),
     val quickReplies: List<QuickReply> = emptyList(),
-    val mode: ChatMode = ChatMode.NONE,
-    val stage: ChatStage = ChatStage.INTAKE_DURATION,
     val isTyping: Boolean = false,
     val isBusy: Boolean = false,
-    val isLoading: Boolean = false,
-    val loadingTitle: String = "",
-    val loadingSubtitle: String = "",
-    val inputEnabled: Boolean = false,
-    val inputPlaceholder: String = "Answer the questions above to get started\u2026",
+    val inputEnabled: Boolean = true,
+    val inputPlaceholder: String = "What are you looking for?",
     // Itinerary state
     val days: List<ItineraryDay> = emptyList(),
     val approvedDayCount: Int = 0,
     val currentDayIndex: Int = 0,
     val planTitle: String = "",
-    val planDates: String = "",
-    val planGroup: String = "",
-    // Single mode state
-    val singleResults: Map<String, SingleResults> = SINGLE_RESULTS_DATA,
-    // Intake state
-    val gatheredDuration: String? = null, // "single" or "multi"
-    val gatheredPeople: String? = null,
-    val gatheredDates: String? = null,
-    val gatheredStartDate: String? = null, // ISO date for multi-day start (YYYY-MM-DD)
-    val gatheredVibe: String? = null,
+    // Plan success overlay
+    val showPlanSuccess: Boolean = false,
+    // User info
+    val userName: String = "",
+    val userPreferences: UserPreferences? = null,
 )
 
 private var idCounter = 0L
 private fun generateId(): String = "msg_${++idCounter}"
 
-class ChatViewModel : ViewModel() {
+class ChatViewModel(
+    private val claudeApi: ClaudeApiService,
+    private val eventRepo: EventRepository,
+    private val venueRepo: VenueRepository,
+    private val userPrefsRepo: UserPreferencesRepository,
+    private val planRepo: PlanRepository,
+) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
+    // One-shot navigation events
+    private val _navigateToPlans = Channel<Unit>(Channel.BUFFERED)
+    val navigateToPlans = _navigateToPlans.receiveAsFlow()
+
+    // Claude conversation history — supports both text and tool_use/tool_result blocks
+    private val conversationHistory = mutableListOf<ClaudeMessage>()
+
     init {
-        showWelcome()
+        loadUserPrefsAndWelcome()
     }
 
+    private fun loadUserPrefsAndWelcome() {
+        viewModelScope.launch {
+            val userId = userPrefsRepo.getLocalUserId()
+                ?: userPrefsRepo.recoverProfile()
+            if (userId != null) {
+                val prefs = userPrefsRepo.loadPreferences(userId)
+                if (prefs != null) {
+                    _uiState.update {
+                        it.copy(
+                            userName = prefs.firstName ?: "",
+                            userPreferences = prefs,
+                        )
+                    }
+                }
+            }
+            showWelcome()
+        }
+    }
+
+    // ── Welcome ──
+
     private fun showWelcome() {
-        addAiMessage("Hey! \uD83D\uDC4B I'm your Boston concierge. Let's get started \u2014 are you looking for something for a single day or multiple days?")
+        val userName = _uiState.value.userName
+        val greetings = listOf(
+            "Hey${if (userName.isNotBlank()) " $userName" else ""}! What are you looking to plan?",
+            "What's on your mind? I can plan anything from a single event to a multi-day trip.",
+            "${if (userName.isNotBlank()) "$userName — " else ""}Tell me what you're thinking and I'll find the best options.",
+            "Ready to discover something new? Tell me what you're in the mood for.",
+            "Hey! Date night, weekend plans, or something else entirely?",
+        )
+        addAiMessage(greetings.random())
+
+        val prefs = _uiState.value.userPreferences
+        val defaultChips = mutableListOf(
+            QuickReply("Weekend plans"),
+            QuickReply("Date night ideas"),
+        )
+        // Add preference-based chips
+        prefs?.selectedCategories?.take(2)?.forEach { cat ->
+            defaultChips.add(QuickReply("${categoryDisplayName(cat)} this week"))
+        }
+        prefs?.selectedNeighborhoods?.firstOrNull()?.let { hood ->
+            defaultChips.add(QuickReply("Things to do in $hood"))
+        }
+        // Fallback chips if no preference-based ones were added
+        if (defaultChips.size <= 2) {
+            defaultChips.add(QuickReply("Free things to do"))
+            defaultChips.add(QuickReply("Live music tonight"))
+        }
+
         _uiState.update {
             it.copy(
-                stage = ChatStage.INTAKE_DURATION,
-                inputEnabled = false,
-                quickReplies = listOf(
-                    QuickReply("\uD83D\uDCC5 Single day", action = "intake_single_day"),
-                    QuickReply("\uD83D\uDDD3\uFE0F Multi-day", action = "intake_multi_day"),
-                ),
+                inputEnabled = true,
+                inputPlaceholder = "What are you looking for?",
+                quickReplies = defaultChips,
             )
         }
+    }
+
+    private fun categoryDisplayName(key: String): String = when (key) {
+        "music" -> "Live Music"
+        "sports" -> "Sports"
+        "arts" -> "Arts"
+        "theatre" -> "Theatre"
+        "comedy" -> "Comedy"
+        "food" -> "Food & Drink"
+        "outdoors" -> "Outdoors"
+        "museums" -> "Museums"
+        "tours" -> "Tours"
+        "libraries" -> "Libraries"
+        "for-kids" -> "For Kids"
+        else -> key.replaceFirstChar { it.uppercase() }
     }
 
     // ── Public actions ──
 
-    fun selectMode(mode: ChatMode) {
-        _uiState.update { it.copy(mode = mode, quickReplies = emptyList()) }
-        when (mode) {
-            ChatMode.SINGLE -> startSingleMode()
-            ChatMode.ITINERARY -> startItineraryMode()
-            ChatMode.NONE -> {}
-        }
-    }
-
-    // ── Structured Intake Flow ──
-
-    private fun handleIntakeDuration(isSingleDay: Boolean) {
-        val label = if (isSingleDay) "Single day" else "Multi-day"
-        addUserMessage(label)
-        _uiState.update {
-            it.copy(
-                gatheredDuration = if (isSingleDay) "single" else "multi",
-                mode = if (isSingleDay) ChatMode.SINGLE else ChatMode.ITINERARY,
-                quickReplies = emptyList(),
-            )
-        }
-        viewModelScope.launch {
-            setBusy(true)
-            delay(600)
-            addAiMessage("How many people is this for?")
-            _uiState.update {
-                it.copy(
-                    stage = ChatStage.INTAKE_PEOPLE,
-                    isBusy = false, isTyping = false,
-                    inputEnabled = false,
-                    quickReplies = listOf(
-                        QuickReply("Just me", action = "intake_people_1"),
-                        QuickReply("2 people", action = "intake_people_2"),
-                        QuickReply("3\u20134 people", action = "intake_people_3-4"),
-                        QuickReply("5+ people", action = "intake_people_5+"),
-                    ),
-                )
-            }
-        }
-    }
-
-    private fun handleIntakePeople(label: String, count: String) {
-        addUserMessage(label)
-        _uiState.update {
-            it.copy(gatheredPeople = count, quickReplies = emptyList())
-        }
-        viewModelScope.launch {
-            setBusy(true)
-            delay(600)
-            val isMulti = _uiState.value.gatheredDuration == "multi"
-            if (isMulti) {
-                addAiMessage("When does your trip start?")
-                _uiState.update {
-                    it.copy(
-                        stage = ChatStage.INTAKE_DATE_START,
-                        isBusy = false, isTyping = false,
-                        inputEnabled = false,
-                        quickReplies = emptyList(),
-                    )
-                }
-            } else {
-                addAiMessage("What day works best?")
-                _uiState.update {
-                    it.copy(
-                        stage = ChatStage.INTAKE_DATE,
-                        isBusy = false, isTyping = false,
-                        inputEnabled = false,
-                        quickReplies = listOf(
-                            QuickReply("Today", action = "intake_date_today"),
-                            QuickReply("Tomorrow", action = "intake_date_tomorrow"),
-                            QuickReply("This Saturday", action = "intake_date_saturday"),
-                            QuickReply("This Sunday", action = "intake_date_sunday"),
-                        ),
-                    )
-                }
-            }
-        }
-    }
-
-    private fun handleIntakeDate(label: String) {
-        addUserMessage(label)
-        _uiState.update {
-            it.copy(gatheredDates = label, quickReplies = emptyList())
-        }
-        // All intake done — transition to the appropriate mode
-        val mode = _uiState.value.mode
-        when (mode) {
-            ChatMode.SINGLE -> startSingleMode()
-            ChatMode.ITINERARY -> startItineraryMode()
-            ChatMode.NONE -> {}
-        }
-    }
-
-    /** Multi-day: user picked a start date (ISO string YYYY-MM-DD) */
-    fun handleIntakeDateStart(isoDate: String, displayLabel: String) {
-        if (_uiState.value.isBusy) return
-        addUserMessage(displayLabel)
-        _uiState.update {
-            it.copy(gatheredStartDate = isoDate, quickReplies = emptyList())
-        }
-        viewModelScope.launch {
-            setBusy(true)
-            delay(500)
-            addAiMessage("And when does it end? (7 days max)")
-            _uiState.update {
-                it.copy(
-                    stage = ChatStage.INTAKE_DATE_END,
-                    isBusy = false, isTyping = false,
-                    inputEnabled = false,
-                    quickReplies = emptyList(),
-                )
-            }
-        }
-    }
-
-    /** Multi-day: user picked an end date (ISO string YYYY-MM-DD) */
-    fun handleIntakeDateEnd(isoDate: String, displayLabel: String) {
-        if (_uiState.value.isBusy) return
-        val startDate = _uiState.value.gatheredStartDate ?: return
-        addUserMessage(displayLabel)
-        val dateRange = "$startDate to $isoDate"
-        _uiState.update {
-            it.copy(gatheredDates = dateRange, quickReplies = emptyList())
-        }
-        startItineraryMode()
-    }
-
     fun sendMessage(text: String) {
         if (text.isBlank() || _uiState.value.isBusy) return
         addUserMessage(text.trim())
-        handleInput(text.trim())
+        handleMessage(text.trim())
     }
 
     fun onQuickReply(reply: QuickReply) {
         if (_uiState.value.isBusy) return
-        when {
-            // Intake flow
-            reply.action == "intake_single_day" -> handleIntakeDuration(isSingleDay = true)
-            reply.action == "intake_multi_day" -> handleIntakeDuration(isSingleDay = false)
-            reply.action.startsWith("intake_people_") -> {
-                val key = reply.action.removePrefix("intake_people_")
-                handleIntakePeople(reply.label, key)
-            }
-            reply.action.startsWith("intake_date_") -> handleIntakeDate(reply.label)
-            // Existing actions
-            reply.action == "reset" -> resetChat()
-            reply.action == "approve_day" -> approveCurrentDay()
-            reply.action == "change_day" -> requestChange()
-            reply.action == "start_building" -> {
-                addUserMessage("Start building")
-                startBuildingDay()
-            }
-            reply.action == "has_notes" -> {
-                _uiState.update {
-                    it.copy(
-                        inputEnabled = true,
-                        inputPlaceholder = "e.g. avoid seafood, dinner at 8pm\u2026",
-                        quickReplies = emptyList(),
-                    )
-                }
-            }
-            reply.action == "save_plan" -> savePlan()
-            reply.action == "share_plan" -> sharePlan()
-            reply.action == "turn_into_itinerary" -> {
-                selectMode(ChatMode.ITINERARY)
-            }
-            reply.action == "different_vibe" -> {
-                addUserMessage("Show me something different")
-                _uiState.update { it.copy(gatheredVibe = null) }
-                handleSingleGathering("something different")
-            }
+        when (reply.action) {
+            "reset" -> resetChat()
             else -> sendMessage(reply.label)
         }
     }
 
     fun removeSlot(dayIndex: Int, slotId: String) {
+        val day = _uiState.value.days.getOrNull(dayIndex) ?: return
+        val slotName = day.slots.firstOrNull { it.id == slotId }?.name ?: return
+
+        // Remove the slot immediately for instant UI feedback (clear travel since it's stale)
         _uiState.update { state ->
             val days = state.days.toMutableList()
-            val day = days[dayIndex]
-            val newSlots = day.slots.filter { it.id != slotId }
-            val newTravel = if (day.travel.size > 1) {
-                day.travel.toMutableList().also {
-                    val idx = day.slots.indexOfFirst { s -> s.id == slotId }
-                    if (idx in it.indices) it.removeAt(idx)
-                }
-            } else emptyList()
-            days[dayIndex] = day.copy(slots = newSlots, travel = newTravel)
+            val d = days[dayIndex]
+            val newSlots = d.slots.filter { it.id != slotId }
+            days[dayIndex] = d.copy(slots = newSlots, travel = emptyList())
             state.copy(days = days)
         }
+
+        // Ask Claude to recalculate travel for the updated day
+        requestTravelRecalc(dayIndex, "I removed \"$slotName\" from Day ${dayIndex + 1}. Update the travel times between the remaining events.")
     }
 
     fun moveSlot(dayIndex: Int, fromIndex: Int, toIndex: Int) {
@@ -359,440 +264,848 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    fun addCustomSlot(dayIndex: Int, name: String, time: String = "") {
+        _uiState.update { state ->
+            val days = state.days.toMutableList()
+            val day = days[dayIndex]
+            val newSlot = ItinerarySlot(
+                id = generateId(),
+                time = time.ifBlank { "" },
+                emoji = "",
+                name = name,
+                detail = "Your custom event",
+                price = "",
+                isFree = true,
+                isCustom = true,
+            )
+            // Clear travel since it's now stale
+            days[dayIndex] = day.copy(slots = day.slots + newSlot, travel = emptyList())
+            state.copy(days = days)
+        }
+
+        // Ask Claude to recalculate travel with the new slot
+        requestTravelRecalc(dayIndex, "I added \"$name\" at $time to Day ${dayIndex + 1}. Reorder the slots chronologically and update travel times.")
+    }
+
+    /**
+     * Ask Claude to return a plan_update with recalculated travel times.
+     * Sends a silent message (no user bubble) so the plan card refreshes.
+     */
+    private fun requestTravelRecalc(dayIndex: Int, instruction: String) {
+        viewModelScope.launch {
+            try {
+                appendTextToHistory("user", instruction)
+                val systemPrompt = buildSystemPrompt()
+                val envelope = sendWithToolLoop(systemPrompt)
+                // Only process if Claude returned a plan_update for this day
+                if (envelope.type == "plan_update" && envelope.day != null) {
+                    val enrichedDay = resolveDayFromDb(envelope.day.toDomain())
+                    _uiState.update { state ->
+                        val days = state.days.toMutableList()
+                        val idx = envelope.dayIndex ?: dayIndex
+                        if (idx in days.indices) {
+                            days[idx] = enrichedDay
+                        }
+                        state.copy(days = days)
+                    }
+                    if (!envelope.text.isNullOrBlank()) {
+                        appendTextToHistory("assistant", envelope.text)
+                    }
+                }
+            } catch (e: Throwable) {
+                println("Travel recalc failed: ${e::class.simpleName}: ${e.message}")
+                // Non-critical — the plan still works, just without updated travel
+            }
+        }
+    }
+
+    suspend fun getEventById(id: String): live.localapp.local.domain.model.Event? {
+        return eventRepo.getEvent(id)
+    }
+
     fun resetChat() {
+        conversationHistory.clear()
         _uiState.value = ChatUiState()
         showWelcome()
     }
 
-    // ── Single Mode ──
+    // ── Core: Single unified message handler ──
 
-    private fun startSingleMode() {
-        val people = _uiState.value.gatheredPeople
-        val dates = _uiState.value.gatheredDates
-        val ps = when (people) {
-            "1" -> "just you"
-            "2" -> "2 people"
-            "3-4" -> "your group"
-            "5+" -> "the crew"
-            else -> "you"
-        }
+    private fun handleMessage(text: String) {
+        _uiState.update { it.copy(quickReplies = emptyList()) }
         viewModelScope.launch {
             setBusy(true)
-            delay(600)
-            addAiMessage("Got it \u2014 $ps on ${dates ?: "your day"}. What kind of experience are you in the mood for?")
-            _uiState.update {
-                it.copy(
-                    stage = ChatStage.SINGLE_GATHERING,
-                    isBusy = false, isTyping = false,
-                    inputEnabled = true,
-                    inputPlaceholder = "e.g. \"live music\" or \"dinner spot\"\u2026",
-                    quickReplies = listOf(
-                        QuickReply("\uD83C\uDFB6 Live music"),
-                        QuickReply("\uD83C\uDF7D\uFE0F Dinner spot"),
-                        QuickReply("\uD83C\uDFAD Show or comedy"),
-                        QuickReply("\uD83C\uDF3F Outdoors"),
-                        QuickReply("\uD83C\uDFA8 Arts + culture"),
-                        QuickReply("\uD83C\uDD93 Free events"),
-                    ),
-                )
+            appendTextToHistory("user", text)
+
+            try {
+                val systemPrompt = buildSystemPrompt()
+                val envelope = sendWithToolLoop(systemPrompt)
+                println("Claude response: type=${envelope.type} text=${envelope.text?.take(100)} days=${envelope.days?.size} day=${envelope.day != null} chips=${envelope.chips?.size}")
+                handleClaudeResponse(envelope)
+            } catch (e: Throwable) {
+                // Catch Throwable (not just Exception) to handle Kotlin/Native errors
+                // that bypass Exception hierarchy (IrLinkageError, etc.)
+                println("Claude error: ${e::class.simpleName}: ${e.message}")
+                e.printStackTrace()
+                try {
+                    handleAiError(if (e is Exception) e else RuntimeException(e.message ?: "Unknown error"))
+                } catch (_: Throwable) {
+                    // Last resort — just show error and re-enable input
+                    addAiMessage("Something went wrong. Please try again.")
+                    setBusy(false)
+                }
             }
         }
     }
 
-    private fun handleSingleGathering(text: String) {
-        viewModelScope.launch {
-            val vibe = _uiState.value.gatheredVibe ?: extractVibe(text)
-            _uiState.update { it.copy(gatheredVibe = vibe) }
+    // ── Tool execution loop ──
 
-            // Show results
-            setBusy(true)
-            delay(1400)
+    /**
+     * Send the conversation to Claude and handle the tool-use loop:
+     * send → if tool_use → execute tool → append tool_result → send again → repeat
+     * until Claude gives a final text (stop_reason == "end_turn").
+     */
+    private suspend fun sendWithToolLoop(systemPrompt: String): AiResponseEnvelope {
+        val maxToolRounds = 5 // Cap tool calls to avoid runaway loops
+        var toolRounds = 0
+        var lastResponse: ClaudeResponse? = null
 
-            val people = _uiState.value.gatheredPeople
-            val bucket = getBucket("${vibe ?: ""} $text")
-            val ps = when (people) {
-                "1" -> "you"
-                "2" -> "2 people"
-                "3-4" -> "your group"
-                "5+" -> "the crew"
-                else -> "you"
+        while (true) {
+            val response = claudeApi.sendRaw(
+                systemPrompt = systemPrompt,
+                messages = conversationHistory,
+                tools = claudeTools,
+            )
+            lastResponse = response
+
+            val toolCalls = claudeApi.extractToolCalls(response)
+
+            if (toolCalls.isEmpty() || response.stopReason == "end_turn") {
+                val text = claudeApi.extractText(response)
+                if (text == null) {
+                    println("sendWithToolLoop: No text in Claude response, returning fallback")
+                    stripToolMessagesFromHistory()
+                    return AiResponseEnvelope(type = "chat", text = "Sorry, I had trouble generating a response. Could you try again?")
+                }
+                stripToolMessagesFromHistory()
+                appendTextToHistory("assistant", text)
+                return try {
+                    claudeApi.parseStructured(text)
+                } catch (e: Exception) {
+                    println("sendWithToolLoop: JSON parse failed: ${e.message}")
+                    println("Raw text: ${text.take(300)}")
+                    AiResponseEnvelope(type = "chat", text = text)
+                }
             }
-            addAiMessage("Here's what I'd recommend for $ps in Boston:")
-            _uiState.update { it.copy(isTyping = false) }
-            delay(300)
 
-            addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.SingleResultsRef(bucket)))
-            delay(300)
-
-            addAiMessage("Tap any pick to save it, or tell me more \u2014 neighbourhood, budget, tonight only, anything.")
-            _uiState.update {
-                it.copy(
-                    stage = ChatStage.SINGLE_RESULTS,
-                    isBusy = false, isTyping = false,
-                    inputEnabled = true,
-                    quickReplies = listOf(
-                        QuickReply("\uD83D\uDDD3\uFE0F Turn into an itinerary", action = "turn_into_itinerary"),
-                        QuickReply("\uD83D\uDD04 Different vibe", action = "different_vibe"),
-                        QuickReply("\uD83D\uDCB0 Budget-friendly only"),
-                    ),
+            // Check if we've hit the tool round cap
+            toolRounds++
+            if (toolRounds >= maxToolRounds) {
+                println("Tool loop capped at $maxToolRounds rounds — forcing completion")
+                val assistantBlocks = claudeApi.buildAssistantContentBlocks(response)
+                conversationHistory.add(ClaudeMessage.blocks("assistant", assistantBlocks))
+                val toolResultBlocks = kotlinx.serialization.json.buildJsonArray {
+                    for (call in toolCalls) {
+                        val result = executeToolCall(call.name, call.input)
+                        add(kotlinx.serialization.json.buildJsonObject {
+                            put("type", JsonPrimitive("tool_result"))
+                            put("tool_use_id", JsonPrimitive(call.id))
+                            put("content", JsonPrimitive(result))
+                        })
+                    }
+                }
+                conversationHistory.add(ClaudeMessage.blocks("user", toolResultBlocks))
+                conversationHistory.add(ClaudeMessage.text("user", "You have enough information now. Respond ONLY with valid JSON (plan, plan_update, or chat type). No other text. Do NOT call any more tools."))
+                val finalResponse = claudeApi.sendRaw(
+                    systemPrompt = systemPrompt,
+                    messages = conversationHistory,
+                    tools = null,
                 )
+                val text = claudeApi.extractText(finalResponse)
+                if (text == null) {
+                    println("sendWithToolLoop: No text after cap nudge, returning fallback")
+                    stripToolMessagesFromHistory()
+                    return AiResponseEnvelope(type = "chat", text = "I found some great options but had trouble putting them together. Could you try asking again?")
+                }
+                stripToolMessagesFromHistory()
+                appendTextToHistory("assistant", text)
+                return try {
+                    claudeApi.parseStructured(text)
+                } catch (e: Exception) {
+                    println("sendWithToolLoop: JSON parse failed after cap: ${e.message}")
+                    AiResponseEnvelope(type = "chat", text = text)
+                }
+            }
+
+            // Claude wants to use tools — add its full response to history
+            val assistantBlocks = claudeApi.buildAssistantContentBlocks(response)
+            conversationHistory.add(ClaudeMessage.blocks("assistant", assistantBlocks))
+
+            // Execute each tool call and build tool_result blocks
+            val toolResultBlocks = kotlinx.serialization.json.buildJsonArray {
+                for (call in toolCalls) {
+                    println("Executing tool: ${call.name} with input: ${call.input}")
+                    val result = executeToolCall(call.name, call.input)
+                    println("Tool result (${call.name}): ${result.take(200)}")
+                    add(kotlinx.serialization.json.buildJsonObject {
+                        put("type", JsonPrimitive("tool_result"))
+                        put("tool_use_id", JsonPrimitive(call.id))
+                        put("content", JsonPrimitive(result))
+                    })
+                }
+            }
+            conversationHistory.add(ClaudeMessage.blocks("user", toolResultBlocks))
+        }
+    }
+
+    /**
+     * Strip tool_use and tool_result messages from conversation history.
+     * These are one-time context and bloat the history for future turns.
+     */
+    private fun stripToolMessagesFromHistory() {
+        conversationHistory.removeAll { msg ->
+            // Remove messages whose content is a JsonArray containing tool_use or tool_result blocks
+            val content = msg.content
+            if (content is kotlinx.serialization.json.JsonArray) {
+                content.any { element ->
+                    val type = element.jsonObject["type"]?.jsonPrimitive?.contentOrNull
+                    type == "tool_use" || type == "tool_result"
+                }
+            } else false
+        }
+    }
+
+    // ── Tool Execution ──
+
+    private suspend fun executeToolCall(name: String, input: JsonObject): String {
+        return try {
+            when (name) {
+                "search_events" -> searchEvents(input)
+                "search_venues" -> searchVenues(input)
+                "get_event_details" -> getEventDetails(input)
+                "recommend_and_save_venue" -> recommendAndSaveVenue(input)
+                else -> """{"error": "Unknown tool: $name"}"""
+            }
+        } catch (e: Exception) {
+            println("Tool execution error ($name): ${e.message}")
+            """{"error": "Failed to execute $name: ${e.message}"}"""
+        }
+    }
+
+    private suspend fun searchEvents(input: JsonObject): String {
+        val location = input["location"]?.jsonPrimitive?.contentOrNull
+        val category = input["category"]?.jsonPrimitive?.contentOrNull
+        val dateRange = input["date_range"]?.jsonPrimitive?.contentOrNull
+        val keyword = input["keyword"]?.jsonPrimitive?.contentOrNull
+        val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 20
+
+        val events = eventRepo.searchEvents(location, category, dateRange, keyword, limit)
+
+        val today = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        return events.joinToString("\n") { e ->
+            val price = e.priceDisplay.ifBlank { "Price TBD" }
+            val venue = e.venueName ?: "TBD"
+            val img = e.imageUrl ?: ""
+            val isFlexible = e.category == "always_on" || e.startAt == null
+            val typeTag = if (isFlexible) "FLEXIBLE" else "FIXED-TIME"
+            // For fixed-time events, show the full ISO date + day of week so Claude can match days
+            val dateInfo = if (isFlexible) {
+                "Anytime (no fixed date)"
+            } else {
+                val isoDate = e.startAt ?: ""
+                val dayOfWeek = try {
+                    val instant = kotlinx.datetime.Instant.parse(isoDate)
+                    val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+                    local.dayOfWeek.name.lowercase().replaceFirstChar { it.uppercase() }
+                } catch (_: Exception) { "" }
+                val dateStr = e.dateDisplay.ifBlank { isoDate.take(10) }
+                if (dayOfWeek.isNotEmpty()) "$dayOfWeek $dateStr ($isoDate)" else dateStr
+            }
+            val flexNote = if (isFlexible) " | Schedule anytime during venue hours" else ""
+            "[$typeTag] [${e.id}] ${e.title} | $venue (${e.venueCity}) | DATE: $dateInfo | $price | ${e.category}${if (e.isFree) " | FREE" else ""}$flexNote${if (img.isNotBlank()) " | img:$img" else ""}"
+        }.ifEmpty { "No events found matching your search." }
+    }
+
+    private suspend fun searchVenues(input: JsonObject): String {
+        val location = input["location"]?.jsonPrimitive?.contentOrNull
+        val category = input["category"]?.jsonPrimitive?.contentOrNull
+        val keyword = input["keyword"]?.jsonPrimitive?.contentOrNull
+        val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 20
+
+        val venues = venueRepo.searchVenues(location, category, keyword, limit)
+
+        return venues.joinToString("\n") { v ->
+            val cat = v.category ?: v.placeType ?: ""
+            val rating = v.googleRating?.let { " | Rating: $it" } ?: ""
+            "[${v.id}] ${v.name} | ${v.city}${if (v.address != null) " (${v.address})" else ""} | $cat$rating"
+        }.ifEmpty { "No venues found matching your search." }
+    }
+
+    private suspend fun getEventDetails(input: JsonObject): String {
+        val eventId = input["event_id"]?.jsonPrimitive?.contentOrNull
+            ?: return """{"error": "event_id is required"}"""
+
+        val event = eventRepo.getEvent(eventId)
+            ?: return """{"error": "Event not found with id: $eventId"}"""
+
+        return buildString {
+            appendLine("ID: ${event.id}")
+            appendLine("Title: ${event.title}")
+            appendLine("Venue: ${event.venueName ?: "TBD"} (${event.venueCity})")
+            if (event.venueAddress != null) appendLine("Address: ${event.venueAddress}")
+            appendLine("Date: ${event.dateDisplay}")
+            appendLine("Price: ${event.priceDisplay.ifBlank { "TBD" }}")
+            if (event.description != null) appendLine("Description: ${event.description}")
+            if (event.ticketUrl != null) appendLine("Tickets: ${event.ticketUrl}")
+            if (event.imageUrl != null) appendLine("Image: ${event.imageUrl}")
+            appendLine("Category: ${event.category}${if (event.subcategory != null) " / ${event.subcategory}" else ""}")
+            appendLine("Free: ${event.isFree}")
+        }
+    }
+
+    private val httpClient = HttpClient()
+
+    private suspend fun recommendAndSaveVenue(input: JsonObject): String {
+        val name = input["name"]?.jsonPrimitive?.contentOrNull
+            ?: return """{"error": "name is required"}"""
+        val city = input["city"]?.jsonPrimitive?.contentOrNull
+            ?: return """{"error": "city is required"}"""
+        val cuisineType = input["cuisine_or_type"]?.jsonPrimitive?.contentOrNull
+
+        return try {
+            val response = httpClient.post("${Config.SUPABASE_URL}/functions/v1/validate-venue") {
+                header("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
+                contentType(ContentType.Application.Json)
+                setBody(buildJsonObject {
+                    put("name", name)
+                    put("city", city)
+                    cuisineType?.let { put("cuisine_or_type", it) }
+                }.toString())
+            }
+
+            val body = response.bodyAsText()
+            println("validate-venue response: status=${response.status.value} body=${body.take(500)}")
+
+            if (response.status.value !in 200..299) {
+                """{"error": "Failed to validate venue: ${response.status.value}"}"""
+            } else {
+                body
+            }
+        } catch (e: Exception) {
+            println("recommend_and_save_venue error: ${e.message}")
+            """{"error": "Failed to validate venue: ${e.message}"}"""
+        }
+    }
+
+    // ── Process Claude's structured response ──
+
+    private suspend fun handleClaudeResponse(envelope: AiResponseEnvelope) {
+        val responseText = envelope.text ?: envelope.intro ?: ""
+
+        when (envelope.type) {
+            "chat" -> {
+                // Pure conversation — Claude is gathering info or answering questions
+                consecutiveQuestionCount++
+                if (responseText.isNotBlank()) {
+                    addAiMessage(responseText)
+                }
+                // After 2+ consecutive questions, inject a "Just surprise me" chip
+                val chips = envelope.chips?.toMutableList() ?: mutableListOf()
+                if (consecutiveQuestionCount >= 2 && chips.none { it.label.contains("surprise", ignoreCase = true) }) {
+                    chips.add(AiChip(label = "Just surprise me"))
+                }
+                finishTurn(chips)
+            }
+
+            "plan" -> {
+                consecutiveQuestionCount = 0
+                // Claude is confident — delivering a full plan
+                val title = envelope.planTitle ?: "Your Plan"
+                val days = envelope.days?.map { it.toDomain() } ?: emptyList()
+                val enrichedDays = days.map { resolveDayFromDb(it) }
+
+                _uiState.update {
+                    it.copy(
+                        days = enrichedDays,
+                        planTitle = title,
+                        currentDayIndex = 0,
+                        approvedDayCount = 0,
+                    )
+                }
+
+                if (responseText.isNotBlank()) {
+                    addAiMessage(responseText)
+                }
+
+                delay(350)
+
+                if (enrichedDays.size > 1) {
+                    // Multi-day: show all days in a single horizontally scrollable card
+                    addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.MultiDayPlanRef(enrichedDays.size)))
+                } else {
+                    // Single day: show as a regular day card
+                    addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(0)))
+                }
+
+                finishTurn(withApproveChip(envelope.chips))
+            }
+
+            "plan_update" -> {
+                consecutiveQuestionCount = 0
+                val dayIndex = envelope.dayIndex ?: _uiState.value.currentDayIndex
+                val updatedDay = envelope.day?.toDomain()
+
+                if (updatedDay != null) {
+                    val enrichedDay = resolveDayFromDb(updatedDay)
+                    val previousDay = _uiState.value.days.getOrNull(dayIndex)
+                    val previousSlotCount = previousDay?.slots?.size ?: 0
+                    val newSlotCount = enrichedDay.slots.size
+
+                    // Validate: if text says "Added" but new plan has same or fewer slots, re-prompt
+                    val textLower = responseText.lowercase()
+                    val claimsAdded = textLower.contains("added") || textLower.contains("here's") || textLower.contains("included")
+                    val slotsMissing = claimsAdded && newSlotCount <= previousSlotCount
+
+                    if (slotsMissing) {
+                        // Claude said it added something but didn't — re-prompt
+                        println("Plan update validation failed: text claims addition but slots didn't increase ($previousSlotCount → $newSlotCount). Re-prompting.")
+                        appendTextToHistory("user", "The plan you returned is missing the event you mentioned adding. Please include ALL existing slots plus the new one in the slots array.")
+                        try {
+                            val retryEnvelope = sendWithToolLoop(buildSystemPrompt())
+                            if (retryEnvelope.type == "plan_update" && retryEnvelope.day != null) {
+                                val retryDay = resolveDayFromDb(retryEnvelope.day.toDomain())
+                                _uiState.update { state ->
+                                    val days = state.days.toMutableList()
+                                    if (dayIndex in days.indices) days[dayIndex] = retryDay
+                                    state.copy(days = days, currentDayIndex = dayIndex)
+                                }
+                                val retryText = retryEnvelope.text ?: responseText
+                                if (retryText.isNotBlank()) addAiMessage(retryText)
+                                addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(dayIndex)))
+                                finishTurn(withApproveChip(retryEnvelope.chips))
+                                return
+                            }
+                        } catch (e: Throwable) {
+                            println("Re-prompt failed: ${e.message}")
+                        }
+                    }
+
+                    // Snapshot old plan cards so they show the previous version
+                    if (previousDay != null) {
+                        _uiState.update { state ->
+                            val messages = state.messages.map { msg ->
+                                if (msg.content is MessageContent.DayCardRef &&
+                                    (msg.content as MessageContent.DayCardRef).dayIndex == dayIndex) {
+                                    msg.copy(content = MessageContent.DayCardSnapshot(
+                                        day = previousDay,
+                                        dayIndex = dayIndex,
+                                        totalDays = state.days.size,
+                                    ))
+                                } else msg
+                            }
+                            state.copy(messages = messages)
+                        }
+                    }
+
+                    _uiState.update { state ->
+                        val days = state.days.toMutableList()
+                        if (dayIndex in days.indices) {
+                            days[dayIndex] = enrichedDay
+                        }
+                        state.copy(days = days, currentDayIndex = dayIndex)
+                    }
+                }
+
+                if (responseText.isNotBlank()) {
+                    addAiMessage(responseText)
+                }
+
+                // Add the new live plan card
+                addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(dayIndex)))
+
+                finishTurn(withApproveChip(envelope.chips))
+            }
+
+            "approve" -> {
+                // Claude recognized an approval — lock in the whole plan
+                if (responseText.isNotBlank()) {
+                    addAiMessage(responseText)
+                }
+                approvePlan()
+            }
+
+            else -> {
+                // Fallback — treat as chat
+                if (responseText.isNotBlank()) {
+                    addAiMessage(responseText)
+                }
+                finishTurn(envelope.chips)
             }
         }
     }
 
-    // ── Itinerary Mode ──
-
-    private fun startItineraryMode() {
-        val people = _uiState.value.gatheredPeople
-        val dates = _uiState.value.gatheredDates
-        val ps = when (people) {
-            "1" -> "just you"
-            "2" -> "2 people"
-            "3-4" -> "your group"
-            "5+" -> "the crew"
-            else -> "you"
+    private fun withApproveChip(aiChips: List<AiChip>?): List<AiChip> {
+        val approve = AiChip(label = "Looks good, add to My Plans", action = "save_plan")
+        val rest = (aiChips ?: emptyList()).filter {
+            !it.label.contains("Looks good", ignoreCase = true) &&
+                it.action != "save_plan"
         }
-        viewModelScope.launch {
-            setBusy(true)
-            delay(600)
-            addAiMessage("Awesome \u2014 $ps, ${dates ?: "your trip"}. What kind of vibe are you going for?")
-            _uiState.update {
-                it.copy(
-                    stage = ChatStage.ITIN_GATHERING,
-                    isBusy = false, isTyping = false,
-                    inputEnabled = true,
-                    inputPlaceholder = "e.g. \"food + culture\" or \"mix of everything\"\u2026",
-                    quickReplies = listOf(
-                        QuickReply("\uD83C\uDF7D\uFE0F Food + culture"),
-                        QuickReply("\uD83C\uDF1F Nightlife"),
-                        QuickReply("\uD83C\uDF3F Outdoors"),
-                        QuickReply("\uD83C\uDFA8 Arts + museums"),
-                        QuickReply("\uD83C\uDF89 Mix of everything"),
-                        QuickReply("\uD83D\uDC76 Family-friendly"),
-                    ),
-                )
-            }
-        }
+        return listOf(approve) + rest
     }
 
-    private fun handleItineraryGathering(text: String) {
-        viewModelScope.launch {
-            val vibe = _uiState.value.gatheredVibe ?: extractVibe(text)
-            _uiState.update { it.copy(gatheredVibe = vibe) }
-
-            val people = _uiState.value.gatheredPeople
-            val groupLabel = when (people) {
-                "1" -> "Just you"
-                "2" -> "2 people"
-                "3-4" -> "3\u20134 people"
-                "5+" -> "5+ people"
-                else -> "Your group"
-            }
-            val dates = _uiState.value.gatheredDates ?: "your trip"
-
-            // Initialize plan and go to pre-day
-            _uiState.update {
-                it.copy(
-                    days = SAMPLE_PLAN.map { it.copy() },
-                    planTitle = "Boston for First-Timers",
-                    planDates = dates,
-                    planGroup = groupLabel,
-                    currentDayIndex = 0,
-                    approvedDayCount = 0,
-                )
-            }
-
-            setBusy(true)
-            delay(1200)
-
-            addAiMessage("Let's pull together an itinerary day by day. Anything you want me to keep in mind for ${DAY_NAMES[0]}, or should I start building?")
-            _uiState.update {
-                it.copy(
-                    stage = ChatStage.ITIN_PRE_DAY,
-                    isBusy = false, isTyping = false,
-                    inputEnabled = true,
-                    inputPlaceholder = "Any notes for ${DAY_NAMES[0]}? Or just say go\u2026",
-                    quickReplies = listOf(
-                        QuickReply("Start building \uD83D\uDE80", isGreen = true, action = "start_building"),
-                        QuickReply("\u270F\uFE0F I have some notes", action = "has_notes"),
-                    ),
-                )
-            }
-        }
-    }
-
-    private fun startBuildingDay() {
-        val dayIndex = _uiState.value.currentDayIndex
-        viewModelScope.launch {
-            _uiState.update {
-                it.copy(
-                    isBusy = true,
-                    quickReplies = emptyList(),
-                    inputEnabled = false,
-                    isLoading = true,
-                    loadingTitle = "Planning ${DAY_NAMES[dayIndex]}",
-                    loadingSubtitle = "Finding the best spots...",
-                )
-            }
-
-            // Simulate planning
-            delay(1000)
-            _uiState.update { it.copy(loadingSubtitle = "Mixing iconic with hidden gems...") }
-            delay(1000)
-            _uiState.update { it.copy(loadingSubtitle = "Building your timeline...") }
-            delay(800)
-            _uiState.update { it.copy(isLoading = false) }
-
-            showDay(dayIndex)
-        }
-    }
-
-    private suspend fun showDay(dayIndex: Int) {
-        // Progress indicator
-        addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.ProgressRef()))
-        delay(300)
-
-        // Day intro
-        addAiMessage(DAY_OPENERS[dayIndex])
-        delay(350)
-
-        // Day card
-        addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(dayIndex)))
-        delay(300)
-
-        // Question
-        addAiMessage(DAY_QUESTIONS[dayIndex])
+    private fun finishTurn(aiChips: List<AiChip>?) {
+        val quickReplies = aiChips?.map { chip ->
+            QuickReply(
+                label = chip.label,
+                action = chip.action ?: chip.label,
+                isGreen = chip.action == "save_plan" ||
+                        chip.label.contains("Looks good", ignoreCase = true),
+            )
+        } ?: emptyList()
 
         _uiState.update {
             it.copy(
-                stage = ChatStage.ITIN_DAY_VIEW,
                 isBusy = false, isTyping = false,
                 inputEnabled = true,
-                inputPlaceholder = "Ask anything\u2026",
+                quickReplies = quickReplies,
+            )
+        }
+    }
+
+    private fun approvePlan() {
+        viewModelScope.launch {
+            val state = _uiState.value
+
+            // Mark all days approved
+            _uiState.update { s ->
+                val days = s.days.map { it.copy(isApproved = true) }
+                s.copy(days = days, approvedDayCount = days.size)
+            }
+
+            // Persist to Supabase
+            try {
+                val plan = Plan(
+                    id = "",
+                    title = state.planTitle.ifBlank { "My Plan" },
+                    city = state.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "Boston",
+                    days = state.days.map { day ->
+                        PlanDay(
+                            label = day.label,
+                            shortName = day.shortName,
+                            slots = day.slots.map { slot ->
+                                PlanSlot(
+                                    id = slot.id,
+                                    time = slot.time,
+                                    emoji = slot.emoji,
+                                    name = slot.name,
+                                    detail = slot.detail,
+                                    price = slot.price,
+                                    isFree = slot.isFree,
+                                    eventId = slot.eventId,
+                                    isCustom = slot.isCustom,
+                                )
+                            },
+                            travel = day.travel.map { PlanTravel(it.mode, it.mins) },
+                        )
+                    },
+                    attendees = emptyList(),
+                    createdAt = "",
+                    dateDisplay = "",
+                )
+                planRepo.savePlan(plan)
+            } catch (e: Throwable) {
+                println("Failed to save plan: ${e.message}")
+            }
+
+            _uiState.update { it.copy(isBusy = false, isTyping = false, showPlanSuccess = true) }
+        }
+    }
+
+    fun clearSuccessState() {
+        if (_uiState.value.showPlanSuccess) {
+            _uiState.update { it.copy(showPlanSuccess = false) }
+            resetChat()
+        }
+    }
+
+    fun dismissPlanSuccess(navigateToPlans: Boolean) {
+        _uiState.update { it.copy(showPlanSuccess = false) }
+        if (navigateToPlans) {
+            viewModelScope.launch {
+                _navigateToPlans.send(Unit)
+            }
+        }
+        resetChat()
+    }
+
+
+    // ── DB Resolution ──
+
+    /**
+     * Resolve a slot against the local DB.
+     * Claude now uses real event IDs from search results, so we just look up by ID.
+     * Returns null if the event_id doesn't resolve (Claude hallucinated it).
+     */
+    private suspend fun resolveSlotFromDb(slot: ItinerarySlot): ItinerarySlot? {
+        // Custom items the user added — always keep
+        if (slot.isCustom) return slot
+
+        // No event_id — could be a venue from recommend_and_save_venue (real name) or filler
+        if (slot.eventId == null) {
+            val name = slot.name.lowercase().trim()
+            val fillerNames = listOf("dinner", "lunch", "brunch", "drinks", "coffee", "custom dinner", "breakfast", "food", "meal")
+            val isFillerName = fillerNames.any { name == it || name == "custom $it" }
+            if (!isFillerName && name.length > 2) {
+                // Real venue name from recommend_and_save_venue — keep it as-is
+                println("resolveSlotFromDb: keeping venue slot '${slot.name}' (no event_id, real name)")
+                return slot
+            }
+            // Filler name — drop it
+            println("resolveSlotFromDb: dropping filler slot '${slot.name}' — no event_id, filler name")
+            return null
+        }
+
+        val event = eventRepo.getEvent(slot.eventId)
+        if (event == null) {
+            println("resolveSlotFromDb: dropping slot '${slot.name}' — event_id '${slot.eventId}' not found in DB")
+            return null
+        }
+
+        // For flexible/always-on events, keep Claude's chosen time
+        // For fixed-time events, use the real event time
+        val isMidnightUtc = event.startAt?.contains("T00:00:00") == true
+        val isFlexible = event.category == "always_on" || event.startAt == null || isMidnightUtc
+        val realTime = if (isFlexible) {
+            slot.time // Keep whatever time Claude picked — midnight UTC means no specific time
+        } else {
+            // Extract local time from the event's start_at
+            try {
+                val instant = kotlinx.datetime.Instant.parse(event.startAt!!)
+                val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+                val hour = local.hour
+                val minute = local.minute
+                val amPm = if (hour < 12) "AM" else "PM"
+                val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
+                if (minute == 0) "$displayHour $amPm" else "$displayHour:${minute.toString().padStart(2, '0')} $amPm"
+            } catch (_: Exception) {
+                event.dateDisplay.substringAfter(", ", "").ifBlank { slot.time }
+            }
+        }
+
+        return slot.copy(
+            eventId = event.id,
+            name = event.title,
+            time = realTime,
+            detail = "${event.venueName ?: ""} · ${event.venueCity}",
+            price = event.priceDisplay,
+            imageUrl = event.imageUrl ?: slot.imageUrl,
+            isFree = event.isFree,
+        )
+    }
+
+    private suspend fun resolveDayFromDb(day: ItineraryDay): ItineraryDay {
+        val resolvedSlots = day.slots.mapNotNull { resolveSlotFromDb(it) }
+            .map { it.copy(time = normalizeTimeDisplay(it.time)) }
+            .sortedBy { parseTimeForSort(it.time) }
+        return day.copy(slots = resolvedSlots)
+    }
+
+    /** Normalize all time formats to "3:30 PM" style — consistent across events and venues */
+    private fun normalizeTimeDisplay(time: String): String {
+        if (time.isBlank()) return time
+        val mins = parseTimeForSort(time)
+        if (mins == Int.MAX_VALUE) return time
+        val hour24 = mins / 60
+        val minute = mins % 60
+        val amPm = if (hour24 < 12) "AM" else "PM"
+        val hour12 = if (hour24 == 0) 12 else if (hour24 > 12) hour24 - 12 else hour24
+        return if (minute == 0) "$hour12 $amPm" else "$hour12:${minute.toString().padStart(2, '0')} $amPm"
+    }
+
+    /** Parse time string like "7:00 PM" or "14:00" to minutes for sorting */
+    private fun parseTimeForSort(time: String): Int {
+        if (time.isBlank()) return Int.MAX_VALUE
+        val clean = time.trim().uppercase()
+        return try {
+            if (clean.contains("AM") || clean.contains("PM")) {
+                val parts = clean.replace("AM", "").replace("PM", "").trim().split(":")
+                var hour = parts[0].trim().toInt()
+                val min = parts.getOrNull(1)?.trim()?.toInt() ?: 0
+                if (clean.contains("PM") && hour != 12) hour += 12
+                if (clean.contains("AM") && hour == 12) hour = 0
+                hour * 60 + min
+            } else {
+                val parts = clean.split(":")
+                parts[0].toInt() * 60 + (parts.getOrNull(1)?.toInt() ?: 0)
+            }
+        } catch (_: Exception) {
+            Int.MAX_VALUE
+        }
+    }
+
+    // ── System Prompt ──
+
+    // Track consecutive question (chat-type) responses for "surprise me" chip injection
+    private var consecutiveQuestionCount = 0
+
+    private fun buildSystemPrompt(): String {
+        val state = _uiState.value
+
+        val currentPlanContext = if (state.days.isNotEmpty()) {
+            val dayDescriptions = state.days.mapIndexed { i, day ->
+                val approved = if (day.isApproved) " [APPROVED]" else ""
+                val slots = if (day.slots.isEmpty()) "  (no slots yet)"
+                else day.slots.joinToString("\n") { s ->
+                    "  ${s.time} ${s.name} — ${s.detail} (${s.price})${if (s.isCustom) " [CUSTOM]" else ""}"
+                }
+                "Day ${i + 1}: ${day.label}$approved\n$slots"
+            }.joinToString("\n\n")
+            """
+CURRENT PLAN (title: "${state.planTitle}"):
+$dayDescriptions
+Current day: Day ${state.currentDayIndex + 1}
+Approved: ${state.approvedDayCount}/${state.days.size}
+            """.trimIndent()
+        } else ""
+
+        val todayDate = kotlin.time.Clock.System.now().toString().take(10)
+        val dayOfWeek = try {
+            val now = kotlinx.datetime.Instant.fromEpochMilliseconds(kotlin.time.Clock.System.now().toEpochMilliseconds())
+            now.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault()).dayOfWeek.name.lowercase().replaceFirstChar { it.uppercase() }
+        } catch (_: Exception) { "" }
+
+        val prefsContext = _uiState.value.userPreferences?.let { prefs ->
+            val cats = prefs.selectedCategories.joinToString(", ")
+            val venues = prefs.selectedVenues.joinToString(", ")
+            val neighborhoods = prefs.selectedNeighborhoods.joinToString(", ")
+            """
+USER PREFERENCES:
+Favorite categories: ${cats.ifEmpty { "none set" }}
+Favorite venues: ${venues.ifEmpty { "none set" }}
+Favorite neighborhoods: ${neighborhoods.ifEmpty { "none set" }}
+Prioritize events and venues matching these preferences.
+            """.trimIndent()
+        } ?: ""
+
+        return """
+You are Local, an events concierge in a mobile app.
+Today: $todayDate ($dayOfWeek)
+
+ABSOLUTE RULE — DATE AND TIME ACCURACY:
+- FIXED-TIME events: ONLY include if the event's date EXACTLY matches the day being planned. A Friday event CANNOT go on a Saturday plan. Check the ISO date in search results.
+- FIXED-TIME events: use the EXACT start time from search results. Never change it.
+- FLEXIBLE events (tagged [FLEXIBLE]): can go on any day at any time you choose.
+- FLEXIBLE events: schedule at reasonable times (10am-9pm) during typical venue hours.
+- If you cannot find FIXED-TIME events for the requested date, say so honestly and suggest FLEXIBLE alternatives.
+
+TOOLS: Always search before recommending. Use search_events for events, search_venues for places, recommend_and_save_venue for restaurants/bars not in the DB, get_event_details for full info. Search broadly first, then narrow down. Pass the user's location and category as tool parameters.
+
+RULES:
+- Events: only from search_events results (must have event_id).
+- Restaurants/bars: search_venues first, then recommend_and_save_venue if needed. Restaurant/venue slots use event_id: null, is_custom: false. NEVER use filler like "Dinner" or "Custom dinner" — always a real restaurant name.
+- No emoji. No markdown (no **bold**, no *italic*, no bullet points). Plain text only. 1-3 sentences. Warm and concise.
+- NEVER set is_custom: true — that is only for user-added items via "Add my own".
+- 2-3 real results beat 5 slots with filler.
+
+RESTAURANT DETAILS: When recommending restaurants via recommend_and_save_venue, also indicate in the plan slot:
+- Price level: $ (under $15), $$ ($15-30), $$$ ($30-60), $$$$ ($60-100), $$$$$ ($100+)
+- Whether reservations are recommended
+- Whether it's hard to get reservations (e.g., "Book 2+ weeks ahead")
+Include these in the slot's "detail" field, e.g.: "North End · $$ · Reservations recommended"
+
+FIRST QUESTION: If the user's request involves a date/trip, ask if they have any existing plans or commitments to build around (e.g., "Do you have anything already locked in, like dinner reservations or tickets?"). Only ask once, at the start.
+
+AMENDMENTS — THIS IS THE #1 RULE:
+When a plan exists and the user asks to change it (add/remove/move/replace/swap, or says "no X", "less X", "more X", "without X", "drop X"), you MUST respond with type "plan_update" (NEVER "plan" or "chat"). Take the EXISTING plan, apply the change, and return ALL remaining slots. Do NOT rebuild from scratch.
+Examples: "No music" = remove music events, keep everything else. "Less food" = remove some food slots. "Add drinks" = add a drinks slot to the existing plan.
+RELATIVE REFERENCES: "before the concert" means BEFORE that event's start time, not after. "after dinner" means AFTER dinner's time.
+DUPLICATES: Never add the same venue twice in one day unless the user explicitly asks for it.
+AMENDMENT ACCURACY: When adding a slot, include it exactly once. When removing, remove only the specified slots and keep everything else.
+CRITICAL: The slots in your JSON response MUST match what you say in the text. If you say "Added X" then X MUST appear in the slots array. If you say "Removed Y" then Y must NOT be in the slots. Never say you added something but leave it out of the slots.
+
+CONFLICTS: If adding at a time already taken, flag it and offer options via chips.
+
+CUSTOM EVENTS ("Add my own"):
+When the user says "Add my own" or wants to add their own event/activity:
+1. Ask: what is it and what time? If the plan is only 1 day, do NOT ask which day — it's obvious.
+2. Return plan_update with ALL existing slots PLUS the custom slot
+3. Custom slot MUST have: is_custom: true, event_id: null
+4. Use the user's exact name and time for the custom slot
+
+ALTERNATIVE PLANS:
+When user asks for "something different", "cheaper", "more active", "option B", etc:
+- Respond with type "plan" (a complete new plan), NOT "chat"
+- Search for different events than the current plan
+- Make it genuinely different — different venues, different vibe
+
+SINGLE vs MULTI-EVENT — CRITICAL:
+- If the user asks for a specific event ("Matt Berninger Monday", "Soul Rebels tonight") → 1 event plan. ONLY that event. Do NOT add dinner, drinks, or anything else. The user will ask if they want more.
+- "Plan a night out" → 2-3 events including food/drinks is fine.
+- "Full day trip" → 4-5 events.
+- NEVER pad a plan with restaurants or bars the user didn't ask for. Let them add via chips.
+
+GATHERING INFO: For plan requests, quickly gather: When, Where, Group size, Vibe, Duration — but only ask what's genuinely missing. Max 2 questions before building. If user says "surprise me", search broadly and build immediately.
+TONE FOR QUESTIONS: Be direct. Don't say "Great, I can help with that! First, let me ask..." — just ask the question. Example: "When are you thinking — this weekend or a specific date?" not "That sounds fun! I'd love to help plan that. To get started, could you tell me when you're thinking?"
+
+$prefsContext
+
+$currentPlanContext
+
+RESPONSE FORMAT (JSON only, no markdown fences):
+chat: {"type":"chat","text":"...","chips":[{"label":"..."}]}
+plan: {"type":"plan","text":"...","plan_title":"...","days":[{"label":"...","short_name":"...","slots":[{"time":"...","emoji":"","name":"...","detail":"...","price":"...","is_free":false,"image_url":"...","event_id":"..."}],"travel":[{"mode":"...","mins":N}]}],"chips":[...]}
+plan_update: {"type":"plan_update","text":"...","day_index":N,"day":{same day structure},"chips":[...]}
+approve: {"type":"approve","text":"..."}
+
+CHIPS: 2-4 contextual suggestions. After plans: approve + modify options + "Add my own". After questions: common answers.
+SLOTS: Match count to request. Every slot needs event_id from search, EXCEPT venue slots from recommend_and_save_venue (event_id: null, is_custom: false) and user custom items (is_custom: true, event_id: null). Sort chronologically. Copy image URLs exactly.
+        """.trimIndent()
+    }
+
+    // ── Helpers ──
+
+    private fun handleAiError(e: Exception) {
+        println("ChatViewModel AI error: ${e::class.simpleName}: ${e.message}")
+        val errorMsg = e.message.orEmpty()
+        val msg = when {
+            errorMsg.contains("ANTHROPIC_API_KEY not configured") ->
+                "The API key isn't set up in Supabase secrets yet. Add ANTHROPIC_API_KEY to your project secrets."
+            errorMsg.contains("401") || errorMsg.contains("403") || errorMsg.contains("authentication") ->
+                "I'm having trouble connecting — check that ANTHROPIC_API_KEY is set in Supabase secrets."
+            errorMsg.contains("429") || errorMsg.contains("rate") ->
+                "I'm getting rate-limited right now. Give it a few seconds and try again."
+            errorMsg.contains("502") || errorMsg.contains("Failed to proxy") ->
+                "Couldn't reach Claude through the proxy. Check your Supabase edge function."
+            else ->
+                "Hmm, something went wrong. Let me try again in a moment."
+        }
+        addAiMessage(msg)
+        _uiState.update {
+            it.copy(
+                isBusy = false, isTyping = false,
+                inputEnabled = true,
                 quickReplies = listOf(
-                    QuickReply("Looks good \u2713", isGreen = true, action = "approve_day"),
-                    QuickReply("\u270F\uFE0F Change something", action = "change_day"),
+                    QuickReply("Try again", action = "reset"),
                 ),
             )
         }
     }
 
-    private fun approveCurrentDay() {
-        val dayIndex = _uiState.value.currentDayIndex
-        viewModelScope.launch {
-            addUserMessage("Looks good!")
-            _uiState.update {
-                it.copy(
-                    isBusy = true,
-                    quickReplies = emptyList(),
-                    inputEnabled = false,
-                )
-            }
-
-            // Mark day approved
-            _uiState.update { state ->
-                val days = state.days.toMutableList()
-                days[dayIndex] = days[dayIndex].copy(isApproved = true)
-                state.copy(
-                    days = days,
-                    approvedDayCount = dayIndex + 1,
-                )
-            }
-
-            delay(900)
-
-            val totalDays = _uiState.value.days.size
-            if (dayIndex + 1 < totalDays) {
-                // Move to next day
-                val nextDay = dayIndex + 1
-                _uiState.update { it.copy(currentDayIndex = nextDay) }
-                addAiMessage("${DAY_NAMES[dayIndex]} is locked in! Anything you want me to keep in mind for ${DAY_NAMES[nextDay]}, or should I start building?")
-                _uiState.update {
-                    it.copy(
-                        stage = ChatStage.ITIN_PRE_DAY,
-                        isBusy = false, isTyping = false,
-                        inputEnabled = true,
-                        inputPlaceholder = "Any notes for ${DAY_NAMES[nextDay]}? Or just say go\u2026",
-                        quickReplies = listOf(
-                            QuickReply("Start building \uD83D\uDE80", isGreen = true, action = "start_building"),
-                            QuickReply("\u270F\uFE0F I have some notes", action = "has_notes"),
-                        ),
-                    )
-                }
-            } else {
-                // All days done — show summary
-                delay(300)
-                addAiMessage("You're all set! \uD83C\uDF89 All $totalDays days approved. Here's your full Boston plan:")
-                _uiState.update { it.copy(isTyping = false) }
-                delay(400)
-                addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.SummaryRef()))
-                delay(400)
-                addAiMessage("\uD83D\uDCA1 Book Craigie on Main and Improv Asylum now \u2014 both sell out weeks out.")
-                _uiState.update {
-                    it.copy(
-                        stage = ChatStage.ITIN_DONE,
-                        isBusy = false, isTyping = false,
-                        inputEnabled = true,
-                        quickReplies = listOf(
-                            QuickReply("\uD83D\uDDD3\uFE0F Save to Plans", isGreen = true, action = "save_plan"),
-                            QuickReply("\uD83D\uDCE4 Share with friends", action = "share_plan"),
-                        ),
-                    )
-                }
-            }
-        }
+    private fun appendTextToHistory(role: String, text: String) {
+        conversationHistory.add(ClaudeMessage.text(role = role, text = text))
+        trimHistory()
     }
 
-    private fun requestChange() {
-        val dayIndex = _uiState.value.currentDayIndex
-        viewModelScope.launch {
-            _uiState.update { it.copy(isBusy = true, quickReplies = emptyList()) }
-            delay(600)
-            addAiMessage("Of course \u2014 what would you like to change about ${DAY_NAMES[dayIndex]}?")
-            _uiState.update {
-                it.copy(
-                    isBusy = false, isTyping = false,
-                    inputEnabled = true,
-                    quickReplies = listOf(
-                        QuickReply("Swap the brewery"),
-                        QuickReply("Earlier start + brunch"),
-                        QuickReply("More nightlife"),
-                        QuickReply("Budget-friendly"),
-                    ),
-                )
-            }
+    private fun trimHistory() {
+        if (conversationHistory.size > 20) {
+            val trimmed = conversationHistory.takeLast(20)
+            conversationHistory.clear()
+            conversationHistory.addAll(trimmed)
         }
     }
-
-    private fun handleDayChange(text: String) {
-        val dayIndex = _uiState.value.currentDayIndex
-        viewModelScope.launch {
-            setBusy(true)
-            delay(1300)
-
-            // Apply a patch if we recognize the request
-            val patch = PATCHES.firstOrNull { it.regex.containsMatchIn(text) }
-            if (patch != null) {
-                _uiState.update { state ->
-                    val days = state.days.toMutableList()
-                    days[dayIndex] = patch.apply(days[dayIndex])
-                    state.copy(days = days)
-                }
-                addAiMessage(patch.reply + " Here's the updated day:")
-            } else {
-                addAiMessage("I've updated the plan. Here's the latest:")
-            }
-
-            _uiState.update { it.copy(isTyping = false) }
-            delay(300)
-            addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(dayIndex)))
-            delay(300)
-            addAiMessage(DAY_QUESTIONS[dayIndex])
-
-            _uiState.update {
-                it.copy(
-                    isBusy = false, isTyping = false,
-                    quickReplies = listOf(
-                        QuickReply("Looks good \u2713", isGreen = true, action = "approve_day"),
-                        QuickReply("\u270F\uFE0F Change something else", action = "change_day"),
-                    ),
-                )
-            }
-        }
-    }
-
-    private fun savePlan() {
-        viewModelScope.launch {
-            setBusy(true)
-            delay(600)
-            addAiMessage("\u2705 Saved to your Plans tab!")
-            delay(350)
-            addAiMessage("You can edit this plan anytime \u2014 swap something, adjust a time, or add an event.")
-            _uiState.update {
-                it.copy(
-                    isBusy = false, isTyping = false,
-                    quickReplies = listOf(
-                        QuickReply("\uD83D\uDCE4 Share with the group", action = "share_plan"),
-                    ),
-                )
-            }
-        }
-    }
-
-    private fun sharePlan() {
-        viewModelScope.launch {
-            setBusy(true)
-            delay(600)
-            addAiMessage("\uD83D\uDCE4 Share link copied!")
-            delay(350)
-            addAiMessage("Your friends can view the full itinerary. You stay as Organizer \u2014 hand it off anytime in Plan Settings.")
-            _uiState.update {
-                it.copy(
-                    isBusy = false, isTyping = false,
-                    quickReplies = listOf(
-                        QuickReply("\uD83D\uDDD3\uFE0F Save to Plans", isGreen = true, action = "save_plan"),
-                    ),
-                )
-            }
-        }
-    }
-
-    // ── Input router ──
-
-    private fun handleInput(text: String) {
-        _uiState.update { it.copy(quickReplies = emptyList()) }
-        when (_uiState.value.stage) {
-            ChatStage.INTAKE_DURATION, ChatStage.INTAKE_PEOPLE, ChatStage.INTAKE_DATE,
-            ChatStage.INTAKE_DATE_START, ChatStage.INTAKE_DATE_END -> {} // input disabled during intake
-            ChatStage.SINGLE_GATHERING, ChatStage.SINGLE_RESULTS -> handleSingleGathering(text)
-            ChatStage.ITIN_GATHERING -> handleItineraryGathering(text)
-            ChatStage.ITIN_PRE_DAY -> {
-                val isGo = text.lowercase().let {
-                    it.contains("start building") || it.contains("go for it") || it.contains("just go") || it.contains("no notes") || it == "go"
-                }
-                if (isGo) {
-                    startBuildingDay()
-                } else {
-                    // User has notes — acknowledge and build
-                    viewModelScope.launch {
-                        setBusy(true)
-                        delay(800)
-                        addAiMessage("Got it \u2014 I'll keep that in mind.")
-                        _uiState.update { it.copy(isTyping = false) }
-                        delay(400)
-                        startBuildingDay()
-                    }
-                }
-            }
-            ChatStage.ITIN_DAY_VIEW -> handleDayChange(text)
-            ChatStage.ITIN_DONE -> {
-                viewModelScope.launch {
-                    setBusy(true)
-                    delay(900)
-                    addAiMessage("The plan is saved \u2014 what would you like to change?")
-                    _uiState.update {
-                        it.copy(
-                            isBusy = false, isTyping = false,
-                            quickReplies = listOf(
-                                QuickReply("\uD83D\uDDD3\uFE0F Save to Plans", isGreen = true, action = "save_plan"),
-                                QuickReply("\uD83D\uDCE4 Share", action = "share_plan"),
-                            ),
-                        )
-                    }
-                }
-            }
-        }
-    }
-
-    // ── Helpers ──
 
     private fun setBusy(busy: Boolean) {
         _uiState.update { it.copy(isBusy = busy, isTyping = busy, inputEnabled = !busy) }
-    }
-
-    private fun currentDayName(): String {
-        val idx = _uiState.value.currentDayIndex
-        return if (idx in DAY_NAMES.indices) DAY_NAMES[idx] else "Day ${idx + 1}"
     }
 
     private fun addAiMessage(text: String) {
@@ -806,196 +1119,9 @@ class ChatViewModel : ViewModel() {
     private fun addMessage(msg: ChatMessage) {
         _uiState.update { it.copy(messages = it.messages + msg) }
     }
-
-    private fun extractPeople(txt: String): String? {
-        val m = Regex("""(\d+)\s*(person|people|friend|guest|of us|pax)""", RegexOption.IGNORE_CASE).find(txt)
-        if (m != null) return m.groupValues[1]
-        if (Regex("just me|solo|myself|alone", RegexOption.IGNORE_CASE).containsMatchIn(txt)) return "1"
-        if (Regex("couple|two of us|date", RegexOption.IGNORE_CASE).containsMatchIn(txt)) return "2"
-        if (Regex("family|kids|children", RegexOption.IGNORE_CASE).containsMatchIn(txt)) return "4"
-        if (Regex("group", RegexOption.IGNORE_CASE).containsMatchIn(txt)) return "5"
-        return null
-    }
-
-    private fun extractVibe(txt: String): String? {
-        if (Regex("food|eat|restaurant|dinner|lunch|brunch", RegexOption.IGNORE_CASE).containsMatchIn(txt)) return "food"
-        if (Regex("music|jazz|concert|live|band", RegexOption.IGNORE_CASE).containsMatchIn(txt)) return "music"
-        if (Regex("outdoor|park|hike|walk|nature", RegexOption.IGNORE_CASE).containsMatchIn(txt)) return "outdoors"
-        if (Regex("art|museum|culture|gallery", RegexOption.IGNORE_CASE).containsMatchIn(txt)) return "culture"
-        if (Regex("nightlife|bar|club|drinks|party", RegexOption.IGNORE_CASE).containsMatchIn(txt)) return "nightlife"
-        if (Regex("comedy|show|improv|theater", RegexOption.IGNORE_CASE).containsMatchIn(txt)) return "entertainment"
-        if (Regex("family|kid|child", RegexOption.IGNORE_CASE).containsMatchIn(txt)) return "family"
-        if (Regex("mix|everything|anything|surprise", RegexOption.IGNORE_CASE).containsMatchIn(txt)) return "mixed"
-        if (Regex("free|budget|cheap|affordable", RegexOption.IGNORE_CASE).containsMatchIn(txt)) return "budget"
-        return null
-    }
-
-    private fun getBucket(txt: String): String {
-        if (Regex("music|jazz|concert|live|band|gig", RegexOption.IGNORE_CASE).containsMatchIn(txt)) return "music"
-        if (Regex("dinner|eat|food|restaurant|lunch|brunch", RegexOption.IGNORE_CASE).containsMatchIn(txt)) return "dinner"
-        return "default"
-    }
 }
 
-// ── Sample Data ──
-
-private val DAY_NAMES = listOf("Thursday", "Friday", "Saturday")
-
-private val DAY_OPENERS = listOf(
-    "Let's start with Thursday. Here's what I'm thinking \u2014 a mix of classics and local favorites:",
-    "Thursday's approved! Here's Friday \u2014 a bit more relaxed, with culture and the harbor in the afternoon:",
-    "Two down, one to go. Saturday is the grand finale \u2014 Fenway, Cambridge, and the best meal of the trip:",
-)
-
-private val DAY_QUESTIONS = listOf(
-    "Does Thursday work? Approve it or tell me what to change.",
-    "Friday looking good? Approve it or tweak anything.",
-    "How's Saturday? Approve it and I'll put the full plan together.",
-)
-
-private val DAY_COLORS = listOf(0xFFFF6B6B, 0xFF4ECBA0, 0xFFFFB830)
-
-fun dayColor(index: Int): Long = DAY_COLORS.getOrElse(index) { DAY_COLORS[0] }
-
-private val SAMPLE_PLAN = listOf(
-    ItineraryDay(
-        label = "Thursday, April 10",
-        shortName = "Thursday",
-        slots = listOf(
-            ItinerarySlot("a1", "12PM", "\uD83E\uDD9E", "Neptune Oyster", "Best lobster rolls \u00b7 North End \u00b7 Cash only", "$25\u201340", false),
-            ItinerarySlot("a2", "2PM", "\uD83D\uDDFD", "Freedom Trail", "2.5 mile self-guided walk \u00b7 Starts at Boston Common", "Free", true),
-            ItinerarySlot("a3", "5PM", "\uD83C\uDF7A", "Samuel Adams Brewery", "Tour + tasting \u00b7 Jamaica Plain \u00b7 30 min from downtown", "$5", false),
-            ItinerarySlot("a4", "8PM", "\uD83C\uDFB8", "The Middle East", "Best live music in Cambridge \u00b7 Central Square", "$15\u201325", false),
-            ItinerarySlot("a5", "11PM", "\uD83C\uDF78", "Drink", "No-menu cocktail bar \u00b7 Fort Point \u00b7 World-class", "$16\u201320", false),
-        ),
-        travel = listOf(
-            TravelInfo("walk", 12), TravelInfo("drive", 18), TravelInfo("drive", 22), TravelInfo("walk", 8),
-        ),
-    ),
-    ItineraryDay(
-        label = "Friday, April 11",
-        shortName = "Friday",
-        slots = listOf(
-            ItinerarySlot("b1", "10AM", "\uD83C\uDFA8", "Museum of Fine Arts", "World-class collection \u00b7 Fenway", "$27", false),
-            ItinerarySlot("b2", "1PM", "\uD83C\uDF2E", "Taqueria El Amigo", "Hidden gem \u00b7 Jamaica Plain \u00b7 Locals only", "$10\u201315", false),
-            ItinerarySlot("b3", "3PM", "\uD83D\uDEA4", "Boston Harbor Cruise", "Best skyline views \u00b7 Long Wharf \u00b7 1 hr", "$32", false),
-            ItinerarySlot("b4", "6PM", "\uD83C\uDF77", "Pastoral Wine Bar", "Small plates + natural wine \u00b7 South End", "$30\u201350", false),
-            ItinerarySlot("b5", "8PM", "\uD83C\uDFAD", "Improv Asylum", "Legendary comedy \u00b7 North End \u00b7 Book ahead", "$25\u201335", false),
-        ),
-        travel = listOf(
-            TravelInfo("drive", 14), TravelInfo("drive", 20), TravelInfo("walk", 6), TravelInfo("walk", 9),
-        ),
-    ),
-    ItineraryDay(
-        label = "Saturday, April 12",
-        shortName = "Saturday",
-        slots = listOf(
-            ItinerarySlot("c1", "10AM", "\u2615", "Thinking Cup", "Best coffee in Boston \u00b7 Tremont St", "$6\u20138", false),
-            ItinerarySlot("c2", "11AM", "\uD83C\uDFDF\uFE0F", "Fenway Park Tour", "Iconic stadium \u00b7 Book online \u00b7 1 hr", "$25", false),
-            ItinerarySlot("c3", "1PM", "\uD83C\uDF54", "Island Creek Oyster Bar", "Fenway \u00b7 Raw bar + lobster mac", "$40\u201360", false),
-            ItinerarySlot("c4", "4PM", "\uD83D\uDCDA", "Harvard Square", "Cambridge \u00b7 Street performers, Brattle Books, Tatte", "Free", true),
-            ItinerarySlot("c5", "7PM", "\uD83E\uDD9E", "Craigie on Main", "\u2B50 Michelin \u00b7 Cambridge \u00b7 Book now", "$85\u2013120", false),
-        ),
-        travel = listOf(
-            TravelInfo("walk", 5), TravelInfo("walk", 3), TravelInfo("drive", 16), TravelInfo("drive", 8),
-        ),
-    ),
-)
-
-private data class PatchDef(
-    val regex: Regex,
-    val reply: String,
-    val apply: (ItineraryDay) -> ItineraryDay,
-)
-
-private val PATCHES = listOf(
-    PatchDef(
-        regex = Regex("comedy|improv", RegexOption.IGNORE_CASE),
-        reply = "Swapped Improv Asylum for a rooftop bar \u2014 better vibe for a group on a Friday night.",
-        apply = { day ->
-            day.copy(slots = day.slots.map { slot ->
-                if (slot.id == "b5") slot.copy(emoji = "\uD83C\uDFD9\uFE0F", name = "Lookout Rooftop Bar", detail = "Best views in the Seaport \u00b7 Open until 1AM", price = "$15\u201325")
-                else slot
-            })
-        },
-    ),
-    PatchDef(
-        regex = Regex("brewery|beer", RegexOption.IGNORE_CASE),
-        reply = "Swapped the brewery for the Gardner Museum \u2014 a stunning Venetian-style mansion.",
-        apply = { day ->
-            day.copy(slots = day.slots.map { slot ->
-                if (slot.id == "a3") slot.copy(emoji = "\uD83C\uDFD9\uFE0F", name = "Gardner Museum", detail = "Stunning Venetian-style mansion \u00b7 Fenway", price = "$20")
-                else slot
-            })
-        },
-    ),
-    PatchDef(
-        regex = Regex("budget|cheap|affordable", RegexOption.IGNORE_CASE),
-        reply = "Made it more budget-friendly \u2014 swapped Craigie on Main for legendary ramen.",
-        apply = { day ->
-            day.copy(slots = day.slots.map { slot ->
-                if (slot.id == "c5") slot.copy(emoji = "\uD83C\uDF5C", name = "Yume Wo Katare", detail = "Legendary ramen \u00b7 Porter Sq \u00b7 Cash only", price = "$18")
-                else slot
-            })
-        },
-    ),
-    PatchDef(
-        regex = Regex("nightlife|late|bars", RegexOption.IGNORE_CASE),
-        reply = "Added a jazz club to close out the night \u2014 Wally's Caf\u00e9 is a Boston institution.",
-        apply = { day ->
-            day.copy(slots = day.slots + ItinerarySlot("x_jazz", "11PM", "\uD83C\uDFB7", "Wally's Caf\u00e9 Jazz Club", "Jazz since 1947 \u00b7 South End \u00b7 No cover", "Free", true))
-        },
-    ),
-    PatchDef(
-        regex = Regex("brunch|breakfast|earlier", RegexOption.IGNORE_CASE),
-        reply = "Added brunch at Flour Bakery to start the day right.",
-        apply = { day ->
-            day.copy(slots = listOf(ItinerarySlot("x_brunch", "9AM", "\uD83E\uDD5E", "Flour Bakery + Caf\u00e9", "Best brunch in Boston \u00b7 South End \u00b7 Get the sticky bun", "$15\u201322", false)) + day.slots)
-        },
-    ),
-)
-
-val SINGLE_RESULTS_DATA = mapOf(
-    "music" to SingleResults(
-        picks = listOf(
-            SinglePick("\uD83C\uDFB8", "The Middle East", "Cambridge \u00b7 Central Square \u00b7 Indie, rock, hip-hop", "$15\u201325", "Best for discovery"),
-            SinglePick("\uD83C\uDFB7", "Wally's Caf\u00e9 Jazz", "South End \u00b7 Jazz since 1947 \u00b7 No cover", "Free", "Most iconic"),
-            SinglePick("\uD83E\uDD41", "Brighton Music Hall", "Allston \u00b7 Intimate 450-cap \u00b7 National touring acts", "$20\u201335", "Best production"),
-        ),
-        mentions = listOf(
-            SingleMention("\uD83C\uDFB5", "Sinclair", "Harvard Square \u00b7 Mid-size \u00b7 Great sound"),
-            SingleMention("\uD83C\uDFBA", "Scullers Jazz Club", "Back Bay \u00b7 Upscale jazz \u00b7 Dinner + show"),
-            SingleMention("\uD83C\uDFA4", "City Winery", "South End \u00b7 Wine + live music \u00b7 Seated"),
-            SingleMention("\uD83E\uDE97", "Lizard Lounge", "Cambridge \u00b7 Folk + acoustic \u00b7 Tiny + intimate"),
-            SingleMention("\uD83C\uDFBB", "Berklee Performance Center", "Fenway \u00b7 World-class student showcases"),
-        ),
-    ),
-    "dinner" to SingleResults(
-        picks = listOf(
-            SinglePick("\uD83E\uDD9E", "Neptune Oyster", "North End \u00b7 Best lobster roll \u00b7 Cash only", "$30\u201350", "Most legendary"),
-            SinglePick("\uD83C\uDF5C", "Pammy's", "Cambridge \u00b7 Italian-ish \u00b7 Stunning room \u00b7 Book ahead", "$50\u201380", "Best date night"),
-            SinglePick("\uD83E\uDD69", "Grill 23 & Bar", "Back Bay \u00b7 Classic steakhouse \u00b7 Special occasion", "$80\u2013120", "Most celebratory"),
-        ),
-        mentions = listOf(
-            SingleMention("\uD83C\uDF5D", "Sulmona", "South End \u00b7 Handmade pasta \u00b7 Great wine list"),
-            SingleMention("\uD83D\uDC1F", "Row 34", "Fort Point \u00b7 Raw bar + fish \u00b7 Always buzzing"),
-            SingleMention("\uD83C\uDF2E", "Taqueria El Amigo", "Jamaica Plain \u00b7 Hidden gem \u00b7 Locals only"),
-            SingleMention("\uD83C\uDF55", "Galleria Umberto", "North End \u00b7 $4 slices \u00b7 Cash \u00b7 Lunch only"),
-            SingleMention("\uD83E\uDDC6", "Oleana", "Cambridge \u00b7 Mediterranean \u00b7 James Beard winner"),
-        ),
-    ),
-    "default" to SingleResults(
-        picks = listOf(
-            SinglePick("\uD83C\uDFD9\uFE0F", "Isabella Stewart Gardner Museum", "Fenway \u00b7 Stunning Venetian mansion \u00b7 World-class art", "$20", "Most unique"),
-            SinglePick("\uD83D\uDEA4", "Boston Harbor Cruise", "Long Wharf \u00b7 Best skyline views \u00b7 1 hr sunset cruise", "$32", "Most memorable"),
-            SinglePick("\uD83C\uDFAD", "Improv Asylum", "North End \u00b7 Legendary comedy \u00b7 Book ahead", "$25\u201335", "Most fun"),
-        ),
-        mentions = listOf(
-            SingleMention("\uD83C\uDF3F", "Arnold Arboretum", "Jamaica Plain \u00b7 Free \u00b7 Stunning in any season"),
-            SingleMention("\uD83D\uDCDA", "Harvard Square", "Cambridge \u00b7 Free \u00b7 Street performers + Brattle Books"),
-            SingleMention("\uD83C\uDF7A", "Harpoon Brewery", "Seaport \u00b7 Tour + tasting \u00b7 Great outdoor space"),
-            SingleMention("\uD83C\uDFA8", "SoWa Art Walk", "South End \u00b7 Sundays \u00b7 Local artists + food trucks"),
-            SingleMention("\uD83C\uDFDF\uFE0F", "Fenway Park Tour", "Iconic \u00b7 Book ahead \u00b7 Great even without a game"),
-        ),
-    ),
-)
+fun dayColor(index: Int): Long {
+    val colors = listOf(0xFFFF6B6B, 0xFF4ECBA0, 0xFFFFB830, 0xFF6B9FFF, 0xFFCC6BFF, 0xFFFF6BB5, 0xFF6BFFD4)
+    return colors.getOrElse(index) { colors[0] }
+}

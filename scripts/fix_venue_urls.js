@@ -19,7 +19,7 @@
 
 const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
 
-const MODEL = "claude-sonnet-4-20250514";
+const MODEL = "claude-haiku-4-5-20251001";
 
 let ANTHROPIC_API_KEY, SUPABASE_SERVICE_KEY;
 

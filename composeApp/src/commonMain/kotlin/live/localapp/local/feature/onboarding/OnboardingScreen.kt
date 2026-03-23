@@ -91,13 +91,17 @@ fun OnboardingScreen(
                         venueCount = state.venueCount,
                         onComplete = { viewModel.onSuccessComplete() },
                     )
-                    OnboardingStep.NEIGHBOURHOODS -> NeighbourhoodsScreen(
-                        neighborhoods = state.neighborhoods,
-                        selected = state.selectedNeighbourhoods,
-                        onToggle = viewModel::toggleNeighbourhood,
-                        onNext = { viewModel.onNeighbourhoodsNext() },
-                        onSkipAll = { viewModel.onSkipAll() },
-                    )
+                    OnboardingStep.NEIGHBOURHOODS -> {
+                        val userState = state.neighborhoods.firstOrNull()?.stateCode
+                        NeighbourhoodsScreen(
+                            neighborhoods = state.neighborhoods,
+                            selected = state.selectedNeighbourhoods,
+                            onToggle = viewModel::toggleNeighbourhood,
+                            onNext = { viewModel.onNeighbourhoodsNext() },
+                            onSkipAll = { viewModel.onSkipAll() },
+                            userStateCode = userState,
+                        )
+                    }
                     OnboardingStep.VENUES -> VenuesScreen(
                         venues = state.venues,
                         selectedNeighborhoods = state.selectedNeighbourhoods,
@@ -129,24 +133,14 @@ fun OnboardingScreen(
                         onToggleTickets = viewModel::toggleNotifTickets,
                         onToggleNearby = viewModel::toggleNotifNearby,
                         onToggleVenues = viewModel::toggleNotifVenues,
-                        onNext = { viewModel.onNotificationsNext() },
-                        onSkip = { viewModel.onSkipNotifications() },
+                        onNext = { onComplete(state.userLat, state.userLng) },
+                        onSkip = { onComplete(state.userLat, state.userLng) },
                         onBack = { viewModel.onBackFromNotifications() },
                     )
-                    OnboardingStep.PHONE -> PhoneScreen(
-                        firstName = state.firstName,
-                        lastName = state.lastName,
-                        phoneNumber = state.phoneNumber,
-                        phoneState = state.phoneState,
-                        onFirstNameChange = viewModel::updateFirstName,
-                        onLastNameChange = viewModel::updateLastName,
-                        onPhoneChange = viewModel::updatePhoneNumber,
-                        onSubmit = { viewModel.submitPhone() },
-                        onLookupResult = viewModel::onPhoneLookupResult,
-                        onComplete = { onComplete(state.userLat, state.userLng) },
-                        onSkip = { onComplete(state.userLat, state.userLng) },
-                        onBack = { viewModel.onBackFromPhone() },
-                    )
+                    OnboardingStep.PHONE -> {
+                        // Phone auth now happens before onboarding — skip this step
+                        onComplete(state.userLat, state.userLng)
+                    }
                 }
             }
         }

@@ -28,6 +28,18 @@ interface UserPreferencesRepository {
     /** Load preferences from Supabase by user ID. */
     suspend fun loadPreferences(userId: String): UserPreferences?
 
+    /** Try to recover a profile from Supabase if local cache was lost. Returns user ID if found. */
+    suspend fun recoverProfile(): String?
+
+    /** Check if a user_profiles row exists for the given Supabase auth user ID. */
+    suspend fun profileExistsForAuthId(authUserId: String): Boolean
+
+    /** Load preferences from Supabase by auth user ID and cache locally. Returns user ID if found. */
+    suspend fun recoverProfileByAuthId(authUserId: String): String?
+
+    /** Save preferences with a specific ID (used when creating profile for authenticated user). */
+    suspend fun savePreferencesWithId(id: String, prefs: UserPreferences): String
+
     /** Clear local cache (logout). */
     fun clearLocal()
 }

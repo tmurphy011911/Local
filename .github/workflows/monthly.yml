@@ -6,8 +6,22 @@ on:
   workflow_dispatch: {}
 
 jobs:
+  seed-grids:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Seed Grid Centers for New States
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node seed_state_grid.js
+
   discover-venues:
     runs-on: ubuntu-latest
+    needs: seed-grids
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4

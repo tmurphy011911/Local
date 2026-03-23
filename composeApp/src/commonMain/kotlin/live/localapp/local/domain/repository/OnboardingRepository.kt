@@ -5,6 +5,8 @@ import live.localapp.local.domain.model.Event
 data class NeighborhoodInfo(
     val name: String,
     val distanceMiles: Double? = null,
+    val stateCode: String? = null,
+    val eventCount: Int = 0,
 ) {
     val distanceDisplay: String
         get() = when {
@@ -31,6 +33,7 @@ data class VenueSummary(
     val name: String,
     val city: String,
     val distanceMiles: Double? = null,
+    val publicInterestRank: Int? = null,
 ) {
     val distanceDisplay: String
         get() = when {

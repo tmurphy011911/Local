@@ -28,6 +28,7 @@ data class Event(
     val venueLng: Double?,
     val city: String,
     val source: String? = null,
+    val sourceUrl: String? = null,
     val distanceMiles: Double? = null,
     val venueDescription: String? = null,
 ) {

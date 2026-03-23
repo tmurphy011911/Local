@@ -45,6 +45,7 @@ fun CategoriesScreen(
 ) {
     val items = remember(categoryCounts) {
         categoryCounts.entries
+            .filter { it.key != "no-public-interest" && it.key != "cafe" && it.key != "other" }
             .sortedByDescending { it.value }
             .map { (key, count) ->
                 SelectionItem(
@@ -114,24 +115,17 @@ fun CategoriesScreen(
                     .padding(horizontal = 20.dp),
             ) {
                 Text(
-                    "What are you",
+                    buildAnnotatedString {
+                        append("What are you ")
+                        withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = AppColors.Plum)) {
+                            append("into?")
+                        }
+                    },
                     style = TextStyle(
                         fontFamily = AppFonts.Heading,
                         fontWeight = FontWeight.Black,
                         fontSize = 24.sp,
                         color = AppColors.Ink,
-                        lineHeight = 30.sp,
-                    ),
-                )
-                Text(
-                    "into?",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Heading,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 24.sp,
-                        fontStyle = FontStyle.Italic,
-                        color = AppColors.Plum,
-                        lineHeight = 30.sp,
                     ),
                 )
 

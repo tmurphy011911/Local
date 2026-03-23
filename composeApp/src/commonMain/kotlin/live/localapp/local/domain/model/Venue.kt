@@ -13,4 +13,8 @@ data class Venue(
     val photoUrl: String? = null,
     val description: String? = null,
     val publicInterestRank: Int? = null,
+    val category: String? = null,
+    val placeType: String? = null,
+    val googleRating: Double? = null,
+    val website: String? = null,
 )

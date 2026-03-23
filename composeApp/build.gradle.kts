@@ -61,6 +61,7 @@ kotlin {
 
             // Supabase
             implementation(libs.supabase.postgrest)
+            implementation(libs.supabase.auth)
 
             // Koin
             implementation(libs.koin.core)

@@ -6,4 +6,5 @@ data class CarouselSection(
     val subtitle: String?,
     val filterType: String,
     val events: List<Event>,
+    val showSaves: Boolean = false,
 )

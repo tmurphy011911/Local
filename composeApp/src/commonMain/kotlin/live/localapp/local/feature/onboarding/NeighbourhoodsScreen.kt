@@ -32,7 +32,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -50,24 +53,39 @@ fun NeighbourhoodsScreen(
     onToggle: (String) -> Unit,
     onNext: () -> Unit,
     onSkipAll: () -> Unit,
+    userStateCode: String? = null,
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var showAll by remember { mutableStateOf(false) }
 
-    val items = remember(neighborhoods) {
+    data class AreaItem(
+        val id: String,
+        val displayName: String,
+        val subtitle: String,
+        val stateCode: String?,
+    )
+
+    val items = remember(neighborhoods, userStateCode) {
         neighborhoods.map { info ->
+            val showState = info.stateCode != null && info.stateCode != userStateCode
+            val displayName = if (showState) "${info.name}, ${info.stateCode}" else info.name
             val distText = info.distanceDisplay
-            SelectionItem(
+            val eventsText = if (info.eventCount > 0) "${info.eventCount} events" else ""
+            val subtitle = listOfNotNull(
+                distText.ifEmpty { null },
+                eventsText.ifEmpty { null },
+            ).joinToString(" · ")
+            AreaItem(
                 id = info.name.lowercase().replace(" ", "-"),
-                icon = null,
-                name = info.name,
-                subtitle = distText.ifEmpty { null },
+                displayName = displayName,
+                subtitle = subtitle,
+                stateCode = info.stateCode,
             )
         }
     }
 
     val filtered = if (searchQuery.isBlank()) items
-    else items.filter { it.name.contains(searchQuery, ignoreCase = true) }
+    else items.filter { it.displayName.contains(searchQuery, ignoreCase = true) }
 
     val displayItems = if (showAll || searchQuery.isNotBlank()) filtered
     else filtered.take(PAGE_SIZE)
@@ -119,29 +137,22 @@ fun NeighbourhoodsScreen(
                     .padding(horizontal = 20.dp),
             ) {
                 Text(
-                    "Which neighbourhoods",
+                    buildAnnotatedString {
+                        append("Which areas ")
+                        withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = AppColors.Plum)) {
+                            append("do you love?")
+                        }
+                    },
                     style = TextStyle(
                         fontFamily = AppFonts.Heading,
                         fontWeight = FontWeight.Black,
                         fontSize = 24.sp,
                         color = AppColors.Ink,
-                        lineHeight = 30.sp,
-                    ),
-                )
-                Text(
-                    "do you love?",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Heading,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 24.sp,
-                        fontStyle = FontStyle.Italic,
-                        color = AppColors.Plum,
-                        lineHeight = 30.sp,
                     ),
                 )
 
                 Text(
-                    "We'll prioritise spots and events in your favourite areas.",
+                    "We'll prioritize spots and events in your favorite areas.",
                     modifier = Modifier.padding(top = 8.dp, bottom = 10.dp),
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
@@ -191,19 +202,19 @@ fun NeighbourhoodsScreen(
                     modifier = Modifier.padding(bottom = 10.dp),
                 )
 
-                // Grid
+                // Grid — 2 columns, slim cards
                 LazyVerticalGrid(
-                    columns = GridCells.Fixed(3),
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
-                    verticalArrangement = Arrangement.spacedBy(7.dp),
+                    columns = GridCells.Fixed(2),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
                     modifier = Modifier.weight(1f),
                 ) {
                     items(displayItems, key = { it.id }) { item ->
-                        SelectionCard(
-                            item = item,
+                        SlimSelectionCard(
+                            name = item.displayName,
+                            subtitle = item.subtitle.ifEmpty { null },
                             isSelected = item.id in selected,
                             onClick = { onToggle(item.id) },
-                            fixedHeight = 90.dp,
                         )
                     }
 
@@ -212,9 +223,9 @@ fun NeighbourhoodsScreen(
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .height(90.dp)
-                                    .background(AppColors.Mist, RoundedCornerShape(16.dp))
-                                    .border(2.dp, AppColors.Pebble, RoundedCornerShape(16.dp))
+                                    .height(44.dp)
+                                    .background(AppColors.Mist, RoundedCornerShape(12.dp))
+                                    .border(2.dp, AppColors.Pebble, RoundedCornerShape(12.dp))
                                     .clickable(
                                         interactionSource = remember { MutableInteractionSource() },
                                         indication = null,
@@ -223,15 +234,13 @@ fun NeighbourhoodsScreen(
                                 contentAlignment = Alignment.Center,
                             ) {
                                 Text(
-                                    "Show ${filtered.size - PAGE_SIZE}\nmore",
+                                    "Show ${filtered.size - PAGE_SIZE} more",
                                     style = TextStyle(
                                         fontFamily = AppFonts.Body,
                                         fontWeight = FontWeight.ExtraBold,
                                         fontSize = 11.sp,
                                         color = AppColors.Plum,
-                                        lineHeight = 15.sp,
                                     ),
-                                    textAlign = TextAlign.Center,
                                 )
                             }
                         }

@@ -30,6 +30,7 @@ data class EventDto(
     @SerialName("source_id") val sourceId: String? = null,
     @SerialName("source_url") val sourceUrl: String? = null,
     val city: String,
+    @SerialName("venue_description") val venueDescription: String? = null,
 )
 
 fun EventDto.toDomain(): Event = Event(
@@ -54,4 +55,6 @@ fun EventDto.toDomain(): Event = Event(
     venueLng = venueLng,
     city = city,
     source = source,
+    sourceUrl = sourceUrl,
+    venueDescription = venueDescription,
 )

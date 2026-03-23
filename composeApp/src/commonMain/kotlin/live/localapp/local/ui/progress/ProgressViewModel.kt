@@ -1,57 +1,105 @@
 package live.localapp.local.ui.progress
 
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import io.github.jan.supabase.SupabaseClient
+import io.github.jan.supabase.postgrest.from
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-
-data class Level(
-    val name: String,
-    val icon: String,
-    val minPts: Int,
-    val maxPts: Int,
-)
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import live.localapp.local.domain.repository.UserPreferencesRepository
 
 data class ProgressUiState(
-    val totalPoints: Int = 847,
-    val streakDays: Int = 6,
-    val favoritesSaved: Int = 12,
-    val eventsConfirmed: Int = 5,
-    val levels: List<Level> = listOf(
-        Level("New Here", "\uD83C\uDF31", 0, 499),
-        Level("Intern", "\uD83D\uDCBC", 500, 4_999),
-        Level("Regular", "\uD83C\uDFD8\uFE0F", 5_000, 19_999),
-        Level("Local", "\uD83D\uDCCD", 20_000, 99_999),
-        Level("Townie", "\uD83D\uDDDD\uFE0F", 100_000, 999_999),
-        Level("Icon", "\uD83D\uDC51", 1_000_000, Int.MAX_VALUE),
-    ),
-) {
-    val currentLevelIndex: Int
-        get() = levels.indexOfLast { totalPoints >= it.minPts }.coerceAtLeast(0)
+    val userName: String = "",
+    val userInitial: String = "",
+    val favoritesSaved: Int = 0,
+    val plansCreated: Int = 0,
+    val eventsExplored: Int = 0,
+)
 
-    val currentLevel: Level
-        get() = levels[currentLevelIndex]
-
-    val nextLevel: Level?
-        get() = levels.getOrNull(currentLevelIndex + 1)
-
-    val progressFraction: Float
-        get() {
-            val next = nextLevel ?: return 1f
-            val range = next.minPts - currentLevel.minPts
-            if (range <= 0) return 1f
-            return ((totalPoints - currentLevel.minPts).toFloat() / range).coerceIn(0f, 1f)
-        }
-
-    val pointsToNext: Int
-        get() {
-            val next = nextLevel ?: return 0
-            return (next.minPts - totalPoints).coerceAtLeast(0)
-        }
-}
-
-class ProgressViewModel : ViewModel() {
+class ProgressViewModel(
+    private val supabaseClient: SupabaseClient,
+    private val userPrefsRepo: UserPreferencesRepository,
+) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ProgressUiState())
     val uiState: StateFlow<ProgressUiState> = _uiState.asStateFlow()
+
+    init {
+        loadProfile()
+        loadStats()
+    }
+
+    private fun loadProfile() {
+        viewModelScope.launch {
+            try {
+                val prefs = userPrefsRepo.getLocalUserId()?.let { id ->
+                    userPrefsRepo.loadPreferences(id)
+                }
+                val name = prefs?.firstName ?: ""
+                val initial = name.firstOrNull()?.uppercase() ?: ""
+                _uiState.update { it.copy(userName = name, userInitial = initial) }
+            } catch (e: Throwable) {
+                println("ProgressVM.loadProfile error: ${e.message}")
+            }
+        }
+    }
+
+    @Serializable
+    private data class InteractionCountDto(
+        @SerialName("interaction_type") val interactionType: String,
+    )
+
+    @Serializable
+    private data class PlanCountDto(
+        val id: String,
+    )
+
+    private fun loadStats() {
+        viewModelScope.launch {
+            val userId = userPrefsRepo.getLocalUserId() ?: return@launch
+            try {
+                // Count favorites
+                val favorites = supabaseClient.from("community_interactions")
+                    .select {
+                        filter {
+                            eq("user_id", userId)
+                            eq("interaction_type", "favorite")
+                        }
+                    }
+                    .decodeList<InteractionCountDto>()
+
+                // Count plans created
+                val plans = supabaseClient.from("plans")
+                    .select {
+                        filter { eq("user_id", userId) }
+                    }
+                    .decodeList<PlanCountDto>()
+
+                // Count unique events explored (clicks)
+                val clicks = supabaseClient.from("community_interactions")
+                    .select {
+                        filter {
+                            eq("user_id", userId)
+                            eq("interaction_type", "click")
+                        }
+                    }
+                    .decodeList<InteractionCountDto>()
+
+                _uiState.update {
+                    it.copy(
+                        favoritesSaved = favorites.size,
+                        plansCreated = plans.size,
+                        eventsExplored = clicks.size,
+                    )
+                }
+            } catch (e: Throwable) {
+                println("ProgressVM.loadStats error: ${e.message}")
+            }
+        }
+    }
 }

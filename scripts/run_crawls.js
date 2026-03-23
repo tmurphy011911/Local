@@ -8,7 +8,6 @@
  *   ANTHROPIC_API_KEY=sk-... SUPABASE_SERVICE_KEY=ey... node scripts/run_crawls.js
  *
  * Optional:
- *   METRO=boston                    — metro area to crawl (default: boston)
  *   CATEGORY=museum,theater        — only crawl specific venue categories
  *   CONCURRENCY=3                  — parallel Claude calls (default: 3)
  *   MAX_VENUES=0                   — limit venues to crawl (0 = all)
@@ -16,17 +15,16 @@
 
 const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
 
-const MODEL = "claude-sonnet-4-20250514";
+const MODEL = "claude-haiku-4-5-20251001";
 const MAX_HTML_CHARS = 50_000;
 
 let ANTHROPIC_API_KEY, SUPABASE_SERVICE_KEY;
-const METRO = process.env.METRO || "boston";
 const CATEGORY_FILTER = process.env.CATEGORY
   ? process.env.CATEGORY.split(",").map((s) => s.trim())
   : null;
+const VENUE_NAME = process.env.VENUE_NAME || null;
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || "3", 10);
 const MAX_VENUES = parseInt(process.env.MAX_VENUES || "0", 10);
-const CITY = "boston";
 
 // ── Category mapping from venue category to event category ──
 
@@ -78,6 +76,15 @@ const VENUE_TO_SUBCATEGORY = {
 
 async function fetchVenues() {
   let baseUrl = `${SUPABASE_URL}/rest/v1/venues?is_active=eq.true&select=*`;
+  if (VENUE_NAME) {
+    const names = VENUE_NAME.split(",").map((s) => s.trim());
+    if (names.length === 1) {
+      baseUrl += `&name=ilike.*${encodeURIComponent(names[0])}*`;
+    } else {
+      const orFilter = names.map((n) => `name.ilike.*${n}*`).join(",");
+      baseUrl += `&or=(${encodeURIComponent(orFilter)})`;
+    }
+  }
   if (CATEGORY_FILTER) {
     baseUrl += `&category=in.(${CATEGORY_FILTER.join(",")})`;
   }
@@ -190,9 +197,14 @@ Rules:
 - Extract ALL events — do not skip any
 - Dates in ISO 8601 (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
 - If year is missing, assume ${YEAR} (or ${YEAR + 1} if month already passed)
-- Today is ${TODAY}
+- Today is ${TODAY} — use this as the starting point for all date calculations
 - For exhibitions/runs, set both start_date and end_date
 - Set confidence 0.0-1.0 based on clarity of extracted data
+- RECURRING EVENTS: When you detect a recurring event (e.g. "Every Sunday", "Weekly", "First Friday of every month", "Daily", "Every Monday and Wednesday"), you MUST expand it into separate individual event entries for EACH occurrence over the next 6 weeks starting from ${TODAY}. Do NOT create a single entry for a recurring event.
+  - Each expanded entry must have its own specific start_date with the correct calendar date
+  - Append the specific date to the title so each entry is distinguishable (e.g. "SOWA Sunday - March 22", "SOWA Sunday - March 29", "Trivia Night - March 24", "Trivia Night - March 31")
+  - Mention the recurrence pattern in the description (e.g. "Recurring weekly every Sunday")
+  - Use a confidence of 0.7 for expanded recurring entries since the specific dates are inferred
 - Return ONLY valid JSON, no other text`;
 
 async function extractEventsFromHtml(venue, html) {
@@ -202,6 +214,7 @@ Venue: ${venue.name}
 City: ${venue.city}
 Category: ${venue.category}
 Page URL: ${venue.events_url}
+Today's date: ${TODAY}
 
 Return a JSON object with an "events" array. Each event:
 - title (string, required)
@@ -214,6 +227,8 @@ Return a JSON object with an "events" array. Each event:
 - ticket_url (string or null)
 - source_url (string or null — link to this specific event)
 - confidence (number 0.0-1.0)
+
+IMPORTANT — Recurring events: If the page mentions recurring events (e.g. "Every Sunday", "Weekly on Tuesdays", "First Friday of every month", "Daily"), expand each one into individual entries for every occurrence over the next 6 weeks from ${TODAY}. Each entry needs its own specific start_date and a date-specific title (e.g. "Open Mic Night - April 1", "Open Mic Night - April 8"). Do NOT output a single entry for a recurring event.
 
 Scraped content:
 
@@ -228,7 +243,7 @@ ${html}`;
     },
     body: JSON.stringify({
       model: MODEL,
-      max_tokens: 8192,
+      max_tokens: 16384,
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: userPrompt }],
     }),
@@ -259,17 +274,41 @@ ${html}`;
 
 // ── Normalize event rows ──
 
+/**
+ * Claude returns dates as ISO 8601 without timezone (e.g. "2026-03-22T20:00:00").
+ * These are Eastern Time since all venues are in the ET zone.
+ * Append "-04:00" (EDT) or "-05:00" (EST) so PostgreSQL stores them correctly.
+ */
+function tagEasternTime(isoDate) {
+  if (!isoDate) return null;
+  // Already has timezone offset or Z — leave it alone
+  if (/[Zz]$/.test(isoDate) || /[+-]\d{2}:\d{2}$/.test(isoDate)) return isoDate;
+  // Determine EDT vs EST based on date
+  // EDT: second Sunday in March → first Sunday in November
+  try {
+    const d = new Date(isoDate + "Z"); // parse as UTC to get month/day
+    const month = d.getUTCMonth(); // 0-indexed
+    // Rough check: April-October is definitely EDT, Dec-Feb is EST
+    // March and November need exact DST boundary checks but -04:00 is safe for most
+    const isEDT = month >= 2 && month <= 10; // Mar-Nov → EDT (close enough)
+    return isoDate + (isEDT ? "-04:00" : "-05:00");
+  } catch {
+    return isoDate + "-04:00"; // default EDT
+  }
+}
+
 function normalizeEvent(event, venue) {
   const now = new Date().toISOString();
-  const sourceId = `crawl-${METRO}-${Buffer.from(event.title + event.start_date + venue.name).toString("base64url").slice(0, 40)}`;
+  const venueCity = (venue.city || "unknown").toLowerCase();
+  const sourceId = `crawl-${venueCity}-${Buffer.from(event.title + event.start_date + venue.name).toString("base64url").slice(0, 40)}`;
 
   return {
     title: event.title,
     description: event.description || null,
     category: VENUE_TO_EVENT_CATEGORY[venue.category] || "other",
     subcategory: VENUE_TO_SUBCATEGORY[venue.category] || null,
-    start_at: event.start_date || null,
-    end_at: event.end_date || null,
+    start_at: tagEasternTime(event.start_date),
+    end_at: tagEasternTime(event.end_date),
     is_free: event.is_free || false,
     price_min: event.price_min ?? null,
     price_max: event.price_max ?? null,
@@ -279,7 +318,7 @@ function normalizeEvent(event, venue) {
     venue_name: venue.name,
     venue_address: null,
     venue_city: venue.city,
-    venue_state: venue.state || "MA",
+    venue_state: venue.state || null,
     venue_lat: venue.lat ? parseFloat(venue.lat) : null,
     venue_lng: venue.lng ? parseFloat(venue.lng) : null,
     source: "crawl",
@@ -288,7 +327,7 @@ function normalizeEvent(event, venue) {
     confidence_score: event.confidence ?? 0.5,
     needs_review: (event.confidence ?? 0.5) < 0.7,
     dedupe_hash: `crawl:${sourceId}`,
-    city: CITY,
+    city: venueCity,
     last_synced_at: now,
     updated_at: now,
   };
@@ -324,8 +363,14 @@ async function upsertEvents(rows) {
   let inserted = 0;
   let errors = 0;
 
-  for (let i = 0; i < rows.length; i += batchSize) {
-    const batch = rows.slice(i, i + batchSize);
+  // Deduplicate by dedupe_hash — last occurrence wins
+  const deduped = [...new Map(rows.map((r) => [r.dedupe_hash, r])).values()];
+  if (deduped.length < rows.length) {
+    console.log(`  Deduped: ${rows.length} -> ${deduped.length} (removed ${rows.length - deduped.length} duplicates)`);
+  }
+
+  for (let i = 0; i < deduped.length; i += batchSize) {
+    const batch = deduped.slice(i, i + batchSize);
     const res = await fetch(url, {
       method: "POST",
       headers: {
@@ -420,7 +465,6 @@ async function main() {
   SUPABASE_SERVICE_KEY = secrets.SUPABASE_SERVICE_KEY;
 
   console.log("=== Venue-Driven Event Crawls ===\n");
-  console.log(`Metro: ${METRO}`);
   console.log(`Model: ${MODEL}`);
   console.log(`Concurrency: ${CONCURRENCY}`);
   console.log(`Date: ${TODAY}\n`);

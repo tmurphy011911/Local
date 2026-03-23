@@ -1,7 +1,13 @@
 package live.localapp.local.ui.home
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -27,8 +33,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.window.Dialog
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.LocalDining
 import androidx.compose.material.icons.outlined.Map
@@ -56,7 +64,14 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.foundation.Image
 import coil3.compose.AsyncImage
+import local.composeapp.generated.resources.Res
+import local.composeapp.generated.resources.*
+import org.jetbrains.compose.resources.DrawableResource
+import org.jetbrains.compose.resources.painterResource
+import coil3.compose.LocalPlatformContext
+import coil3.request.ImageRequest
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.ui.graphics.Color
@@ -69,7 +84,16 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalHapticFeedback
+import live.localapp.local.ui.common.ProximityFilterChip
+import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.Config
+import org.koin.mp.KoinPlatform
 import live.localapp.local.domain.model.CarouselSection
 import live.localapp.local.domain.repository.CategoryInfo
 import live.localapp.local.domain.model.Event
@@ -92,15 +116,26 @@ private fun String.toTitleCase(): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event) -> Unit = {}, onConciergeClick: () -> Unit = {}) {
+fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onProfileClick: () -> Unit = {}, onDebugLocationChange: ((Double, Double, String) -> Unit)? = null, onFavorite: ((Event) -> Unit)? = null) {
     val state by viewModel.uiState.collectAsState()
     var showDebugMenu by remember { mutableStateOf(false) }
+    var previouslyLoading by remember { mutableStateOf(true) }
+    val haptic = LocalHapticFeedback.current
+
+    // Haptic when data arrives
+    LaunchedEffect(state.isLoading, state.carousels) {
+        if (previouslyLoading && !state.isLoading && state.carousels.isNotEmpty()) {
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        }
+        previouslyLoading = state.isLoading
+    }
 
     if (showDebugMenu) {
         DebugMenuDialog(
             onDismiss = { showDebugMenu = false },
             onMockLocation = { lat, lng, name ->
                 viewModel.debugSetLocation(lat, lng, name)
+                onDebugLocationChange?.invoke(lat, lng, name)
                 showDebugMenu = false
             },
             onSetUserState = { userState ->
@@ -115,7 +150,12 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event) -> Unit = {}, onC
             .fillMaxSize()
             .background(AppColors.Snow),
     ) {
-        HomeHeader(state, onDebugOpen = { showDebugMenu = true })
+        HomeHeader(
+            state = state,
+            onRadiusSelect = { viewModel.setRadiusFilter(it) },
+            onDebugOpen = { showDebugMenu = true },
+            onProfileClick = onProfileClick,
+        )
 
         PullToRefreshBox(
             isRefreshing = state.isRefreshing,
@@ -125,20 +165,25 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event) -> Unit = {}, onC
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(rememberScrollState())
+                    .padding(bottom = 80.dp),
             ) {
                 GreetingSection(state)
                 AiConciergeCard(onClick = onConciergeClick)
-                SegmentedControl(state, viewModel)
+
+                // "Your Events This Week" album carousel
+                if (state.savedThisWeek.isNotEmpty()) {
+                    SavedEventsAlbumCarousel(
+                        events = state.savedThisWeek,
+                        onEventClick = { event, transitionInfo -> onEventClick(event, transitionInfo) },
+                    )
+                }
+
+                // Category row — below saved events
                 CategoryRow(state, viewModel)
 
                 if (state.isLoading && !state.isRefreshing) {
-                    Box(
-                        modifier = Modifier.fillMaxWidth().padding(vertical = 40.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text("Loading events...", style = AppType.PlanMeta)
-                    }
+                    SkeletonCarousels()
                 } else if (state.carousels.isEmpty() && state.error != null) {
                     EmptyState(
                         title = "Something went wrong",
@@ -151,15 +196,85 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event) -> Unit = {}, onC
                     )
                 } else {
                     val isForYou = state.selectedCategory == "foryou"
-                    state.carousels.forEach { section ->
+                    val radius = state.radiusFilter
+                    val displayCarousels = if (radius == null) {
+                        state.carousels
+                    } else {
+                        state.carousels
+                            .map { section -> section.copy(events = section.events.filter { (it.distanceMiles ?: 999.0) <= radius }) }
+                            .filter { it.events.isNotEmpty() }
+                    }
+                    displayCarousels.forEach { section ->
                         key(section.slug) {
-                            CarouselSectionView(section, onEventClick, showTags = isForYou)
+                            CarouselSectionView(section, onEventClick, showTags = isForYou, onFavorite = onFavorite, favoriteIds = state.favoriteEventIds)
                         }
                     }
                 }
 
-                PlansSection()
                 Spacer(Modifier.height(24.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun SkeletonCarousels() {
+    val shimmerAlpha by animateFloatAsState(
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(800, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+    )
+    val skeletonColor = AppColors.Pebble.copy(alpha = 0.3f + shimmerAlpha * 0.2f)
+
+    repeat(3) {
+        // Section title skeleton
+        Box(
+            modifier = Modifier
+                .padding(start = 20.dp, top = 18.dp, bottom = 10.dp)
+                .width(140.dp)
+                .height(16.dp)
+                .background(skeletonColor, RoundedCornerShape(8.dp)),
+        )
+        // Card row skeleton
+        Row(
+            modifier = Modifier
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            repeat(4) {
+                Column {
+                    Box(
+                        modifier = Modifier
+                            .width(156.dp)
+                            .height(92.dp)
+                            .background(skeletonColor, RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)),
+                    )
+                    Column(modifier = Modifier.padding(horizontal = 11.dp, vertical = 9.dp)) {
+                        Box(
+                            modifier = Modifier
+                                .width(120.dp)
+                                .height(12.dp)
+                                .background(skeletonColor, RoundedCornerShape(6.dp)),
+                        )
+                        Spacer(Modifier.height(6.dp))
+                        Box(
+                            modifier = Modifier
+                                .width(80.dp)
+                                .height(10.dp)
+                                .background(skeletonColor, RoundedCornerShape(5.dp)),
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Box(
+                            modifier = Modifier
+                                .width(60.dp)
+                                .height(10.dp)
+                                .background(skeletonColor, RoundedCornerShape(5.dp)),
+                        )
+                    }
+                }
             }
         }
     }
@@ -198,81 +313,9 @@ private fun EmptyState(title: String, subtitle: String) {
 // ── Dynamic Carousel Section ──
 
 @Composable
-private fun CarouselSectionView(section: CarouselSection, onEventClick: (Event) -> Unit, showTags: Boolean = true) {
+private fun CarouselSectionView(section: CarouselSection, onEventClick: (Event, CardTransitionInfo?) -> Unit, showTags: Boolean = true, onFavorite: ((Event) -> Unit)? = null, favoriteIds: Set<String> = emptySet()) {
     SectionHeader(section.title)
-    EventCardRow(section.events, onEventClick, showTags = showTags)
-}
-
-// ── Segmented Control ──
-
-@Composable
-private fun SegmentedControl(state: HomeUiState, viewModel: HomeViewModel) {
-    Row(
-        modifier = Modifier
-            .padding(horizontal = 20.dp)
-            .padding(top = 14.dp)
-            .fillMaxWidth()
-            .background(AppColors.Mist, AppShapes.SegmentControl)
-            .border(2.dp, AppColors.Pebble, AppShapes.SegmentControl)
-            .padding(3.dp),
-    ) {
-        SegmentButton(
-            label = "Upcoming Events",
-            isSelected = state.selectedSegment == HomeSegment.UPCOMING,
-            onClick = { viewModel.selectSegment(HomeSegment.UPCOMING) },
-            modifier = Modifier.weight(1f),
-        )
-        Spacer(Modifier.width(3.dp))
-        SegmentButton(
-            label = "Always On",
-            isSelected = state.selectedSegment == HomeSegment.ALWAYS_ON,
-            onClick = { viewModel.selectSegment(HomeSegment.ALWAYS_ON) },
-            modifier = Modifier.weight(1f),
-        )
-    }
-}
-
-@Composable
-private fun SegmentButton(
-    label: String,
-    isSelected: Boolean,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    val textColor = if (isSelected) AppColors.Ink else AppColors.Ink3
-
-    Box(modifier = modifier) {
-        if (isSelected) {
-            // Flat bottom shadow: 0 2px 0 pebble (matches CSS box-shadow exactly)
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .offset(y = 2.dp)
-                    .background(AppColors.Pebble, AppShapes.SegmentButton),
-            )
-        }
-
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(
-                    if (isSelected) AppColors.White else Color.Transparent,
-                    AppShapes.SegmentButton,
-                )
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onClick,
-                )
-                .padding(vertical = 8.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                label,
-                style = AppType.SegmentButton.copy(color = textColor),
-            )
-        }
-    }
+    EventCardRow(section.events, onEventClick, showTags = showTags, showSaves = section.showSaves, onFavorite = onFavorite, favoriteIds = favoriteIds)
 }
 
 // ── Category Row ──
@@ -288,6 +331,36 @@ private val forYouTile = CategoryInfo(
 
 @Composable
 private fun CategoryRow(state: HomeUiState, viewModel: HomeViewModel) {
+    // Show skeleton placeholders while categories load
+    if (state.availableCategories.isEmpty() && state.isLoading) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(Color.White)
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            repeat(7) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.width(64.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .size(50.dp)
+                            .background(AppColors.Mist, RoundedCornerShape(14.dp)),
+                    )
+                    Spacer(Modifier.height(5.dp))
+                    Box(
+                        modifier = Modifier
+                            .width(40.dp)
+                            .height(10.dp)
+                            .background(AppColors.Mist, RoundedCornerShape(5.dp)),
+                    )
+                }
+            }
+        }
+        return
+    }
+
     val categories = remember(state.availableCategories) {
         listOf(forYouTile) + state.availableCategories
     }
@@ -299,7 +372,7 @@ private fun CategoryRow(state: HomeUiState, viewModel: HomeViewModel) {
     val itemWidthPx = with(density) { 64.dp.toPx() }
 
     // Auto-scroll to center the selected category
-    LaunchedEffect(selectedIndex, state.selectedSegment) {
+    LaunchedEffect(selectedIndex) {
         val targetCenter = (selectedIndex * itemWidthPx + itemWidthPx / 2).toInt()
         val viewportCenter = scrollState.viewportSize / 2
         val scrollTo = (targetCenter - viewportCenter).coerceIn(0, scrollState.maxValue)
@@ -349,6 +422,7 @@ private fun CategoryTileItem(
         targetValue = if (isActive) 1.08f else 1f,
         animationSpec = tween(150),
     )
+    val haptic = LocalHapticFeedback.current
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -357,17 +431,35 @@ private fun CategoryTileItem(
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = onClick,
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onClick()
+                },
             ),
     ) {
-        AsyncImage(
-            model = tile.iconUrl,
-            contentDescription = tile.label,
+        Box(
             modifier = Modifier
                 .size(50.dp)
                 .graphicsLayer { scaleX = scale; scaleY = scale },
-            contentScale = ContentScale.Fit,
-        )
+            contentAlignment = Alignment.Center,
+        ) {
+            val localIcon = categoryDrawable(tile.id)
+            if (localIcon != null) {
+                Image(
+                    painter = painterResource(localIcon),
+                    contentDescription = tile.label,
+                    modifier = Modifier.size(50.dp),
+                    contentScale = ContentScale.Fit,
+                )
+            } else {
+                Icon(
+                    categoryIcon(tile.id),
+                    contentDescription = null,
+                    modifier = Modifier.size(28.dp),
+                    tint = AppColors.Ink3.copy(alpha = 0.3f),
+                )
+            }
+        }
 
         Spacer(Modifier.height(5.dp))
 
@@ -411,6 +503,13 @@ private fun SectionHeader(title: String) {
     }
 }
 
+// ── Shared-element transition info ──
+
+data class CardTransitionInfo(
+    val bounds: Rect,       // card position in screen coordinates (pixels)
+    val imageUrl: String?,
+)
+
 // ── Event Card ──
 
 private data class EventCardData(
@@ -422,6 +521,7 @@ private data class EventCardData(
     val tag: String,
     val showTag: Boolean = true,
     val isFree: Boolean = false,
+    val price: String = "",
     val imageUrl: String?,
     val bgStart: Color,
     val bgEnd: Color,
@@ -429,19 +529,32 @@ private data class EventCardData(
 )
 
 @Composable
-private fun EventCard(data: EventCardData, onClick: () -> Unit = {}) {
+private fun EventCard(data: EventCardData, onClick: (Rect) -> Unit = {}, onFavorite: (() -> Unit)? = null, isFavorited: Boolean = false) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
     val offsetY by animateFloatAsState(
         targetValue = if (isPressed) 3f else 0f,
         animationSpec = tween(80),
     )
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.97f else 1f,
+        animationSpec = tween(80),
+    )
+    val haptic = LocalHapticFeedback.current
+    var cardBounds by remember { mutableStateOf(Rect.Zero) }
 
     Box(
         modifier = Modifier
             .width(156.dp)
             .height(212.dp)
-            .graphicsLayer { translationY = offsetY * density },
+            .onGloballyPositioned { coordinates ->
+                cardBounds = coordinates.boundsInRoot()
+            }
+            .graphicsLayer {
+                translationY = offsetY * density
+                scaleX = scale
+                scaleY = scale
+            },
     ) {
         // Shadow
         Box(
@@ -462,7 +575,10 @@ private fun EventCard(data: EventCardData, onClick: () -> Unit = {}) {
                 .clickable(
                     interactionSource = interactionSource,
                     indication = null,
-                    onClick = onClick,
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onClick(cardBounds)
+                    },
                 ),
         ) {
             // Image area
@@ -483,7 +599,7 @@ private fun EventCard(data: EventCardData, onClick: () -> Unit = {}) {
                         modifier = Modifier.fillMaxSize(),
                     )
                 } else {
-                    Icon(data.icon, contentDescription = null, modifier = Modifier.size(32.dp), tint = AppColors.Ink3.copy(alpha = 0.5f))
+                    Icon(data.icon, contentDescription = null, modifier = Modifier.size(32.dp), tint = AppColors.Ink3.copy(alpha = 0.3f))
                 }
 
                 // Tag pill — only shown on "For You" tab
@@ -500,18 +616,27 @@ private fun EventCard(data: EventCardData, onClick: () -> Unit = {}) {
                     )
                 }
 
-                // Heart button
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(7.dp)
-                        .size(26.dp)
-                        .background(AppColors.White, CircleShape)
-                        .border(1.5.dp, AppColors.Pebble, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Outlined.FavoriteBorder, contentDescription = "Favorite", modifier = Modifier.size(13.dp), tint = AppColors.Ink3)
+                // Heart / favorite button
+                if (onFavorite != null) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(6.dp)
+                            .size(28.dp)
+                            .background(Color.White.copy(alpha = 0.75f), CircleShape)
+                            .clip(CircleShape)
+                            .clickable { onFavorite() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            if (isFavorited) Icons.Outlined.Favorite else Icons.Outlined.FavoriteBorder,
+                            contentDescription = "Favorite",
+                            modifier = Modifier.size(16.dp),
+                            tint = if (isFavorited) AppColors.Coral else AppColors.Ink2,
+                        )
+                    }
                 }
+
             }
 
             // Body
@@ -610,7 +735,11 @@ private fun EventCard(data: EventCardData, onClick: () -> Unit = {}) {
 }
 
 @Composable
-private fun EventCardRow(events: List<Event>, onEventClick: (Event) -> Unit, showTags: Boolean = true) {
+private fun EventCardRow(events: List<Event>, onEventClick: (Event, CardTransitionInfo?) -> Unit, showTags: Boolean = true, showSaves: Boolean = false, onFavorite: ((Event) -> Unit)? = null, favoriteIds: Set<String> = emptySet()) {
+    val communityRepo = if (showSaves) {
+        remember { KoinPlatform.getKoin().get<live.localapp.local.domain.repository.CommunityInterestRepository>() }
+    } else null
+
     Row(
         modifier = Modifier
             .horizontalScroll(rememberScrollState())
@@ -618,7 +747,17 @@ private fun EventCardRow(events: List<Event>, onEventClick: (Event) -> Unit, sho
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         events.forEach { event ->
-            EventCard(data = event.toCardData(showTag = showTags), onClick = { onEventClick(event) })
+            val saveCount = communityRepo?.totalSaves(event.id) ?: 0
+            val tagOverride = if (showSaves && saveCount > 10) "$saveCount Saves" else null
+            val cardData = event.toCardData(showTag = showTags || tagOverride != null, tagOverride = tagOverride)
+            EventCard(
+                data = cardData,
+                onClick = { bounds ->
+                    onEventClick(event, CardTransitionInfo(bounds = bounds, imageUrl = cardData.imageUrl))
+                },
+                onFavorite = onFavorite?.let { { it(event) } },
+                isFavorited = event.id in favoriteIds,
+            )
         }
     }
 }
@@ -636,6 +775,24 @@ private fun categoryColors(category: String): Pair<Color, Color> = when (categor
     else -> AppColors.BgCoralStart to AppColors.BgCoralEnd
 }
 
+private fun categoryDrawable(category: String): DrawableResource? = when (category.lowercase()) {
+    "foryou" -> Res.drawable.cat_foryou
+    "music" -> Res.drawable.cat_music
+    "sports" -> Res.drawable.cat_sports
+    "arts" -> Res.drawable.cat_arts
+    "theatre" -> Res.drawable.cat_theatre
+    "comedy" -> Res.drawable.cat_comedy
+    "food" -> Res.drawable.cat_food
+    "outdoors" -> Res.drawable.cat_outdoors
+    "museums" -> Res.drawable.cat_museums
+    "tours" -> Res.drawable.cat_tours
+    "libraries" -> Res.drawable.cat_libraries
+    "for-kids" -> Res.drawable.cat_forkids
+    "experiences" -> Res.drawable.cat_foryou
+    "other" -> Res.drawable.cat_other
+    else -> null
+}
+
 private fun categoryIcon(category: String): ImageVector = when (category.lowercase()) {
     "music" -> Icons.Outlined.MusicNote
     "sports" -> Icons.Outlined.SportsScore
@@ -644,11 +801,14 @@ private fun categoryIcon(category: String): ImageVector = when (category.lowerca
     "food" -> Icons.Outlined.LocalDining
     "outdoors" -> Icons.Outlined.Park
     "nightlife" -> Icons.Outlined.Nightlife
+    "experiences" -> Icons.Outlined.Explore
     else -> Icons.Outlined.AutoAwesome
 }
 
-private fun Event.toCardData(showTag: Boolean = true): EventCardData {
-    val displaySubcategory = formatSubcategoryDisplay(subcategory ?: category)
+private fun Event.toCardData(showTag: Boolean = true, tagOverride: String? = null): EventCardData {
+    // Prefer subSubcategory for a more specific tag (e.g. "Hip Hop" vs "Music")
+    val tagKey = subSubcategory ?: subcategory ?: category
+    val displayTag = tagOverride ?: formatSubcategoryDisplay(tagKey)
     val colorKey = subcategory ?: category
     val (bgS, bgE) = categoryColors(colorKey)
     return EventCardData(
@@ -663,9 +823,10 @@ private fun Event.toCardData(showTag: Boolean = true): EventCardData {
             }
         },
         distance = distanceDisplay,
-        tag = displaySubcategory,
+        tag = displayTag,
         showTag = showTag,
         isFree = isFree,
+        price = priceDisplay,
         imageUrl = imageUrl,
         bgStart = bgS,
         bgEnd = bgE,
@@ -704,12 +865,21 @@ private fun PlanRow(icon: ImageVector, name: String, meta: String) {
         targetValue = if (isPressed) 2f else 0f,
         animationSpec = tween(80),
     )
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.98f else 1f,
+        animationSpec = tween(80),
+    )
+    val haptic = LocalHapticFeedback.current
 
     Box(
         modifier = Modifier
             .padding(horizontal = 20.dp)
             .fillMaxWidth()
-            .graphicsLayer { translationY = offsetY * density },
+            .graphicsLayer {
+                translationY = offsetY * density
+                scaleX = scale
+                scaleY = scale
+            },
     ) {
         // Shadow
         Box(
@@ -727,7 +897,9 @@ private fun PlanRow(icon: ImageVector, name: String, meta: String) {
                 .clickable(
                     interactionSource = interactionSource,
                     indication = null,
-                    onClick = {},
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    },
                 )
                 .padding(horizontal = 14.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -759,24 +931,27 @@ private fun PlanRow(icon: ImageVector, name: String, meta: String) {
 
 @Composable
 private fun GreetingSection(state: HomeUiState) {
+    @Suppress("DEPRECATION")
+    val timeGreeting = remember {
+        val hour = kotlinx.datetime.Instant.fromEpochMilliseconds(
+            kotlin.time.Clock.System.now().toEpochMilliseconds()
+        ).toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault()).hour
+        when {
+            hour < 12 -> "Good morning"
+            hour < 17 -> "Good afternoon"
+            else -> "Good evening"
+        }
+    }
+    val name = state.userName
+    val greeting = if (name.isNotEmpty()) "$timeGreeting, $name" else timeGreeting
+
     Column(
         modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp),
     ) {
         Text(
-            "Good evening, ${state.userName}",
+            greeting,
             style = AppType.GreetingSmall,
         )
-        Spacer(Modifier.height(3.dp))
-        Row {
-            Text("What are you ", style = AppType.GreetingBig)
-            Text(
-                "planning?",
-                style = AppType.GreetingBig.copy(
-                    fontStyle = FontStyle.Italic,
-                    color = AppColors.Coral,
-                ),
-            )
-        }
     }
 }
 
@@ -790,24 +965,21 @@ private fun AiConciergeCard(onClick: () -> Unit = {}) {
         targetValue = if (isPressed) 5f else 0f,
         animationSpec = tween(80),
     )
-    val shadowHeight by animateFloatAsState(
-        targetValue = if (isPressed) 0f else 5f,
-        animationSpec = tween(60),
-    )
+    val haptic = LocalHapticFeedback.current
 
     Box(
         modifier = Modifier
             .padding(horizontal = 20.dp)
-            .padding(top = 14.dp)
+            .padding(top = 14.dp, bottom = 2.dp)
             .fillMaxWidth()
             .graphicsLayer { translationY = offsetY * density },
     ) {
-        // Shadow layer
+        // Shadow layer — contained within the box (no overflow)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .matchParentSize()
-                .offset(y = shadowHeight.dp)
+                .offset(y = if (!isPressed) 5.dp else 1.dp)
                 .background(AppColors.CoralDk, RoundedCornerShape(20.dp)),
         )
 
@@ -821,9 +993,12 @@ private fun AiConciergeCard(onClick: () -> Unit = {}) {
                 .clickable(
                     interactionSource = interactionSource,
                     indication = null,
-                    onClick = onClick,
+                    onClick = {
+                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        onClick()
+                    },
                 )
-                .padding(16.dp),
+                .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 0.dp),
         ) {
             // Decorative shine circle
             Box(
@@ -838,31 +1013,6 @@ private fun AiConciergeCard(onClick: () -> Unit = {}) {
             )
 
             Column {
-                // AI badge
-                Row(
-                    modifier = Modifier
-                        .background(
-                            AppColors.White.copy(alpha = 0.25f),
-                            AppShapes.Pill,
-                        )
-                        .padding(horizontal = 11.dp, vertical = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(Icons.Outlined.AutoAwesome, contentDescription = null, modifier = Modifier.size(12.dp), tint = AppColors.White)
-                    Spacer(Modifier.width(4.dp))
-                    Text(
-                        "AI Concierge",
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 11.sp,
-                            color = AppColors.White,
-                        ),
-                    )
-                }
-
-                Spacer(Modifier.height(8.dp))
-
                 // Title
                 Row {
                     Text(
@@ -930,10 +1080,171 @@ private fun AiConciergeCard(onClick: () -> Unit = {}) {
     }
 }
 
+// ── Saved Events Album Carousel ──
+
+@Composable
+private fun SavedEventsAlbumCarousel(
+    events: List<Event>,
+    onEventClick: (Event, CardTransitionInfo?) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 18.dp),
+    ) {
+        // Header
+        Text(
+            "Saved Events This Week",
+            modifier = Modifier.padding(horizontal = 20.dp),
+            style = TextStyle(
+                fontFamily = AppFonts.Heading,
+                fontWeight = FontWeight.Bold,
+                fontSize = 15.sp,
+                color = AppColors.Coral,
+                letterSpacing = (-0.3).sp,
+            ),
+        )
+        Spacer(Modifier.height(12.dp))
+
+        // Horizontal scroll of album-style cards
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp),
+            horizontalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
+            events.forEach { event ->
+                AlbumEventCard(event = event, onClick = { bounds ->
+                    onEventClick(event, CardTransitionInfo(bounds, event.imageUrl))
+                })
+            }
+        }
+    }
+}
+
+@Composable
+private fun AlbumEventCard(event: Event, onClick: (Rect) -> Unit) {
+    val cardShape = RoundedCornerShape(16.dp)
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(if (isPressed) 0.96f else 1f, tween(80))
+    val haptic = LocalHapticFeedback.current
+    var cardBounds by remember { mutableStateOf(Rect.Zero) }
+
+    Box(
+        modifier = Modifier
+            .width(156.dp)
+            .height(190.dp)
+            .onGloballyPositioned { coordinates ->
+                cardBounds = coordinates.boundsInRoot()
+            }
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                shadowElevation = 8f
+                shape = cardShape
+                clip = true
+            }
+            .clip(cardShape)
+            .clickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    onClick(cardBounds)
+                },
+            ),
+    ) {
+        // Full-bleed image (or category gradient fallback)
+        val imageUrl = event.imageUrl
+        val colorKey = event.subcategory ?: event.category
+        val (bgStart, bgEnd) = categoryColors(colorKey)
+        if (!imageUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = ImageRequest.Builder(LocalPlatformContext.current)
+                    .data(imageUrl)
+                    .build(),
+                contentDescription = event.title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Brush.linearGradient(listOf(bgStart, bgEnd))),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    categoryIcon(colorKey),
+                    contentDescription = null,
+                    modifier = Modifier.size(48.dp),
+                    tint = AppColors.Ink3.copy(alpha = 0.3f),
+                )
+            }
+        }
+
+        // Date pill in top-right corner
+        val dateText = event.dateDisplay
+        if (dateText.isNotBlank()) {
+            Text(
+                dateText,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(10.dp)
+                    .background(
+                        Color.Black.copy(alpha = 0.6f),
+                        RoundedCornerShape(8.dp),
+                    )
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 10.sp,
+                    color = Color.White,
+                ),
+                maxLines = 1,
+            )
+        }
+
+        // Title overlaid at bottom with dark gradient
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f)),
+                    ),
+                )
+                .padding(horizontal = 12.dp, vertical = 14.dp),
+        ) {
+            Text(
+                event.title,
+                style = TextStyle(
+                    fontFamily = AppFonts.Heading,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 14.sp,
+                    color = Color.White,
+                ),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
 // ── Header ──
 
 @Composable
-private fun HomeHeader(state: HomeUiState, onDebugOpen: () -> Unit = {}) {
+private fun HomeHeader(
+    state: HomeUiState,
+    onRadiusSelect: (Double?) -> Unit,
+    onDebugOpen: () -> Unit = {},
+    onProfileClick: () -> Unit = {},
+) {
+    var radiusPickerOpen by remember { mutableStateOf(false) }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -955,32 +1266,22 @@ private fun HomeHeader(state: HomeUiState, onDebugOpen: () -> Unit = {}) {
                         onClick = onDebugOpen,
                     ),
             ) {
-                Text("lo", style = AppType.Logo)
-                Text("c", style = AppType.Logo.copy(color = AppColors.Coral))
-                Text("al", style = AppType.Logo)
+                Text("l", style = AppType.Logo.copy(color = AppColors.Coral, fontSize = 24.sp))
+                Text("ocal", style = AppType.Logo.copy(fontSize = 24.sp))
             }
-
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .background(AppColors.Mist, AppShapes.Avatar)
-                    .border(2.dp, AppColors.Pebble, AppShapes.Avatar),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Outlined.Notifications, contentDescription = "Notifications", modifier = Modifier.size(18.dp), tint = AppColors.Ink2)
-            }
-
-            Spacer(Modifier.width(8.dp))
 
             Box(
                 modifier = Modifier
                     .size(36.dp)
                     .background(AppColors.Coral, AppShapes.Avatar)
-                    .border(2.dp, AppColors.CoralDk, AppShapes.Avatar),
+                    .border(2.dp, AppColors.CoralDk, AppShapes.Avatar)
+                    .clip(AppShapes.Avatar)
+                    .clickable { onProfileClick() },
                 contentAlignment = Alignment.Center,
             ) {
+                val initial = state.userName.firstOrNull()?.uppercase() ?: ""
                 Text(
-                    "J",
+                    initial,
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.Black,
@@ -996,15 +1297,20 @@ private fun HomeHeader(state: HomeUiState, onDebugOpen: () -> Unit = {}) {
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp)
-                .padding(bottom = 14.dp),
+                .padding(bottom = if (radiusPickerOpen) 8.dp else 14.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
-            // Location pill
+            // Location pill — tappable to open radius picker
+            val radiusLabel = state.radiusFilter?.let { " · ${it.toInt()} mi" } ?: ""
             Row(
                 modifier = Modifier
                     .background(AppColors.SkyLt, AppShapes.Pill)
                     .border(2.dp, AppColors.Sky, AppShapes.Pill)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { radiusPickerOpen = !radiusPickerOpen }
                     .padding(horizontal = 12.dp, vertical = 5.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -1015,7 +1321,7 @@ private fun HomeHeader(state: HomeUiState, onDebugOpen: () -> Unit = {}) {
                 )
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    state.locationName,
+                    "${state.locationName}$radiusLabel",
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.ExtraBold,
@@ -1044,6 +1350,63 @@ private fun HomeHeader(state: HomeUiState, onDebugOpen: () -> Unit = {}) {
                         color = AppColors.SunDk,
                     ),
                 )
+            }
+        }
+
+        // Radius picker — expands below the pill row when tapped
+        AnimatedVisibility(
+            visible = radiusPickerOpen,
+            enter = expandVertically(),
+            exit = shrinkVertically(),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 10.dp)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                listOf<Double?>(null, 1.0, 3.0, 5.0, 10.0, 25.0, 50.0, 100.0).forEach { option ->
+                    val isSelected = option == state.radiusFilter
+                    val label = when (option) {
+                        null   -> "Any"
+                        1.0    -> "1 mi"
+                        3.0    -> "3 mi"
+                        5.0    -> "5 mi"
+                        10.0   -> "10 mi"
+                        25.0   -> "25 mi"
+                        50.0   -> "50 mi"
+                        100.0  -> "100 mi"
+                        else   -> "${option.toInt()} mi"
+                    }
+                    Box(
+                        modifier = Modifier
+                            .background(
+                                if (isSelected) AppColors.Sky else AppColors.SkyLt,
+                                AppShapes.Pill,
+                            )
+                            .border(1.5.dp, AppColors.Sky, AppShapes.Pill)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) {
+                                onRadiusSelect(option)
+                                radiusPickerOpen = false
+                            }
+                            .padding(horizontal = 12.dp, vertical = 5.dp),
+                    ) {
+                        Text(
+                            label,
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 12.sp,
+                                color = if (isSelected) AppColors.White else AppColors.Sky,
+                            ),
+                        )
+                    }
+                }
             }
         }
 

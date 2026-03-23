@@ -1,5 +1,10 @@
 package live.localapp.local.ui.detail
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -15,21 +20,30 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.AccessTime
 import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.DirectionsCar
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.IosShare
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Place
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,56 +53,118 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
+import kotlinx.coroutines.delay
+import kotlinx.datetime.Instant
+import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.domain.model.Event
+import live.localapp.local.snakeToTitleCase
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 import live.localapp.local.ui.theme.AppShapes
 import live.localapp.local.ui.theme.AppType
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.layout.offset
-import androidx.compose.material3.Icon
-import androidx.compose.material3.Text
-import androidx.compose.ui.graphics.graphicsLayer
+
+// ── Countdown model ──────────────────────────────────────────────────────────
+
+private data class Countdown(
+    val days: Long = 0,
+    val hours: Long = 0,
+    val minutes: Long = 0,
+    val seconds: Long = 0,
+    val isLive: Boolean = false,
+    val isPast: Boolean = false,
+    val hasDate: Boolean = false,
+)
+
+private fun computeCountdown(startAt: String?): Countdown {
+    if (startAt == null) return Countdown(hasDate = false)
+    return try {
+        val eventInstant = Instant.parse(startAt)
+        val now = kotlin.time.Clock.System.now()
+        val totalSeconds = (eventInstant - now).inWholeSeconds
+        when {
+            totalSeconds in -14400..0 -> Countdown(isLive = true, hasDate = true)
+            totalSeconds < -14400     -> Countdown(isPast = true, hasDate = true)
+            else -> {
+                val d = totalSeconds / 86400
+                val h = (totalSeconds % 86400) / 3600
+                val m = (totalSeconds % 3600) / 60
+                val s = totalSeconds % 60
+                Countdown(d, h, m, s, hasDate = true)
+            }
+        }
+    } catch (_: Exception) { Countdown(hasDate = false) }
+}
+
+// ── Screen ───────────────────────────────────────────────────────────────────
 
 @Composable
 fun EventDetailScreen(
     event: Event,
     onBack: () -> Unit,
+    onShareTracked: ((String) -> Unit)? = null,
+    onFavoriteTracked: ((String) -> Unit)? = null,
 ) {
     val uriHandler = LocalUriHandler.current
-    var isFavorited by remember { mutableStateOf(false) }
+    val clipboardManager = LocalClipboardManager.current
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(AppColors.Snow),
-    ) {
+    var isFavorited by remember { mutableStateOf(false) }
+    var countdown by remember { mutableStateOf(computeCountdown(event.startAt)) }
+    var mapsExpanded by remember { mutableStateOf(false) }
+    var rideExpanded by remember { mutableStateOf(false) }
+    var shareCopied by remember { mutableStateOf(false) }
+
+    // Tick every second
+    LaunchedEffect(event.startAt) {
+        while (true) {
+            delay(1000)
+            countdown = computeCountdown(event.startAt)
+        }
+    }
+
+    // Reset "Copied!" after 2 seconds
+    LaunchedEffect(shareCopied) {
+        if (shareCopied) {
+            delay(2000)
+            shareCopied = false
+        }
+    }
+
+    val ctaUrl = event.ticketUrl ?: event.sourceUrl
+    val hasLocation = event.venueLat != null && event.venueLng != null
+
+    Column(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
         Column(
             modifier = Modifier
                 .weight(1f)
                 .verticalScroll(rememberScrollState()),
         ) {
-            // Hero image
             HeroImage(
                 event = event,
                 isFavorited = isFavorited,
                 onBack = onBack,
-                onFavoriteToggle = { isFavorited = !isFavorited },
+                onFavoriteToggle = {
+                    val wasFavorited = isFavorited
+                    isFavorited = !isFavorited
+                    if (!wasFavorited) {
+                        onFavoriteTracked?.invoke(event.id)
+                    }
+                },
             )
 
-            // Content
-            Column(
-                modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp),
-            ) {
-                // Title
+            Column(modifier = Modifier.padding(horizontal = 20.dp, vertical = 16.dp)) {
                 Text(
                     event.title,
                     style = TextStyle(
@@ -100,9 +176,40 @@ fun EventDetailScreen(
                     ),
                 )
 
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(14.dp))
 
-                // Date/time
+                // Countdown
+                if (countdown.hasDate) {
+                    CountdownBanner(countdown)
+                    Spacer(Modifier.height(16.dp))
+                }
+
+                // Recurring indicator
+                val recurrenceLabel = detectRecurrence(event)
+                if (recurrenceLabel != null) {
+                    Row(
+                        modifier = Modifier
+                            .background(AppColors.SkyLt, RoundedCornerShape(8.dp))
+                            .border(1.5.dp, AppColors.Sky, RoundedCornerShape(8.dp))
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(Icons.Outlined.Refresh, contentDescription = null, modifier = Modifier.size(14.dp), tint = AppColors.Sky)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            recurrenceLabel,
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 12.sp,
+                                color = AppColors.Sky,
+                            ),
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                }
+
+                // Date
                 if (event.startAt != null) {
                     InfoRow(
                         icon = Icons.Outlined.CalendarMonth,
@@ -116,23 +223,12 @@ fun EventDetailScreen(
                 if (event.venueName != null) {
                     val venueText = buildString {
                         append(event.venueName)
-                        if (event.venueAddress != null) {
-                            append(" \u00B7 ${event.venueAddress}")
-                        }
+                        if (event.venueAddress != null) append(" \u00B7 ${event.venueAddress}")
                     }
-                    val canOpenMap = event.venueLat != null && event.venueLng != null
                     InfoRow(
                         icon = Icons.Outlined.Place,
                         iconTint = AppColors.Sky,
                         text = venueText,
-                        isClickable = canOpenMap,
-                        onClick = {
-                            if (canOpenMap) {
-                                val label = event.venueName
-                                val url = "https://maps.apple.com/?q=${label}&ll=${event.venueLat},${event.venueLng}"
-                                uriHandler.openUri(url)
-                            }
-                        },
                     )
                     Spacer(Modifier.height(10.dp))
                 }
@@ -173,7 +269,6 @@ fun EventDetailScreen(
                     )
                 }
 
-                // Venue description from Google Places
                 if (!event.venueDescription.isNullOrBlank() && event.venueName != null) {
                     Spacer(Modifier.height(20.dp))
                     Text(
@@ -203,17 +298,367 @@ fun EventDetailScreen(
             }
         }
 
-        // Bottom ticket button
-        if (event.ticketUrl != null) {
-            TicketButton(
-                isFree = event.isFree,
-                onClick = { uriHandler.openUri(event.ticketUrl) },
+        // ── CTA bar ──────────────────────────────────────────────────────────
+        CtaBar(
+            event = event,
+            ctaUrl = ctaUrl,
+            hasLocation = hasLocation,
+            mapsExpanded = mapsExpanded,
+            rideExpanded = rideExpanded,
+            shareCopied = shareCopied,
+            onCtaClick = { if (ctaUrl != null) uriHandler.openUri(ctaUrl) },
+            onToggleMaps = {
+                mapsExpanded = !mapsExpanded
+                if (mapsExpanded) rideExpanded = false
+            },
+            onToggleRide = {
+                rideExpanded = !rideExpanded
+                if (rideExpanded) mapsExpanded = false
+            },
+            onOpenAppleMaps = {
+                val url = "https://maps.apple.com/?q=${event.venueName}&ll=${event.venueLat},${event.venueLng}"
+                uriHandler.openUri(url)
+            },
+            onOpenGoogleMaps = {
+                val url = "https://maps.google.com/?q=${event.venueLat},${event.venueLng}"
+                uriHandler.openUri(url)
+            },
+            onOpenUber = {
+                val url = "https://m.uber.com/ul/?action=setPickup&pickup=my_location" +
+                    "&dropoff[latitude]=${event.venueLat}&dropoff[longitude]=${event.venueLng}" +
+                    "&dropoff[nickname]=${event.venueName}"
+                uriHandler.openUri(url)
+            },
+            onOpenLyft = {
+                val url = "https://lyft.com/ride?id=lyft" +
+                    "&destination[lat]=${event.venueLat}&destination[lng]=${event.venueLng}"
+                uriHandler.openUri(url)
+            },
+            onShare = {
+                clipboardManager.setText(AnnotatedString("https://local.live/e/${event.id}"))
+                shareCopied = true
+                onShareTracked?.invoke(event.id)
+            },
+        )
+    }
+}
+
+// ── Countdown banner ─────────────────────────────────────────────────────────
+
+@Composable
+private fun CountdownBanner(countdown: Countdown) {
+    val cardShape = RoundedCornerShape(16.dp)
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Box(Modifier.fillMaxWidth().matchParentSize().offset(y = 4.dp).background(AppColors.CoralDk, cardShape))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(AppColors.Coral, cardShape)
+                .border(1.5.dp, AppColors.CoralDk, cardShape)
+                .padding(horizontal = 20.dp, vertical = 14.dp),
+        ) {
+            when {
+                countdown.isLive -> {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(8.dp)
+                                .background(AppColors.White, CircleShape),
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Happening now",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Heading,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp,
+                                color = AppColors.White,
+                            ),
+                        )
+                    }
+                }
+                countdown.isPast -> {
+                    Text(
+                        "This event has passed",
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp,
+                            color = AppColors.White.copy(alpha = 0.78f),
+                        ),
+                    )
+                }
+                else -> {
+                    Column {
+                        Text(
+                            "STARTS IN",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 10.sp,
+                                color = AppColors.White.copy(alpha = 0.75f),
+                                letterSpacing = 1.sp,
+                            ),
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.Bottom,
+                        ) {
+                            CountdownUnit(countdown.days, "days")
+                            CountdownSep()
+                            CountdownUnit(countdown.hours, "hrs")
+                            CountdownSep()
+                            CountdownUnit(countdown.minutes, "min")
+                            CountdownSep()
+                            CountdownUnit(countdown.seconds, "sec")
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CountdownUnit(value: Long, label: String) {
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(
+            value.toString().padStart(2, '0'),
+            style = TextStyle(
+                fontFamily = AppFonts.Heading,
+                fontWeight = FontWeight.Black,
+                fontSize = 28.sp,
+                color = AppColors.White,
+                letterSpacing = (-0.5).sp,
+            ),
+        )
+        Text(
+            label,
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 9.sp,
+                color = AppColors.White.copy(alpha = 0.75f),
+                letterSpacing = 0.3.sp,
+            ),
+        )
+    }
+}
+
+@Composable
+private fun CountdownSep() {
+    Text(
+        "·",
+        style = TextStyle(
+            fontFamily = AppFonts.Body,
+            fontWeight = FontWeight.Black,
+            fontSize = 20.sp,
+            color = AppColors.White.copy(alpha = 0.6f),
+        ),
+        modifier = Modifier.padding(bottom = 14.dp),
+    )
+}
+
+// ── CTA bar ──────────────────────────────────────────────────────────────────
+
+@Composable
+private fun CtaBar(
+    event: Event,
+    ctaUrl: String?,
+    hasLocation: Boolean,
+    mapsExpanded: Boolean,
+    rideExpanded: Boolean,
+    shareCopied: Boolean,
+    onCtaClick: () -> Unit,
+    onToggleMaps: () -> Unit,
+    onToggleRide: () -> Unit,
+    onOpenAppleMaps: () -> Unit,
+    onOpenGoogleMaps: () -> Unit,
+    onOpenUber: () -> Unit,
+    onOpenLyft: () -> Unit,
+    onShare: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(AppColors.White)
+            .border(width = 1.dp, color = AppColors.Mist)
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        // Secondary row
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            if (hasLocation) {
+                SecondaryCtaButton(
+                    icon = Icons.Outlined.Place,
+                    label = if (mapsExpanded) "Close" else "Directions",
+                    isActive = mapsExpanded,
+                    modifier = Modifier.weight(1f),
+                    onClick = onToggleMaps,
+                )
+            }
+            SecondaryCtaButton(
+                icon = Icons.Outlined.IosShare,
+                label = if (shareCopied) "Copied!" else "Share",
+                isActive = shareCopied,
+                modifier = Modifier.weight(1f),
+                onClick = onShare,
+            )
+            if (hasLocation) {
+                SecondaryCtaButton(
+                    icon = Icons.Outlined.DirectionsCar,
+                    label = if (rideExpanded) "Close" else "Get a Ride",
+                    isActive = rideExpanded,
+                    modifier = Modifier.weight(1f),
+                    onClick = onToggleRide,
+                )
+            }
+        }
+
+        // Expandable maps options
+        AnimatedVisibility(visible = mapsExpanded, enter = expandVertically(), exit = shrinkVertically()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ExpandedOption(label = "Apple Maps", modifier = Modifier.weight(1f), onClick = onOpenAppleMaps)
+                ExpandedOption(label = "Google Maps", modifier = Modifier.weight(1f), onClick = onOpenGoogleMaps)
+            }
+        }
+
+        // Expandable ride options
+        AnimatedVisibility(visible = rideExpanded, enter = expandVertically(), exit = shrinkVertically()) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ExpandedOption(label = "Uber", modifier = Modifier.weight(1f), onClick = onOpenUber)
+                ExpandedOption(label = "Lyft", modifier = Modifier.weight(1f), onClick = onOpenLyft)
+            }
+        }
+
+        // Primary CTA
+        if (ctaUrl != null) {
+            PrimaryCtaButton(
+                label = when {
+                    event.isFree -> "RSVP"
+                    event.ticketUrl != null -> "Get Tickets"
+                    else -> "More Info"
+                },
+                isPrimary = event.ticketUrl != null,
+                onClick = onCtaClick,
             )
         }
     }
 }
 
-// ── Hero image with gradient overlay ──
+@Composable
+private fun PrimaryCtaButton(label: String, isPrimary: Boolean, onClick: () -> Unit) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val offsetY by animateFloatAsState(targetValue = if (isPressed) 4f else 0f, animationSpec = tween(80))
+    val scale by animateFloatAsState(targetValue = if (isPressed) 0.97f else 1f, animationSpec = tween(80))
+    val haptic = LocalHapticFeedback.current
+
+    Box(modifier = Modifier.fillMaxWidth().graphicsLayer { translationY = offsetY * density; scaleX = scale; scaleY = scale }) {
+        val bgColor = if (isPrimary) AppColors.Coral else AppColors.Ink2
+        val shadowColor = if (isPrimary) AppColors.CoralDk else Color(0xFF0D0B12)
+        Box(Modifier.matchParentSize().offset(y = if (!isPressed) 4.dp else 1.dp).background(shadowColor, AppShapes.CardSmall))
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(bgColor, AppShapes.CardSmall)
+                .border(2.dp, shadowColor, AppShapes.CardSmall)
+                .clip(AppShapes.CardSmall)
+                .clickable(interactionSource = interactionSource, indication = null, onClick = {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onClick()
+                })
+                .padding(vertical = 14.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                label,
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = Color.White),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SecondaryCtaButton(
+    icon: ImageVector,
+    label: String,
+    isActive: Boolean,
+    modifier: Modifier,
+    onClick: () -> Unit,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(targetValue = if (isPressed) 0.95f else 1f, animationSpec = tween(80))
+    val haptic = LocalHapticFeedback.current
+    val bgColor = if (isActive) AppColors.CoralLt else AppColors.Snow
+    val borderColor = if (isActive) AppColors.Coral else AppColors.Pebble
+    val contentColor = if (isActive) AppColors.Coral else AppColors.Ink2
+
+    Column(
+        modifier = modifier
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .background(bgColor, RoundedCornerShape(12.dp))
+            .border(1.5.dp, borderColor, RoundedCornerShape(12.dp))
+            .clickable(interactionSource = interactionSource, indication = null, onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onClick()
+            })
+            .padding(vertical = 10.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Icon(icon, null, Modifier.size(18.dp), tint = contentColor)
+        Text(
+            label,
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 10.sp,
+                color = contentColor,
+            ),
+        )
+    }
+}
+
+@Composable
+private fun ExpandedOption(label: String, modifier: Modifier, onClick: () -> Unit) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val scale by animateFloatAsState(targetValue = if (isPressed) 0.95f else 1f, animationSpec = tween(80))
+    val haptic = LocalHapticFeedback.current
+
+    Box(
+        modifier = modifier
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .background(AppColors.Snow, RoundedCornerShape(10.dp))
+            .border(1.5.dp, AppColors.Pebble, RoundedCornerShape(10.dp))
+            .clickable(interactionSource = interactionSource, indication = null, onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onClick()
+            })
+            .padding(vertical = 10.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = AppColors.Ink),
+        )
+    }
+}
+
+// ── Hero image ───────────────────────────────────────────────────────────────
 
 @Composable
 private fun HeroImage(
@@ -223,11 +668,8 @@ private fun HeroImage(
     onFavoriteToggle: () -> Unit,
 ) {
     Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(280.dp),
+        modifier = Modifier.fillMaxWidth().height(280.dp),
     ) {
-        // Image or placeholder
         if (event.imageUrl != null) {
             AsyncImage(
                 model = event.imageUrl,
@@ -237,32 +679,24 @@ private fun HeroImage(
             )
         } else {
             Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            listOf(AppColors.BgCoralStart, AppColors.BgCoralEnd),
-                        ),
-                    ),
-            )
+                modifier = Modifier.fillMaxSize().background(
+                    Brush.linearGradient(listOf(AppColors.BgCoralStart, AppColors.BgCoralEnd)),
+                ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Outlined.CalendarMonth, contentDescription = null, modifier = Modifier.size(48.dp), tint = AppColors.Ink3.copy(alpha = 0.3f))
+            }
         }
 
-        // Bottom gradient overlay
+        // Bottom fade
         Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(120.dp)
-                .align(Alignment.BottomCenter)
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(Color.Transparent, AppColors.Snow),
-                    ),
-                ),
+            modifier = Modifier.fillMaxWidth().height(120.dp).align(Alignment.BottomCenter)
+                .background(Brush.verticalGradient(colors = listOf(Color.Transparent, AppColors.Snow))),
         )
 
         // Category pill
         Text(
-            (event.subcategory ?: event.category).replaceFirstChar { it.uppercase() },
+            (event.subcategory ?: event.category).snakeToTitleCase(),
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(start = 20.dp, bottom = 16.dp)
@@ -273,54 +707,53 @@ private fun HeroImage(
         )
 
         // Back button
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopStart)
-                .padding(start = 16.dp, top = 12.dp)
-                .size(36.dp)
-                .background(AppColors.White.copy(alpha = 0.9f), CircleShape)
-                .border(1.5.dp, AppColors.Pebble, CircleShape)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onBack,
-                ),
-            contentAlignment = Alignment.Center,
+        HeroIconButton(
+            modifier = Modifier.align(Alignment.TopStart).padding(start = 16.dp, top = 12.dp),
+            onClick = onBack,
         ) {
-            Icon(
-                Icons.AutoMirrored.Outlined.ArrowBack,
-                contentDescription = "Back",
-                modifier = Modifier.size(18.dp),
-                tint = AppColors.Ink,
-            )
+            Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back", Modifier.size(18.dp), tint = AppColors.Ink)
         }
 
         // Favorite button
-        Box(
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(end = 16.dp, top = 12.dp)
-                .size(36.dp)
-                .background(AppColors.White.copy(alpha = 0.9f), CircleShape)
-                .border(1.5.dp, AppColors.Pebble, CircleShape)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onFavoriteToggle,
-                ),
-            contentAlignment = Alignment.Center,
+        HeroIconButton(
+            modifier = Modifier.align(Alignment.TopEnd).padding(end = 16.dp, top = 12.dp),
+            onClick = onFavoriteToggle,
         ) {
             Icon(
                 if (isFavorited) Icons.Outlined.Favorite else Icons.Outlined.FavoriteBorder,
-                contentDescription = "Favorite",
-                modifier = Modifier.size(18.dp),
+                "Favorite",
+                Modifier.size(18.dp),
                 tint = if (isFavorited) AppColors.Coral else AppColors.Ink3,
             )
         }
     }
 }
 
-// ── Info row with icon ──
+@Composable
+private fun HeroIconButton(modifier: Modifier, onClick: () -> Unit, content: @Composable () -> Unit) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val btnScale by animateFloatAsState(
+        targetValue = if (isPressed) 0.88f else 1f,
+        animationSpec = tween(80),
+    )
+    val haptic = LocalHapticFeedback.current
+
+    Box(
+        modifier = modifier
+            .size(36.dp)
+            .graphicsLayer { scaleX = btnScale; scaleY = btnScale }
+            .background(AppColors.White.copy(alpha = 0.9f), CircleShape)
+            .border(1.5.dp, AppColors.Pebble, CircleShape)
+            .clickable(interactionSource = interactionSource, indication = null, onClick = {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                onClick()
+            }),
+        contentAlignment = Alignment.Center,
+    ) { content() }
+}
+
+// ── Info row ─────────────────────────────────────────────────────────────────
 
 @Composable
 private fun InfoRow(
@@ -328,155 +761,103 @@ private fun InfoRow(
     iconTint: Color,
     text: String,
     textColor: Color = AppColors.Ink2,
-    isClickable: Boolean = false,
-    onClick: () -> Unit = {},
 ) {
-    Row(
-        verticalAlignment = Alignment.Top,
-        modifier = if (isClickable) {
-            Modifier.clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onClick,
-            )
-        } else {
-            Modifier
-        },
-    ) {
+    Row(verticalAlignment = Alignment.Top) {
         Box(
-            modifier = Modifier
-                .size(32.dp)
-                .background(AppColors.Mist, AppShapes.IconBox)
-                .border(1.5.dp, AppColors.Pebble, AppShapes.IconBox),
+            modifier = Modifier.size(32.dp).background(AppColors.Mist, AppShapes.IconBox).border(1.5.dp, AppColors.Pebble, AppShapes.IconBox),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp), tint = iconTint)
+            Icon(icon, null, Modifier.size(16.dp), tint = iconTint)
         }
         Spacer(Modifier.width(10.dp))
-        Column(modifier = Modifier.padding(top = 4.dp)) {
-            Text(
-                text,
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    color = textColor,
-                    lineHeight = 18.sp,
-                ),
-            )
-            if (isClickable) {
-                Text(
-                    "Open in Maps",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 11.sp,
-                        color = AppColors.Sky,
-                    ),
-                )
-            }
-        }
+        Text(
+            text,
+            modifier = Modifier.padding(top = 6.dp),
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = textColor, lineHeight = 18.sp),
+        )
     }
 }
 
-// ── Ticket / RSVP button ──
-
-@Composable
-private fun TicketButton(isFree: Boolean, onClick: () -> Unit) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
-    val offsetY by animateFloatAsState(
-        targetValue = if (isPressed) 4f else 0f,
-        animationSpec = tween(80),
-    )
-
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(AppColors.White)
-            .windowInsetsPadding(WindowInsets.navigationBars)
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-    ) {
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .graphicsLayer { translationY = offsetY * density },
-        ) {
-            // Shadow
-            Box(
-                modifier = Modifier
-                    .matchParentSize()
-                    .offset(y = if (!isPressed) 4.dp else 1.dp)
-                    .background(AppColors.CoralDk, AppShapes.CardSmall),
-            )
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(AppColors.Coral, AppShapes.CardSmall)
-                    .border(2.dp, AppColors.CoralDk, AppShapes.CardSmall)
-                    .clip(AppShapes.CardSmall)
-                    .clickable(
-                        interactionSource = interactionSource,
-                        indication = null,
-                        onClick = onClick,
-                    )
-                    .padding(vertical = 14.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    if (isFree) "RSVP" else "Get Tickets",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 16.sp,
-                        color = AppColors.White,
-                    ),
-                )
-            }
-        }
-    }
-}
-
-// ── Description source label ──
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 private fun descriptionSource(event: Event): String {
     val src = event.source?.lowercase() ?: return event.venueName ?: "Venue"
     return when {
         src == "ticketmaster" -> "Ticketmaster"
-        // Crawled events: use the venue name as the source
         event.venueName != null -> event.venueName
         else -> src.replaceFirstChar { it.uppercase() }
     }
 }
 
-// ── Date formatter ──
+/** Detect if an event is recurring based on title, description, and category */
+private fun detectRecurrence(event: Event): String? {
+    val text = "${event.title} ${event.description ?: ""}".lowercase()
+    val isAlwaysOn = event.category == "always_on"
+
+    // Check for specific day patterns
+    val dayPatterns = mapOf(
+        "sunday" to "Happens Every Sunday",
+        "monday" to "Happens Every Monday",
+        "tuesday" to "Happens Every Tuesday",
+        "wednesday" to "Happens Every Wednesday",
+        "thursday" to "Happens Every Thursday",
+        "friday" to "Happens Every Friday",
+        "saturday" to "Happens Every Saturday",
+    )
+
+    // Check for "every [day]" pattern
+    for ((day, label) in dayPatterns) {
+        if (text.contains("every $day") || text.contains("${day}s") ||
+            (text.contains(day) && (text.contains("weekly") || text.contains("every week")))) {
+            return label
+        }
+    }
+
+    // Check for weekly
+    if (text.contains("weekly") || text.contains("every week")) return "Happens Weekly"
+
+    // Check for monthly
+    if (text.contains("monthly") || text.contains("every month") ||
+        text.contains("first friday") || text.contains("first saturday") ||
+        text.contains("last friday") || text.contains("second saturday") ||
+        text.contains("third thursday")) return "Happens Monthly"
+
+    // Check for daily
+    if (text.contains("daily") || text.contains("every day") || text.contains("everyday")) return "Happens Daily"
+
+    // Always-on events without a specific start_at are anytime experiences
+    if (isAlwaysOn && event.startAt == null) return "Available Anytime"
+
+    // Always-on with a start_at but no weekly/monthly pattern — likely recurring
+    if (isAlwaysOn && event.startAt != null) return "Recurring Event"
+
+    return null
+}
 
 private fun formatDate(isoDate: String): String {
     return try {
-        // Parse ISO 8601: "2026-03-15T19:00:00"
-        val parts = isoDate.split("T")
-        if (parts.size < 2) return isoDate
-        val dateParts = parts[0].split("-")
-        if (dateParts.size < 3) return isoDate
-        val months = listOf(
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun",
-            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-        )
-        val month = months.getOrNull((dateParts[1].toIntOrNull() ?: 1) - 1) ?: ""
-        val day = dateParts[2].toIntOrNull() ?: 0
-        val year = dateParts[0]
-        val timeParts = parts[1].split(":")
-        val hour = timeParts[0].toIntOrNull() ?: 0
-        val minute = timeParts.getOrNull(1) ?: "00"
-        val amPm = if (hour < 12) "AM" else "PM"
-        val hour12 = when {
-            hour == 0 -> 12
-            hour > 12 -> hour - 12
-            else -> hour
+        // Midnight UTC means "no specific time" — just show the date
+        val isMidnightUtc = isoDate.contains("T00:00:00")
+        val instant = Instant.parse(isoDate)
+        val tz = kotlinx.datetime.TimeZone.currentSystemDefault()
+        val local = if (isMidnightUtc) {
+            instant.toLocalDateTime(kotlinx.datetime.TimeZone.UTC)
+        } else {
+            instant.toLocalDateTime(tz)
         }
-        "$month $day, $year \u00B7 $hour12:$minute $amPm"
-    } catch (_: Exception) {
-        isoDate
-    }
+        val months = listOf("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+        val month = months.getOrNull(local.monthNumber - 1) ?: ""
+        val day = local.dayOfMonth
+        val year = local.year
+        if (isMidnightUtc) {
+            "$month $day, $year"
+        } else {
+            val hour = local.hour
+            val minute = local.minute
+            val amPm = if (hour < 12) "AM" else "PM"
+            val hour12 = when { hour == 0 -> 12; hour > 12 -> hour - 12; else -> hour }
+            val minuteStr = minute.toString().padStart(2, '0')
+            "$month $day, $year \u00B7 $hour12:$minuteStr $amPm"
+        }
+    } catch (_: Exception) { isoDate }
 }

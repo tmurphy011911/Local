@@ -32,7 +32,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -59,29 +62,35 @@ fun VenuesScreen(
 
     val cityToId: (String) -> String = { it.lowercase().replace(" ", "-") }
 
-    // Build items: favorite-city venues first (by proximity), then others (by proximity).
-    // Venues are already sorted by proximity from the repository.
+    // Sort: selected-area venues by public interest rank, then rest by distance + rank
     val items = remember(venues, selectedNeighborhoods) {
-        val favoriteCity = mutableListOf<SelectionItem>()
-        val other = mutableListOf<SelectionItem>()
+        val favoriteCity = mutableListOf<Pair<VenueSummary, Int>>()
+        val other = mutableListOf<Pair<VenueSummary, Int>>()
 
         venues.forEachIndexed { index, venue ->
-            val distText = venue.distanceDisplay
             val isFavoriteCity = selectedNeighborhoods.isNotEmpty() &&
                 cityToId(venue.city) in selectedNeighborhoods
-            val subtitle = if (distText.isNotEmpty()) "${venue.city} \u00B7 $distText" else venue.city
+            if (isFavoriteCity) favoriteCity.add(venue to index) else other.add(venue to index)
+        }
 
-            val item = SelectionItem(
+        // Sort favorite-area venues by rank (highest first)
+        val sortedFavorites = favoriteCity.sortedByDescending { it.first.publicInterestRank ?: 0 }
+        // Sort others by combined rank + distance
+        val sortedOther = other.sortedWith(
+            compareByDescending<Pair<VenueSummary, Int>> { it.first.publicInterestRank ?: 0 }
+                .thenBy { it.first.distanceMiles ?: Double.MAX_VALUE }
+        )
+
+        (sortedFavorites + sortedOther).map { (venue, index) ->
+            val distText = venue.distanceDisplay
+            val subtitle = if (distText.isNotEmpty()) "${venue.city} \u00B7 $distText" else venue.city
+            SelectionItem(
                 id = venue.name.lowercase().replace(" ", "-"),
                 icon = OnboardingViewModel.venueIcon(index),
                 name = venue.name,
                 subtitle = subtitle,
             )
-
-            if (isFavoriteCity) favoriteCity.add(item) else other.add(item)
         }
-
-        favoriteCity + other
     }
 
     val filtered = if (searchQuery.isBlank()) items
@@ -150,25 +159,19 @@ fun VenuesScreen(
                     .padding(horizontal = 20.dp),
             ) {
                 Text(
-                    "Any favourite",
+                    buildAnnotatedString {
+                        append("Any favorite ")
+                        withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = AppColors.Plum)) {
+                            append("spots?")
+                        }
+                    },
                     style = TextStyle(
                         fontFamily = AppFonts.Heading,
                         fontWeight = FontWeight.Black,
                         fontSize = 24.sp,
                         color = AppColors.Ink,
-                        lineHeight = 30.sp,
                     ),
-                )
-                Text(
-                    "spots?",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Heading,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 24.sp,
-                        fontStyle = FontStyle.Italic,
-                        color = AppColors.Plum,
-                        lineHeight = 30.sp,
-                    ),
+                    maxLines = 1,
                 )
 
                 Text(

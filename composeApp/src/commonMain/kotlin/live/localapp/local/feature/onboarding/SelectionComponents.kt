@@ -10,6 +10,7 @@ import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -30,6 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -90,75 +92,81 @@ fun SelectionCard(
                 .background(bgColor, RoundedCornerShape(16.dp))
                 .border(2.dp, borderColor, RoundedCornerShape(16.dp))
                 .padding(11.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
         ) {
-            // Top: icon/spacer + check
-            Box(modifier = Modifier.fillMaxWidth()) {
-                if (item.icon != null) {
-                    Icon(
-                        item.icon,
-                        contentDescription = null,
-                        modifier = Modifier.size(22.dp),
-                        tint = if (isSelected) AppColors.PlumDk else AppColors.Ink2,
-                    )
-                } else {
-                    Spacer(Modifier.size(22.dp))
-                }
+            // Top section: icon/check + name + tag
+            Column {
+                // Top: icon/spacer + check
+                Box(modifier = Modifier.fillMaxWidth()) {
+                    if (item.icon != null) {
+                        Icon(
+                            item.icon,
+                            contentDescription = null,
+                            modifier = Modifier.size(22.dp),
+                            tint = if (isSelected) AppColors.PlumDk else AppColors.Ink2,
+                        )
+                    } else {
+                        Spacer(Modifier.size(22.dp))
+                    }
 
-                Box(
-                    modifier = Modifier
-                        .size(18.dp)
-                        .align(Alignment.TopEnd)
-                        .background(
-                            if (isSelected) AppColors.Plum else Color.Transparent,
-                            CircleShape,
-                        )
-                        .border(2.dp, if (isSelected) AppColors.PlumDk else AppColors.Pebble, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    if (isSelected) {
-                        Text(
-                            "\u2713",
-                            style = TextStyle(
-                                fontWeight = FontWeight.Black,
-                                fontSize = 9.sp,
-                                color = AppColors.White,
-                            ),
-                        )
+                    Box(
+                        modifier = Modifier
+                            .size(18.dp)
+                            .align(Alignment.TopEnd)
+                            .background(
+                                if (isSelected) AppColors.Plum else Color.Transparent,
+                                CircleShape,
+                            )
+                            .border(2.dp, if (isSelected) AppColors.PlumDk else AppColors.Pebble, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (isSelected) {
+                            Text(
+                                "\u2713",
+                                style = TextStyle(
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 9.sp,
+                                    color = AppColors.White,
+                                ),
+                            )
+                        }
                     }
                 }
-            }
 
-            Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(6.dp))
 
-            Text(
-                item.name,
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 12.sp,
-                    color = if (isSelected) AppColors.PlumDk else AppColors.Ink,
-                    lineHeight = 16.sp,
-                ),
-            )
-
-            if (item.tag != null) {
-                Spacer(Modifier.height(3.dp))
                 Text(
-                    item.tag,
-                    modifier = Modifier
-                        .background(AppColors.Coral.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 6.dp, vertical = 1.dp),
+                    item.name,
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.ExtraBold,
-                        fontSize = 9.sp,
-                        color = AppColors.Coral,
+                        fontSize = 12.sp,
+                        color = if (isSelected) AppColors.PlumDk else AppColors.Ink,
+                        lineHeight = 16.sp,
                     ),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
                 )
+
+                if (item.tag != null) {
+                    Spacer(Modifier.height(3.dp))
+                    Text(
+                        item.tag,
+                        modifier = Modifier
+                            .background(AppColors.Coral.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
+                            .padding(horizontal = 6.dp, vertical = 1.dp),
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 9.sp,
+                            color = AppColors.Coral,
+                        ),
+                    )
+                }
             }
 
+            // Bottom: subtitle — always bottom-aligned
             if (item.subtitle != null) {
-                Spacer(Modifier.height(if (item.tag != null) 2.dp else 4.dp))
                 Text(
                     item.subtitle,
                     style = TextStyle(
@@ -166,7 +174,83 @@ fun SelectionCard(
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 10.sp,
                         color = AppColors.Ink3,
-                        lineHeight = 14.sp,
+                    ),
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+/** Slim horizontal card — name + subtitle on the left, radio on the right */
+@Composable
+fun SlimSelectionCard(
+    name: String,
+    subtitle: String? = null,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+) {
+    val borderColor = if (isSelected) AppColors.Plum else AppColors.Pebble
+    val bgColor = if (isSelected) AppColors.PlumLt else AppColors.White
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .defaultMinSize(minHeight = 44.dp)
+            .background(bgColor, RoundedCornerShape(12.dp))
+            .border(2.dp, borderColor, RoundedCornerShape(12.dp))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                name,
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 13.sp,
+                    color = if (isSelected) AppColors.PlumDk else AppColors.Ink,
+                ),
+                maxLines = 1,
+            )
+            if (subtitle != null) {
+                Text(
+                    subtitle,
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 10.sp,
+                        color = AppColors.Ink3,
+                    ),
+                    maxLines = 1,
+                )
+            }
+        }
+
+        Spacer(Modifier.size(8.dp))
+
+        Box(
+            modifier = Modifier
+                .size(18.dp)
+                .background(
+                    if (isSelected) AppColors.Plum else Color.Transparent,
+                    CircleShape,
+                )
+                .border(2.dp, if (isSelected) AppColors.PlumDk else AppColors.Pebble, CircleShape),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (isSelected) {
+                Text(
+                    "\u2713",
+                    style = TextStyle(
+                        fontWeight = FontWeight.Black,
+                        fontSize = 9.sp,
+                        color = AppColors.White,
                     ),
                 )
             }

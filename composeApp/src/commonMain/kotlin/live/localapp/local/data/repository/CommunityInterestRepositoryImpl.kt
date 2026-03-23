@@ -1,0 +1,240 @@
+package live.localapp.local.data.repository
+
+import io.github.jan.supabase.SupabaseClient
+import io.github.jan.supabase.postgrest.from
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import live.localapp.local.domain.repository.CommunityInterestRepository
+import live.localapp.local.domain.repository.InteractionType
+import live.localapp.local.domain.repository.UserPreferencesRepository
+
+@Serializable
+private data class CommunityInteractionDto(
+    @SerialName("user_id") val userId: String,
+    @SerialName("item_id") val itemId: String,
+    @SerialName("item_type") val itemType: String,
+    @SerialName("interaction_type") val interactionType: String,
+    @SerialName("category") val category: String? = null,
+)
+
+class CommunityInterestRepositoryImpl(
+    private val supabaseClient: SupabaseClient,
+    private val userPreferencesRepository: UserPreferencesRepository,
+) : CommunityInterestRepository {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    // Personal interaction maps (current user only)
+    private val personalClicks = mutableMapOf<String, Int>()
+    private val personalFavorites = mutableMapOf<String, Int>()
+    private val personalShares = mutableMapOf<String, Int>()
+    private val personalPlanAdds = mutableMapOf<String, Int>()
+
+    // Community interaction maps (everyone else)
+    private val communityClicks = mutableMapOf<String, Int>()
+    private val communityFavorites = mutableMapOf<String, Int>()
+    private val communityShares = mutableMapOf<String, Int>()
+    private val communityPlanAdds = mutableMapOf<String, Int>()
+
+    // Category affinity cache
+    private var cachedAffinity: Map<String, Double> = emptyMap()
+    private var affinityDirty = true
+
+    // Track personal category interactions for affinity: category -> weighted count
+    private val personalCategoryWeights = mutableMapOf<String, Double>()
+
+    private var historyLoaded = false
+
+    // Scoring is now server-side; no need to load 10k rows on startup.
+    // init { scope.launch { loadHistory() } }
+
+    private suspend fun loadHistory() {
+        try {
+            val currentUserId = userPreferencesRepository.getLocalUserId()
+
+            // Load recent community interactions (capped for performance)
+            val rows = supabaseClient.from("community_interactions")
+                .select {
+                    order("created_at", io.github.jan.supabase.postgrest.query.Order.DESCENDING)
+                    limit(10000)
+                }
+                .decodeList<CommunityInteractionDto>()
+
+            rows.forEach { row ->
+                val isPersonal = currentUserId != null && row.userId == currentUserId
+                when (row.interactionType) {
+                    "click" -> {
+                        if (isPersonal) {
+                            personalClicks[row.itemId] = (personalClicks[row.itemId] ?: 0) + 1
+                        } else {
+                            communityClicks[row.itemId] = (communityClicks[row.itemId] ?: 0) + 1
+                        }
+                    }
+                    "favorite" -> {
+                        if (isPersonal) {
+                            personalFavorites[row.itemId] = (personalFavorites[row.itemId] ?: 0) + 1
+                        } else {
+                            communityFavorites[row.itemId] = (communityFavorites[row.itemId] ?: 0) + 1
+                        }
+                    }
+                    "share" -> {
+                        if (isPersonal) {
+                            personalShares[row.itemId] = (personalShares[row.itemId] ?: 0) + 1
+                        } else {
+                            communityShares[row.itemId] = (communityShares[row.itemId] ?: 0) + 1
+                        }
+                    }
+                    "plan_add" -> {
+                        if (isPersonal) {
+                            personalPlanAdds[row.itemId] = (personalPlanAdds[row.itemId] ?: 0) + 1
+                        } else {
+                            communityPlanAdds[row.itemId] = (communityPlanAdds[row.itemId] ?: 0) + 1
+                        }
+                    }
+                }
+
+                // Track personal category weights for affinity
+                if (isPersonal && row.category != null) {
+                    val weight = interactionWeight(row.interactionType)
+                    val cat = row.category.lowercase()
+                    personalCategoryWeights[cat] = (personalCategoryWeights[cat] ?: 0.0) + weight
+                }
+            }
+            affinityDirty = true
+            historyLoaded = true
+        } catch (_: Exception) {
+            // Non-fatal: scores will just start from zero this session
+        }
+    }
+
+    private fun interactionWeight(interactionType: String): Double = when (interactionType) {
+        "click" -> 1.0
+        "favorite" -> 2.0
+        "share" -> 4.0
+        "plan_add" -> 6.0
+        else -> 1.0
+    }
+
+    override fun recordClick(id: String, type: InteractionType, category: String?) {
+        personalClicks[id] = (personalClicks[id] ?: 0) + 1
+        trackCategoryWeight(category, 1.0)
+        persistInteraction(id, type, "click", category)
+    }
+
+    override fun recordShare(id: String, type: InteractionType, category: String?) {
+        personalShares[id] = (personalShares[id] ?: 0) + 1
+        trackCategoryWeight(category, 4.0)
+        persistInteraction(id, type, "share", category)
+    }
+
+    override fun recordFavorite(id: String, type: InteractionType, category: String?) {
+        personalFavorites[id] = (personalFavorites[id] ?: 0) + 1
+        trackCategoryWeight(category, 2.0)
+        persistInteraction(id, type, "favorite", category)
+    }
+
+    override fun removeFavorite(id: String, type: InteractionType) {
+        personalFavorites.remove(id)
+        val userId = userPreferencesRepository.getLocalUserId() ?: return
+        scope.launch {
+            try {
+                supabaseClient.from("community_interactions").delete {
+                    filter {
+                        eq("user_id", userId)
+                        eq("item_id", id)
+                        eq("item_type", when (type) {
+                            InteractionType.EVENT -> "event"
+                            InteractionType.PLACE -> "place"
+                        })
+                        eq("interaction_type", "favorite")
+                    }
+                }
+            } catch (_: Exception) { }
+        }
+    }
+
+    override fun recordPlanAdd(id: String, type: InteractionType, category: String?) {
+        personalPlanAdds[id] = (personalPlanAdds[id] ?: 0) + 1
+        trackCategoryWeight(category, 6.0)
+        persistInteraction(id, type, "plan_add", category)
+    }
+
+    private fun trackCategoryWeight(category: String?, weight: Double) {
+        if (category != null) {
+            val cat = category.lowercase()
+            personalCategoryWeights[cat] = (personalCategoryWeights[cat] ?: 0.0) + weight
+            affinityDirty = true
+        }
+    }
+
+    // Scoring is now computed server-side in the carousels edge function.
+    // These methods return 0 / empty since no local history is loaded.
+    override fun personalRawScore(id: String): Double = 0.0
+    override fun communityRawScore(id: String): Double = 0.0
+    override fun rawScore(id: String): Double = 0.0
+    override fun normalizedScore(id: String, peerIds: List<String>): Double = 0.0
+    override fun totalSaves(id: String): Int = 0
+    override fun categoryAffinity(): Map<String, Double> = emptyMap()
+
+    override suspend fun getFavoriteEventIds(userId: String): List<String> {
+        return try {
+            supabaseClient.from("community_interactions")
+                .select {
+                    filter {
+                        eq("user_id", userId)
+                        eq("interaction_type", "favorite")
+                        eq("item_type", "event")
+                    }
+                }
+                .decodeList<CommunityInteractionDto>()
+                .map { it.itemId }
+                .distinct()
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    override suspend fun getFavoriteVenueIds(userId: String): List<String> {
+        return try {
+            supabaseClient.from("community_interactions")
+                .select {
+                    filter {
+                        eq("user_id", userId)
+                        eq("interaction_type", "favorite")
+                        eq("item_type", "place")
+                    }
+                }
+                .decodeList<CommunityInteractionDto>()
+                .map { it.itemId }
+                .distinct()
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    private fun persistInteraction(itemId: String, type: InteractionType, interaction: String, category: String?) {
+        val userId = userPreferencesRepository.getLocalUserId() ?: return
+        scope.launch {
+            try {
+                supabaseClient.from("community_interactions").insert(
+                    CommunityInteractionDto(
+                        userId = userId,
+                        itemId = itemId,
+                        itemType = when (type) {
+                            InteractionType.EVENT -> "event"
+                            InteractionType.PLACE -> "place"
+                        },
+                        interactionType = interaction,
+                        category = category,
+                    )
+                )
+            } catch (_: Exception) {
+                // Fire-and-forget: don't crash the app if persistence fails
+            }
+        }
+    }
+}

@@ -5,9 +5,8 @@
  *   GOOGLE_PLACES_API_KEY=xxx SUPABASE_SERVICE_KEY=ey... node scripts/discover_venues_google.js
  *
  * Optional:
- *   STATE=MA             (use predefined grid to cover entire state; default MA)
- *   METRO=boston         (default; used alongside state)
  *   CENTER_LAT=42.3601  CENTER_LNG=-71.0589  (override single center point)
+ *   STATE=MA             (used with CENTER_LAT/LNG for category text queries)
  *   RADIUS_METERS=50000 (default 50km ≈ 31 miles, max 50000)
  *   DRY_RUN=1           (preview without writing to Supabase)
  *   CATEGORY=bar,brewery (comma-separated filter — only run specific categories)
@@ -17,123 +16,17 @@ const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
 
 let GOOGLE_PLACES_API_KEY, SUPABASE_SERVICE_KEY;
 
-const STATE = process.env.STATE || "MA";
-const METRO = process.env.METRO || "boston";
 const RADIUS_METERS = parseInt(process.env.RADIUS_METERS || "50000", 10);
 const DRY_RUN = process.env.DRY_RUN === "1";
 const CATEGORY_FILTER = process.env.CATEGORY
   ? process.env.CATEGORY.split(",").map((s) => s.trim())
   : null;
 
-// ── State grid definitions: overlapping 50km circles to cover the whole state ──
-
-const STATE_GRIDS = {
-  MA: {
-    name: "Massachusetts",
-    centers: [
-      { label: "Boston/East",       lat: 42.3601, lng: -71.0589 },
-      { label: "Worcester/Central", lat: 42.2626, lng: -71.8023 },
-      { label: "Springfield/West",  lat: 42.1015, lng: -72.5898 },
-      { label: "Cape Cod/SE",       lat: 41.7688, lng: -70.4974 },
-      { label: "Lowell/NE",         lat: 42.6334, lng: -71.3162 },
-      { label: "Pittsfield/Berkshires", lat: 42.4501, lng: -73.2454 },
-      { label: "New Bedford/South Coast", lat: 41.6362, lng: -70.9342 },
-    ],
-  },
-};
-
-// Use custom center if provided, otherwise use state grid
+// Use custom center if provided — for manual one-off runs
 const USE_CUSTOM_CENTER = process.env.CENTER_LAT && process.env.CENTER_LNG;
 const GRID_CENTERS = USE_CUSTOM_CENTER
   ? [{ label: "Custom", lat: parseFloat(process.env.CENTER_LAT), lng: parseFloat(process.env.CENTER_LNG) }]
-  : (STATE_GRIDS[STATE]?.centers || STATE_GRIDS.MA.centers);
-
-// ── Category definitions: your venue category → Google Places types + text query ──
-
-const STATE_NAME = STATE_GRIDS[STATE]?.name || STATE;
-
-const CATEGORIES = [
-  {
-    category: "bar",
-    includedTypes: ["bar"],
-    textQuery: `bars in ${STATE_NAME}`,
-  },
-  {
-    category: "brewery",
-    includedTypes: ["brewery"],
-    textQuery: null,
-  },
-  {
-    category: "winery",
-    includedTypes: ["winery"],
-    textQuery: null,
-  },
-  {
-    category: "restaurant",
-    includedTypes: ["restaurant"],
-    textQuery: `restaurants with events in ${STATE_NAME}`,
-  },
-  {
-    category: "cafe",
-    includedTypes: ["cafe", "coffee_shop"],
-    textQuery: null,
-  },
-  {
-    category: "bakery",
-    includedTypes: ["bakery"],
-    textQuery: null,
-  },
-  {
-    category: "music_venue",
-    includedTypes: ["live_music_venue", "night_club"],
-    textQuery: `music venues concert halls in ${STATE_NAME}`,
-  },
-  {
-    category: "sports_venue",
-    includedTypes: ["sports_complex", "arena", "gym"],
-    textQuery: `sports venues arenas in ${STATE_NAME}`,
-  },
-  {
-    category: "stadium",
-    includedTypes: ["stadium"],
-    textQuery: null,
-  },
-  {
-    category: "arts_center",
-    includedTypes: ["cultural_center", "performing_arts_theater"],
-    textQuery: `arts centers in ${STATE_NAME}`,
-  },
-  {
-    category: "library",
-    includedTypes: ["library"],
-    textQuery: null,
-  },
-  {
-    category: "museum",
-    includedTypes: ["museum", "art_gallery"],
-    textQuery: null,
-  },
-  {
-    category: "tour",
-    includedTypes: ["tourist_attraction"],
-    textQuery: `tours walking tours in ${STATE_NAME}`,
-  },
-  {
-    category: "theater",
-    includedTypes: ["performing_arts_theater", "movie_theater"],
-    textQuery: `theaters in ${STATE_NAME}`,
-  },
-  {
-    category: "park",
-    includedTypes: ["park", "national_park"],
-    textQuery: `parks with events in ${STATE_NAME}`,
-  },
-  {
-    category: "public_space",
-    includedTypes: ["community_center", "convention_center", "event_venue"],
-    textQuery: `event spaces community centers in ${STATE_NAME}`,
-  },
-];
+  : null;
 
 // ── Google Places API (New) — Nearby Search ──
 
@@ -148,6 +41,8 @@ const PLACES_FIELDS = [
   "places.businessStatus",
   "places.photos",
   "places.editorialSummary",
+  "places.rating",
+  "places.priceLevel",
 ].join(",");
 
 async function searchNearby(includedTypes, centerLat, centerLng) {
@@ -218,6 +113,8 @@ const TEXT_FIELDS = [
   "places.businessStatus",
   "places.photos",
   "places.editorialSummary",
+  "places.rating",
+  "places.priceLevel",
 ].join(",");
 
 async function searchText(query, centerLat, centerLng) {
@@ -363,6 +260,26 @@ const EXCLUDED_NAMES = new Set([
   "funeral home", "funeral service",
   // Dry cleaning / laundry
   "dry cleaners", "laundromat",
+  // Spa / massage chains
+  "massage envy", "hand & stone", "hand and stone", "elements massage",
+  "european wax center", "ideal image", "laser away", "milan laser",
+  // Bowling / entertainment chains
+  "bowlero", "bowlmor", "amf bowling", "lucky strike",
+  "dave & buster's", "dave and buster's", "main event", "topgolf",
+  "k1 speed", "urban air", "sky zone", "launch trampoline",
+  // Shopping / retail chains (beyond big box already listed)
+  "primark", "zara", "h&m", "forever 21", "uniqlo",
+  "nordstrom rack", "saks off 5th", "ross", "five below",
+  "dollar tree", "dollar general", "family dollar",
+  "gamestop", "spencer's", "hot topic", "bath & body works",
+  // Bookstore chains
+  "barnes & noble", "barnes and noble", "books-a-million",
+  // Market / grocery chains (beyond already listed)
+  "sprouts", "fresh market", "the fresh market",
+  // Private / non-public
+  "elks lodge", "vfw post", "american legion", "moose lodge",
+  "knights of columbus", "masonic lodge", "rotary club",
+  "country club", "yacht club", "tennis club", "swim club",
 ]);
 
 // Patterns that indicate a chain/non-local venue
@@ -399,9 +316,25 @@ const EXCLUDED_PATTERNS = [
   /\breal estate\b/i, /\brealty\b/i,
   /\bself.?storage\b/i, /\bmini.?storage\b/i,
   /\bparking (lot|garage)\b/i,
+  // Spa / wellness chains
+  /^massage envy/i, /^hand (& |and )stone/i, /^elements massage/i,
+  /^european wax/i, /^ideal image/i, /^milan laser/i,
+  // Entertainment chains
+  /^bowlero/i, /^bowlmor/i, /^amf\b/i, /^topgolf/i, /^k1 speed/i,
+  /^urban air/i, /^sky zone/i, /^launch trampoline/i, /^main event\b/i,
+  // Private clubs / lodges
+  /\belks lodge\b/i, /\bvfw\b/i, /\bamerican legion\b/i,
+  /\bmoose lodge\b/i, /\bknights of columbus\b/i, /\bmasonic\b/i,
+  /\bcountry club\b/i, /\byacht club\b/i,
+  /\bhoa\b/i, /\bhomeowners?\s*assoc/i,
+  /\brotary club\b/i, /\blions club\b/i, /\bkiwanis\b/i,
+  // Misc non-public
+  /\bwedding venue\b/i, /\bbanquet hall\b/i, /\bfunction hall\b/i,
+  /\brehearsal space\b/i, /\bcoworking\b/i, /\bco-working\b/i,
+  /\bself.?serve\b/i, /\bvending\b/i,
 ];
 
-// Google Places types that don't belong on an event discovery app
+// Google Places types that don't belong on a local discovery app
 const EXCLUDED_TYPES = new Set([
   "accounting", "atm", "bank", "car_dealer", "car_rental", "car_repair",
   "car_wash", "cemetery", "dentist", "doctor", "drugstore", "electrician",
@@ -411,6 +344,14 @@ const EXCLUDED_TYPES = new Set([
   "physiotherapist", "plumber", "police", "post_office", "real_estate_agency",
   "roofing_contractor", "school", "shoe_store", "storage", "store",
   "supermarket", "transit_station", "travel_agency", "veterinary_care",
+  // Additional non-public types for expanded categories
+  "church", "mosque", "synagogue", "hindu_temple",
+  "city_hall", "courthouse", "embassy", "local_government_office",
+  "university", "primary_school", "secondary_school",
+  "gym", "fitness_center",
+  "rv_park", "campground",
+  "wedding_venue", "funeral_director",
+  "private_club",
 ]);
 
 function isExcludedVenue(name, placeTypes) {
@@ -440,8 +381,8 @@ function extractCity(formattedAddress) {
   return parts[0] || "";
 }
 
-function extractState(formattedAddress) {
-  if (!formattedAddress) return STATE;
+function extractState(formattedAddress, fallbackState) {
+  if (!formattedAddress) return fallbackState;
   // "123 Main St, Cambridge, MA 02139, USA" → "MA"
   const parts = formattedAddress.split(",").map((s) => s.trim());
   if (parts.length >= 2) {
@@ -449,13 +390,37 @@ function extractState(formattedAddress) {
     const match = stateZip.match(/^([A-Z]{2})\s/);
     if (match) return match[1];
   }
-  return STATE;
+  return fallbackState;
 }
 
-function placeToVenue(place, category) {
+// ── Category → place_type mapping ──
+
+const PLACE_TYPE_MAP = {
+  // eat_drink
+  restaurant: "eat_drink", bar: "eat_drink", brewery: "eat_drink",
+  cafe: "eat_drink", bakery: "eat_drink", winery: "eat_drink",
+  // public_attraction
+  park: "public_attraction", beach: "public_attraction", garden: "public_attraction",
+  trail: "public_attraction", waterfront: "public_attraction", plaza: "public_attraction",
+  public_space: "public_attraction",
+  // ticketed
+  museum: "ticketed", aquarium: "ticketed", zoo: "ticketed",
+  historic_site: "ticketed", tour: "ticketed", observation: "ticketed",
+  escape_room: "ticketed", arts_center: "ticketed", library: "ticketed",
+  theater: "ticketed",
+  // entertainment
+  bowling: "entertainment", arcade: "entertainment", mini_golf: "entertainment",
+  movie_theater: "entertainment", spa: "entertainment", shopping: "entertainment",
+  bookstore: "entertainment", market: "entertainment", comedy_club: "entertainment",
+  // event_venue (primarily for crawling)
+  music_venue: "event_venue", sports_venue: "event_venue", stadium: "event_venue",
+  outdoor_amphitheater: "event_venue", college: "event_venue", bar_events: "event_venue",
+};
+
+function placeToVenue(place, category, currentStateCode) {
   const name = place.displayName?.text || place.displayName || "";
   const city = extractCity(place.formattedAddress);
-  const state = extractState(place.formattedAddress);
+  const state = extractState(place.formattedAddress, currentStateCode);
   const lat = place.location?.latitude || null;
   const lng = place.location?.longitude || null;
   const website = place.websiteUri || null;
@@ -471,20 +436,31 @@ function placeToVenue(place, category) {
     website,
     events_url: null, // Will be discovered by fix_venue_urls.js
     category,
+    place_type: PLACE_TYPE_MAP[category] || null,
     city,
     state,
-    metro_area: METRO,
     lat,
     lng,
     is_active: true,
     crawl_success_rate: 1.0,
     photo_url,
     description,
+    address: place.formattedAddress || null,
+    google_rating: place.rating || null,
+    price_level: place.priceLevel || null,
     _placeTypes: placeTypes, // used for filtering, stripped before upsert
   };
 }
 
 // ── Upsert to Supabase ──
+
+function stripInternalFields(obj) {
+  const clean = {};
+  for (const [k, v] of Object.entries(obj)) {
+    if (!k.startsWith("_")) clean[k] = v;
+  }
+  return clean;
+}
 
 async function upsertVenues(venues) {
   const seen = new Set();
@@ -506,7 +482,7 @@ async function upsertVenues(venues) {
   let errors = 0;
 
   for (let i = 0; i < unique.length; i += batchSize) {
-    const batch = unique.slice(i, i + batchSize);
+    const batch = unique.slice(i, i + batchSize).map(stripInternalFields);
     const res = await fetch(url, {
       method: "POST",
       headers: {
@@ -528,6 +504,28 @@ async function upsertVenues(venues) {
   }
 
   return { inserted, errors, dedupedCount: venues.length - unique.length };
+}
+
+// ── Fetch grid centers from state_grid_centers table ──
+
+async function fetchGridCentersForState(stateCode) {
+  try {
+    const res = await fetch(
+      `${SUPABASE_URL}/rest/v1/state_grid_centers?state_code=eq.${stateCode}&select=label,lat,lng`,
+      {
+        headers: {
+          apikey: SUPABASE_SERVICE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+        },
+      }
+    );
+    if (!res.ok) return [];
+    const centers = await res.json();
+    if (!Array.isArray(centers) || centers.length === 0) return [];
+    return centers;
+  } catch (_) {
+    return [];
+  }
 }
 
 // ── Fetch live states from Supabase ──
@@ -566,86 +564,47 @@ async function fetchLiveStates() {
 
 function buildCategories(stateName) {
   return [
-    {
-      category: "bar",
-      includedTypes: ["bar"],
-      textQuery: `bars in ${stateName}`,
-    },
-    {
-      category: "brewery",
-      includedTypes: ["brewery"],
-      textQuery: null,
-    },
-    {
-      category: "winery",
-      includedTypes: ["winery"],
-      textQuery: null,
-    },
-    {
-      category: "restaurant",
-      includedTypes: ["restaurant"],
-      textQuery: `restaurants with events in ${stateName}`,
-    },
-    {
-      category: "cafe",
-      includedTypes: ["cafe", "coffee_shop"],
-      textQuery: null,
-    },
-    {
-      category: "bakery",
-      includedTypes: ["bakery"],
-      textQuery: null,
-    },
-    {
-      category: "music_venue",
-      includedTypes: ["live_music_venue", "night_club"],
-      textQuery: `music venues concert halls in ${stateName}`,
-    },
-    {
-      category: "sports_venue",
-      includedTypes: ["sports_complex", "arena", "gym"],
-      textQuery: `sports venues arenas in ${stateName}`,
-    },
-    {
-      category: "stadium",
-      includedTypes: ["stadium"],
-      textQuery: null,
-    },
-    {
-      category: "arts_center",
-      includedTypes: ["cultural_center", "performing_arts_theater"],
-      textQuery: `arts centers in ${stateName}`,
-    },
-    {
-      category: "library",
-      includedTypes: ["library"],
-      textQuery: null,
-    },
-    {
-      category: "museum",
-      includedTypes: ["museum", "art_gallery"],
-      textQuery: null,
-    },
-    {
-      category: "tour",
-      includedTypes: ["tourist_attraction"],
-      textQuery: `tours walking tours in ${stateName}`,
-    },
-    {
-      category: "theater",
-      includedTypes: ["performing_arts_theater", "movie_theater"],
-      textQuery: `theaters in ${stateName}`,
-    },
-    {
-      category: "park",
-      includedTypes: ["park", "national_park"],
-      textQuery: `parks with events in ${stateName}`,
-    },
-    {
-      category: "public_space",
-      includedTypes: ["community_center", "convention_center", "event_venue"],
-      textQuery: `event spaces community centers in ${stateName}`,
-    },
+    // ── Eat & Drink ──
+    { category: "restaurant", includedTypes: ["restaurant"], textQuery: `restaurants in ${stateName}` },
+    { category: "bar", includedTypes: ["bar"], textQuery: `bars in ${stateName}` },
+    { category: "brewery", includedTypes: ["brewery"], textQuery: null },
+    { category: "winery", includedTypes: ["winery"], textQuery: null },
+    { category: "cafe", includedTypes: ["cafe", "coffee_shop"], textQuery: null },
+    { category: "bakery", includedTypes: ["bakery"], textQuery: null },
+
+    // ── Public Attractions ──
+    { category: "park", includedTypes: ["park", "national_park"], textQuery: `parks in ${stateName}` },
+    { category: "beach", includedTypes: ["beach"], textQuery: `beaches in ${stateName}` },
+    { category: "garden", includedTypes: ["botanical_garden"], textQuery: `gardens in ${stateName}` },
+    { category: "trail", includedTypes: ["hiking_area"], textQuery: `hiking trails in ${stateName}` },
+    { category: "waterfront", includedTypes: ["marina"], textQuery: `waterfront harbor walk in ${stateName}` },
+    { category: "plaza", includedTypes: ["plaza"], textQuery: `public plazas squares in ${stateName}` },
+    { category: "public_space", includedTypes: ["community_center", "convention_center", "event_venue"], textQuery: `event spaces community centers in ${stateName}` },
+
+    // ── Ticketed / Tours ──
+    { category: "museum", includedTypes: ["museum", "art_gallery"], textQuery: null },
+    { category: "aquarium", includedTypes: ["aquarium"], textQuery: null },
+    { category: "zoo", includedTypes: ["zoo"], textQuery: null },
+    { category: "historic_site", includedTypes: ["historical_landmark"], textQuery: `historic sites landmarks in ${stateName}` },
+    { category: "tour", includedTypes: ["tourist_attraction"], textQuery: `tours walking tours in ${stateName}` },
+    { category: "arts_center", includedTypes: ["cultural_center", "performing_arts_theater"], textQuery: `arts centers in ${stateName}` },
+    { category: "library", includedTypes: ["library"], textQuery: null },
+    { category: "theater", includedTypes: ["performing_arts_theater", "movie_theater"], textQuery: `theaters in ${stateName}` },
+    { category: "escape_room", includedTypes: ["escape_room"], textQuery: `escape rooms in ${stateName}` },
+
+    // ── Entertainment ──
+    { category: "bowling", includedTypes: ["bowling_alley"], textQuery: null },
+    { category: "arcade", includedTypes: ["amusement_center"], textQuery: `arcades in ${stateName}` },
+    { category: "mini_golf", includedTypes: ["miniature_golf_course"], textQuery: null },
+    { category: "spa", includedTypes: ["spa"], textQuery: null },
+    { category: "shopping", includedTypes: ["shopping_mall"], textQuery: `shopping districts in ${stateName}` },
+    { category: "bookstore", includedTypes: ["book_store"], textQuery: `independent bookstores in ${stateName}` },
+    { category: "market", includedTypes: ["market"], textQuery: `farmers markets flea markets in ${stateName}` },
+
+    // ── Event Venues (for crawl pipeline) ──
+    { category: "music_venue", includedTypes: ["live_music_venue", "night_club"], textQuery: `music venues concert halls in ${stateName}` },
+    { category: "sports_venue", includedTypes: ["sports_complex", "arena", "gym"], textQuery: `sports venues arenas in ${stateName}` },
+    { category: "stadium", includedTypes: ["stadium"], textQuery: null },
   ];
 }
 
@@ -657,7 +616,7 @@ function sleep(ms) {
 
 // ── Main ──
 
-async function discoverForGrid(gridCenters, categoriesToRun) {
+async function discoverForGrid(gridCenters, categoriesToRun, currentStateCode) {
   const allVenues = [];
   const results = [];
 
@@ -691,11 +650,10 @@ async function discoverForGrid(gridCenters, categoriesToRun) {
       }
 
       const allMapped = Array.from(placesMap.values())
-        .map((p) => placeToVenue(p, cat.category))
+        .map((p) => placeToVenue(p, cat.category, currentStateCode))
         .filter((v) => v.name && v.city);
       const venues = allMapped
-        .filter((v) => !isExcludedVenue(v.name, v._placeTypes))
-        .map(({ _placeTypes, ...v }) => v); // strip internal field
+        .filter((v) => !isExcludedVenue(v.name, v._placeTypes));
       const excluded = allMapped.length - venues.length;
 
       console.log(`  Found ${venues.length} venues (${placesMap.size} from API, ${excluded} chains/excluded)`);
@@ -749,9 +707,12 @@ async function main() {
 
   if (USE_CUSTOM_CENTER) {
     // Custom center override — single run with custom coordinates
+    const STATE_CODE = process.env.STATE || "MA";
+    const STATE_NAME = STATE_CODE; // Best effort for custom center
+    const CATEGORIES = buildCategories(STATE_NAME);
+
     console.log(`Custom center: ${GRID_CENTERS[0].lat}, ${GRID_CENTERS[0].lng}`);
-    console.log(`State: ${STATE} (${STATE_NAME})`);
-    console.log(`Metro: ${METRO}`);
+    console.log(`State: ${STATE_CODE}`);
     console.log(`Grid centers: ${GRID_CENTERS.map((c) => c.label).join(", ")}`);
     console.log();
 
@@ -761,7 +722,7 @@ async function main() {
 
     console.log(`Categories: ${categoriesToRun.map((c) => c.category).join(", ")}\n`);
 
-    const result = await discoverForGrid(GRID_CENTERS, categoriesToRun);
+    const result = await discoverForGrid(GRID_CENTERS, categoriesToRun, STATE_CODE);
     allVenues.push(...result.allVenues);
     results.push(...result.results);
   } else {
@@ -771,15 +732,16 @@ async function main() {
     console.log(`Live states: ${liveStates.map((s) => `${s.code} (${s.name})`).join(", ")}\n`);
 
     for (const liveState of liveStates) {
-      const stateGrid = STATE_GRIDS[liveState.code];
-      if (!stateGrid) {
-        console.warn(`WARNING: State ${liveState.code} (${liveState.name}) is live but has no grid defined in STATE_GRIDS. Skipping.`);
+      const gridCenters = await fetchGridCentersForState(liveState.code);
+
+      if (!gridCenters || gridCenters.length === 0) {
+        console.warn(`WARNING: State ${liveState.code} (${liveState.name}) has no grid centers. Run: STATE=${liveState.code} node seed_state_grid.js`);
         continue;
       }
 
       console.log(`\n========================================`);
       console.log(`Processing state: ${liveState.code} (${liveState.name})`);
-      console.log(`Grid centers: ${stateGrid.centers.map((c) => c.label).join(", ")}`);
+      console.log(`Grid centers: ${gridCenters.map((c) => c.label).join(", ")}`);
       console.log(`========================================\n`);
 
       const categories = buildCategories(liveState.name);
@@ -789,7 +751,7 @@ async function main() {
 
       console.log(`Categories: ${categoriesToRun.map((c) => c.category).join(", ")}\n`);
 
-      const result = await discoverForGrid(stateGrid.centers, categoriesToRun);
+      const result = await discoverForGrid(gridCenters, categoriesToRun, liveState.code);
       allVenues.push(...result.allVenues);
       results.push(...result.results.map((r) => ({ ...r, state: liveState.code })));
     }

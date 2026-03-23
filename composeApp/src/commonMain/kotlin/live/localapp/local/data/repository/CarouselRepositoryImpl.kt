@@ -1,5 +1,7 @@
 package live.localapp.local.data.repository
 
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.query.Order
@@ -21,7 +23,6 @@ import live.localapp.local.domain.model.distanceMiles
 import live.localapp.local.Config
 import live.localapp.local.domain.repository.CarouselRepository
 import live.localapp.local.domain.repository.CategoryInfo
-import live.localapp.local.domain.repository.SegmentMode
 import live.localapp.local.domain.repository.UserPreferences
 
 private sealed class EventFilter {
@@ -30,6 +31,7 @@ private sealed class EventFilter {
     data class Category(val value: String) : EventFilter()
     data class VenueLike(val pattern: String) : EventFilter()
     data class Subcategory(val value: String) : EventFilter()
+    data class Source(val value: String) : EventFilter()
     data object ExcludeKnown : EventFilter()
 }
 
@@ -41,14 +43,14 @@ private data class VenueInfo(
 
 class CarouselRepositoryImpl(
     private val supabaseClient: SupabaseClient,
+    private val communityInterestRepository: live.localapp.local.domain.repository.CommunityInterestRepository,
 ) : CarouselRepository {
 
     /** Cached venue name → info (rank, photo, description) */
     private var venueCache: Map<String, VenueInfo> = emptyMap()
 
-    /** Cached event pools per segment — fetched once, filtered in-memory */
-    private var upcomingEventsCache: List<Event>? = null
-    private var alwaysOnEventsCache: List<Event>? = null
+    /** Cached unified event pool — fetched once, filtered in-memory */
+    private var allEventsCache: List<Event>? = null
 
     /** Raw sports events (no dedup/cleaning) for team carousels */
     private var rawSportsEventsCache: List<Event>? = null
@@ -56,26 +58,77 @@ class CarouselRepositoryImpl(
     /** Cached carousels config from DB */
     private var carouselsConfigCache: List<CarouselDto>? = null
 
+    /** Dynamic score weights based on user's distance from the metro center */
+    private data class ScoreWeights(
+        val relevance: Double,
+        val venueRank: Double,
+        val proximity: Double,
+        val date: Double,
+        val decayDivisor: Double, // lower = steeper proximity falloff per mile
+        val maxEventRadius: Double, // miles — events beyond this distance are dropped
+    )
+
+    /** Boston metro center */
+    private val metroCenterLat = 42.3601
+    private val metroCenterLng = -71.0589
+
+    private fun weightsForUser(userLat: Double, userLng: Double, radiusMiles: Int): ScoreWeights {
+        val milesFromMetro = distanceMiles(userLat, userLng, metroCenterLat, metroCenterLng)
+        // Proximity weight and decay steepness scale with distance from metro.
+        // Further from the metro → proximity dominates more aggressively so
+        // users in suburban/rural areas see nearby events first.
+        val proxWeight: Double
+        val decay: Double
+        when {
+            milesFromMetro <= 12.0 -> { proxWeight = 0.25; decay = 6.0 }  // downtown / inner metro
+            milesFromMetro <= 25.0 -> { proxWeight = 0.40; decay = 3.5 }  // metro suburbs
+            milesFromMetro <= 45.0 -> { proxWeight = 0.55; decay = 2.0 }  // outer suburbs
+            else ->                   { proxWeight = 0.65; decay = 1.0 }  // rural — proximity is king
+        }
+        // Ensure radius always reaches the metro center so events never vanish
+        // when the user moves far away — they just sort lower by proximity.
+        val effectiveRadius = maxOf(radiusMiles.toDouble(), milesFromMetro + 25.0)
+        val remaining = 1.0 - proxWeight
+        return ScoreWeights(
+            relevance = remaining * (40.0 / 80.0),
+            venueRank = remaining * (25.0 / 80.0),
+            proximity = proxWeight,
+            date = remaining * (15.0 / 80.0),
+            decayDivisor = decay,
+            maxEventRadius = effectiveRadius,
+        )
+    }
+
+    /** Current weights — recomputed at the start of each getCarousels call */
+    private var currentWeights = ScoreWeights(0.375, 0.234, 0.25, 0.141, 6.0, Double.MAX_VALUE)
+
     override fun invalidateCaches() {
-        upcomingEventsCache = null
-        alwaysOnEventsCache = null
+        allEventsCache = null
         rawSportsEventsCache = null
         carouselsConfigCache = null
-        categoryCacheUpcoming = null
-        categoryCacheAlwaysOn = null
-        categoryOrder = null
+        categoryCache = null
+        // NOTE: categoryOrder is intentionally NOT cleared here so the
+        // tab ordering stays stable across pull-to-refresh. It is only
+        // recomputed when the user changes location (invalidateAll).
         venueCache = emptyMap()
+    }
+
+    /** Full reset including category order — called on location change. */
+    override fun invalidateAll() {
+        invalidateCaches()
+        categoryOrder = null
     }
 
     override suspend fun getCarousels(
         userLat: Double,
         userLng: Double,
-        segment: SegmentMode,
         category: String?,
         userPreferences: UserPreferences?,
         locationName: String,
+        radiusMiles: Int,
     ): List<CarouselSection> {
         val city = cityKeyFromLocation(userLat, userLng)
+        currentWeights = weightsForUser(userLat, userLng, radiusMiles)
 
         // Load venue cache if empty
         if (venueCache.isEmpty()) {
@@ -86,34 +139,50 @@ class CarouselRepositoryImpl(
         val nearestCity = if (locationName.isNotBlank()) locationName
             else nearestCityName(userLat, userLng)
 
-        return when (segment) {
-            SegmentMode.UPCOMING -> getUpcomingCarousels(city, category, userLat, userLng, userPreferences, nearestCity)
-            SegmentMode.ALWAYS_ON -> getAlwaysOnCarousels(city, category, userLat, userLng, userPreferences, nearestCity)
-        }
+        return buildCarousels(city, category, userLat, userLng, userPreferences, nearestCity)
     }
 
-    /** Fetch and cache all upcoming events for this city */
-    private suspend fun getUpcomingEventPool(city: String): List<Event> {
-        upcomingEventsCache?.let { return it }
-        val events = queryEvents(city, EventFilter.None, dateRange = "this_month", segment = "upcoming", limit = 1000)
-            .let { cleanEvents(it) }
-        upcomingEventsCache = events
+    /** Fetch and cache all events (both upcoming and always-on) for this city */
+    private suspend fun getAllEventPool(city: String): List<Event> {
+        allEventsCache?.let { return it }
+        // Fetch upcoming events (have start_at)
+        val upcoming = queryEvents(city, EventFilter.None, dateRange = "this_month", limit = 0)
+        // Fetch always-on / curated events (start_at is null)
+        val alwaysOn = queryAlwaysOnEvents(city)
+        val events = (upcoming + alwaysOn).let { cleanEvents(it) }
+        allEventsCache = events
         return events
     }
 
-    /** Fetch and cache all always-on events for this city */
-    private suspend fun getAlwaysOnEventPool(city: String): List<Event> {
-        alwaysOnEventsCache?.let { return it }
-        val events = queryEvents(city, EventFilter.None, segment = "always_on", limit = 1000)
-            .let { cleanEvents(it) }
-        alwaysOnEventsCache = events
-        return events
+    /** Fetch always-on events separately since they have null start_at */
+    private suspend fun queryAlwaysOnEvents(city: String): List<Event> {
+        val pageSize = 1000L
+        suspend fun fetchPage(pageIndex: Int): List<EventDto> =
+            supabaseClient.from("events")
+                .select {
+                    filter {
+                        eq("city", city)
+                        eq("is_active", true)
+                        eq("category", "always_on")
+                    }
+                    order("title", Order.ASCENDING)
+                    limit(pageSize)
+                    range(pageIndex * pageSize, (pageIndex + 1) * pageSize - 1)
+                }
+                .decodeList<EventDto>()
+
+        return coroutineScope {
+            val deferred = (0 until 3).map { page ->
+                async { fetchPage(page) }
+            }
+            deferred.flatMap { it.await() }
+        }.map { it.toDomain() }
     }
 
     /** Fetch raw sports events — no dedup or title cleaning, sorted by start date */
     private suspend fun getRawSportsPool(city: String): List<Event> {
         rawSportsEventsCache?.let { return it }
-        val events = queryEvents(city, EventFilter.Category("sports"), dateRange = "this_month", segment = "upcoming", limit = 500)
+        val events = queryEvents(city, EventFilter.Category("sports"), dateRange = "this_month", limit = 0)
             .sortedBy { it.startAt ?: "" }
         rawSportsEventsCache = events
         return events
@@ -129,6 +198,7 @@ class CarouselRepositoryImpl(
             filter { (it.venueName ?: "").lowercase().contains(pattern) }
         }
         is EventFilter.Subcategory -> filter { it.subSubcategory?.lowercase() == filter.value }
+        is EventFilter.Source -> filter { it.source == filter.value }
         is EventFilter.ExcludeKnown -> filter { (it.subcategory ?: "other").lowercase() !in knownSubcategories }
     }
 
@@ -200,7 +270,7 @@ class CarouselRepositoryImpl(
     // UPCOMING — scheduled, one-time events (concerts, games, shows)
     // ════════════════════════════════════════════════════════════════
 
-    private suspend fun getUpcomingCarousels(
+    private suspend fun buildCarousels(
         city: String,
         category: String?,
         userLat: Double,
@@ -216,7 +286,6 @@ class CarouselRepositoryImpl(
             carouselsConfigCache = supabaseClient.from("carousels")
                 .select {
                     filter {
-                        eq("city", city)
                         eq("is_active", true)
                     }
                     order("position", Order.ASCENDING)
@@ -225,10 +294,12 @@ class CarouselRepositoryImpl(
         }
         val carousels = carouselsConfigCache!!
 
-        // Get cached event pool and apply filter in-memory
-        val allEvents = getUpcomingEventPool(city)
+        // Get cached unified event pool and apply filter in-memory
+        val allEvents = getAllEventPool(city)
+        val maxRadius = currentWeights.maxEventRadius
         val filtered = allEvents.applyFilter(filter)
             .map { it.withDistance(userLat, userLng) }
+            .filter { maxRadius == Double.MAX_VALUE || (it.distanceMiles ?: 999.0) <= maxRadius }
             .sortedBy { scoreForSort(it, prefs) }
 
         val seenEventIds = mutableSetOf<String>()
@@ -345,12 +416,65 @@ class CarouselRepositoryImpl(
                 )
             }
 
-            // Free events
+            // ── Affinity-based carousels ──
+            val affinity = communityInterestRepository.categoryAffinity()
+            val existingCatSlugs = result.map { it.slug }.toSet()
+            val skipCategories = setOf("other", "general", "unknown")
+            var affinityCount = 0
+            for ((cat, score) in affinity.entries.sortedByDescending { it.value }) {
+                if (score < 0.4) break // only meaningful affinity
+                if (affinityCount >= 6) break // max 6 affinity carousels
+                if (cat.lowercase() in skipCategories) continue
+                val slugKey = "affinity-${cat.lowercase().replace(" ", "-")}"
+                if (slugKey in existingCatSlugs) continue
+                // Skip if we already have a favorite-category carousel for this
+                if ("fav-cat-${cat.lowercase()}" in existingCatSlugs) continue
+                val affinityEvents = allEvents
+                    .filter { (it.subcategory ?: it.category).lowercase() == cat.lowercase() }
+                    .map { it.withDistance(userLat, userLng) }
+                    .sortedBy { scoreForSort(it, prefs) }
+                    .filter { it.id !in seenEventIds }
+                    .take(carouselDisplayLimit)
+                if (affinityEvents.isEmpty()) continue
+                affinityEvents.forEach { seenEventIds.add(it.id) }
+                result.add(
+                    CarouselSection(
+                        slug = slugKey,
+                        title = affinityCarouselTitle(cat, affinityCount),
+                        subtitle = null,
+                        filterType = "affinity",
+                        events = affinityEvents,
+                    ),
+                )
+                affinityCount++
+            }
+
+            // ── Popular Events (community saves > 10) ──
+            val popularEvents = filtered
+                .filter { communityInterestRepository.totalSaves(it.id) > 10 }
+                .sortedByDescending { communityInterestRepository.totalSaves(it.id) }
+                .filter { it.id !in seenEventIds }
+                .take(carouselDisplayLimit)
+            if (popularEvents.isNotEmpty()) {
+                popularEvents.forEach { seenEventIds.add(it.id) }
+                result.add(
+                    CarouselSection(
+                        slug = "popular-events",
+                        title = "Popular Events in $nearestCity",
+                        subtitle = null,
+                        filterType = "popular",
+                        events = popularEvents,
+                        showSaves = true,
+                    ),
+                )
+            }
+
+            // Free events — intentionally ignores seenEventIds so free events are
+            // always visible regardless of which other carousels claimed them first.
             val freeEvents = filtered
-                .filter { it.isFree && it.id !in seenEventIds }
+                .filter { it.isFree }
                 .take(carouselDisplayLimit)
             if (freeEvents.isNotEmpty()) {
-                freeEvents.forEach { seenEventIds.add(it.id) }
                 result.add(
                     CarouselSection(
                         slug = "free-events",
@@ -361,14 +485,37 @@ class CarouselRepositoryImpl(
                     ),
                 )
             }
+
+            // ── Experiences carousel (curated always-on events) ──
+            val experiences = allEvents
+                .filter { it.source == "curated" }
+                .map { it.withDistance(userLat, userLng) }
+                .filter { maxRadius == Double.MAX_VALUE || (it.distanceMiles ?: 999.0) <= maxRadius }
+                .sortedBy { scoreForSort(it, prefs) }
+                .filter { it.id !in seenEventIds }
+                .take(carouselDisplayLimit)
+            if (experiences.isNotEmpty()) {
+                experiences.forEach { seenEventIds.add(it.id) }
+                result.add(
+                    CarouselSection(
+                        slug = "experiences",
+                        title = "Experiences Near You",
+                        subtitle = null,
+                        filterType = "experiences",
+                        events = experiences,
+                    ),
+                )
+            }
+
+            // ── Daily / Weekly / Monthly carousels (For You — mixed across categories) ──
+            result.addAll(buildRecurringCarousels(allEvents, null, maxRadius, userLat, userLng, prefs, seenEventIds))
         }
 
         // ── Sports-specific carousels (pro teams + by sport) ──
         // Use raw (uncleaned) events so team games aren't lost to dedup/title cleaning
         if (filter is EventFilter.Category && filter.value == "sports") {
             val rawSports = getRawSportsPool(city)
-            val sportsSeen = mutableSetOf<String>()
-            val sportsCarousels = buildSportsCarouselsFromPool(rawSports, prefs, sportsSeen)
+            val sportsCarousels = buildSportsCarouselsFromPool(rawSports, prefs, seenEventIds)
             result.addAll(sportsCarousels)
         }
 
@@ -419,6 +566,20 @@ class CarouselRepositoryImpl(
                 filtered, filter.value, categoryDisplayName(filter.value),
             )
             result.addAll(dynamicCarousels)
+        }
+
+        // ── Experiences tab: dynamic sub-carousels by subcategory, venue, etc. ──
+        if (filter is EventFilter.Source) {
+            val dynamicCarousels = buildDynamicSubcarousels(
+                filtered, "experiences", "Experiences",
+            )
+            result.addAll(dynamicCarousels)
+        }
+
+        // ── Daily / Weekly / Monthly carousels on subcategory tabs ──
+        if (filter is EventFilter.Category) {
+            val subcatName = categoryDisplayName(filter.value)
+            result.addAll(buildRecurringCarousels(allEvents, filter.value, maxRadius, userLat, userLng, prefs, seenEventIds, subcatName))
         }
 
         // ── Subcategory "This Month" carousel (positioned after dynamic for depth) ──
@@ -546,7 +707,7 @@ class CarouselRepositoryImpl(
 
         fun addCarousel(slug: String, title: String, items: List<Event>) {
             val capped = items.take(carouselDisplayLimit)
-            if (capped.size < 2) return
+            if (capped.size < 4) return
             result.add(CarouselSection(slug, title, null, "dynamic_sub", capped))
         }
 
@@ -559,7 +720,7 @@ class CarouselRepositoryImpl(
         val comingSoonEvents = events.filter {
             val s = it.startAt ?: ""; s <= comingSoonCutoff
         }
-        addCarousel("$subcategory-coming-up", "Coming Up: $displayName", comingSoonEvents)
+        addCarousel("$subcategory-coming-up", "Coming Up", comingSoonEvents)
 
         // This Weekend
         val weekendEvents = events.filter {
@@ -605,6 +766,37 @@ class CarouselRepositoryImpl(
     }
 
     /** Map subcategory key to display name for carousel titles */
+    /** Varied titles for affinity carousels based on category and position. */
+    private fun affinityCarouselTitle(cat: String, index: Int): String {
+        val name = categoryDisplayName(cat)
+        return when (cat.lowercase()) {
+            "for-kids" -> when (index % 6) {
+                0 -> "Events For Kids"
+                1 -> "Family-Friendly Picks"
+                2 -> "Fun For The Whole Family"
+                3 -> "Kid-Approved Events"
+                4 -> "Bring The Kids"
+                else -> "More Family Events"
+            }
+            "food" -> when (index % 6) {
+                0 -> "For Foodies Like You"
+                1 -> "Tasty Events Nearby"
+                2 -> "$name Events For You"
+                3 -> "Don't Miss These Bites"
+                4 -> "Food Events This Week"
+                else -> "More $name Events"
+            }
+            else -> when (index % 6) {
+                0 -> "For $name Lovers"
+                1 -> "$name Picks For You"
+                2 -> "More $name Events"
+                3 -> "Top $name This Week"
+                4 -> "$name You Might Like"
+                else -> "Trending in $name"
+            }
+        }
+    }
+
     private fun categoryDisplayName(key: String): String = when (key.lowercase()) {
         "music" -> "Music"
         "food" -> "Food & Drink"
@@ -798,281 +990,117 @@ class CarouselRepositoryImpl(
         return result
     }
 
-    // ════════════════════════════════════════════════════════════════
-    // ALWAYS ON — permanent attractions, recurring events, ongoing things
-    // ════════════════════════════════════════════════════════════════
-
-    private suspend fun getAlwaysOnCarousels(
-        city: String,
-        category: String?,
-        userLat: Double,
-        userLng: Double,
-        prefs: UserPreferences?,
-        nearestCity: String = "Boston",
-    ): List<CarouselSection> {
-        val filter = resolveAlwaysOnFilter(category)
-        if (filter is EventFilter.Empty) return emptyList()
-
-        val allEvents = getAlwaysOnEventPool(city)
-        val filtered = allEvents.applyFilter(filter)
-            .map { it.withDistance(userLat, userLng) }
-            .sortedBy { scoreForSort(it, prefs) }
-
-        if (filtered.isEmpty()) return emptyList()
-
-        // Subcategory tab — just build dynamic sections
-        if (filter !is EventFilter.None) {
-            return buildAlwaysOnSections(filtered, isForYou = false)
-        }
-
-        // ── For You tab — personalized carousels, mirroring Upcoming ──
-        val seenEventIds = mutableSetOf<String>()
-        val result = mutableListOf<CarouselSection>()
-
-        // 1. Top Always On Picks for You
-        val ranked = rankForColdStart(filtered, prefs, maxResults = carouselDisplayLimit)
-        val backfilled = backfillToMinimum(ranked, seenEventIds, filtered)
-        if (backfilled.isNotEmpty()) {
-            backfilled.forEach { seenEventIds.add(it.id) }
-            result.add(
-                CarouselSection(
-                    slug = "ao-top-personalized",
-                    title = "Top Picks for You",
-                    subtitle = null,
-                    filterType = "personalized",
-                    events = backfilled,
-                ),
-            )
-        }
-
-        // 2. Favorite category carousels
-        if (prefs != null) {
-            for (cat in prefs.selectedCategories) {
-                val catEvents = allEvents
-                    .filter { it.subcategory?.lowercase() == cat.lowercase() }
-                    .map { it.withDistance(userLat, userLng) }
-                    .sortedBy { scoreForSort(it, prefs) }
-                    .filter { it.id !in seenEventIds }
-                    .take(carouselDisplayLimit)
-                if (catEvents.isEmpty()) continue
-                catEvents.forEach { seenEventIds.add(it.id) }
-                result.add(
-                    CarouselSection(
-                        slug = "ao-fav-cat-${cat.lowercase()}",
-                        title = "Top ${categoryDisplayName(cat)}",
-                        subtitle = null,
-                        filterType = "favorite_category",
-                        events = catEvents,
-                    ),
-                )
-            }
-
-            // 3. Favorite venue carousels
-            for (venue in prefs.selectedVenues) {
-                val venueEvents = allEvents
-                    .filter { (it.venueName ?: "").contains(venue, ignoreCase = true) }
-                    .map { it.withDistance(userLat, userLng) }
-                    .sortedBy { scoreForSort(it, prefs) }
-                    .filter { it.id !in seenEventIds }
-                    .take(carouselDisplayLimit)
-                if (venueEvents.isEmpty()) continue
-                venueEvents.forEach { seenEventIds.add(it.id) }
-                result.add(
-                    CarouselSection(
-                        slug = "ao-fav-venue-${venue.lowercase().replace(" ", "-")}",
-                        title = "Happening at $venue",
-                        subtitle = null,
-                        filterType = "favorite_venue",
-                        events = venueEvents,
-                    ),
-                )
-            }
-        }
-
-        // 4. Neighborhood carousels — always shown, based on current location
-        val aoNeighborhoods = buildList {
-            add(nearestCity)
-            prefs?.selectedNeighborhoods?.forEach { n ->
-                if (!n.equals(nearestCity, ignoreCase = true)) add(n)
-            }
-        }
-        for (neighborhood in aoNeighborhoods) {
-            val neighborhoodEvents = allEvents
-                .filter { it.venueCity.contains(neighborhood, ignoreCase = true) }
-                .map { it.withDistance(userLat, userLng) }
-                .sortedBy { scoreForSort(it, prefs) }
-                .filter { it.id !in seenEventIds }
-                .take(carouselDisplayLimit)
-            if (neighborhoodEvents.isEmpty()) continue
-            neighborhoodEvents.forEach { seenEventIds.add(it.id) }
-            result.add(
-                CarouselSection(
-                    slug = "ao-neighborhood-${neighborhood.lowercase().replace(" ", "-")}",
-                    title = "Happening in $neighborhood",
-                    subtitle = null,
-                    filterType = "neighborhood",
-                    events = neighborhoodEvents,
-                ),
-            )
-        }
-
-        // 5. Free events
-        val freeEvents = filtered
-            .filter { it.isFree && it.id !in seenEventIds }
-            .take(carouselDisplayLimit)
-        if (freeEvents.isNotEmpty()) {
-            freeEvents.forEach { seenEventIds.add(it.id) }
-            result.add(
-                CarouselSection(
-                    slug = "ao-free-events",
-                    title = "Free Things to Do",
-                    subtitle = null,
-                    filterType = "free",
-                    events = freeEvents,
-                ),
-            )
-        }
-
-        // 6. Fill in with dynamic sub_subcategory carousels from remaining events
-        val remaining = filtered.filter { it.id !in seenEventIds }
-        if (remaining.isNotEmpty()) {
-            val dynamicSections = buildAlwaysOnSections(remaining, isForYou = true)
-            result.addAll(dynamicSections)
-        }
-
-        return result
-    }
-
-    private fun resolveAlwaysOnFilter(category: String?): EventFilter {
-        return when (category?.lowercase()) {
-            null, "foryou" -> EventFilter.None
-            else -> EventFilter.Category(category.lowercase())
-        }
-    }
-
-    /**
-     * Dynamically builds Always On carousels by grouping events by sub_subcategory
-     * within each subcategory. No hardcoded sections — scales to any city/content.
-     *
-     * When [isForYou] is true, limits carousels per subcategory and interleaves
-     * them so no single subcategory dominates the feed.
-     */
-    private fun buildAlwaysOnSections(events: List<Event>, isForYou: Boolean = false): List<CarouselSection> {
-        val used = mutableSetOf<String>()
-
-        fun buildItems(items: List<Event>): List<Event>? {
-            val unique = items.filter { it.id !in used }
-            if (unique.isEmpty()) return null
-            unique.forEach { used.add(it.id) }
-            return unique
-        }
-
-        // Group all events by subcategory, sorted by event count (most popular first)
-        val bySubcategory = events
-            .groupBy { (it.subcategory ?: "other").lowercase() }
-            .entries
-            .sortedByDescending { it.value.size }
-
-        // Build carousels per subcategory
-        val perSubcategory = mutableMapOf<String, MutableList<CarouselSection>>()
-
-        for ((subcategory, subcatEvents) in bySubcategory) {
-            val displaySubcat = categoryDisplayName(subcategory)
-            val carousels = mutableListOf<CarouselSection>()
-
-            // 1. Group by sub_subcategory first — these are the interesting themed carousels
-            val bySubSub = subcatEvents
-                .groupBy { (it.subSubcategory ?: "").lowercase() }
-                .filter { it.key.isNotEmpty() }
-                .entries
-                .sortedByDescending { it.value.size }
-
-            for ((subSub, subSubEvents) in bySubSub) {
-                if (subSubEvents.size < 2) continue
-                val displayName = subSubcategoryDisplayName(subSub)
-                buildItems(subSubEvents)?.let {
-                    carousels.add(CarouselSection("$subcategory-$subSub", displayName, null, "always_on", it))
-                }
-            }
-
-            // 2. Free events carousel (after themed carousels so it doesn't steal their events)
-            val freeEvents = subcatEvents.filter { it.isFree && it.id !in used }
-            if (freeEvents.size >= 3) {
-                buildItems(freeEvents)?.let {
-                    carousels.add(CarouselSection("$subcategory-free", "Free $displaySubcat", null, "always_on", it))
-                }
-            }
-
-            // 3. Catch-all for remaining events
-            val remaining = subcatEvents.filter { it.id !in used }
-            if (remaining.isNotEmpty()) {
-                buildItems(remaining)?.let {
-                    carousels.add(CarouselSection("$subcategory-more", "More $displaySubcat", null, "always_on", it))
-                }
-            }
-
-            if (carousels.isNotEmpty()) {
-                perSubcategory[subcategory] = carousels
-            }
-        }
-
-        if (!isForYou) {
-            // Single subcategory selected — return all carousels, but also add
-            // venue-based carousels for richer content
-            val subcatResult = perSubcategory.values.flatten().toMutableList()
-
-            // Add venue carousels (events can overlap with sub_subcategory carousels)
-            for ((_, subcatEvents) in bySubcategory) {
-                val byVenue = subcatEvents
-                    .filter { !it.venueName.isNullOrBlank() }
-                    .groupBy { it.venueName!!.lowercase() }
-                    .filter { it.value.size >= 2 }
-                    .entries
-                    .sortedByDescending { it.value.size }
-                    .take(6)
-
-                for ((_, venueEvents) in byVenue) {
-                    val venueName = venueEvents.first().venueName ?: continue
-                    val subcat = venueEvents.first().subcategory ?: "other"
-                    val capped = venueEvents.take(carouselDisplayLimit)
-                    if (capped.size >= 2) {
-                        subcatResult.add(CarouselSection(
-                            "$subcat-venue-${venueName.lowercase().replace(" ", "-").take(30)}",
-                            "At $venueName", null, "always_on", capped,
-                        ))
-                    }
-                }
-            }
-            return subcatResult
-        }
-
-        // For You: interleave carousels from different subcategories
-        // so no single subcategory dominates the feed
-        val result = mutableListOf<CarouselSection>()
-        val iterators = perSubcategory.entries
-            .sortedByDescending { it.value.size }
-            .map { it.value.iterator() }
-            .toMutableList()
-
-        while (iterators.isNotEmpty()) {
-            val iter = iterators.iterator()
-            while (iter.hasNext()) {
-                val subcatIter = iter.next()
-                if (subcatIter.hasNext()) {
-                    result.add(subcatIter.next())
-                } else {
-                    iter.remove()
-                }
-            }
-        }
-
-        return result
-    }
-
     /** Convert a sub_subcategory or subcategory key to a display title */
     private fun subSubcategoryDisplayName(key: String): String {
         return key.split("-")
             .joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // Daily / Weekly / Monthly recurring carousels
+    // ════════════════════════════════════════════════════════════════
+
+    private val weeklyKeywords = listOf(
+        "weekly", "every week", "every monday", "every tuesday", "every wednesday",
+        "every thursday", "every friday", "every saturday", "every sunday",
+        "monday night", "tuesday night", "wednesday night", "thursday night",
+        "friday night", "saturday night", "sunday night",
+        "trivia night", "open mic", "karaoke night", "game night",
+        "happy hour", "ladies night", "wing night", "quiz night",
+    )
+
+    private val monthlyKeywords = listOf(
+        "monthly", "every month", "first friday", "first saturday", "first sunday",
+        "last friday", "last saturday", "second saturday", "third thursday",
+        "once a month",
+    )
+
+    private fun isWeeklyEvent(event: Event): Boolean {
+        val text = "${event.title} ${event.description ?: ""}".lowercase()
+        return weeklyKeywords.any { text.contains(it) }
+    }
+
+    private fun isMonthlyEvent(event: Event): Boolean {
+        val text = "${event.title} ${event.description ?: ""}".lowercase()
+        return monthlyKeywords.any { text.contains(it) }
+    }
+
+    private fun isDailyEvent(event: Event): Boolean {
+        return event.category == "always_on" && !isWeeklyEvent(event) && !isMonthlyEvent(event)
+    }
+
+    private fun buildRecurringCarousels(
+        allEvents: List<Event>,
+        subcategoryFilter: String?,
+        maxRadius: Double,
+        userLat: Double,
+        userLng: Double,
+        prefs: UserPreferences?,
+        seenEventIds: MutableSet<String>,
+        displayName: String? = null,
+    ): List<CarouselSection> {
+        val result = mutableListOf<CarouselSection>()
+        val prefix = if (displayName != null) "$displayName: " else ""
+
+        // Filter to relevant events
+        val pool = allEvents
+            .let { events ->
+                if (subcategoryFilter != null) events.filter { it.subcategory?.lowercase() == subcategoryFilter }
+                else events
+            }
+            .map { it.withDistance(userLat, userLng) }
+            .filter { maxRadius == Double.MAX_VALUE || (it.distanceMiles ?: 999.0) <= maxRadius }
+            .sortedBy { scoreForSort(it, prefs) }
+
+        // Happens Every Day — always-on events that aren't weekly or monthly
+        val dailyEvents = pool
+            .filter { isDailyEvent(it) }
+            .filter { it.id !in seenEventIds }
+            .take(carouselDisplayLimit)
+        if (dailyEvents.isNotEmpty()) {
+            dailyEvents.forEach { seenEventIds.add(it.id) }
+            result.add(CarouselSection(
+                slug = "daily-${subcategoryFilter ?: "all"}",
+                title = "${prefix}Happens Every Day",
+                subtitle = null,
+                filterType = "daily",
+                events = dailyEvents,
+            ))
+        }
+
+        // Weekly Happenings
+        val weeklyEvents = pool
+            .filter { isWeeklyEvent(it) }
+            .filter { it.id !in seenEventIds }
+            .take(carouselDisplayLimit)
+        if (weeklyEvents.isNotEmpty()) {
+            weeklyEvents.forEach { seenEventIds.add(it.id) }
+            result.add(CarouselSection(
+                slug = "weekly-${subcategoryFilter ?: "all"}",
+                title = "${prefix}Weekly Happenings",
+                subtitle = null,
+                filterType = "weekly",
+                events = weeklyEvents,
+            ))
+        }
+
+        // Once a Month
+        val monthlyEvents = pool
+            .filter { isMonthlyEvent(it) }
+            .filter { it.id !in seenEventIds }
+            .take(carouselDisplayLimit)
+        if (monthlyEvents.isNotEmpty()) {
+            monthlyEvents.forEach { seenEventIds.add(it.id) }
+            result.add(CarouselSection(
+                slug = "monthly-${subcategoryFilter ?: "all"}",
+                title = "${prefix}Once a Month",
+                subtitle = null,
+                filterType = "monthly",
+                events = monthlyEvents,
+            ))
+        }
+
+        return result
     }
 
     // ════════════════════════════════════════════════════════════════
@@ -1082,6 +1110,7 @@ class CarouselRepositoryImpl(
     private fun resolveFilter(category: String?): EventFilter {
         return when (category?.lowercase()) {
             null, "foryou" -> EventFilter.None
+            "experiences" -> EventFilter.Source("curated")
             "music", "sports", "arts", "theatre", "comedy", "food",
             "museums", "tours", "libraries", "outdoors", "for-kids" -> EventFilter.Category(category.lowercase())
             "locations" -> EventFilter.None
@@ -1149,53 +1178,67 @@ class CarouselRepositoryImpl(
         filter: EventFilter,
         dateRange: String? = null,
         tag: String? = null,
-        segment: String? = null,
         limit: Int = 45,
     ): List<Event> {
         val now = nowIso()
-        return supabaseClient.from("events")
-            .select {
-                filter {
-                    eq("city", city)
-                    eq("is_active", true)
-                    gte("start_at", now)
+        val wantAll = limit <= 0
+        val pageSize = if (wantAll) 1000L else limit.toLong()
 
-                    // Filter by parent category (upcoming / always_on)
-                    if (segment != null) {
-                        eq("category", segment)
-                    }
+        suspend fun fetchPage(pageIndex: Int): List<EventDto> =
+            supabaseClient.from("events")
+                .select {
+                    filter {
+                        eq("city", city)
+                        eq("is_active", true)
+                        gte("start_at", now)
 
-                    when (dateRange) {
-                        "this_weekend" -> {
-                            gte("start_at", startOfNextFridayIso())
-                            lte("start_at", endOfNextSundayIso())
+                        when (dateRange) {
+                            "this_weekend" -> {
+                                gte("start_at", startOfNextFridayIso())
+                                lte("start_at", endOfNextSundayIso())
+                            }
+                            "this_week" -> lte("start_at", daysFromNowIso(7))
+                            "next_2_weeks" -> lte("start_at", daysFromNowIso(14))
+                            "this_month" -> lte("start_at", daysFromNowIso(30))
+                            else -> {}
                         }
-                        "this_week" -> lte("start_at", daysFromNowIso(7))
-                        "next_2_weeks" -> lte("start_at", daysFromNowIso(14))
-                        "this_month" -> lte("start_at", daysFromNowIso(30))
-                        else -> {}
-                    }
 
-                    when (tag) {
-                        "free" -> eq("is_free", true)
-                        else -> {}
-                    }
+                        when (tag) {
+                            "free" -> eq("is_free", true)
+                            else -> {}
+                        }
 
-                    when (filter) {
-                        is EventFilter.None -> {}
-                        is EventFilter.Empty -> {}
-                        is EventFilter.Category -> eq("subcategory", filter.value)
-                        is EventFilter.VenueLike -> ilike("venue_name", filter.pattern)
-                        is EventFilter.Subcategory -> eq("sub_subcategory", filter.value)
-                        is EventFilter.ExcludeKnown -> {
-                            knownSubcategories.forEach { cat -> neq("subcategory", cat) }
+                        when (filter) {
+                            is EventFilter.None -> {}
+                            is EventFilter.Empty -> {}
+                            is EventFilter.Category -> eq("subcategory", filter.value)
+                            is EventFilter.VenueLike -> ilike("venue_name", filter.pattern)
+                            is EventFilter.Subcategory -> eq("sub_subcategory", filter.value)
+                            is EventFilter.Source -> eq("source", filter.value)
+                            is EventFilter.ExcludeKnown -> {
+                                knownSubcategories.forEach { cat -> neq("subcategory", cat) }
+                            }
                         }
                     }
+                    order("start_at", Order.ASCENDING)
+                    limit(pageSize)
+                    range(pageIndex * pageSize, (pageIndex + 1) * pageSize - 1)
                 }
-                order("start_at", Order.ASCENDING)
-                limit(limit.toLong())
+                .decodeList<EventDto>()
+
+        val allDtos = if (!wantAll) {
+            fetchPage(0)
+        } else {
+            // Fire all pages in parallel
+            coroutineScope {
+                val deferred = (0 until 7).map { page ->
+                    async { fetchPage(page) }
+                }
+                deferred.flatMap { it.await() }
             }
-            .decodeList<EventDto>()
+        }
+
+        return allDtos
             .map { it.toDomain() }
             .deduplicateCrossSource()
     }
@@ -1209,8 +1252,15 @@ class CarouselRepositoryImpl(
     private fun List<Event>.deduplicateCrossSource(): List<Event> {
         data class DedupeKey(val venue: String, val date: String)
 
+        fun normalizeVenue(name: String): String {
+            return name.lowercase().trim()
+                .replace(Regex(",.*"), "")  // "TD Garden, Boston" → "TD Garden"
+                .replace(Regex("\\s+"), " ")
+                .trim()
+        }
+
         fun Event.dedupeKey() = DedupeKey(
-            venue = (venueName ?: "").lowercase().trim(),
+            venue = normalizeVenue(venueName ?: ""),
             date = startAt?.take(10) ?: "",  // YYYY-MM-DD
         )
 
@@ -1468,16 +1518,14 @@ class CarouselRepositoryImpl(
      * Lower = better. Combines relevance, venue rank, date proximity, and
      * geographic proximity into a single sort key.
      *
-     * Weights:
-     *   40% — relevance (cold-start signals + personalization)
-     *   25% — venue public interest rank (higher-ranked venues surface first)
-     *   20% — geographic proximity (closer is better)
-     *   15% — start date proximity (sooner events get a boost)
+     * Weights are dynamic — proximity scales up as the user moves away from
+     * the metro center (25% downtown → 65% rural). The remaining weight is
+     * split proportionally among relevance, venue rank, and date.
      */
     private fun scoreForSort(event: Event, prefs: UserPreferences? = null): Double {
         val relevance = coldStartScore(event, prefs)  // 0..~1.3
         val distance = event.distanceMiles ?: 50.0
-        val proximity = 1.0 / (1.0 + distance / 5.0) // 1.0 at 0mi, decays
+        val proximity = 1.0 / (1.0 + distance / currentWeights.decayDivisor)
 
         // Venue rank: normalize 0-100 → 0-1
         val venueLc = (event.venueName ?: "").lowercase()
@@ -1487,8 +1535,13 @@ class CarouselRepositoryImpl(
         // Date proximity: events happening sooner score higher
         val dateScore = startDateProximityScore(event.startAt)
 
-        // Combined: higher is better, negate for ascending sort
-        return -(relevance * 0.40 + rankScore * 0.25 + proximity * 0.20 + dateScore * 0.15)
+        // Personal + community interest bonuses
+        val personalBonus = communityInterestRepository.personalRawScore(event.id).coerceAtMost(1.0) * 0.20
+        val communityBonus = communityInterestRepository.communityRawScore(event.id).coerceAtMost(1.0) * 0.10
+
+        // Dynamic weights: proximity importance scales with user's distance from metro
+        val w = currentWeights
+        return -(relevance * w.relevance + rankScore * w.venueRank + proximity * w.proximity + dateScore * w.date + personalBonus + communityBonus)
     }
 
     /**
@@ -1648,6 +1701,15 @@ class CarouselRepositoryImpl(
             if (prefs.selectedNeighborhoods.any { cityLc.contains(it.lowercase()) }) score += 0.10
         }
 
+        // Behavioral affinity boosts (from interaction history)
+        val affinity = communityInterestRepository.categoryAffinity()
+        if (affinity.isNotEmpty()) {
+            val eventSubcat = event.subcategory?.lowercase()
+            val eventCat = event.category.lowercase()
+            val affinityScore = affinity[eventSubcat] ?: affinity[eventCat] ?: 0.0
+            score += affinityScore * 0.25  // up to +0.25 for top affinity category
+        }
+
         return score
     }
 
@@ -1667,28 +1729,23 @@ class CarouselRepositoryImpl(
         "libraries" to "Libraries",
         "outdoors" to "Outdoors",
         "for-kids" to "For Kids",
+        "experiences" to "Experiences",
         "other" to "Other",
     )
 
     private fun iconUrlFor(subcategory: String): String =
         "${Config.SUPABASE_URL}/storage/v1/object/public/category-icons/${subcategory}.png"
 
-    /** Cached category lists per segment */
-    private var categoryCacheUpcoming: List<CategoryInfo>? = null
-    private var categoryCacheAlwaysOn: List<CategoryInfo>? = null
-    /** Stable ordering shared across both segments, computed once */
+    /** Cached unified category list */
+    private var categoryCache: List<CategoryInfo>? = null
+    /** Stable ordering, computed once */
     private var categoryOrder: List<String>? = null
 
     override suspend fun getAvailableCategories(
-        segment: SegmentMode,
         userPreferences: UserPreferences?,
     ): List<CategoryInfo> {
         // Return cached if available
-        val cached = when (segment) {
-            SegmentMode.UPCOMING -> categoryCacheUpcoming
-            SegmentMode.ALWAYS_ON -> categoryCacheAlwaysOn
-        }
-        if (cached != null) return cached
+        categoryCache?.let { return it }
 
         val city = cityKeyFromLocation(
             userPreferences?.userLat ?: 42.3897,
@@ -1697,9 +1754,10 @@ class CarouselRepositoryImpl(
         val now = nowIso()
         val userFavorites = userPreferences?.selectedCategories?.map { it.lowercase() } ?: emptyList()
 
-        // On first call, fetch both segments and compute a stable order
+        // Fetch all active events (both upcoming and always_on) to compute counts
         if (categoryOrder == null) {
-            val allEvents = supabaseClient.from("events")
+            // Fetch upcoming events (have start_at >= now)
+            val upcomingEvents = supabaseClient.from("events")
                 .select(columns = io.github.jan.supabase.postgrest.query.Columns.list("subcategory")) {
                     filter {
                         eq("city", city)
@@ -1709,7 +1767,18 @@ class CarouselRepositoryImpl(
                 }
                 .decodeList<SubcategoryDto>()
 
-            val combinedCounts = allEvents
+            // Fetch always-on events (category = "always_on", start_at may be null)
+            val alwaysOnEvents = supabaseClient.from("events")
+                .select(columns = io.github.jan.supabase.postgrest.query.Columns.list("subcategory")) {
+                    filter {
+                        eq("city", city)
+                        eq("is_active", true)
+                        eq("category", "always_on")
+                    }
+                }
+                .decodeList<SubcategoryDto>()
+
+            val combinedCounts = (upcomingEvents + alwaysOnEvents)
                 .mapNotNull { it.subcategory?.lowercase() }
                 .filter { it != "no-public-interest" && it != "cafe" }
                 .groupingBy { it }
@@ -1726,24 +1795,28 @@ class CarouselRepositoryImpl(
 
         val order = categoryOrder!!
 
-        // Now fetch counts for the requested segment only
-        val parentCategory = when (segment) {
-            SegmentMode.UPCOMING -> "upcoming"
-            SegmentMode.ALWAYS_ON -> "always_on"
-        }
-
-        val segmentEvents = supabaseClient.from("events")
+        // Fetch unified counts (all active events regardless of category)
+        val upcomingCounts = supabaseClient.from("events")
             .select(columns = io.github.jan.supabase.postgrest.query.Columns.list("subcategory")) {
                 filter {
                     eq("city", city)
                     eq("is_active", true)
-                    eq("category", parentCategory)
                     gte("start_at", now)
                 }
             }
             .decodeList<SubcategoryDto>()
 
-        val counts = segmentEvents
+        val alwaysOnCounts = supabaseClient.from("events")
+            .select(columns = io.github.jan.supabase.postgrest.query.Columns.list("subcategory")) {
+                filter {
+                    eq("city", city)
+                    eq("is_active", true)
+                    eq("category", "always_on")
+                }
+            }
+            .decodeList<SubcategoryDto>()
+
+        val counts = (upcomingCounts + alwaysOnCounts)
             .mapNotNull { it.subcategory?.lowercase() }
             .filter { it != "no-public-interest" && it != "cafe" }
             .groupingBy { it }
@@ -1751,8 +1824,8 @@ class CarouselRepositoryImpl(
 
         if (counts.isEmpty()) return emptyList()
 
-        // Use the stable order, only including subcategories that have events in this segment
-        val result = order
+        // Build category list using stable order
+        val categories = order
             .filter { it in counts }
             .map { subcat ->
                 CategoryInfo(
@@ -1762,11 +1835,27 @@ class CarouselRepositoryImpl(
                     eventCount = counts[subcat] ?: 0,
                 )
             }
+            .toMutableList()
 
-        when (segment) {
-            SegmentMode.UPCOMING -> categoryCacheUpcoming = result
-            SegmentMode.ALWAYS_ON -> categoryCacheAlwaysOn = result
+        // Count curated experiences for the Experiences tab
+        val experiencesCount = alwaysOnCounts
+            .mapNotNull { it.subcategory?.lowercase() }
+            .size
+
+        // Insert "Experiences" at 4th position (index 3)
+        if (experiencesCount > 0) {
+            val experiencesInfo = CategoryInfo(
+                id = "experiences",
+                label = "Experiences",
+                iconUrl = iconUrlFor("experiences"),
+                eventCount = experiencesCount,
+            )
+            val insertIndex = minOf(3, categories.size)
+            categories.add(insertIndex, experiencesInfo)
         }
+
+        val result = categories.toList()
+        categoryCache = result
         return result
     }
 }

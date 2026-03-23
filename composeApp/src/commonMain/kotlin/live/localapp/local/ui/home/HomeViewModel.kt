@@ -7,22 +7,25 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.datetime.Instant
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.domain.model.CarouselSection
+import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.repository.CarouselRepository
 import live.localapp.local.domain.repository.CategoryInfo
-import live.localapp.local.domain.repository.SegmentMode
+import live.localapp.local.domain.repository.CommunityInterestRepository
+import live.localapp.local.domain.repository.EventRepository
+import live.localapp.local.domain.repository.InteractionType
 import live.localapp.local.domain.repository.UserPreferences
 import live.localapp.local.domain.repository.UserPreferencesRepository
 
-enum class HomeSegment { UPCOMING, ALWAYS_ON }
-
 data class HomeUiState(
     val userName: String = "",
-    val locationName: String = "",
+    val locationName: String = "Waltham, MA",
     val userLat: Double = 42.3897,
     val userLng: Double = -71.2358,
     val streakDays: Int = 2,
-    val selectedSegment: HomeSegment = HomeSegment.UPCOMING,
     val selectedCategory: String = "foryou",
     val availableCategories: List<CategoryInfo> = emptyList(),
     val carousels: List<CarouselSection> = emptyList(),
@@ -30,32 +33,46 @@ data class HomeUiState(
     val isRefreshing: Boolean = false,
     val error: String? = null,
     val userPreferences: UserPreferences? = null,
+    val radiusFilter: Double? = null,
+    val savedThisWeek: List<Event> = emptyList(),
+    val favoriteEventIds: Set<String> = emptySet(),
 )
 
 class HomeViewModel(
     private val carouselRepository: CarouselRepository,
     private val userPreferencesRepository: UserPreferencesRepository,
+    private val communityInterestRepository: CommunityInterestRepository,
+    private val eventRepository: EventRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
     init {
-        loadUserPreferences()
-        loadCarousels()
+        loadUserPreferencesThenCarousels()
+        loadSavedThisWeek()
     }
 
-    private fun loadUserPreferences() {
-        val userId = userPreferencesRepository.getLocalUserId() ?: return
+    private fun loadUserPreferencesThenCarousels() {
         viewModelScope.launch {
-            val prefs = userPreferencesRepository.loadPreferences(userId) ?: return@launch
-            _uiState.update {
-                it.copy(
-                    userLat = prefs.userLat ?: it.userLat,
-                    userLng = prefs.userLng ?: it.userLng,
-                    userPreferences = prefs,
-                )
+            _uiState.update { it.copy(isLoading = true) }
+            // Try local cache first, recover from Supabase if lost
+            val userId = userPreferencesRepository.getLocalUserId()
+                ?: userPreferencesRepository.recoverProfile()
+            if (userId != null) {
+                val prefs = userPreferencesRepository.loadPreferences(userId)
+                if (prefs != null) {
+                    _uiState.update {
+                        it.copy(
+                            userName = prefs.firstName ?: "",
+                            userLat = prefs.userLat ?: it.userLat,
+                            userLng = prefs.userLng ?: it.userLng,
+                            userPreferences = prefs,
+                        )
+                    }
+                }
             }
+            // Load carousels once, with prefs already set
             loadCarousels()
         }
     }
@@ -64,19 +81,14 @@ class HomeViewModel(
         val current = _uiState.value
         if (current.userLat != lat || current.userLng != lng) {
             _uiState.update { it.copy(userLat = lat, userLng = lng) }
-            carouselRepository.invalidateCaches()
+            carouselRepository.invalidateAll()
             loadCarousels()
         }
     }
 
     fun debugSetLocation(lat: Double, lng: Double, name: String) {
         _uiState.update { it.copy(userLat = lat, userLng = lng, locationName = name) }
-        carouselRepository.invalidateCaches()
-        loadCarousels()
-    }
-
-    fun selectSegment(segment: HomeSegment) {
-        _uiState.update { it.copy(selectedSegment = segment, selectedCategory = "foryou") }
+        carouselRepository.invalidateAll()
         loadCarousels()
     }
 
@@ -85,10 +97,75 @@ class HomeViewModel(
         loadCarousels(loadCategories = false)
     }
 
+    fun recordEventClick(eventId: String, category: String? = null) {
+        communityInterestRepository.recordClick(eventId, InteractionType.EVENT, category)
+    }
+
+    fun recordEventShare(eventId: String, category: String? = null) {
+        communityInterestRepository.recordShare(eventId, InteractionType.EVENT, category)
+    }
+
+    fun toggleEventFavorite(eventId: String, category: String? = null) {
+        val isFav = eventId in _uiState.value.favoriteEventIds
+        if (isFav) {
+            communityInterestRepository.removeFavorite(eventId, InteractionType.EVENT)
+            _uiState.update { it.copy(favoriteEventIds = it.favoriteEventIds - eventId) }
+        } else {
+            communityInterestRepository.recordFavorite(eventId, InteractionType.EVENT, category)
+            _uiState.update { it.copy(favoriteEventIds = it.favoriteEventIds + eventId) }
+        }
+    }
+
+    fun recordEventFavorite(eventId: String, category: String? = null) {
+        communityInterestRepository.recordFavorite(eventId, InteractionType.EVENT, category)
+        _uiState.update { it.copy(favoriteEventIds = it.favoriteEventIds + eventId) }
+    }
+
+    fun recordPlaceShare(placeId: String) {
+        communityInterestRepository.recordShare(placeId, InteractionType.PLACE)
+    }
+
+    fun setRadiusFilter(miles: Double?) {
+        _uiState.update { it.copy(radiusFilter = miles) }
+    }
+
     fun refresh() {
         carouselRepository.invalidateCaches()
         _uiState.update { it.copy(isRefreshing = true) }
         loadCarousels()
+        loadSavedThisWeek()
+    }
+
+    private fun loadSavedThisWeek() {
+        viewModelScope.launch {
+            try {
+                val userId = userPreferencesRepository.getLocalUserId() ?: return@launch
+                val eventIds = communityInterestRepository.getFavoriteEventIds(userId)
+                _uiState.update { it.copy(favoriteEventIds = eventIds.toSet()) }
+                if (eventIds.isEmpty()) return@launch
+                val events = eventRepository.getEventsByIds(eventIds)
+
+                val now = kotlin.time.Clock.System.now()
+                val tz = TimeZone.currentSystemDefault()
+                val todayEpochDay = now.toLocalDateTime(tz).date.toEpochDays()
+                val endEpochDay = todayEpochDay + 7
+
+                val thisWeek = events.filter { event ->
+                    val startAt = event.startAt ?: return@filter false
+                    try {
+                        val eventDate = Instant.parse(startAt).toLocalDateTime(tz).date
+                        val eventEpochDay = eventDate.toEpochDays()
+                        eventEpochDay in todayEpochDay..endEpochDay
+                    } catch (_: Exception) {
+                        false
+                    }
+                }
+
+                _uiState.update { it.copy(savedThisWeek = thisWeek.sortedBy { it.startAt ?: "" }) }
+            } catch (_: Exception) {
+                // Non-fatal
+            }
+        }
     }
 
     private fun loadCarousels(loadCategories: Boolean = true) {
@@ -97,15 +174,9 @@ class HomeViewModel(
             try {
                 val state = _uiState.value
                 val category = state.selectedCategory
-                val segment = when (state.selectedSegment) {
-                    HomeSegment.UPCOMING -> SegmentMode.UPCOMING
-                    HomeSegment.ALWAYS_ON -> SegmentMode.ALWAYS_ON
-                }
 
-                // Only fetch categories when segment changes or on first load
                 val categories = if (loadCategories || state.availableCategories.isEmpty()) {
                     carouselRepository.getAvailableCategories(
-                        segment = segment,
                         userPreferences = state.userPreferences,
                     )
                 } else {
@@ -115,7 +186,6 @@ class HomeViewModel(
                 val carousels = carouselRepository.getCarousels(
                     userLat = state.userLat,
                     userLng = state.userLng,
-                    segment = segment,
                     category = if (category == "foryou") null else category,
                     userPreferences = state.userPreferences,
                     locationName = state.locationName,

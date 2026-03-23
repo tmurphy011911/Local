@@ -2,12 +2,8 @@ const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
 
 let TICKETMASTER_API_KEY, SUPABASE_SERVICE_KEY;
 
-const CITY = "boston";
-const METRO = "boston";
-const GEO_LAT = "42.3601";
-const GEO_LNG = "-71.0589";
-const GEO_RADIUS = "75";
-const GEO_UNIT = "miles";
+// Per-metro variables set during each iteration
+let CURRENT_CITY, CURRENT_LAT, CURRENT_LNG, CURRENT_RADIUS;
 
 // ── Classification segments to query separately (gets us past the 1000-result cap) ──
 const SEGMENTS = [
@@ -131,7 +127,7 @@ function normalizeEvent(tm) {
     status: "active",
     venue_name: venue?.name || null,
     venue_address: venue?.address?.line1 || null,
-    venue_city: venue?.city?.name || "Boston",
+    venue_city: venue?.city?.name || CURRENT_CITY.charAt(0).toUpperCase() + CURRENT_CITY.slice(1),
     venue_state: venue?.state?.stateCode || null,
     venue_lat: venue?.location?.latitude
       ? parseFloat(venue.location.latitude)
@@ -145,8 +141,8 @@ function normalizeEvent(tm) {
     confidence_score: 1.0,
     needs_review: false,
     dedupe_hash: hashEvent("ticketmaster", tm.id),
-    city: CITY,
-    metro_area: METRO,
+    city: CURRENT_CITY,
+    metro_area: CURRENT_CITY,
     last_synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
@@ -183,9 +179,9 @@ async function fetchWindow(segment, window) {
       "https://app.ticketmaster.com/discovery/v2/events.json"
     );
     url.searchParams.set("apikey", TICKETMASTER_API_KEY);
-    url.searchParams.set("geoPoint", `${GEO_LAT},${GEO_LNG}`);
-    url.searchParams.set("radius", GEO_RADIUS);
-    url.searchParams.set("unit", GEO_UNIT);
+    url.searchParams.set("geoPoint", `${CURRENT_LAT},${CURRENT_LNG}`);
+    url.searchParams.set("radius", CURRENT_RADIUS);
+    url.searchParams.set("unit", "miles");
     url.searchParams.set("size", size.toString());
     url.searchParams.set("page", page.toString());
     url.searchParams.set("sort", "date,asc");
@@ -277,6 +273,25 @@ async function upsertToSupabase(rows) {
   return { inserted, errors };
 }
 
+async function fetchActiveMetros() {
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/metros?is_active=eq.true&select=*`,
+    {
+      headers: {
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      },
+    }
+  );
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Failed to fetch metros: ${res.status} ${body}`);
+  }
+
+  return res.json();
+}
+
 async function main() {
   const secrets = await getSecrets(["TICKETMASTER_API_KEY"]);
   TICKETMASTER_API_KEY = secrets.TICKETMASTER_API_KEY;
@@ -284,58 +299,97 @@ async function main() {
 
   console.log("=== Ticketmaster -> Supabase Sync ===\n");
 
-  // 1. Fetch from Ticketmaster (per segment × monthly windows for max coverage)
-  const tmEvents = await fetchAllEvents();
+  // Fetch all active metros
+  const metros = await fetchActiveMetros();
+  console.log(`Found ${metros.length} active metro(s): ${metros.map((m) => m.name).join(", ")}\n`);
 
-  if (tmEvents.length === 0) {
-    console.log("No events found. Exiting.");
+  if (metros.length === 0) {
+    console.log("No active metros found. Run seed_metros.js first.");
     return;
   }
 
-  // 2. Normalize
-  const rows = tmEvents.map(normalizeEvent);
+  let grandTotal = { fetched: 0, valid: 0, upserted: 0, skipped: 0, errors: 0 };
 
-  const valid = rows.filter((r) => r.start_at);
-  const skipped = rows.length - valid.length;
-  console.log(`Normalized: ${valid.length} valid, ${skipped} skipped (no date)\n`);
+  for (const metro of metros) {
+    // Set per-metro variables
+    CURRENT_CITY = metro.name.toLowerCase();
+    CURRENT_LAT = metro.lat.toString();
+    CURRENT_LNG = metro.lng.toString();
+    CURRENT_RADIUS = (metro.radius_miles || 75).toString();
 
-  // 3. Upsert to Supabase
-  const { inserted, errors } = await upsertToSupabase(valid);
+    console.log(`\n${"=".repeat(50)}`);
+    console.log(`Syncing metro: ${metro.name} (${CURRENT_LAT}, ${CURRENT_LNG}, ${CURRENT_RADIUS}mi)`);
+    console.log(`${"=".repeat(50)}`);
 
-  // 4. Summary
-  console.log("\n=== Sync Summary ===");
-  console.log(`  Fetched:   ${tmEvents.length}`);
-  console.log(`  Valid:     ${valid.length}`);
-  console.log(`  Upserted:  ${inserted}`);
-  console.log(`  Skipped:   ${skipped}`);
-  console.log(`  Errors:    ${errors}`);
+    // 1. Fetch from Ticketmaster (per segment x monthly windows for max coverage)
+    const tmEvents = await fetchAllEvents();
 
-  // Category breakdown
-  const cats = {};
-  valid.forEach((r) => {
-    cats[r.category] = (cats[r.category] || 0) + 1;
-  });
-  console.log("\n  By category:");
-  Object.entries(cats)
-    .sort((a, b) => b[1] - a[1])
-    .forEach(([cat, count]) => {
-      console.log(`    ${cat}: ${count}`);
-    });
-
-  // Subcategory breakdown
-  const subs = {};
-  valid.forEach((r) => {
-    if (r.subcategory) {
-      subs[r.subcategory] = (subs[r.subcategory] || 0) + 1;
+    if (tmEvents.length === 0) {
+      console.log(`No events found for ${metro.name}. Skipping.`);
+      continue;
     }
-  });
-  console.log("\n  Top subcategories:");
-  Object.entries(subs)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 15)
-    .forEach(([sub, count]) => {
-      console.log(`    ${sub}: ${count}`);
+
+    // 2. Normalize
+    const rows = tmEvents.map(normalizeEvent);
+
+    const valid = rows.filter((r) => r.start_at);
+    const skipped = rows.length - valid.length;
+    console.log(`Normalized: ${valid.length} valid, ${skipped} skipped (no date)\n`);
+
+    // 3. Upsert to Supabase
+    const { inserted, errors } = await upsertToSupabase(valid);
+
+    // 4. Per-metro summary
+    console.log(`\n--- ${metro.name} Summary ---`);
+    console.log(`  Fetched:   ${tmEvents.length}`);
+    console.log(`  Valid:     ${valid.length}`);
+    console.log(`  Upserted:  ${inserted}`);
+    console.log(`  Skipped:   ${skipped}`);
+    console.log(`  Errors:    ${errors}`);
+
+    grandTotal.fetched += tmEvents.length;
+    grandTotal.valid += valid.length;
+    grandTotal.upserted += inserted;
+    grandTotal.skipped += skipped;
+    grandTotal.errors += errors;
+
+    // Category breakdown
+    const cats = {};
+    valid.forEach((r) => {
+      cats[r.category] = (cats[r.category] || 0) + 1;
     });
+    console.log("\n  By category:");
+    Object.entries(cats)
+      .sort((a, b) => b[1] - a[1])
+      .forEach(([cat, count]) => {
+        console.log(`    ${cat}: ${count}`);
+      });
+
+    // Subcategory breakdown
+    const subs = {};
+    valid.forEach((r) => {
+      if (r.subcategory) {
+        subs[r.subcategory] = (subs[r.subcategory] || 0) + 1;
+      }
+    });
+    console.log("\n  Top subcategories:");
+    Object.entries(subs)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 15)
+      .forEach(([sub, count]) => {
+        console.log(`    ${sub}: ${count}`);
+      });
+  }
+
+  // Grand total
+  console.log(`\n${"=".repeat(50)}`);
+  console.log("=== Grand Total ===");
+  console.log(`  Metros synced: ${metros.length}`);
+  console.log(`  Fetched:   ${grandTotal.fetched}`);
+  console.log(`  Valid:     ${grandTotal.valid}`);
+  console.log(`  Upserted:  ${grandTotal.upserted}`);
+  console.log(`  Skipped:   ${grandTotal.skipped}`);
+  console.log(`  Errors:    ${grandTotal.errors}`);
 }
 
 main().catch((err) => {
