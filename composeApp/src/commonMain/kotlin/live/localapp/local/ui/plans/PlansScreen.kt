@@ -30,13 +30,24 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.Delete
+import androidx.compose.material.icons.outlined.People
+import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material3.Icon
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -64,6 +75,7 @@ import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.model.Plan
 import live.localapp.local.domain.model.PlanDay
 import live.localapp.local.domain.model.Venue
+import live.localapp.local.ui.common.AppHeader
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 import live.localapp.local.ui.theme.AppShapes
@@ -74,56 +86,113 @@ fun PlansScreen(
     viewModel: PlansViewModel,
     onNewPlan: () -> Unit,
     onEventClick: (String) -> Unit = {},
+    onBuildPlanFromEvent: ((String) -> Unit)? = null,
+    onBuildPlanFromTemplate: ((String) -> Unit)? = null,
+    onSharePlan: ((Plan) -> Unit)? = null,
     userInitial: String = "",
     onProfileClick: () -> Unit = {},
+    locationName: String = "Waltham, MA",
+    streakDays: Int = 2,
 ) {
     val state by viewModel.uiState.collectAsState()
 
     Column(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
-        PlansHeader(onNewPlan = onNewPlan, userInitial = userInitial, onProfileClick = onProfileClick)
+        AppHeader(
+            title = "plans",
+            locationName = locationName,
+            radiusFilter = null,
+            streakDays = streakDays,
+            userInitial = userInitial,
+            onProfileClick = onProfileClick,
+            onLocationClick = {},
+        )
 
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 80.dp),
+            contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 80.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
-            // Upcoming plans
-            if (state.upcomingPlans.isEmpty() && !state.isLoading) {
-                item { EmptyPlansCard(onNewPlan = onNewPlan) }
-            } else {
-                items(state.upcomingPlans) { plan ->
-                    PlanCard(
-                        plan = plan,
-                        isExpanded = state.expandedPlanId == plan.id,
-                        onToggleExpand = { viewModel.toggleExpand(plan.id) },
-                        onEventClick = onEventClick,
+            // Section header
+            item {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text(
+                        "Upcoming Plans",
+                        style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = AppColors.Ink),
                     )
+                    Row(
+                        modifier = Modifier
+                            .background(AppColors.Coral, RoundedCornerShape(10.dp))
+                            .clickable { onNewPlan() }
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White)
+                        Text("New Plan", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, color = Color.White))
+                    }
                 }
             }
 
-            // Past plans
+            if (state.upcomingPlans.isEmpty()) {
+                if (!state.isLoading) {
+                    // Empty state with template suggestions
+                    item { PlanTemplates(onNewPlan = onNewPlan, onTemplateClick = onBuildPlanFromTemplate) }
+                }
+            } else {
+                // Hero card for the first plan
+                val heroPlan = state.upcomingPlans.first()
+                item(key = heroPlan.id) {
+                    SwipeToRevealDelete(onDelete = { viewModel.deletePlan(heroPlan.id) }) {
+                        HeroPlanCard(
+                            plan = heroPlan,
+                            isExpanded = state.expandedPlanId == heroPlan.id,
+                            onToggleExpand = { viewModel.toggleExpand(heroPlan.id) },
+                            onEventClick = onEventClick,
+                            onShare = { onSharePlan?.invoke(heroPlan) },
+                            onRemoveSlot = { dayIndex, slotId -> viewModel.removeSlotFromPlan(heroPlan.id, dayIndex, slotId) },
+                        )
+                    }
+                }
+
+                // Remaining plans as compact cards
+                if (state.upcomingPlans.size > 1) {
+                    items(state.upcomingPlans.drop(1), key = { it.id }) { plan ->
+                        SwipeToRevealDelete(onDelete = { viewModel.deletePlan(plan.id) }) {
+                            CompactPlanCard(
+                                plan = plan,
+                                isExpanded = state.expandedPlanId == plan.id,
+                                onToggleExpand = { viewModel.toggleExpand(plan.id) },
+                                onEventClick = onEventClick,
+                                onShare = { onSharePlan?.invoke(plan) },
+                                onRemoveSlot = { dayIndex, slotId -> viewModel.removeSlotFromPlan(plan.id, dayIndex, slotId) },
+                            )
+                        }
+                    }
+                }
+            }
+
+            // Past plans — dimmed
             if (state.pastPlans.isNotEmpty()) {
                 item {
                     Spacer(Modifier.height(4.dp))
-                    Text(
-                        "Past Plans",
-                        style = TextStyle(
-                            fontFamily = AppFonts.Heading,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 18.sp,
-                            color = AppColors.Ink3,
-                        ),
-                    )
-                    Spacer(Modifier.height(10.dp))
+                    Text("Past Plans", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = AppColors.Ink3))
                 }
-                items(state.pastPlans) { plan ->
-                    PlanCard(
-                        plan = plan,
-                        isExpanded = state.expandedPlanId == plan.id,
-                        onToggleExpand = { viewModel.toggleExpand(plan.id) },
-                        isPast = true,
-                        onEventClick = onEventClick,
-                    )
+                items(state.pastPlans, key = { it.id }) { plan ->
+                    SwipeToRevealDelete(onDelete = { viewModel.deletePlan(plan.id) }) {
+                        Box(modifier = Modifier.alpha(0.5f)) {
+                            CompactPlanCard(
+                                plan = plan,
+                                isExpanded = state.expandedPlanId == plan.id,
+                                onToggleExpand = { viewModel.toggleExpand(plan.id) },
+                                onEventClick = onEventClick,
+                                onRemoveSlot = { dayIndex, slotId -> viewModel.removeSlotFromPlan(plan.id, dayIndex, slotId) },
+                            )
+                        }
+                    }
                 }
             }
 
@@ -148,7 +217,11 @@ fun PlansScreen(
                         horizontalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
                         state.savedEvents.forEach { event ->
-                            SavedEventCard(event = event, onClick = { onEventClick(event.id) })
+                            SavedEventCard(
+                                event = event,
+                                onClick = { onEventClick(event.id) },
+                                onBuildPlan = { onBuildPlanFromEvent?.invoke(event.title) },
+                            )
                         }
                     }
                 }
@@ -184,59 +257,72 @@ fun PlansScreen(
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
-private fun SavedEventCard(event: Event, onClick: () -> Unit) {
+private fun SavedEventCard(event: Event, onClick: () -> Unit, onBuildPlan: () -> Unit = {}) {
     val cardShape = RoundedCornerShape(14.dp)
     Column(
         modifier = Modifier
             .width(140.dp)
+            .height(150.dp)
             .background(AppColors.White, cardShape)
             .border(1.5.dp, AppColors.Pebble, cardShape)
             .clip(cardShape)
             .clickable(onClick = onClick),
     ) {
-        // Image
-        val imageUrl = event.imageUrl
-        if (!imageUrl.isNullOrBlank()) {
-            AsyncImage(
-                model = ImageRequest.Builder(LocalPlatformContext.current)
-                    .data(imageUrl)
-                    .build(),
-                contentDescription = event.title,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(80.dp),
-                contentScale = ContentScale.Crop,
-            )
-        } else {
+        // Image with Yocal button overlay
+        Box(
+            modifier = Modifier.fillMaxWidth().height(80.dp),
+        ) {
+            val imageUrl = event.imageUrl
+            if (!imageUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = ImageRequest.Builder(LocalPlatformContext.current).data(imageUrl).build(),
+                    contentDescription = event.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            } else {
+                val colorKey = event.subcategory ?: event.category
+                val (bgStart, bgEnd) = categoryGradient(colorKey)
+                Box(
+                    modifier = Modifier.fillMaxSize().background(Brush.linearGradient(listOf(bgStart, bgEnd))),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.CalendarMonth,
+                        contentDescription = null,
+                        modifier = Modifier.size(28.dp),
+                        tint = AppColors.Ink3.copy(alpha = 0.3f),
+                    )
+                }
+            }
+
+            // Yocal sparkle button — top right
             Box(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .height(80.dp)
-                    .background(AppColors.Mist),
-            )
+                    .align(Alignment.TopEnd)
+                    .padding(4.dp)
+                    .size(24.dp)
+                    .background(AppColors.Coral, CircleShape)
+                    .clip(CircleShape)
+                    .clickable { onBuildPlan() },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Outlined.AutoAwesome, contentDescription = "Build plan", modifier = Modifier.size(13.dp), tint = Color.White)
+            }
         }
+
         // Body
         Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp)) {
             Text(
                 event.title,
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 11.sp,
-                    color = AppColors.Ink,
-                ),
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = AppColors.Ink),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
             )
             Spacer(Modifier.height(2.dp))
             Text(
                 event.dateDisplay,
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 10.sp,
-                    color = AppColors.Ink3,
-                ),
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, color = AppColors.Ink3),
                 maxLines = 1,
             )
         }
@@ -309,96 +395,7 @@ private fun SavedVenueRow(venue: Venue) {
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// HEADER
-// ═══════════════════════════════════════════════════════════════════
-
-@Composable
-private fun PlansHeader(
-    onNewPlan: () -> Unit,
-    userInitial: String = "",
-    onProfileClick: () -> Unit = {},
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(AppColors.White),
-    ) {
-        // Title row: logo-style "plans" + New Plan button + avatar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(
-                modifier = Modifier.weight(1f),
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                Text("p", style = AppType.Logo.copy(color = AppColors.Coral, fontSize = 24.sp))
-                Text("lans", style = AppType.Logo.copy(fontSize = 24.sp))
-            }
-
-            // New Plan button
-            val interactionSource = remember { MutableInteractionSource() }
-            val isPressed by interactionSource.collectIsPressedAsState()
-            val newPlanScale by animateFloatAsState(if (isPressed) 0.95f else 1f, tween(80))
-            val haptic = LocalHapticFeedback.current
-            Row(
-                modifier = Modifier
-                    .graphicsLayer { scaleX = newPlanScale; scaleY = newPlanScale }
-                    .background(
-                        if (isPressed) AppColors.Coral.copy(alpha = 0.85f) else AppColors.Coral,
-                        RoundedCornerShape(12.dp),
-                    )
-                    .clickable(interactionSource = interactionSource, indication = null, onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onNewPlan()
-                    })
-                    .padding(horizontal = 14.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-            ) {
-                Icon(Icons.Outlined.Add, contentDescription = null, modifier = Modifier.size(15.dp), tint = Color.White)
-                Text(
-                    "New Plan",
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = Color.White),
-                )
-            }
-
-            Spacer(Modifier.width(10.dp))
-
-            // User avatar
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .background(AppColors.Coral, AppShapes.Avatar)
-                    .border(2.dp, AppColors.CoralDk, AppShapes.Avatar)
-                    .clip(AppShapes.Avatar)
-                    .clickable { onProfileClick() },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    userInitial,
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 15.sp,
-                        color = AppColors.White,
-                    ),
-                )
-            }
-        }
-
-        // Bottom border
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(2.dp)
-                .background(AppColors.Mist),
-        )
-    }
-}
+// PlansHeader removed — now uses shared AppHeader
 
 // ═══════════════════════════════════════════════════════════════════
 // EMPTY STATE
@@ -788,3 +785,455 @@ private fun PlanStatCell(value: String, label: String, modifier: Modifier) {
     }
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// SWIPE TO REVEAL DELETE
+// ═══════════════════════════════════════════════════════════════════
+
+@Composable
+private fun SwipeToRevealDelete(
+    onDelete: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    var revealed by remember { mutableStateOf(false) }
+    val offsetX by animateFloatAsState(
+        targetValue = if (revealed) -80f else 0f,
+        animationSpec = tween(200),
+    )
+
+    Box(modifier = Modifier.fillMaxWidth().clipToBounds()) {
+        // Delete button behind
+        Box(
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .width(80.dp)
+                .fillMaxHeight()
+                .background(Color(0xFFFF3B30), RoundedCornerShape(topEnd = 14.dp, bottomEnd = 14.dp))
+                .clickable {
+                    revealed = false
+                    onDelete()
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Outlined.Delete, contentDescription = "Delete", tint = Color.White, modifier = Modifier.size(22.dp))
+        }
+
+        // Content on top — slides left
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .graphicsLayer { translationX = offsetX * density }
+                .pointerInput(Unit) {
+                    detectHorizontalDragGestures(
+                        onDragEnd = { },
+                        onHorizontalDrag = { _, dragAmount ->
+                            if (dragAmount < -10) revealed = true
+                            else if (dragAmount > 10) revealed = false
+                        },
+                    )
+                },
+        ) {
+            content()
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// HERO PLAN CARD
+// ═══════════════════════════════════════════════════════════════════
+
+@Composable
+private fun HeroPlanCard(
+    plan: Plan,
+    isExpanded: Boolean,
+    onToggleExpand: () -> Unit,
+    onEventClick: (String) -> Unit = {},
+    onShare: () -> Unit = {},
+    onRemoveSlot: (dayIndex: Int, slotId: String) -> Unit = { _, _ -> },
+) {
+    val totalEvents = plan.days.sumOf { it.slots.size }
+    val cardShape = RoundedCornerShape(20.dp)
+
+    Column {
+        // Hero
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(cardShape)
+                .background(
+                    Brush.linearGradient(listOf(AppColors.Coral, Color(0xFFFF4F4F))),
+                    cardShape,
+                )
+                .clickable { onToggleExpand() }
+                .padding(20.dp),
+        ) {
+            // Decorative circle
+            Box(
+                modifier = Modifier
+                    .size(120.dp)
+                    .offset(x = 80.dp, y = (-40).dp)
+                    .align(Alignment.TopEnd)
+                    .background(Color.White.copy(alpha = 0.1f), CircleShape),
+            )
+
+            Column {
+                // Top row: confirmed + share
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    val confirmed = plan.attendees.count { it.confirmed }
+                    val total = plan.attendees.size.coerceAtLeast(1)
+                    Row(
+                        modifier = Modifier
+                            .background(Color.White.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Icon(Icons.Outlined.People, contentDescription = null, modifier = Modifier.size(12.dp), tint = Color.White)
+                        Text(
+                            "$confirmed/$total confirmed",
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = Color.White),
+                        )
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(30.dp)
+                            .background(Color.White.copy(alpha = 0.2f), CircleShape)
+                            .clip(CircleShape)
+                            .clickable { onShare() },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Outlined.IosShare, contentDescription = "Share", modifier = Modifier.size(14.dp), tint = Color.White)
+                    }
+                }
+
+                Spacer(Modifier.height(10.dp))
+
+                Text(
+                    plan.title,
+                    style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 22.sp, color = Color.White),
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    plan.dateDisplay.ifBlank { "${plan.days.size} ${if (plan.days.size == 1) "day" else "days"}" },
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Color.White.copy(alpha = 0.75f)),
+                )
+                Spacer(Modifier.height(12.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Box(
+                        modifier = Modifier
+                            .background(Color.White.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    ) {
+                        Text("$totalEvents events", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = Color.White))
+                    }
+                    Box(
+                        modifier = Modifier
+                            .background(Color.White.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    ) {
+                        Text("${plan.days.size} ${if (plan.days.size == 1) "day" else "days"}", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = Color.White))
+                    }
+                }
+            }
+        }
+
+        // Timeline — expands below the hero
+        AnimatedVisibility(visible = isExpanded) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(AppColors.Snow)
+                    .padding(top = 8.dp),
+            ) {
+                plan.days.forEachIndexed { index, day ->
+                    if (plan.days.size > 1) {
+                        Text(
+                            day.label.replace("Today ", "").replace("Tomorrow ", ""),
+                            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Ink),
+                            modifier = Modifier.padding(vertical = 8.dp),
+                        )
+                    }
+                    TimelineView(
+                        day = day,
+                        onEventClick = onEventClick,
+                        onRemoveSlot = { slotId -> onRemoveSlot(index, slotId) },
+                    )
+                    if (index < plan.days.lastIndex) {
+                        Spacer(Modifier.height(12.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// COMPACT PLAN CARD
+// ═══════════════════════════════════════════════════════════════════
+
+@Composable
+private fun CompactPlanCard(
+    plan: Plan,
+    isExpanded: Boolean,
+    onToggleExpand: () -> Unit,
+    onEventClick: (String) -> Unit = {},
+    onShare: () -> Unit = {},
+    onRemoveSlot: (dayIndex: Int, slotId: String) -> Unit = { _, _ -> },
+) {
+    val totalEvents = plan.days.sumOf { it.slots.size }
+    val cardShape = RoundedCornerShape(14.dp)
+
+    Column {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(AppColors.White, cardShape)
+                .border(1.5.dp, AppColors.Pebble, cardShape)
+                .clip(cardShape)
+                .clickable { onToggleExpand() }
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // Coral accent dot
+            Box(modifier = Modifier.size(8.dp).background(AppColors.Coral, CircleShape))
+            Spacer(Modifier.width(12.dp))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    plan.title,
+                    style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = AppColors.Ink),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    plan.dateDisplay.ifBlank { "${plan.days.size} days" },
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
+                )
+            }
+
+            // Confirmed count
+            val confirmed = plan.attendees.count { it.confirmed }
+            val total = plan.attendees.size.coerceAtLeast(1)
+            Text(
+                "$confirmed/$total",
+                modifier = Modifier
+                    .background(AppColors.Mist, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Ink3),
+            )
+
+            Spacer(Modifier.width(6.dp))
+
+            // Event count badge
+            Box(
+                modifier = Modifier
+                    .background(AppColors.CoralLt, RoundedCornerShape(8.dp))
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+            ) {
+                Text("$totalEvents", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = AppColors.Coral))
+            }
+
+            Spacer(Modifier.width(6.dp))
+
+            // Share
+            Icon(
+                Icons.Outlined.IosShare,
+                contentDescription = "Share",
+                modifier = Modifier.size(16.dp).clickable { onShare() },
+                tint = AppColors.Ink3,
+            )
+
+        }
+
+        // Timeline expands below
+        AnimatedVisibility(visible = isExpanded) {
+            Column(modifier = Modifier.padding(top = 8.dp, start = 4.dp)) {
+                plan.days.forEachIndexed { index, day ->
+                    if (plan.days.size > 1) {
+                        Text(
+                            day.label.replace("Today ", "").replace("Tomorrow ", ""),
+                            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Ink),
+                            modifier = Modifier.padding(vertical = 8.dp),
+                        )
+                    }
+                    TimelineView(
+                        day = day,
+                        onEventClick = onEventClick,
+                        onRemoveSlot = { slotId -> onRemoveSlot(index, slotId) },
+                    )
+                    if (index < plan.days.lastIndex) Spacer(Modifier.height(12.dp))
+                }
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// TIMELINE VIEW
+// ═══════════════════════════════════════════════════════════════════
+
+@Composable
+private fun TimelineView(
+    day: PlanDay,
+    onEventClick: (String) -> Unit = {},
+    onRemoveSlot: ((String) -> Unit)? = null,
+) {
+    Column {
+        day.slots.forEachIndexed { index, slot ->
+            val isLast = index == day.slots.lastIndex
+
+            val slotContent = @Composable {
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    // Time + line
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.width(50.dp),
+                    ) {
+                        Text(
+                            slot.time,
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = AppColors.Ink3),
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        // Dot
+                        Box(modifier = Modifier.size(10.dp).background(AppColors.Coral, CircleShape))
+                        // Line
+                        if (!isLast) {
+                            Box(
+                                modifier = Modifier
+                                    .width(2.dp)
+                                    .height(40.dp)
+                                    .background(AppColors.Coral.copy(alpha = 0.25f)),
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.width(10.dp))
+
+                    // Event card
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(bottom = if (isLast) 0.dp else 8.dp)
+                            .background(AppColors.White, RoundedCornerShape(10.dp))
+                            .border(1.5.dp, AppColors.Pebble, RoundedCornerShape(10.dp))
+                            .then(
+                                if (slot.eventId != null) Modifier.clickable { onEventClick(slot.eventId) }
+                                else Modifier
+                            )
+                            .padding(horizontal = 12.dp, vertical = 8.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                slot.name,
+                                modifier = Modifier.weight(1f, fill = false),
+                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, color = AppColors.Ink),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (slot.isFree) {
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    "Free",
+                                    modifier = Modifier
+                                        .background(Color(0xFFEDFAF5), RoundedCornerShape(4.dp))
+                                        .padding(horizontal = 5.dp, vertical = 1.dp),
+                                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Sage),
+                                )
+                            }
+                        }
+                        if (slot.detail.isNotBlank()) {
+                            Text(
+                                slot.detail,
+                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, color = AppColors.Ink3),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                }
+            }
+
+            if (onRemoveSlot != null) {
+                SwipeToRevealDelete(onDelete = { onRemoveSlot(slot.id) }) {
+                    slotContent()
+                }
+            } else {
+                slotContent()
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// PLAN TEMPLATES (empty state)
+// ═══════════════════════════════════════════════════════════════════
+
+@Composable
+private fun PlanTemplates(onNewPlan: () -> Unit, onTemplateClick: ((String) -> Unit)? = null) {
+    val templateMessages = mapOf(
+        "Date Night" to "Plan a date night",
+        "Family Day Out" to "Plan a family day out",
+        "Visitors in Town" to "Plan a day showing visitors around",
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            "Get started with a template",
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Ink3),
+        )
+        Spacer(Modifier.height(2.dp))
+        listOf(
+            "Date Night" to "Plan the perfect evening for two",
+            "Family Day Out" to "Fun for the whole crew",
+            "Visitors in Town" to "Show them the best of the area",
+        ).forEach { (title, subtitle) ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(AppColors.White, RoundedCornerShape(14.dp))
+                    .border(1.5.dp, AppColors.Pebble, RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(14.dp))
+                    .clickable {
+                        val msg = templateMessages[title]
+                        if (msg != null && onTemplateClick != null) {
+                            onTemplateClick(msg)
+                        } else {
+                            onNewPlan()
+                        }
+                    }
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        title,
+                        style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = AppColors.Ink),
+                    )
+                    Text(
+                        subtitle,
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
+                    )
+                }
+                Icon(
+                    Icons.Outlined.AutoAwesome,
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp),
+                    tint = AppColors.Coral,
+                )
+            }
+        }
+    }
+}
+
+
+
+private fun categoryGradient(category: String): Pair<Color, Color> = when (category.lowercase()) {
+    "music" -> Color(0xFFF5F0FF) to Color(0xFFEDE0FF)
+    "sports" -> Color(0xFFEEF5FF) to Color(0xFFDCEEFF)
+    "arts" -> Color(0xFFEDFAF5) to Color(0xFFD5F5E8)
+    "comedy", "food" -> Color(0xFFFFF8EC) to Color(0xFFFFF0CC)
+    "outdoors" -> Color(0xFFEDFAF5) to Color(0xFFD5F5E8)
+    else -> Color(0xFFFFF0EE) to Color(0xFFFFE0DC)
+}

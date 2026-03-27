@@ -2,6 +2,9 @@ package live.localapp.local.ui.navigation
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.fadeIn
 import androidx.compose.animation.togetherWith
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
@@ -10,6 +13,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -88,6 +92,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.geometry.Rect
 import kotlinx.coroutines.launch
 import live.localapp.local.ui.progress.ProgressScreen
+import live.localapp.local.ui.progress.CelebrationEvent
 import live.localapp.local.ui.progress.ProgressViewModel
 import live.localapp.local.platform.closeChatSheet
 import live.localapp.local.platform.hasNativeHeroTransition
@@ -121,7 +126,10 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     val density = LocalDensity.current.density
     var selectedTab by remember { mutableStateOf(Tab.HOME) }
     var detailEvent by remember { mutableStateOf<Event?>(null) }
+    var detailFromPlans by remember { mutableStateOf(false) }
     var showChat by remember { mutableStateOf(false) }
+    var pendingChatMessage by remember { mutableStateOf<String?>(null) }
+    var chatOpenCount by remember { mutableStateOf(0) }
 
     // Hoist HomeViewModel so data starts loading immediately (for splash screen)
     val homeVm: HomeViewModel = viewModel {
@@ -133,6 +141,10 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     }
     val homeState by homeVm.uiState.collectAsState()
 
+    // Hoist ProgressViewModel so badge celebrations show on any screen
+    val progressVm: ProgressViewModel = viewModel { koin.get<ProgressViewModel>() }
+    val progressState by progressVm.uiState.collectAsState()
+
     // Hoist PlacesViewModel so VenueDetailPage overlay can observe its state
     val placesVm: PlacesViewModel = viewModel {
         koin.get<PlacesViewModel>().also { vm ->
@@ -140,6 +152,11 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         }
     }
     val placesState by placesVm.uiState.collectAsState()
+
+    // Observe chat success state to defer celebrations
+    val chatVm: ChatViewModel = viewModel { koin.get<ChatViewModel>() }
+    val chatState by chatVm.uiState.collectAsState()
+    val deferCelebrations = chatState.showPlanSuccess
 
     Box(
         modifier = Modifier
@@ -168,10 +185,12 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                         cardImageUrl = transitionInfo?.imageUrl,
                                         onDismissed = { /* state cleanup if needed */ },
                                         onFavorited = { eventId ->
-                                            homeVm.recordEventFavorite(eventId, event.subcategory ?: event.category)
+                                            homeVm.toggleEventFavorite(eventId, event.subcategory ?: event.category)
                                         },
+                                        showDirections = false,
                                     )
                                 } else {
+                                    detailFromPlans = false
                                     detailEvent = event
                                 }
                             },
@@ -200,8 +219,13 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         )
                     }
                     Tab.PROFILE -> {
-                        val vm: ProgressViewModel = viewModel { koin.get<ProgressViewModel>() }
-                        ProgressScreen(vm, onLogout = onLogout)
+                        LaunchedEffect(selectedTab) { progressVm.refresh() }
+                        ProgressScreen(
+                            progressVm,
+                            onLogout = onLogout,
+                            locationName = homeState.locationName,
+                            streakDays = homeState.streakDays,
+                        )
                     }
                     Tab.PLANS -> {
                         val plansVm: PlansViewModel = viewModel { koin.get<PlansViewModel>() }
@@ -211,10 +235,32 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             onNewPlan = { showChat = true },
                             userInitial = homeState.userName.firstOrNull()?.uppercase() ?: "",
                             onProfileClick = { selectedTab = Tab.PROFILE },
+                            locationName = homeState.locationName,
+                            streakDays = homeState.streakDays,
+                            onBuildPlanFromEvent = { eventTitle ->
+                                pendingChatMessage = "Build a plan around $eventTitle"
+                                chatOpenCount++
+                                showChat = true
+                            },
+                            onBuildPlanFromTemplate = { templateMessage ->
+                                pendingChatMessage = templateMessage
+                                chatOpenCount++
+                                showChat = true
+                            },
                             onEventClick = { eventId ->
                                 scope.launch {
-                                    val event = eventRepo.getEvent(eventId)
-                                    if (event != null) {
+                                    val event = eventRepo.getEvent(eventId) ?: return@launch
+                                    if (hasNativeHeroTransition) {
+                                        showNativeEventDetail(
+                                            event = event,
+                                            cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                                            cardImageUrl = event.imageUrl,
+                                            onDismissed = {},
+                                            onFavorited = { id -> homeVm.toggleEventFavorite(id, event.subcategory ?: event.category) },
+                                            showDirections = true,
+                                        )
+                                    } else {
+                                        detailFromPlans = true
                                         detailEvent = event
                                     }
                                 }
@@ -269,6 +315,21 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
 
         // Event detail overlay
         if (detailEvent != null) {
+            // On iOS, redirect to native SwiftUI detail
+            if (hasNativeHeroTransition) {
+                LaunchedEffect(detailEvent) {
+                    val event = detailEvent ?: return@LaunchedEffect
+                    detailEvent = null // clear immediately so Compose overlay doesn't show
+                    showNativeEventDetail(
+                        event = event,
+                        cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                        cardImageUrl = event.imageUrl,
+                        onDismissed = { },
+                        onFavorited = { id -> homeVm.toggleEventFavorite(id, event.subcategory ?: event.category) },
+                        showDirections = detailFromPlans,
+                    )
+                }
+            } else {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -283,9 +344,10 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     },
                     onFavoriteTracked = { eventId ->
                         val cat = detailEvent?.let { it.subcategory ?: it.category }
-                        homeVm.recordEventFavorite(eventId, cat)
+                        homeVm.toggleEventFavorite(eventId, cat)
                     },
                 )
+            }
             }
         }
 
@@ -293,6 +355,14 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         if (showChat) {
             val chatVm: ChatViewModel = viewModel { koin.get<ChatViewModel>() }
             val chatSheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+            // Auto-send pending message when chat opens from event/template
+            LaunchedEffect(chatOpenCount) {
+                val msg = pendingChatMessage ?: return@LaunchedEffect
+                delay(800) // let the sheet animate open and chat initialize
+                pendingChatMessage = null
+                chatVm.sendMessage(msg)
+            }
 
             // Animated dismiss helper
             val dismissChat: ((() -> Unit)?) -> Unit = { extra ->
@@ -347,8 +417,36 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     ChatScreen(
                         viewModel = chatVm,
                         onBack = { dismissChat(null) },
-                        onNavigateToPlans = { dismissChat { selectedTab = Tab.PLANS } },
+                        onNavigateToPlans = {
+                            dismissChat {
+                                selectedTab = Tab.PLANS
+                                // Force refresh even if already on Plans tab
+                                val plansVm = koin.get<PlansViewModel>()
+                                plansVm.refresh()
+                            }
+                        },
                         onNavigateHome = { dismissChat { selectedTab = Tab.HOME } },
+                    )
+                }
+            }
+        }
+
+        // ── Global Badge Celebration Overlays ──
+        // Defer celebrations while plan success overlay is showing
+        if (!deferCelebrations) {
+            progressState.celebration?.let { event ->
+                when (event) {
+                    is CelebrationEvent.MilestoneEarned -> GlobalMilestoneToast(
+                        event = event,
+                        onDismiss = { progressVm.dismissCelebration() },
+                    )
+                    is CelebrationEvent.StatusLevelUp -> GlobalLevelUpOverlay(
+                        event = event,
+                        onDismiss = { progressVm.dismissCelebration() },
+                    )
+                    is CelebrationEvent.NewState -> GlobalNewStateToast(
+                        event = event,
+                        onDismiss = { progressVm.dismissCelebration() },
                     )
                 }
             }
@@ -611,6 +709,204 @@ private fun BootstrapSplash() {
                             ),
                         ),
                 )
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════
+// ── Global Celebration Overlays ──
+// ═══════════════════════════════════════
+
+private fun stateAbbrevToFull(abbrev: String): String = when (abbrev.uppercase()) {
+    "MA" -> "Massachusetts"; "ME" -> "Maine"; "NH" -> "New Hampshire"
+    "VT" -> "Vermont"; "RI" -> "Rhode Island"; "CT" -> "Connecticut"
+    "NY" -> "New York"; "NJ" -> "New Jersey"; "PA" -> "Pennsylvania"
+    "CA" -> "California"; "TX" -> "Texas"; "FL" -> "Florida"
+    else -> abbrev
+}
+
+@Composable
+private fun GlobalMilestoneToast(event: CelebrationEvent.MilestoneEarned, onDismiss: () -> Unit) {
+    var visible by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        visible = true
+        delay(3500)
+        visible = false
+        delay(300)
+        onDismiss()
+    }
+
+    AnimatedVisibility(
+        visible = visible,
+        enter = slideInVertically(
+            initialOffsetY = { -it * 2 },
+            animationSpec = spring(dampingRatio = 0.7f, stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow),
+        ) + fadeIn(),
+        exit = slideOutVertically(targetOffsetY = { -it * 2 }, animationSpec = tween(250)) + fadeOut(),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 56.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(AppColors.Ink)
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp))
+                        .background(AppColors.CoralLt.copy(alpha = 0.15f)),
+                    contentAlignment = Alignment.Center,
+                ) { Text("\uD83C\uDF89", fontSize = 20.sp) }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "${event.milestone} ${event.action.label}!",
+                        style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = AppColors.White),
+                    )
+                    Text(
+                        "+${event.points} PTS",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, color = AppColors.Coral, letterSpacing = 0.5.sp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun GlobalLevelUpOverlay(event: CelebrationEvent.StatusLevelUp, onDismiss: () -> Unit) {
+    val scale = remember { Animatable(0.6f) }
+    val contentAlpha = remember { Animatable(0f) }
+
+    LaunchedEffect(Unit) {
+        contentAlpha.animateTo(1f, tween(300))
+        scale.animateTo(1f, spring(dampingRatio = 0.5f, stiffness = androidx.compose.animation.core.Spring.StiffnessLow))
+    }
+
+    // Fully opaque background — no bleed-through
+    Box(
+        modifier = Modifier.fillMaxSize()
+            .background(Color(0xFF1A1523))
+            .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onDismiss),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .graphicsLayer { scaleX = scale.value; scaleY = scale.value; alpha = contentAlpha.value }
+                .padding(horizontal = 32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                "LEVEL UP",
+                style = TextStyle(
+                    fontFamily = AppFonts.Heading,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    color = AppColors.Coral,
+                    letterSpacing = 4.sp,
+                ),
+            )
+            Spacer(Modifier.height(20.dp))
+            Text(
+                event.newTier.label,
+                style = TextStyle(
+                    fontFamily = AppFonts.Heading,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 52.sp,
+                    color = AppColors.White,
+                    letterSpacing = (-2).sp,
+                    textAlign = TextAlign.Center,
+                    lineHeight = 56.sp,
+                ),
+            )
+            Spacer(Modifier.height(16.dp))
+            Text(
+                "${formatNumber(event.totalPoints)} total points",
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 16.sp,
+                    color = AppColors.White.copy(alpha = 0.6f),
+                ),
+            )
+            Spacer(Modifier.height(40.dp))
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(30.dp))
+                    .background(AppColors.Coral)
+                    .clickable { onDismiss() }
+                    .padding(horizontal = 40.dp, vertical = 16.dp),
+            ) {
+                Text(
+                    "Share Achievement",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 16.sp,
+                        color = AppColors.White,
+                    ),
+                )
+            }
+            Spacer(Modifier.height(24.dp))
+            Text(
+                "TAP ANYWHERE TO DISMISS",
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
+                    color = AppColors.White.copy(alpha = 0.3f),
+                    letterSpacing = 1.sp,
+                ),
+            )
+        }
+    }
+}
+
+private fun formatNumber(n: Int): String {
+    if (n < 1000) return n.toString()
+    val s = n.toString()
+    val sb = StringBuilder()
+    s.forEachIndexed { i, c ->
+        if (i > 0 && (s.length - i) % 3 == 0) sb.append(',')
+        sb.append(c)
+    }
+    return sb.toString()
+}
+
+@Composable
+private fun GlobalNewStateToast(event: CelebrationEvent.NewState, onDismiss: () -> Unit) {
+    var visible by remember { mutableStateOf(false) }
+    val stateFullName = stateAbbrevToFull(event.state)
+
+    LaunchedEffect(Unit) {
+        visible = true
+        delay(3500)
+        visible = false
+        delay(300)
+        onDismiss()
+    }
+
+    AnimatedVisibility(
+        visible = visible,
+        enter = slideInVertically(initialOffsetY = { -it * 2 }, animationSpec = spring(dampingRatio = 0.7f, stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow)) + fadeIn(),
+        exit = slideOutVertically(targetOffsetY = { -it * 2 }, animationSpec = tween(250)) + fadeOut(),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 56.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))
+                    .background(Brush.linearGradient(listOf(AppColors.Sage, AppColors.SageDk))).padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("\uD83D\uDCCD", fontSize = 28.sp)
+                Spacer(Modifier.width(12.dp))
+                Column {
+                    Text("Welcome to $stateFullName!", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = AppColors.White))
+                    Text("Start exploring to earn milestones", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.White.copy(alpha = 0.8f)))
+                }
             }
         }
     }

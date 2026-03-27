@@ -142,7 +142,6 @@ function normalizeEvent(tm) {
     needs_review: false,
     dedupe_hash: hashEvent("ticketmaster", tm.id),
     city: CURRENT_CITY,
-    metro_area: CURRENT_CITY,
     last_synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };

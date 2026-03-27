@@ -63,9 +63,11 @@ actual fun showNativeEventDetail(
     cardImageUrl: String?,
     onDismissed: () -> Unit,
     onFavorited: ((String) -> Unit)?,
+    showDirections: Boolean,
 ) {
     EventDetailBridge.onDismissed = onDismissed
     EventDetailBridge.onFavorited = onFavorited
+    EventDetailBridge.showDirections = showDirections
     EventDetailBridge.showEventDetail?.invoke(
         event.id,
         event.title,

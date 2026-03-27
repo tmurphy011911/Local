@@ -59,7 +59,7 @@ data class Event(
                 val instant = Instant.parse(s)
                 val tz = TimeZone.currentSystemDefault()
                 val local = instant.toLocalDateTime(tz)
-                val now = kotlin.time.Clock.System.now().toLocalDateTime(tz)
+                val now = Instant.fromEpochMilliseconds(kotlin.time.Clock.System.now().toEpochMilliseconds()).toLocalDateTime(tz)
 
                 val hour = local.hour
                 val minute = local.minute

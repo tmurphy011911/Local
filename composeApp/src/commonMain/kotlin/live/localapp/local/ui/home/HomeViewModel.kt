@@ -17,8 +17,10 @@ import live.localapp.local.domain.repository.CategoryInfo
 import live.localapp.local.domain.repository.CommunityInterestRepository
 import live.localapp.local.domain.repository.EventRepository
 import live.localapp.local.domain.repository.InteractionType
+import live.localapp.local.domain.model.BadgeAction
 import live.localapp.local.domain.repository.UserPreferences
 import live.localapp.local.domain.repository.UserPreferencesRepository
+import live.localapp.local.domain.service.BadgeService
 
 data class HomeUiState(
     val userName: String = "",
@@ -43,6 +45,7 @@ class HomeViewModel(
     private val userPreferencesRepository: UserPreferencesRepository,
     private val communityInterestRepository: CommunityInterestRepository,
     private val eventRepository: EventRepository,
+    private val badgeService: BadgeService,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -103,6 +106,7 @@ class HomeViewModel(
 
     fun recordEventShare(eventId: String, category: String? = null) {
         communityInterestRepository.recordShare(eventId, InteractionType.EVENT, category)
+        badgeService.recordAction(BadgeAction.EVENT_SHARED, deriveUserState())
     }
 
     fun toggleEventFavorite(eventId: String, category: String? = null) {
@@ -113,6 +117,8 @@ class HomeViewModel(
         } else {
             communityInterestRepository.recordFavorite(eventId, InteractionType.EVENT, category)
             _uiState.update { it.copy(favoriteEventIds = it.favoriteEventIds + eventId) }
+            // Badge: track event saved
+            badgeService.recordAction(BadgeAction.EVENT_SAVED, deriveUserState())
         }
     }
 
@@ -127,6 +133,24 @@ class HomeViewModel(
 
     fun setRadiusFilter(miles: Double?) {
         _uiState.update { it.copy(radiusFilter = miles) }
+    }
+
+    /** Derive the US state from the user's city preference. */
+    private fun deriveUserState(): String {
+        val city = _uiState.value.userPreferences?.city ?: "boston"
+        return cityToState(city)
+    }
+
+    private fun cityToState(city: String): String = when (city.lowercase().trim()) {
+        "boston", "cambridge", "somerville", "newton", "waltham",
+        "brookline", "worcester", "springfield", "lowell" -> "MA"
+        "portland", "south portland", "scarborough" -> "ME"
+        "new york", "brooklyn", "manhattan", "queens" -> "NY"
+        "providence", "warwick", "cranston" -> "RI"
+        "burlington", "montpelier" -> "VT"
+        "portsmouth", "concord", "nashua", "manchester" -> "NH"
+        "hartford", "new haven", "stamford" -> "CT"
+        else -> "MA"
     }
 
     fun refresh() {
@@ -145,7 +169,7 @@ class HomeViewModel(
                 if (eventIds.isEmpty()) return@launch
                 val events = eventRepository.getEventsByIds(eventIds)
 
-                val now = kotlin.time.Clock.System.now()
+                val now = kotlinx.datetime.Instant.fromEpochMilliseconds(kotlin.time.Clock.System.now().toEpochMilliseconds())
                 val tz = TimeZone.currentSystemDefault()
                 val todayEpochDay = now.toLocalDateTime(tz).date.toEpochDays()
                 val endEpochDay = todayEpochDay + 7
@@ -178,6 +202,8 @@ class HomeViewModel(
                 val categories = if (loadCategories || state.availableCategories.isEmpty()) {
                     carouselRepository.getAvailableCategories(
                         userPreferences = state.userPreferences,
+                        userLat = state.userLat,
+                        userLng = state.userLng,
                     )
                 } else {
                     state.availableCategories

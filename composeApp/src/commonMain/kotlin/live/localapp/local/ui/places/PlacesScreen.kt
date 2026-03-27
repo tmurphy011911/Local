@@ -37,6 +37,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.CircularProgressIndicator
@@ -80,6 +81,7 @@ import live.localapp.local.domain.repository.VenueWithMeta
 import live.localapp.local.domain.repository.CommunityInterestRepository
 import live.localapp.local.domain.repository.InteractionType
 import live.localapp.local.ui.detail.EventDetailScreen
+import live.localapp.local.ui.common.AppHeader
 import live.localapp.local.ui.theme.AppColors
 import org.koin.mp.KoinPlatform
 import live.localapp.local.ui.theme.AppFonts
@@ -121,15 +123,118 @@ fun PlacesScreen(
     Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
         Column(modifier = Modifier.fillMaxSize()) {
             // ── Header ──
-            PlacesHeader(
-                state = state,
-                onSearchChange = { viewModel.setSearchQuery(it) },
-                onFilterSelect = { viewModel.setFilter(it) },
-                onSubFilterSelect = { viewModel.setSubFilter(it) },
-                onRadiusSelect = { viewModel.setRadiusFilter(it) },
-                onProfileClick = onProfileClick,
-                userInitial = userInitial,
-            )
+            run {
+                var radiusPickerOpen by remember { mutableStateOf(false) }
+                AppHeader(
+                    title = "places",
+                    locationName = state.locationName,
+                    radiusFilter = state.radiusFilter,
+                    streakDays = state.streakDays,
+                    userInitial = userInitial,
+                    onProfileClick = onProfileClick,
+                    onLocationClick = { radiusPickerOpen = !radiusPickerOpen },
+                    bottomPadding = !radiusPickerOpen,
+                    extraContent = {
+                        // Radius picker
+                        AnimatedVisibility(
+                            visible = radiusPickerOpen,
+                            enter = expandVertically(),
+                            exit = shrinkVertically(),
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 20.dp)
+                                    .padding(bottom = 10.dp)
+                                    .horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            ) {
+                                listOf<Double?>(null, 1.0, 3.0, 5.0, 10.0, 25.0, 50.0, 100.0).forEach { option ->
+                                    val isSelected = option == state.radiusFilter
+                                    val label = when (option) {
+                                        null   -> "Any"
+                                        1.0    -> "1 mi"
+                                        3.0    -> "3 mi"
+                                        5.0    -> "5 mi"
+                                        10.0   -> "10 mi"
+                                        25.0   -> "25 mi"
+                                        50.0   -> "50 mi"
+                                        100.0  -> "100 mi"
+                                        else   -> "${option.toInt()} mi"
+                                    }
+                                    Box(
+                                        modifier = Modifier
+                                            .background(
+                                                if (isSelected) AppColors.Sky else AppColors.SkyLt,
+                                                AppShapes.Pill,
+                                            )
+                                            .border(1.5.dp, AppColors.Sky, AppShapes.Pill)
+                                            .clickable(
+                                                interactionSource = remember { MutableInteractionSource() },
+                                                indication = null,
+                                            ) {
+                                                viewModel.setRadiusFilter(option)
+                                                radiusPickerOpen = false
+                                            }
+                                            .padding(horizontal = 12.dp, vertical = 5.dp),
+                                    ) {
+                                        Text(
+                                            label,
+                                            style = TextStyle(
+                                                fontFamily = AppFonts.Body,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontSize = 12.sp,
+                                                color = if (isSelected) AppColors.White else AppColors.Sky,
+                                            ),
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        // Search bar
+                        Box(modifier = Modifier.padding(horizontal = 20.dp)) {
+                            SearchBar(query = state.searchQuery, onQueryChange = { viewModel.setSearchQuery(it) })
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+
+                        // Filter chips row
+                        Row(
+                            modifier = Modifier.padding(horizontal = 20.dp).horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            PlacesViewModel.FILTERS.forEach { filter ->
+                                FilterChip(
+                                    label = filter,
+                                    isActive = filter == state.selectedFilter,
+                                    activeColor = AppColors.Coral,
+                                    onClick = { viewModel.setFilter(filter) },
+                                )
+                            }
+                        }
+
+                        // Sub-filter chips
+                        val subFilters = PlacesViewModel.SUB_FILTERS[state.selectedFilter]
+                        AnimatedVisibility(
+                            visible = subFilters != null,
+                            enter = expandVertically(animationSpec = tween(280)),
+                            exit = shrinkVertically(animationSpec = tween(220)),
+                        ) {
+                            Box(modifier = Modifier.padding(horizontal = 20.dp)) {
+                                SubFilterChipRow(
+                                    items = subFilters ?: emptyList(),
+                                    selected = state.selectedSubFilter ?: subFilters?.firstOrNull(),
+                                    onSelect = { viewModel.setSubFilter(it) },
+                                )
+                            }
+                        }
+
+                        Spacer(Modifier.height(4.dp))
+                    },
+                )
+            }
 
             // ── Content ──
             PullToRefreshBox(
@@ -159,222 +264,7 @@ fun PlacesScreen(
     }
 }
 
-// ═══════════════════════════════════════════════════════════════════
-// HEADER
-// ═══════════════════════════════════════════════════════════════════
-
-@Composable
-private fun PlacesHeader(
-    state: PlacesUiState,
-    onSearchChange: (String) -> Unit,
-    onFilterSelect: (String) -> Unit,
-    onSubFilterSelect: (String?) -> Unit,
-    onRadiusSelect: (Double?) -> Unit,
-    onProfileClick: () -> Unit = {},
-    userInitial: String = "",
-) {
-    var radiusPickerOpen by remember { mutableStateOf(false) }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(AppColors.White),
-    ) {
-        // Title row
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(
-                modifier = Modifier.weight(1f),
-                verticalAlignment = Alignment.Bottom,
-            ) {
-                Text("p", style = AppType.Logo.copy(fontSize = 24.sp))
-                Text("l", style = AppType.Logo.copy(color = AppColors.Coral, fontSize = 24.sp))
-                Text("aces", style = AppType.Logo.copy(fontSize = 24.sp))
-            }
-
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .background(AppColors.Coral, AppShapes.Avatar)
-                    .border(2.dp, AppColors.CoralDk, AppShapes.Avatar)
-                    .clip(AppShapes.Avatar)
-                    .clickable { onProfileClick() },
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    userInitial,
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 15.sp,
-                        color = AppColors.White,
-                    ),
-                )
-            }
-        }
-
-        // Location pill row — same layout as Home header
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = if (radiusPickerOpen) 8.dp else 14.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            val radiusLabel = state.radiusFilter?.let { " · ${it.toInt()} mi" } ?: ""
-            Row(
-                modifier = Modifier
-                    .background(AppColors.SkyLt, AppShapes.Pill)
-                    .border(2.dp, AppColors.Sky, AppShapes.Pill)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) { radiusPickerOpen = !radiusPickerOpen }
-                    .padding(horizontal = 12.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(7.dp)
-                        .background(AppColors.Sky, CircleShape),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    "${state.locationName}$radiusLabel",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 12.sp,
-                        color = AppColors.Sky,
-                    ),
-                )
-            }
-
-            // Streak badge
-            Row(
-                modifier = Modifier
-                    .background(AppColors.SunLt, AppShapes.Pill)
-                    .border(2.dp, AppColors.Sun, AppShapes.Pill)
-                    .padding(horizontal = 12.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Outlined.Bolt, contentDescription = null, modifier = Modifier.size(14.dp), tint = AppColors.SunDk)
-                Spacer(Modifier.width(3.dp))
-                Text(
-                    "${state.streakDays} day streak!",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 12.sp,
-                        color = AppColors.SunDk,
-                    ),
-                )
-            }
-        }
-
-        // Radius picker — expands below pill row when tapped
-        AnimatedVisibility(
-            visible = radiusPickerOpen,
-            enter = expandVertically(),
-            exit = shrinkVertically(),
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 10.dp)
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                listOf<Double?>(null, 1.0, 3.0, 5.0, 10.0, 25.0, 50.0, 100.0).forEach { option ->
-                    val isSelected = option == state.radiusFilter
-                    val label = when (option) {
-                        null   -> "Any"
-                        1.0    -> "1 mi"
-                        3.0    -> "3 mi"
-                        5.0    -> "5 mi"
-                        10.0   -> "10 mi"
-                        25.0   -> "25 mi"
-                        50.0   -> "50 mi"
-                        100.0  -> "100 mi"
-                        else   -> "${option.toInt()} mi"
-                    }
-                    Box(
-                        modifier = Modifier
-                            .background(
-                                if (isSelected) AppColors.Sky else AppColors.SkyLt,
-                                AppShapes.Pill,
-                            )
-                            .border(1.5.dp, AppColors.Sky, AppShapes.Pill)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                            ) {
-                                onRadiusSelect(option)
-                                radiusPickerOpen = false
-                            }
-                            .padding(horizontal = 12.dp, vertical = 5.dp),
-                    ) {
-                        Text(
-                            label,
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 12.sp,
-                                color = if (isSelected) AppColors.White else AppColors.Sky,
-                            ),
-                        )
-                    }
-                }
-            }
-        }
-
-        // Search bar
-        Box(modifier = Modifier.padding(horizontal = 20.dp)) {
-            SearchBar(query = state.searchQuery, onQueryChange = onSearchChange)
-        }
-
-        Spacer(Modifier.height(12.dp))
-
-        // Filter chips row — category chips only
-        Row(
-            modifier = Modifier.padding(horizontal = 20.dp).horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            PlacesViewModel.FILTERS.forEach { filter ->
-                FilterChip(
-                    label = filter,
-                    isActive = filter == state.selectedFilter,
-                    activeColor = AppColors.Coral,
-                    onClick = { onFilterSelect(filter) },
-                )
-            }
-        }
-
-        // Sub-filter chips
-        val subFilters = PlacesViewModel.SUB_FILTERS[state.selectedFilter]
-        AnimatedVisibility(
-            visible = subFilters != null,
-            enter = expandVertically(animationSpec = tween(280)),
-            exit = shrinkVertically(animationSpec = tween(220)),
-        ) {
-            Box(modifier = Modifier.padding(horizontal = 20.dp)) {
-                SubFilterChipRow(
-                    items = subFilters ?: emptyList(),
-                    selected = state.selectedSubFilter ?: subFilters?.firstOrNull(),
-                    onSelect = onSubFilterSelect,
-                )
-            }
-        }
-
-        Spacer(Modifier.height(4.dp))
-    }
-}
+// PlacesHeader removed — now uses shared AppHeader
 
 @Composable
 private fun SearchBar(query: String, onQueryChange: (String) -> Unit) {
@@ -723,6 +613,17 @@ fun VenueDetailPage(
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
+                Spacer(Modifier.width(8.dp))
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .background(AppColors.Snow, RoundedCornerShape(10.dp))
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable { /* TODO: share venue */ },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Outlined.IosShare, contentDescription = "Share", modifier = Modifier.size(18.dp), tint = AppColors.Ink)
+                }
             }
 
             // Scrollable content

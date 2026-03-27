@@ -1595,19 +1595,32 @@ function buildCategories(
 
 async function fetchAllEvents(
   supabase: ReturnType<typeof createClient>,
-  city: string,
+  lat: number,
+  lng: number,
+  radiusMiles: number,
 ): Promise<ProcessedEvent[]> {
   const now = nowIso();
   const pageSize = 1000;
+
+  // Bounding box filter (~1 degree lat ≈ 69 miles, 1 degree lng ≈ 50 miles at mid-latitudes)
+  const latDelta = radiusMiles / 69.0;
+  const lngDelta = radiusMiles / 50.0;
+  const minLat = lat - latDelta;
+  const maxLat = lat + latDelta;
+  const minLng = lng - lngDelta;
+  const maxLng = lng + lngDelta;
 
   async function fetchUpcomingPage(page: number): Promise<EventRow[]> {
     const { data, error } = await supabase
       .from("events")
       .select("*")
-      .eq("city", city)
       .eq("is_active", true)
       .gte("start_at", now)
       .lte("start_at", daysFromNowIso(31))
+      .gte("venue_lat", minLat)
+      .lte("venue_lat", maxLat)
+      .gte("venue_lng", minLng)
+      .lte("venue_lng", maxLng)
       .order("start_at", { ascending: true })
       .range(page * pageSize, (page + 1) * pageSize - 1);
     if (error) throw error;
@@ -1618,9 +1631,12 @@ async function fetchAllEvents(
     const { data, error } = await supabase
       .from("events")
       .select("*")
-      .eq("city", city)
       .eq("is_active", true)
       .eq("category", "always_on")
+      .gte("venue_lat", minLat)
+      .lte("venue_lat", maxLat)
+      .gte("venue_lng", minLng)
+      .lte("venue_lng", maxLng)
       .order("title", { ascending: true })
       .range(page * pageSize, (page + 1) * pageSize - 1);
     if (error) throw error;
@@ -1635,28 +1651,41 @@ async function fetchAllEvents(
   const results = await Promise.all(promises);
   const allRows = results.flat();
 
-  return allRows.map(row => ({
-    ...row,
-    distance_miles: null,
-    venue_description: null,
-  }));
+  // Precise distance filter
+  return allRows
+    .map(row => ({
+      ...row,
+      distance_miles: (row.venue_lat != null && row.venue_lng != null)
+        ? distanceMiles(lat, lng, row.venue_lat, row.venue_lng)
+        : null,
+      venue_description: null,
+    }))
+    .filter(e => e.distance_miles == null || e.distance_miles <= radiusMiles);
 }
 
 async function fetchRawSportsEvents(
   supabase: ReturnType<typeof createClient>,
-  city: string,
+  lat: number,
+  lng: number,
+  radiusMiles: number,
 ): Promise<ProcessedEvent[]> {
   const now = nowIso();
   const pageSize = 1000;
+
+  const latDelta = radiusMiles / 69.0;
+  const lngDelta = radiusMiles / 50.0;
 
   const promises = Array.from({ length: 7 }, async (_, page) => {
     const { data, error } = await supabase
       .from("events")
       .select("*")
-      .eq("city", city)
       .eq("is_active", true)
       .eq("subcategory", "sports")
       .gte("start_at", now)
+      .gte("venue_lat", lat - latDelta)
+      .lte("venue_lat", lat + latDelta)
+      .gte("venue_lng", lng - lngDelta)
+      .lte("venue_lng", lng + lngDelta)
       .order("start_at", { ascending: true })
       .range(page * pageSize, (page + 1) * pageSize - 1);
     if (error) throw error;
@@ -1666,7 +1695,14 @@ async function fetchRawSportsEvents(
   const results = await Promise.all(promises);
   return results.flat()
     .sort((a, b) => (a.start_at ?? "").localeCompare(b.start_at ?? ""))
-    .map(row => ({ ...row, distance_miles: null, venue_description: null }));
+    .map(row => ({
+      ...row,
+      distance_miles: (row.venue_lat != null && row.venue_lng != null)
+        ? distanceMiles(lat, lng, row.venue_lat, row.venue_lng)
+        : null,
+      venue_description: null,
+    }))
+    .filter(e => e.distance_miles == null || e.distance_miles <= radiusMiles);
 }
 
 async function fetchVenueCache(
@@ -1806,24 +1842,27 @@ Deno.serve(async (req) => {
     const radiusMiles = parseInt(url.searchParams.get("radius") ?? "75", 10);
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-    const city = "boston";
+    // Cache key: rounded lat/lng so nearby requests share cache
+    const cacheGeoKey = `${Math.round(lat * 10) / 10},${Math.round(lng * 10) / 10}`;
 
     // Use cached event/venue data if available, only fetch per-user data fresh
+    // Invalidate cache if location changed significantly
     let allEvents: ProcessedEvent[];
     let rawSportsEvents: ProcessedEvent[];
     let venueCache: Map<string, VenueInfo>;
     let carouselsConfig: any[];
 
-    if (isCacheValid()) {
+    const cachedGeoKey = (dataCache as any)?.geoKey as string | undefined;
+    if (isCacheValid() && cachedGeoKey === cacheGeoKey) {
       allEvents = dataCache!.allEvents;
       rawSportsEvents = dataCache!.rawSportsEvents;
       venueCache = dataCache!.venueCache;
       carouselsConfig = dataCache!.carouselsConfig;
     } else {
-      // Heavy fetch — only happens every 15 minutes
+      // Heavy fetch — only happens every 15 minutes (or on location change)
       const [rawEvents, rawSports, venues, config] = await Promise.all([
-        fetchAllEvents(supabase, city),
-        fetchRawSportsEvents(supabase, city),
+        fetchAllEvents(supabase, lat, lng, radiusMiles),
+        fetchRawSportsEvents(supabase, lat, lng, radiusMiles),
         fetchVenueCache(supabase),
         fetchCarouselsConfig(supabase),
       ]);
@@ -1832,7 +1871,7 @@ Deno.serve(async (req) => {
       rawSportsEvents = rawSports;
       venueCache = venues;
       carouselsConfig = config;
-      dataCache = { allEvents, rawSportsEvents, venueCache, carouselsConfig, timestamp: Date.now() };
+      dataCache = { allEvents, rawSportsEvents, venueCache, carouselsConfig, timestamp: Date.now(), geoKey: cacheGeoKey } as any;
     }
 
     // Per-user data — always fetched fresh (fast, single-row queries)

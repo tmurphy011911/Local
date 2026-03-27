@@ -93,7 +93,7 @@ Deno.serve(async (req) => {
           "Content-Type": "application/json",
           "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
           "X-Goog-FieldMask":
-            "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.websiteUri,places.photos,places.types",
+            "places.id,places.displayName,places.formattedAddress,places.location,places.rating,places.websiteUri,places.photos,places.types,places.editorialSummary,places.priceLevel,places.currentOpeningHours,places.userRatingCount",
         },
         body: JSON.stringify({ textQuery }),
       },
@@ -128,7 +128,11 @@ Deno.serve(async (req) => {
     const lat = place.location?.latitude;
     const lng = place.location?.longitude;
     const rating = place.rating;
+    const ratingCount = place.userRatingCount || 0;
     const website = place.websiteUri;
+    const description = place.editorialSummary?.text || null;
+    const priceLevel = place.priceLevel || null; // PRICE_LEVEL_FREE, PRICE_LEVEL_INEXPENSIVE, etc.
+    const hours = place.currentOpeningHours?.weekdayDescriptions || null;
 
     // Extract photo URL if available
     let photoUrl: string | null = null;
@@ -162,7 +166,6 @@ Deno.serve(async (req) => {
     // 3. Insert into venues table
     const newVenue = {
       name: displayName,
-      address: formattedAddress,
       city: city,
       state: state,
       lat: lat,
@@ -170,10 +173,11 @@ Deno.serve(async (req) => {
       google_rating: rating,
       website: website,
       photo_url: photoUrl,
+      description: description,
       category: category,
       place_type: category,
       is_active: true,
-      source: "claude_recommendation",
+      metro_area: city?.toLowerCase() || null,
     };
 
     const { data: inserted, error: insertError } = await supabase
@@ -210,6 +214,7 @@ Deno.serve(async (req) => {
           google_rating: inserted.google_rating,
           website: inserted.website,
           photo_url: inserted.photo_url,
+          description: inserted.description,
         },
       }),
       { status: 200, headers: { "Content-Type": "application/json", ...CORS_HEADERS } },

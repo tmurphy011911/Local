@@ -52,14 +52,52 @@ class PlansViewModel(
         loadSavedItems()
     }
 
+    fun removeSlotFromPlan(planId: String, dayIndex: Int, slotId: String) {
+        // Optimistic UI update — remove the slot from the plan in state
+        _uiState.update { state ->
+            fun updatePlans(plans: List<Plan>) = plans.map { plan ->
+                if (plan.id != planId) return@map plan
+                val updatedDays = plan.days.mapIndexed { i, day ->
+                    if (i != dayIndex) day
+                    else day.copy(slots = day.slots.filter { it.id != slotId })
+                }.filter { it.slots.isNotEmpty() } // remove empty days
+                plan.copy(days = updatedDays)
+            }
+            state.copy(
+                upcomingPlans = updatePlans(state.upcomingPlans),
+                pastPlans = updatePlans(state.pastPlans),
+            )
+        }
+
+        // Persist the updated plan to the DB
+        viewModelScope.launch {
+            val allPlans = _uiState.value.upcomingPlans + _uiState.value.pastPlans
+            val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
+            planRepository.updatePlan(updatedPlan)
+        }
+    }
+
+    fun deletePlan(planId: String) {
+        viewModelScope.launch {
+            planRepository.deletePlan(planId)
+            // Optimistic remove from UI
+            _uiState.update { state ->
+                state.copy(
+                    upcomingPlans = state.upcomingPlans.filter { it.id != planId },
+                    pastPlans = state.pastPlans.filter { it.id != planId },
+                )
+            }
+        }
+    }
+
     private fun loadPlans() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
             val plans = planRepository.getPlans()
             _uiState.update {
                 it.copy(
-                    upcomingPlans = plans.filter { p -> !p.isPast },
-                    pastPlans = plans.filter { p -> p.isPast },
+                    upcomingPlans = plans.filter { p -> !p.isPast }.sortedBy { p -> p.createdAt },
+                    pastPlans = plans.filter { p -> p.isPast }.sortedByDescending { p -> p.createdAt },
                     isLoading = false,
                 )
             }
@@ -77,7 +115,13 @@ class PlansViewModel(
                 val venueIds = communityInterestRepository.getFavoriteVenueIds(userId)
                 println("PlansVM.loadSavedItems: ${eventIds.size} fav events, ${venueIds.size} fav venues")
 
-                val events = if (eventIds.isNotEmpty()) eventRepository.getEventsByIds(eventIds) else emptyList()
+                val now = kotlin.time.Clock.System.now().toString()
+                val events = if (eventIds.isNotEmpty()) {
+                    eventRepository.getEventsByIds(eventIds).filter {
+                        val startAt = it.startAt ?: return@filter true // keep always-on
+                        startAt >= now
+                    }
+                } else emptyList()
                 val venues = if (venueIds.isNotEmpty()) venueRepository.getVenuesByIds(venueIds) else emptyList()
                 println("PlansVM.loadSavedItems: loaded ${events.size} events, ${venues.size} venues")
 

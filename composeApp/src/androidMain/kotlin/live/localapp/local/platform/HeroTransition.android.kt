@@ -35,6 +35,7 @@ actual fun showNativeEventDetail(
     cardImageUrl: String?,
     onDismissed: () -> Unit,
     onFavorited: ((String) -> Unit)?,
+    showDirections: Boolean,
 ) {
     // No-op on Android — Compose handles the detail screen
 }

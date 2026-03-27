@@ -1133,7 +1133,7 @@ class CarouselRepositoryImpl(
      */
     private fun endOfNextSundayIso(): String {
         val tz = TimeZone.currentSystemDefault()
-        val todayDate = kotlin.time.Clock.System.now().toLocalDateTime(tz).date
+        val todayDate = Instant.fromEpochMilliseconds(kotlin.time.Clock.System.now().toEpochMilliseconds()).toLocalDateTime(tz).date
         val today = todayDate.dayOfWeek
         val daysUntilSunday = when (today) {
             DayOfWeek.SUNDAY -> 0
@@ -1156,7 +1156,7 @@ class CarouselRepositoryImpl(
      */
     private fun startOfNextFridayIso(): String {
         val tz = TimeZone.currentSystemDefault()
-        val todayDate = kotlin.time.Clock.System.now().toLocalDateTime(tz).date
+        val todayDate = Instant.fromEpochMilliseconds(kotlin.time.Clock.System.now().toEpochMilliseconds()).toLocalDateTime(tz).date
         val today = todayDate.dayOfWeek
         val daysUntilFriday = when (today) {
             DayOfWeek.FRIDAY, DayOfWeek.SATURDAY, DayOfWeek.SUNDAY -> 0
@@ -1743,13 +1743,15 @@ class CarouselRepositoryImpl(
 
     override suspend fun getAvailableCategories(
         userPreferences: UserPreferences?,
+        userLat: Double,
+        userLng: Double,
     ): List<CategoryInfo> {
         // Return cached if available
         categoryCache?.let { return it }
 
         val city = cityKeyFromLocation(
-            userPreferences?.userLat ?: 42.3897,
-            userPreferences?.userLng ?: -71.2358,
+            userLat,
+            userLng,
         )
         val now = nowIso()
         val userFavorites = userPreferences?.selectedCategories?.map { it.lowercase() } ?: emptyList()

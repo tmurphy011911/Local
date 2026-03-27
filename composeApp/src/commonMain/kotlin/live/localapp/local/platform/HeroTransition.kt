@@ -57,6 +57,7 @@ expect fun showNativeEventDetail(
     cardImageUrl: String?,
     onDismissed: () -> Unit,
     onFavorited: ((String) -> Unit)? = null,
+    showDirections: Boolean = false,
 )
 
 /**

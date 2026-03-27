@@ -25,4 +25,5 @@ interface VenueRepository {
     ): List<Venue>
     suspend fun findVenueByNameAndCity(name: String, city: String): Venue?
     suspend fun getVenuesByIds(ids: List<String>): List<Venue>
+    suspend fun searchByName(name: String): Venue?
 }

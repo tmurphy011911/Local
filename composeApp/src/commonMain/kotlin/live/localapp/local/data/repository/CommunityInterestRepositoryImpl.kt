@@ -132,7 +132,8 @@ class CommunityInterestRepositoryImpl(
     }
 
     override fun recordFavorite(id: String, type: InteractionType, category: String?) {
-        personalFavorites[id] = (personalFavorites[id] ?: 0) + 1
+        if (personalFavorites.containsKey(id)) return // already favorited
+        personalFavorites[id] = 1
         trackCategoryWeight(category, 2.0)
         persistInteraction(id, type, "favorite", category)
     }

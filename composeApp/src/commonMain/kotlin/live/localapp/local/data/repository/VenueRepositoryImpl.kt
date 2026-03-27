@@ -235,6 +235,19 @@ class VenueRepositoryImpl(
         }
     }
 
+    override suspend fun searchByName(name: String): Venue? {
+        return try {
+            supabaseClient.from("venues")
+                .select {
+                    filter { ilike("name", "%${name}%") }
+                    limit(1)
+                }
+                .decodeList<VenueDto>()
+                .firstOrNull()
+                ?.toDomain()
+        } catch (_: Throwable) { null }
+    }
+
     private fun categoryDisplayName(cat: String): String = when (cat) {
         "music" -> "Music"
         "sports" -> "Sports"

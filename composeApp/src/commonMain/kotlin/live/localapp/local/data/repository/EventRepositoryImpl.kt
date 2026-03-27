@@ -84,6 +84,11 @@ class EventRepositoryImpl(
         dateRange: String?,
         keyword: String?,
         limit: Int,
+        startDate: String?,
+        endDate: String?,
+        userLat: Double?,
+        userLng: Double?,
+        radiusMiles: Double?,
     ): List<Event> {
         val now = kotlin.time.Clock.System.now()
         val nowIso = now.toString()
@@ -148,8 +153,14 @@ class EventRepositoryImpl(
                 DateWindow("${nextMonday}T00:00:00Z", "${nextSunday}T00:00:00Z")
             }
             "this_month" -> {
-                val endDate = todayLocal.date.plus(30, DateTimeUnit.DAY)
-                DateWindow(nowIso, "${endDate}T00:00:00Z")
+                val endDt = todayLocal.date.plus(30, DateTimeUnit.DAY)
+                DateWindow(nowIso, "${endDt}T00:00:00Z")
+            }
+            "custom" -> {
+                if (startDate != null) {
+                    val end = endDate ?: startDate.take(8) + (startDate.takeLast(2).toIntOrNull()?.plus(1)?.toString()?.padStart(2, '0') ?: "01")
+                    DateWindow("${startDate}T00:00:00Z", "${end}T23:59:59Z")
+                } else null
             }
             else -> null
         }
@@ -162,7 +173,8 @@ class EventRepositoryImpl(
                     if (dateWindow != null) {
                         lt("start_at", dateWindow.end)
                     }
-                    if (!location.isNullOrBlank()) {
+                    // If geo search, skip city filter — we'll filter by distance after
+                    if (userLat == null && !location.isNullOrBlank()) {
                         ilike("venue_city", "%${location}%")
                     }
                     if (!category.isNullOrBlank()) {
@@ -179,9 +191,19 @@ class EventRepositoryImpl(
                     }
                 }
                 order("start_at", Order.ASCENDING)
-                limit(limit.toLong())
+                limit(if (userLat != null) 200L else limit.toLong())
             }
             .decodeList<EventDto>()
             .map { it.toDomain() }
+            .let { events ->
+                if (userLat != null && userLng != null) {
+                    val radius = radiusMiles ?: 15.0
+                    events.filter { e ->
+                        val lat = e.venueLat ?: return@filter false
+                        val lng = e.venueLng ?: return@filter false
+                        live.localapp.local.domain.model.distanceMiles(userLat, userLng, lat, lng) <= radius
+                    }.take(limit)
+                } else events
+            }
     }
 }

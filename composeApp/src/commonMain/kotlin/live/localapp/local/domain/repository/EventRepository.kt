@@ -14,5 +14,10 @@ interface EventRepository {
         dateRange: String? = null,
         keyword: String? = null,
         limit: Int = 20,
+        startDate: String? = null,
+        endDate: String? = null,
+        userLat: Double? = null,
+        userLng: Double? = null,
+        radiusMiles: Double? = null,
     ): List<Event>
 }

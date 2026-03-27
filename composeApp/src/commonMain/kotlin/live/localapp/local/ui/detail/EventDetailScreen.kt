@@ -178,14 +178,16 @@ fun EventDetailScreen(
 
                 Spacer(Modifier.height(14.dp))
 
-                // Countdown
-                if (countdown.hasDate) {
+                // Recurring indicator — shown instead of countdown/date for recurring events
+                val recurrenceLabel = detectRecurrence(event)
+                val isRecurring = recurrenceLabel != null
+
+                // Countdown — only for non-recurring events with a date
+                if (countdown.hasDate && !isRecurring) {
                     CountdownBanner(countdown)
                     Spacer(Modifier.height(16.dp))
                 }
 
-                // Recurring indicator
-                val recurrenceLabel = detectRecurrence(event)
                 if (recurrenceLabel != null) {
                     Row(
                         modifier = Modifier
@@ -209,8 +211,8 @@ fun EventDetailScreen(
                     Spacer(Modifier.height(10.dp))
                 }
 
-                // Date
-                if (event.startAt != null) {
+                // Date — skip for recurring events
+                if (event.startAt != null && !isRecurring) {
                     InfoRow(
                         icon = Icons.Outlined.CalendarMonth,
                         iconTint = AppColors.Coral,

@@ -10,7 +10,9 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -38,6 +40,8 @@ import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.LocalDining
 import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.MusicNote
@@ -97,6 +101,7 @@ import org.koin.mp.KoinPlatform
 import live.localapp.local.domain.model.CarouselSection
 import live.localapp.local.domain.repository.CategoryInfo
 import live.localapp.local.domain.model.Event
+import live.localapp.local.ui.common.AppHeader
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 import live.localapp.local.ui.theme.AppShapes
@@ -150,50 +155,124 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
             .fillMaxSize()
             .background(AppColors.Snow),
     ) {
-        HomeHeader(
-            state = state,
-            onRadiusSelect = { viewModel.setRadiusFilter(it) },
-            onDebugOpen = { showDebugMenu = true },
-            onProfileClick = onProfileClick,
-        )
+        run {
+            var radiusPickerOpen by remember { mutableStateOf(false) }
+            AppHeader(
+                title = "local",
+                locationName = state.locationName,
+                radiusFilter = state.radiusFilter,
+                streakDays = state.streakDays,
+                userInitial = state.userName.firstOrNull()?.uppercase() ?: "",
+                onProfileClick = onProfileClick,
+                onLocationClick = { radiusPickerOpen = !radiusPickerOpen },
+                onLogoClick = { showDebugMenu = true },
+                bottomPadding = !radiusPickerOpen,
+                extraContent = {
+                    // Radius picker — expands below the pill row when tapped
+                    AnimatedVisibility(
+                        visible = radiusPickerOpen,
+                        enter = expandVertically(),
+                        exit = shrinkVertically(),
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 20.dp)
+                                .padding(bottom = 10.dp)
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            listOf<Double?>(null, 1.0, 3.0, 5.0, 10.0, 25.0, 50.0, 100.0).forEach { option ->
+                                val isSelected = option == state.radiusFilter
+                                val label = when (option) {
+                                    null   -> "Any"
+                                    1.0    -> "1 mi"
+                                    3.0    -> "3 mi"
+                                    5.0    -> "5 mi"
+                                    10.0   -> "10 mi"
+                                    25.0   -> "25 mi"
+                                    50.0   -> "50 mi"
+                                    100.0  -> "100 mi"
+                                    else   -> "${option.toInt()} mi"
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .background(
+                                            if (isSelected) AppColors.Sky else AppColors.SkyLt,
+                                            AppShapes.Pill,
+                                        )
+                                        .border(1.5.dp, AppColors.Sky, AppShapes.Pill)
+                                        .clickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = null,
+                                        ) {
+                                            viewModel.setRadiusFilter(option)
+                                            radiusPickerOpen = false
+                                        }
+                                        .padding(horizontal = 12.dp, vertical = 5.dp),
+                                ) {
+                                    Text(
+                                        label,
+                                        style = TextStyle(
+                                            fontFamily = AppFonts.Body,
+                                            fontWeight = FontWeight.ExtraBold,
+                                            fontSize = 12.sp,
+                                            color = if (isSelected) AppColors.White else AppColors.Sky,
+                                        ),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                },
+            )
+        }
 
         PullToRefreshBox(
             isRefreshing = state.isRefreshing,
             onRefresh = { viewModel.refresh() },
             modifier = Modifier.fillMaxSize(),
         ) {
-            Column(
+            @OptIn(ExperimentalFoundationApi::class)
+            LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
-                    .verticalScroll(rememberScrollState())
                     .padding(bottom = 80.dp),
             ) {
-                GreetingSection(state)
-                AiConciergeCard(onClick = onConciergeClick)
+                item { GreetingSection(state) }
+                item { AiConciergeCard(onClick = onConciergeClick) }
 
                 // "Your Events This Week" album carousel
                 if (state.savedThisWeek.isNotEmpty()) {
-                    SavedEventsAlbumCarousel(
-                        events = state.savedThisWeek,
-                        onEventClick = { event, transitionInfo -> onEventClick(event, transitionInfo) },
-                    )
+                    item {
+                        SavedEventsAlbumCarousel(
+                            events = state.savedThisWeek,
+                            onEventClick = { event, transitionInfo -> onEventClick(event, transitionInfo) },
+                        )
+                    }
                 }
 
-                // Category row — below saved events
-                CategoryRow(state, viewModel)
+                // Category row — sticky header
+                stickyHeader {
+                    CategoryRow(state, viewModel)
+                }
 
                 if (state.isLoading && !state.isRefreshing) {
-                    SkeletonCarousels()
+                    item { SkeletonCarousels() }
                 } else if (state.carousels.isEmpty() && state.error != null) {
-                    EmptyState(
-                        title = "Something went wrong",
-                        subtitle = "Pull down to try again",
-                    )
+                    item {
+                        EmptyState(
+                            title = "Something went wrong",
+                            subtitle = "Pull down to try again",
+                        )
+                    }
                 } else if (state.carousels.isEmpty() && !state.isLoading) {
-                    EmptyState(
-                        title = "No events found",
-                        subtitle = "Try a different category or check back later",
-                    )
+                    item {
+                        EmptyState(
+                            title = "No events found",
+                            subtitle = "Try a different category or check back later",
+                        )
+                    }
                 } else {
                     val isForYou = state.selectedCategory == "foryou"
                     val radius = state.radiusFilter
@@ -205,13 +284,13 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                             .filter { it.events.isNotEmpty() }
                     }
                     displayCarousels.forEach { section ->
-                        key(section.slug) {
+                        item(key = section.slug) {
                             CarouselSectionView(section, onEventClick, showTags = isForYou, onFavorite = onFavorite, favoriteIds = state.favoriteEventIds)
                         }
                     }
                 }
 
-                Spacer(Modifier.height(24.dp))
+                item { Spacer(Modifier.height(24.dp)) }
             }
         }
     }
@@ -1087,37 +1166,57 @@ private fun SavedEventsAlbumCarousel(
     events: List<Event>,
     onEventClick: (Event, CardTransitionInfo?) -> Unit,
 ) {
+    var expanded by remember { mutableStateOf(true) }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .padding(top = 18.dp),
     ) {
-        // Header
-        Text(
-            "Saved Events This Week",
-            modifier = Modifier.padding(horizontal = 20.dp),
-            style = TextStyle(
-                fontFamily = AppFonts.Heading,
-                fontWeight = FontWeight.Bold,
-                fontSize = 15.sp,
-                color = AppColors.Coral,
-                letterSpacing = (-0.3).sp,
-            ),
-        )
-        Spacer(Modifier.height(12.dp))
-
-        // Horizontal scroll of album-style cards
+        // Header — tappable to collapse/expand
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
+                .clickable { expanded = !expanded }
                 .padding(horizontal = 20.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            events.forEach { event ->
-                AlbumEventCard(event = event, onClick = { bounds ->
-                    onEventClick(event, CardTransitionInfo(bounds, event.imageUrl))
-                })
+            Text(
+                "Saved Events This Week (${events.size})",
+                modifier = Modifier.weight(1f),
+                style = TextStyle(
+                    fontFamily = AppFonts.Heading,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    color = AppColors.Coral,
+                    letterSpacing = (-0.3).sp,
+                ),
+            )
+            Icon(
+                if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+                contentDescription = if (expanded) "Collapse" else "Expand",
+                modifier = Modifier.size(20.dp),
+                tint = AppColors.Coral,
+            )
+        }
+
+        // Cards — collapsible
+        AnimatedVisibility(visible = expanded) {
+            Column {
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(14.dp),
+                ) {
+                    events.forEach { event ->
+                        AlbumEventCard(event = event, onClick = { bounds ->
+                            onEventClick(event, CardTransitionInfo(bounds, event.imageUrl))
+                        })
+                    }
+                }
             }
         }
     }
@@ -1235,190 +1334,7 @@ private fun AlbumEventCard(event: Event, onClick: (Rect) -> Unit) {
     }
 }
 
-// ── Header ──
-
-@Composable
-private fun HomeHeader(
-    state: HomeUiState,
-    onRadiusSelect: (Double?) -> Unit,
-    onDebugOpen: () -> Unit = {},
-    onProfileClick: () -> Unit = {},
-) {
-    var radiusPickerOpen by remember { mutableStateOf(false) }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(AppColors.White),
-    ) {
-        // Top row: logo + icons
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 20.dp, end = 20.dp, top = 4.dp, bottom = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = onDebugOpen,
-                    ),
-            ) {
-                Text("l", style = AppType.Logo.copy(color = AppColors.Coral, fontSize = 24.sp))
-                Text("ocal", style = AppType.Logo.copy(fontSize = 24.sp))
-            }
-
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .background(AppColors.Coral, AppShapes.Avatar)
-                    .border(2.dp, AppColors.CoralDk, AppShapes.Avatar)
-                    .clip(AppShapes.Avatar)
-                    .clickable { onProfileClick() },
-                contentAlignment = Alignment.Center,
-            ) {
-                val initial = state.userName.firstOrNull()?.uppercase() ?: ""
-                Text(
-                    initial,
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 15.sp,
-                        color = AppColors.White,
-                    ),
-                )
-            }
-        }
-
-        // Sub-header: location pill + streak badge
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .padding(bottom = if (radiusPickerOpen) 8.dp else 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            // Location pill — tappable to open radius picker
-            val radiusLabel = state.radiusFilter?.let { " · ${it.toInt()} mi" } ?: ""
-            Row(
-                modifier = Modifier
-                    .background(AppColors.SkyLt, AppShapes.Pill)
-                    .border(2.dp, AppColors.Sky, AppShapes.Pill)
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) { radiusPickerOpen = !radiusPickerOpen }
-                    .padding(horizontal = 12.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(7.dp)
-                        .background(AppColors.Sky, CircleShape),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    "${state.locationName}$radiusLabel",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 12.sp,
-                        color = AppColors.Sky,
-                    ),
-                )
-            }
-
-            // Streak badge
-            Row(
-                modifier = Modifier
-                    .background(AppColors.SunLt, AppShapes.Pill)
-                    .border(2.dp, AppColors.Sun, AppShapes.Pill)
-                    .padding(horizontal = 12.dp, vertical = 5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Outlined.Bolt, contentDescription = null, modifier = Modifier.size(14.dp), tint = AppColors.SunDk)
-                Spacer(Modifier.width(3.dp))
-                Text(
-                    "${state.streakDays} day streak!",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 12.sp,
-                        color = AppColors.SunDk,
-                    ),
-                )
-            }
-        }
-
-        // Radius picker — expands below the pill row when tapped
-        AnimatedVisibility(
-            visible = radiusPickerOpen,
-            enter = expandVertically(),
-            exit = shrinkVertically(),
-        ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 20.dp)
-                    .padding(bottom = 10.dp)
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                listOf<Double?>(null, 1.0, 3.0, 5.0, 10.0, 25.0, 50.0, 100.0).forEach { option ->
-                    val isSelected = option == state.radiusFilter
-                    val label = when (option) {
-                        null   -> "Any"
-                        1.0    -> "1 mi"
-                        3.0    -> "3 mi"
-                        5.0    -> "5 mi"
-                        10.0   -> "10 mi"
-                        25.0   -> "25 mi"
-                        50.0   -> "50 mi"
-                        100.0  -> "100 mi"
-                        else   -> "${option.toInt()} mi"
-                    }
-                    Box(
-                        modifier = Modifier
-                            .background(
-                                if (isSelected) AppColors.Sky else AppColors.SkyLt,
-                                AppShapes.Pill,
-                            )
-                            .border(1.5.dp, AppColors.Sky, AppShapes.Pill)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                            ) {
-                                onRadiusSelect(option)
-                                radiusPickerOpen = false
-                            }
-                            .padding(horizontal = 12.dp, vertical = 5.dp),
-                    ) {
-                        Text(
-                            label,
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 12.sp,
-                                color = if (isSelected) AppColors.White else AppColors.Sky,
-                            ),
-                        )
-                    }
-                }
-            }
-        }
-
-        // Bottom border
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(2.dp)
-                .background(AppColors.Mist),
-        )
-    }
-}
+// HomeHeader removed — now uses shared AppHeader
 
 // ── Debug Menu ──
 

@@ -129,7 +129,6 @@ function normalizeEvent(eb) {
     needs_review: false,
     dedupe_hash: hashEvent(eb.id),
     city: CURRENT_CITY,
-    metro_area: CURRENT_CITY,
     last_synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
@@ -150,7 +149,11 @@ async function fetchCategoryEvents(category) {
     url.searchParams.set("location.longitude", CURRENT_LNG);
     url.searchParams.set("location.within", CURRENT_WITHIN);
     url.searchParams.set("categories", category.id);
-    url.searchParams.set("start_date.keyword", "this_month");
+    // 60-day lookahead instead of just current month
+    const now = new Date();
+    const sixtyDaysOut = new Date(now.getTime() + 60 * 24 * 60 * 60 * 1000);
+    url.searchParams.set("start_date.range_start", now.toISOString().replace(/\.\d{3}Z$/, "Z"));
+    url.searchParams.set("start_date.range_end", sixtyDaysOut.toISOString().replace(/\.\d{3}Z$/, "Z"));
     url.searchParams.set("expand", "venue");
     url.searchParams.set("page", page.toString());
 

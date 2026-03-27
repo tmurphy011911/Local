@@ -133,14 +133,16 @@ class ServerCarouselRepository : CarouselRepository {
 
     override suspend fun getAvailableCategories(
         userPreferences: UserPreferences?,
+        userLat: Double,
+        userLng: Double,
     ): List<CategoryInfo> {
         // Return cached categories if available
         cachedCategories?.let { return it }
 
         // If no cache, fetch carousels which populates categories
         getCarousels(
-            userLat = userPreferences?.userLat ?: 42.3601,
-            userLng = userPreferences?.userLng ?: -71.0589,
+            userLat = userLat,
+            userLng = userLng,
             category = null,
             userPreferences = userPreferences,
         )

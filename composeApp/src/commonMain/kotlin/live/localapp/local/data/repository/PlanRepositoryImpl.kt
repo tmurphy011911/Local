@@ -210,6 +210,37 @@ class PlanRepositoryImpl(
         }
     }
 
+    override suspend fun updatePlan(plan: Plan) {
+        if (plan.id.isBlank()) return
+        try {
+            val dayDtos = plan.days.map { day ->
+                PlanDayDto(
+                    label = day.label,
+                    shortName = day.shortName,
+                    slots = day.slots.map { slot ->
+                        PlanSlotDto(
+                            id = slot.id, time = slot.time, emoji = slot.emoji,
+                            name = slot.name, detail = slot.detail, price = slot.price,
+                            isFree = slot.isFree, eventId = slot.eventId, isCustom = slot.isCustom,
+                        )
+                    },
+                    travel = day.travel.map { PlanTravelDto(it.mode, it.mins) },
+                )
+            }
+            supabaseClient.from("plans").update({
+                set("days", json.encodeToJsonElement(
+                    kotlinx.serialization.serializer<List<PlanDayDto>>(), dayDtos
+                ))
+                set("name", plan.title)
+            }) {
+                filter { eq("id", plan.id) }
+            }
+            println("PlanRepository.updatePlan: SUCCESS '${plan.title}'")
+        } catch (e: Throwable) {
+            println("PlanRepository.updatePlan error: ${e::class.simpleName}: ${e.message}")
+        }
+    }
+
     override suspend fun deletePlan(planId: String) {
         try {
             supabaseClient.from("plans").delete {

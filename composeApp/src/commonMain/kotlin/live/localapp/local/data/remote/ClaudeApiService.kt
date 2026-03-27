@@ -80,6 +80,7 @@ data class AiResponseEnvelope(
     val days: List<AiItineraryDay>? = null,
     val day: AiItineraryDay? = null,
     @SerialName("plan_title") val planTitle: String? = null,
+    @SerialName("attendee_count") val attendeeCount: Int? = null,
     val chips: List<AiChip>? = null,
     @SerialName("day_index") val dayIndex: Int? = null,
     @SerialName("approve_day") val approveDay: Int? = null,
@@ -156,7 +157,15 @@ val claudeTools: JsonArray = buildJsonArray {
                 }
                 putJsonObject("date_range") {
                     put("type", "string")
-                    put("description", "Time filter: today, this_weekend, next_weekend, this_week, next_week, this_month. Use 'next_weekend' for the FOLLOWING weekend, 'this_weekend' for the CURRENT/upcoming weekend.")
+                    put("description", "Time filter: today, this_weekend, next_weekend, this_week, next_week, this_month. Use 'next_weekend' for the FOLLOWING weekend, 'this_weekend' for the CURRENT/upcoming weekend. For specific dates, use start_date/end_date instead.")
+                }
+                putJsonObject("start_date") {
+                    put("type", "string")
+                    put("description", "Start date in ISO format (YYYY-MM-DD). Use this for specific date searches instead of date_range.")
+                }
+                putJsonObject("end_date") {
+                    put("type", "string")
+                    put("description", "End date in ISO format (YYYY-MM-DD). Use with start_date for date range searches.")
                 }
                 putJsonObject("keyword") {
                     put("type", "string")
@@ -295,7 +304,7 @@ class ClaudeApiService {
     ): ClaudeResponse {
         val body = buildJsonObject {
             put("model", "claude-sonnet-4-5-20250929")
-            put("max_tokens", 4096)
+            put("max_tokens", 16384)
             put("system", systemPrompt)
             put("messages", json.encodeToJsonElement(
                 kotlinx.serialization.serializer<List<ClaudeMessage>>(),

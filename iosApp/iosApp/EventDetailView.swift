@@ -22,6 +22,7 @@ struct EventDetailData {
     let category: String
     let subcategory: String?
     let source: String?
+    var showDirections: Bool = false
 
     var ctaUrl: String? { ticketUrl ?? sourceUrl }
     var hasLocation: Bool { venueLat != 0 && venueLng != 0 }
@@ -68,22 +69,12 @@ private enum AppColor {
 // MARK: - Fonts
 
 private enum AppFont {
-    static func nunito(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        // Try custom font first, fall back to system
-        let uiFont = UIFont(name: "Nunito", size: size)
-            ?? UIFont(name: "NunitoSans", size: size)
-        if let uiFont = uiFont {
-            return Font(uiFont)
-        }
-        return .system(size: size, weight: weight)
-    }
-
     static func heading(_ size: CGFloat, weight: Font.Weight = .bold) -> Font {
-        return nunito(size, weight: weight)
+        return .system(size: size, weight: weight, design: .rounded)
     }
 
     static func body(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
-        return nunito(size, weight: weight)
+        return .system(size: size, weight: weight, design: .rounded)
     }
 }
 
@@ -310,18 +301,25 @@ struct EventDetailView: View {
                     .padding(.leading, 16)
                     .padding(.top, 52)
 
-                // Favorite button — top right
-                HStack {
-                    Spacer()
-                    heroIconButton(systemName: isFavorited ? "heart.fill" : "heart") {
-                    let wasFavorited = isFavorited
-                    isFavorited.toggle()
-                    if !wasFavorited {
-                        onFavorite?(event.id)
+                // Share + Favorite — top right, horizontal
+                VStack {
+                    HStack(spacing: 8) {
+                        Spacer()
+                        heroIconButton(systemName: "square.and.arrow.up") {
+                            UIPasteboard.general.string = event.ctaUrl ?? "https://local.live/e/\(event.id)"
+                            shareCopied = true
+                        }
+                        heroIconButton(systemName: isFavorited ? "heart.fill" : "heart") {
+                            let wasFavorited = isFavorited
+                            isFavorited.toggle()
+                            if !wasFavorited {
+                                onFavorite?(event.id)
+                            }
+                        }
                     }
-                }
-                        .padding(.trailing, 16)
-                        .padding(.top, 52)
+                    .padding(.trailing, 16)
+                    .padding(.top, 52)
+                    Spacer()
                 }
             }
         }
@@ -396,19 +394,23 @@ struct EventDetailView: View {
 
             Spacer().frame(height: 14)
 
-            // Countdown
-            if countdown.hasDate {
+            // Detect recurrence first
+            let recurrence = detectRecurrence(
+                title: event.title,
+                description: event.description,
+                category: event.category,
+                startAt: event.startAt
+            )
+            let isRecurring = recurrence != nil
+
+            // Countdown — skip for recurring events
+            if countdown.hasDate && !isRecurring {
                 countdownBanner
                 Spacer().frame(height: 16)
             }
 
             // Recurring indicator
-            if let recurrence = detectRecurrence(
-                title: event.title,
-                description: event.description,
-                category: event.category,
-                startAt: event.startAt
-            ) {
+            if let recurrence = recurrence {
                 HStack(spacing: 6) {
                     Image(systemName: "arrow.clockwise")
                         .font(AppFont.body(12, weight: .bold))
@@ -426,8 +428,8 @@ struct EventDetailView: View {
                 Spacer().frame(height: 10)
             }
 
-            // Date
-            if let startAt = event.startAt {
+            // Date — skip for recurring events
+            if let startAt = event.startAt, !isRecurring {
                 infoRow(
                     systemName: "calendar",
                     iconColor: AppColor.coral,
@@ -539,7 +541,7 @@ struct EventDetailView: View {
                                 .foregroundColor(.white.opacity(0.75))
                                 .tracking(1)
 
-                            HStack(spacing: 4) {
+                            HStack(alignment: .bottom, spacing: 4) {
                                 countdownUnit(value: countdown.days, label: "days")
                                 countdownSep
                                 countdownUnit(value: countdown.hours, label: "hrs")
@@ -561,19 +563,19 @@ struct EventDetailView: View {
     private func countdownUnit(value: Int, label: String) -> some View {
         VStack(spacing: 0) {
             Text(String(format: "%02d", value))
-                .font(AppFont.heading(28, weight: .black))
+                .font(.system(size: 28, weight: .black))
                 .foregroundColor(.white)
                 .tracking(-0.5)
             Text(label)
-                .font(AppFont.body(9, weight: .heavy))
+                .font(.system(size: 9, weight: .heavy))
                 .foregroundColor(.white.opacity(0.75))
                 .tracking(0.3)
         }
     }
 
     private var countdownSep: some View {
-        Text("\u{00B7}")
-            .font(AppFont.heading(20, weight: .black))
+        Text("·")
+            .font(.system(size: 20, weight: .black))
             .foregroundColor(.white.opacity(0.6))
             .padding(.bottom, 14)
     }
@@ -605,42 +607,36 @@ struct EventDetailView: View {
 
     private var ctaBar: some View {
         VStack(spacing: 10) {
-            // Secondary row
-            HStack(spacing: 8) {
-                if event.hasLocation {
-                    secondaryButton(
-                        systemName: "mappin.and.ellipse",
-                        label: mapsExpanded ? "Close" : "Directions",
-                        isActive: mapsExpanded
-                    ) {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            mapsExpanded.toggle()
-                            if mapsExpanded { rideExpanded = false }
+            // Secondary row — only from Plans
+            if event.showDirections {
+                HStack(spacing: 8) {
+                    if event.hasLocation {
+                        secondaryButton(
+                            systemName: "mappin.and.ellipse",
+                            label: mapsExpanded ? "Close" : "Directions",
+                            isActive: mapsExpanded
+                        ) {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                mapsExpanded.toggle()
+                                if mapsExpanded { rideExpanded = false }
+                            }
+                        }
+                    }
+
+                    if event.hasLocation {
+                        secondaryButton(
+                            systemName: "car.fill",
+                            label: rideExpanded ? "Close" : "Get a Ride",
+                            isActive: rideExpanded
+                        ) {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                rideExpanded.toggle()
+                                if rideExpanded { mapsExpanded = false }
+                            }
                         }
                     }
                 }
 
-                secondaryButton(
-                    systemName: "square.and.arrow.up",
-                    label: shareCopied ? "Copied!" : "Share",
-                    isActive: shareCopied
-                ) {
-                    UIPasteboard.general.string = "https://local.live/e/\(event.id)"
-                    shareCopied = true
-                }
-
-                if event.hasLocation {
-                    secondaryButton(
-                        systemName: "car.fill",
-                        label: rideExpanded ? "Close" : "Get a Ride",
-                        isActive: rideExpanded
-                    ) {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            rideExpanded.toggle()
-                            if rideExpanded { mapsExpanded = false }
-                        }
-                    }
-                }
             }
 
             // Expandable maps
@@ -689,7 +685,8 @@ struct EventDetailView: View {
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
+        .padding(.top, 12)
+        .padding(.bottom, 24)
         .background(AppColor.white)
         .overlay(alignment: .top) {
             Rectangle().fill(AppColor.mist).frame(height: 1)

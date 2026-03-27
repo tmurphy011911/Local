@@ -21,6 +21,8 @@ interface CarouselRepository {
 
     suspend fun getAvailableCategories(
         userPreferences: UserPreferences? = null,
+        userLat: Double = 42.3601,
+        userLng: Double = -71.0589,
     ): List<CategoryInfo>
 
     fun invalidateCaches()

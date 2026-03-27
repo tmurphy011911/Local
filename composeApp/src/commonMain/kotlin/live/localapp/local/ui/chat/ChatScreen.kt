@@ -49,7 +49,7 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -95,11 +95,14 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     var selectedEventId by remember { mutableStateOf<String?>(null) }
     var selectedEvent by remember { mutableStateOf<live.localapp.local.domain.model.Event?>(null) }
+    var selectedVenueName by remember { mutableStateOf<String?>(null) }
+    var selectedVenue by remember { mutableStateOf<live.localapp.local.domain.model.Venue?>(null) }
 
-    // Auto-scroll to bottom when new messages arrive
-    LaunchedEffect(state.messages.size) {
-        if (state.messages.isNotEmpty()) {
-            listState.animateScrollToItem(state.messages.size - 1)
+    // Auto-scroll to bottom when new messages arrive (no animation to avoid bounce loop)
+    val messageCount = state.messages.size
+    LaunchedEffect(messageCount) {
+        if (messageCount > 0) {
+            listState.scrollToItem(messageCount - 1)
         }
     }
 
@@ -116,7 +119,13 @@ fun ChatScreen(
         selectedEvent = viewModel.getEventById(id)
     }
 
-    // Event detail sheet
+    // Load venue when venue slot is tapped
+    LaunchedEffect(selectedVenueName) {
+        val name = selectedVenueName ?: return@LaunchedEffect
+        selectedVenue = viewModel.getVenueByName(name)
+    }
+
+    // Event detail — always Compose inside chat (native would open behind the sheet)
     if (selectedEvent != null) {
         androidx.compose.material3.ModalBottomSheet(
             onDismissRequest = { selectedEvent = null; selectedEventId = null },
@@ -126,6 +135,22 @@ fun ChatScreen(
             live.localapp.local.ui.detail.EventDetailScreen(
                 event = selectedEvent!!,
                 onBack = { selectedEvent = null; selectedEventId = null },
+            )
+        }
+    }
+
+    // Venue detail sheet
+    if (selectedVenue != null) {
+        androidx.compose.material3.ModalBottomSheet(
+            onDismissRequest = { selectedVenue = null; selectedVenueName = null },
+            sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = AppColors.Snow,
+        ) {
+            live.localapp.local.ui.places.VenueDetailPage(
+                venueWithMeta = live.localapp.local.domain.repository.VenueWithMeta(venue = selectedVenue!!),
+                events = emptyList(),
+                isLoading = false,
+                onBack = { selectedVenue = null; selectedVenueName = null },
             )
         }
     }
@@ -157,7 +182,13 @@ fun ChatScreen(
                             dayIndex = dayIdx,
                             totalDays = state.days.size,
                             onRemoveSlot = { slotId -> viewModel.removeSlot(dayIdx, slotId) },
-                            onEventClick = { eventId -> selectedEventId = eventId },
+                            onEventClick = { id ->
+                                if (id.startsWith("venue:")) {
+                                    selectedVenueName = id.removePrefix("venue:")
+                                } else {
+                                    selectedEventId = id
+                                }
+                            },
                         )
                     }
                     is MessageContent.DayCardSnapshot -> {
@@ -177,7 +208,13 @@ fun ChatScreen(
                         MultiDayPlanCard(
                             days = state.days,
                             onRemoveSlot = { dayIdx, slotId -> viewModel.removeSlot(dayIdx, slotId) },
-                            onEventClick = { eventId -> selectedEventId = eventId },
+                            onEventClick = { id ->
+                                if (id.startsWith("venue:")) {
+                                    selectedVenueName = id.removePrefix("venue:")
+                                } else {
+                                    selectedEventId = id
+                                }
+                            },
                         )
                     }
                     is MessageContent.SummaryRef -> {
@@ -194,8 +231,10 @@ fun ChatScreen(
                 }
             }
 
-            // Typing indicator
-            if (state.isTyping) {
+            // Typing / searching indicator
+            if (state.isSearching) {
+                item { SearchingIndicator() }
+            } else if (state.isTyping) {
                 item { TypingIndicator() }
             }
         }
@@ -385,6 +424,219 @@ private fun TypingIndicator() {
     }
 }
 
+// ── Searching Indicator (rotating gerund phrases) ──
+
+private val searchingPhrases = listOf(
+    "Flambéing...",
+    "Parallel parking...",
+    "Consulting the locals...",
+    "Polishing the itinerary...",
+    "Taste-testing...",
+    "Checking the vibe...",
+    "Dodging tourists...",
+    "Asking the bartender...",
+    "Finding the secret menu...",
+    "Warming up the car...",
+    "Scouting rooftops...",
+    "Bribing the maître d'...",
+    "Googling parking...",
+    "Judging the Yelp reviews...",
+    "Texting the group chat...",
+    "Stretching before the walk...",
+    "Charging the phone...",
+    "Picking the playlist...",
+    "Ironing the outfit...",
+    "Checking the weather...",
+    "Memorizing the wine list...",
+    "Practicing small talk...",
+    "Feeding the meter...",
+    "Adjusting the GPS...",
+    "Calling an audible...",
+    "Haggling...",
+    "Eavesdropping on regulars...",
+    "Reading the room...",
+    "Shaking the cocktail...",
+    "Folding the napkin...",
+    "Buttering the bread...",
+    "Sampling the charcuterie...",
+    "Tipping generously...",
+    "Sneaking into VIP...",
+    "Befriending the bouncer...",
+    "Splitting the check...",
+    "Flagging the waiter...",
+    "Double-checking the address...",
+    "Refreshing the page...",
+    "Stalking their Instagram...",
+    "Manifesting good weather...",
+    "Summoning the Uber...",
+    "Hydrating...",
+    "Pregaming...",
+    "Limbering up...",
+    "Coordinating outfits...",
+    "Sniffing the cork...",
+    "Judging the font on the menu...",
+    "Pretending to read the specials...",
+    "Complimenting the décor...",
+    "Warming the engine...",
+    "Negotiating the dress code...",
+    "Pocketing the mints...",
+    "Claiming the booth...",
+    "Decoding the cocktail menu...",
+    "Rating the ambiance...",
+    "Swiping for inspiration...",
+    "Checking the tide chart...",
+    "Waxing the surfboard...",
+    "Alphabetizing the beer list...",
+    "Arguing with the GPS...",
+    "Avoiding eye contact with mimes...",
+    "Borrowing a lighter...",
+    "Calculating the tip...",
+    "Canceling other plans...",
+    "Checking coat pockets...",
+    "Choosing the right sneakers...",
+    "Clearing the camera roll...",
+    "Comparing happy hours...",
+    "Confirming the dress code...",
+    "Convincing the group...",
+    "Counting the steps...",
+    "Crossing fingers...",
+    "Cueing the DJ...",
+    "Debugging the playlist...",
+    "Defrosting the windshield...",
+    "Deleting bad selfies...",
+    "Doing recon...",
+    "Double-knotting the laces...",
+    "Downloading the map offline...",
+    "Drafting the toast...",
+    "Dry-cleaning the jacket...",
+    "Dusting off the dance moves...",
+    "Eating a snack first...",
+    "Estimating walk time...",
+    "Eyeing the dessert menu...",
+    "Fact-checking the specials...",
+    "Faking a French accent...",
+    "Finding an outlet...",
+    "Fixing the hair...",
+    "Flipping through records...",
+    "Forging a shortcut...",
+    "Gargling mouthwash...",
+    "Getting the inside scoop...",
+    "Grabbing the umbrella...",
+    "Guarding the parking spot...",
+    "Hailing a cab...",
+    "Hiding the shopping bags...",
+    "Holding the elevator...",
+    "Hunting for street parking...",
+    "Ignoring the calorie count...",
+    "Improvising...",
+    "Inspecting the glassware...",
+    "Jaywalking responsibly...",
+    "Keeping it casual...",
+    "Layering appropriately...",
+    "Learning the specials...",
+    "Licking the spoon...",
+    "Loosening the belt...",
+    "Making a fashionably late entrance...",
+    "Marinating the chicken...",
+    "Microwaving nothing...",
+    "Mispronouncing the entrée...",
+    "Nabbing the window seat...",
+    "Nodding at the sommelier...",
+    "Opening all the tabs...",
+    "Ordering water first...",
+    "Overthinking the appetizer...",
+    "Pacing the block...",
+    "Peeling the orange...",
+    "Photographing the food...",
+    "Picking the right emoji...",
+    "Pivoting plans...",
+    "Plating the garnish...",
+    "Popping the cork...",
+    "Powering through the menu...",
+    "Pre-buttering the rolls...",
+    "Procrastinating productively...",
+    "Queuing strategically...",
+    "Rearranging the chairs...",
+    "Recalibrating expectations...",
+    "Rehearsing the order...",
+    "Reloading the gift card...",
+    "Renaming the group chat...",
+    "Repressing FOMO...",
+    "Reviewing the fire exits...",
+    "Rolling up the sleeves...",
+    "Rotating the cheese board...",
+    "Saving the corner seat...",
+    "Scanning for celebrities...",
+    "Seasoning to taste...",
+    "Sharpening the steak knife...",
+    "Shushing the table...",
+    "Silencing the phone...",
+    "Skimming the cocktail bible...",
+    "Slicing the sourdough...",
+    "Smelling the candles...",
+    "Sneaking in snacks...",
+    "Sorting by price...",
+    "Squeezing the lemon...",
+    "Straightening the tie...",
+    "Surviving the wait list...",
+    "Tasting the olive oil...",
+    "Testing the acoustics...",
+    "Toasting the bread...",
+    "Turning on flashlight to view the menu...",
+    "Uncorking the Malbec...",
+    "Updating the story...",
+    "Vibing...",
+    "Whispering to the chef...",
+    "Almost there...",
+)
+
+@Composable
+private fun SearchingIndicator() {
+    var phraseIndex by remember { mutableStateOf((0 until searchingPhrases.size).random()) }
+    val currentPhrase = searchingPhrases[phraseIndex % searchingPhrases.size]
+
+    // Rotate every 2.5 seconds
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(2500L)
+            phraseIndex++
+        }
+    }
+
+    // Fade transition on phrase change
+    val alpha = remember { Animatable(1f) }
+    LaunchedEffect(phraseIndex) {
+        alpha.snapTo(0f)
+        alpha.animateTo(1f, animationSpec = tween(400))
+    }
+
+    Row(horizontalArrangement = Arrangement.Start) {
+        AiAvatar()
+        Spacer(Modifier.width(8.dp))
+        val bubbleShape = RoundedCornerShape(4.dp, 16.dp, 16.dp, 16.dp)
+        Box {
+            Box(Modifier.matchParentSize().offset(y = 4.dp).background(Color(0xFFD8D2E8), bubbleShape))
+            Box(
+                Modifier
+                    .background(AppColors.White, bubbleShape)
+                    .border(2.dp, Color(0xFFE2DCF0), bubbleShape)
+                    .padding(horizontal = 14.dp, vertical = 12.dp),
+            ) {
+                Text(
+                    currentPhrase,
+                    modifier = Modifier.graphicsLayer { this.alpha = alpha.value },
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        color = AppColors.Ink3,
+                    ),
+                )
+            }
+        }
+    }
+}
+
 // ── Day Card ──
 
 @Composable
@@ -460,7 +712,7 @@ private fun DayCard(
                                 color = AppColors.White.copy(alpha = 0.7f), letterSpacing = 0.8.sp),
                         )
                         Text(
-                            "${day.slots.size} events",
+                            "${day.slots.size} ${if (day.slots.size == 1) "event" else "events"}",
                             style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp,
                                 color = AppColors.White.copy(alpha = 0.7f)),
                         )
@@ -468,13 +720,13 @@ private fun DayCard(
                     Spacer(Modifier.height(2.dp))
                 }
                 Text(
-                    day.label.ifBlank { "Your Plan" },
+                    day.label.replace("Today ", "").replace("Tomorrow ", "").ifBlank { "Your Plan" },
                     style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 16.sp, color = AppColors.White),
                 )
                 if (totalDays <= 1) {
                     Spacer(Modifier.height(2.dp))
                     Text(
-                        "${day.slots.size} events",
+                        "${day.slots.size} ${if (day.slots.size == 1) "event" else "events"}",
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp,
                             color = AppColors.White.copy(alpha = 0.7f)),
                     )
@@ -506,7 +758,13 @@ private fun DayCard(
                         isLast = isLast,
                         isApproved = day.isApproved,
                         onRemove = { onRemoveSlot(slot.id) },
-                        onEventClick = { slot.eventId?.let { onEventClick(it) } },
+                        onEventClick = {
+                            if (slot.eventId != null) {
+                                onEventClick(slot.eventId)
+                            } else if (!slot.isCustom && slot.name.length > 2) {
+                                onEventClick("venue:${slot.name}")
+                            }
+                        },
                     )
 
                     if (!isLast) {
@@ -561,7 +819,7 @@ private fun SlotRow(
                 .clip(RoundedCornerShape(13.dp))
                 .pressable(
                     onClick = onEventClick,
-                    enabled = slot.eventId != null,
+                    enabled = slot.eventId != null || (!slot.isCustom && slot.name.length > 2),
                 )
                 .padding(horizontal = 11.dp, vertical = 9.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -985,11 +1243,24 @@ private fun PlanSuccessOverlay(
     onInviteFriends: () -> Unit,
 ) {
     val subtitle = remember(days) {
-        val firstDay = days.firstOrNull()
-        if (firstDay != null && firstDay.label.isNotBlank()) {
-            "${firstDay.label} is sorted"
+        if (days.isEmpty()) ""
+        else if (days.size == 1) {
+            // Single day: extract date part from label like "Saturday, March 28"
+            val label = days.first().label
+            val datePart = label.substringAfter(", ", label)
+            datePart
         } else {
-            "Your plan is sorted"
+            // Multi-day: "March 28 to 30" or "March 28 to April 1"
+            val first = days.first().label.substringAfter(", ", days.first().label)
+            val last = days.last().label.substringAfter(", ", days.last().label)
+            val firstMonth = first.substringBefore(" ")
+            val lastMonth = last.substringBefore(" ")
+            if (firstMonth == lastMonth) {
+                val lastDay = last.substringAfter(" ")
+                "$first to $lastDay"
+            } else {
+                "$first to $last"
+            }
         }
     }
 
@@ -1243,13 +1514,13 @@ private fun PlanSuccessOverlay(
                         horizontalArrangement = Arrangement.spacedBy(9.dp),
                     ) {
                         Icon(
-                            Icons.Outlined.Share,
+                            Icons.Outlined.IosShare,
                             contentDescription = "Share",
                             modifier = Modifier.size(17.dp),
                             tint = AppColors.Coral,
                         )
                         Text(
-                            "Invite friends",
+                            "Share Plan",
                             style = TextStyle(
                                 fontSize = 15.sp,
                                 fontWeight = FontWeight.ExtraBold,

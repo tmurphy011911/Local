@@ -104,7 +104,8 @@ struct ComposeView: UIViewControllerRepresentable {
                     sourceUrl: sourceUrl,
                     category: category,
                     subcategory: subcategory,
-                    source: source
+                    source: source,
+                    showDirections: detailBridge.showDirections
                 )
 
                 let cardFrame = CGRect(
