@@ -394,6 +394,397 @@ async function upsertEvents(rows) {
   return { inserted, errors };
 }
 
+// ── BiblioCommons API crawler ──
+
+async function crawlBiblioCommons(venue, libraryCode) {
+  const baseUrl = `https://gateway.bibliocommons.com/v2/libraries/${libraryCode}/events?locale=en-US&limit=50`;
+  const allEvents = [];
+  let page = 1;
+  const maxPages = 5; // 250 events max
+
+  try {
+    while (page <= maxPages) {
+      const url = `${baseUrl}&page=${page}`;
+      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      if (!res.ok) {
+        console.log(`    BiblioCommons API error: ${res.status}`);
+        break;
+      }
+      const data = await res.json();
+      const items = data.events?.items || [];
+      const entities = data.entities?.events || {};
+      const branches = data.entities?.branches || {};
+
+      if (items.length === 0) break;
+
+      for (const id of items) {
+        const evt = entities[id];
+        if (!evt?.definition) continue;
+        const def = evt.definition;
+        const branchId = def.branchLocationId;
+        const branch = branches[branchId];
+        const branchName = branch?.name || venue.name;
+
+        // Skip events more than 60 days out
+        const startIso = def.start ? def.start.replace("T", "T") + ":00Z" : null;
+        if (!startIso) continue;
+
+        // Strip HTML from description
+        const descClean = (def.description || "")
+          .replace(/<[^>]+>/g, " ")
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 300);
+
+        allEvents.push({
+          title: def.title,
+          start_date: startIso,
+          end_date: def.end ? def.end + ":00Z" : null,
+          description: descClean || null,
+          source_url: `https://${libraryCode}.bibliocommons.com/v2/events/${id}`,
+          venue_override: branchName,
+        });
+      }
+
+      const totalPages = data.events?.pagination?.pages || 1;
+      if (page >= totalPages) break;
+      page++;
+      await new Promise((r) => setTimeout(r, 300)); // rate limit
+    }
+
+    // Normalize and upsert — use branch name if available
+    const rows = allEvents.map((e) => {
+      const v = e.venue_override ? { ...venue, name: e.venue_override } : venue;
+      return normalizeEvent(e, v);
+    });
+    if (rows.length > 0) {
+      await upsertEvents(rows);
+    }
+    await updateVenueCrawlStatus(venue.id, true, venue.crawl_success_rate);
+    return { venue: venue.name, events: rows.length, status: "ok" };
+  } catch (err) {
+    console.log(`    BiblioCommons crawl error: ${err.message}`);
+    await updateVenueCrawlStatus(venue.id, false, venue.crawl_success_rate);
+    return { venue: venue.name, events: 0, status: "error", reason: err.message };
+  }
+}
+
+// ── Localist API crawler (MIT, Northeastern, BC, etc.) ──
+
+async function crawlLocalist(venue, baseUrl) {
+  const allEvents = [];
+  let page = 1;
+  const maxPages = 5;
+
+  try {
+    // Extract the base domain for the API
+    const urlObj = new URL(baseUrl);
+    const apiBase = `${urlObj.origin}/api/2/events`;
+
+    while (page <= maxPages) {
+      const url = `${apiBase}?pp=50&page=${page}`;
+      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      if (!res.ok) {
+        console.log(`    Localist API error: ${res.status}`);
+        break;
+      }
+      const data = await res.json();
+      const events = data.events || [];
+      if (events.length === 0) break;
+
+      for (const wrapper of events) {
+        const evt = wrapper.event || wrapper;
+        if (!evt.title) continue;
+
+        const startIso = evt.first_date || evt.date || null;
+        if (!startIso) continue;
+
+        allEvents.push({
+          title: evt.title,
+          start_date: startIso,
+          end_date: evt.last_date || null,
+          description: (evt.description_text || "").slice(0, 300) || null,
+          source_url: evt.localist_url || evt.url || null,
+          is_free: evt.free || false,
+          ticket_url: evt.ticket_url || null,
+          venue_override: evt.location_name || null,
+        });
+      }
+
+      const totalPages = data.page?.total || 1;
+      if (page >= totalPages) break;
+      page++;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    const rows = allEvents.map((e) => {
+      const v = e.venue_override ? { ...venue, name: e.venue_override } : venue;
+      return normalizeEvent(e, v);
+    });
+    if (rows.length > 0) await upsertEvents(rows);
+    await updateVenueCrawlStatus(venue.id, true, venue.crawl_success_rate);
+    return { venue: venue.name, events: rows.length, status: "ok (localist)" };
+  } catch (err) {
+    console.log(`    Localist crawl error: ${err.message}`);
+    await updateVenueCrawlStatus(venue.id, false, venue.crawl_success_rate);
+    return { venue: venue.name, events: 0, status: "error", reason: err.message };
+  }
+}
+
+// ── WordPress REST API crawler ──
+
+async function crawlWordPress(venue, baseUrl) {
+  const allEvents = [];
+
+  try {
+    const urlObj = new URL(baseUrl);
+    const wpBase = `${urlObj.origin}/wp-json`;
+
+    // Try The Events Calendar plugin first (most common for event venues)
+    const endpoints = [
+      `${wpBase}/tribe/events/v1/events?per_page=50&start_date=now`,
+      `${wpBase}/wp/v2/events?per_page=50&orderby=date&order=asc`,
+      `${wpBase}/wp/v2/tribe_events?per_page=50`,
+    ];
+
+    let found = false;
+    for (const endpoint of endpoints) {
+      try {
+        const res = await fetch(endpoint, {
+          headers: { Accept: "application/json" },
+        });
+        if (!res.ok) continue;
+        const data = await res.json();
+
+        // Tribe Events Calendar format
+        const events = data.events || (Array.isArray(data) ? data : []);
+        if (events.length === 0) continue;
+
+        found = true;
+        for (const evt of events) {
+          const title = evt.title?.rendered || evt.title || "";
+          if (!title) continue;
+
+          const startDate = evt.start_date || evt.date || evt.meta?.start_date || null;
+          if (!startDate) continue;
+
+          const desc = (evt.description?.rendered || evt.excerpt?.rendered || evt.content?.rendered || "")
+            .replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+
+          allEvents.push({
+            title: typeof title === "string" ? title : title.toString(),
+            start_date: startDate,
+            end_date: evt.end_date || evt.meta?.end_date || null,
+            description: desc || null,
+            source_url: evt.url || evt.link || null,
+            is_free: evt.cost === "Free" || evt.cost === "" || evt.cost === "$0" || false,
+            ticket_url: evt.website || evt.url || null,
+          });
+        }
+
+        // Paginate if tribe events
+        if (data.next_rest_url) {
+          let nextUrl = data.next_rest_url;
+          let pages = 1;
+          while (nextUrl && pages < 5) {
+            const nextRes = await fetch(nextUrl, { headers: { Accept: "application/json" } });
+            if (!nextRes.ok) break;
+            const nextData = await nextRes.json();
+            const nextEvents = nextData.events || [];
+            if (nextEvents.length === 0) break;
+            for (const evt of nextEvents) {
+              const title = evt.title?.rendered || evt.title || "";
+              const startDate = evt.start_date || evt.date || null;
+              if (!title || !startDate) continue;
+              const desc = (evt.description?.rendered || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+              allEvents.push({
+                title, start_date: startDate, end_date: evt.end_date || null,
+                description: desc || null, source_url: evt.url || evt.link || null,
+                is_free: evt.cost === "Free" || false, ticket_url: evt.website || null,
+              });
+            }
+            nextUrl = nextData.next_rest_url || null;
+            pages++;
+            await new Promise((r) => setTimeout(r, 300));
+          }
+        }
+        break;
+      } catch (_) {
+        continue;
+      }
+    }
+
+    if (!found) {
+      // Fallback: return to normal HTML crawl
+      return null;
+    }
+
+    const rows = allEvents.map((e) => normalizeEvent(e, venue));
+    if (rows.length > 0) await upsertEvents(rows);
+    await updateVenueCrawlStatus(venue.id, true, venue.crawl_success_rate);
+    return { venue: venue.name, events: rows.length, status: "ok (wordpress)" };
+  } catch (err) {
+    console.log(`    WordPress crawl error: ${err.message}`);
+    return null; // Fall back to HTML crawl
+  }
+}
+
+// ── Tessitura API crawler ──
+
+async function crawlTessitura(venue, baseUrl) {
+  try {
+    const urlObj = new URL(baseUrl);
+    const origin = urlObj.origin;
+
+    // Try common Tessitura/TNEW API endpoints
+    const apiEndpoints = [
+      `${origin}/api/events`,
+      `${origin}/api/performances`,
+      `${origin}/TessituraService/Web/Cart/Performances`,
+    ];
+
+    // Also try TNEW feed endpoint (many Tessitura sites expose this)
+    const tnewEndpoints = [
+      `${origin}/events-tickets/calendar?format=json`,
+      `${origin}/events?format=json`,
+      `${origin}/Online/default.asp?doession&BOparam::WScontent::loadArticle::permalink=events-calendar`,
+    ];
+
+    // For Tessitura, the HTML often has structured data even though it's JS-heavy
+    // Fall back to normal HTML crawl which may pick up JSON-LD or structured content
+    console.log(`    Tessitura detected — falling back to HTML crawl with enhanced extraction`);
+    return null; // Fall back to HTML crawl
+  } catch (err) {
+    return null;
+  }
+}
+
+// ── Drupal JSON:API crawler ──
+
+async function crawlDrupal(venue, baseUrl) {
+  const allEvents = [];
+
+  try {
+    const urlObj = new URL(baseUrl);
+    const origin = urlObj.origin;
+
+    // Try Drupal JSON:API endpoints
+    const endpoints = [
+      `${origin}/jsonapi/node/event?sort=-field_date_time&page[limit]=50`,
+      `${origin}/jsonapi/node/events?sort=-field_date_time&page[limit]=50`,
+      `${origin}/jsonapi/node/performance?sort=-field_date_time&page[limit]=50`,
+      `${origin}/jsonapi/node/program?sort=-field_date_time&page[limit]=50`,
+    ];
+
+    for (const endpoint of endpoints) {
+      try {
+        const res = await fetch(endpoint, {
+          headers: { Accept: "application/vnd.api+json, application/json" },
+        });
+        if (!res.ok) continue;
+        const data = await res.json();
+        const items = data.data || [];
+        if (items.length === 0) continue;
+
+        for (const item of items) {
+          const attrs = item.attributes || {};
+          const title = attrs.title || attrs.name || "";
+          if (!title) continue;
+
+          // Try various date field names
+          const startDate = attrs.field_date_time?.value || attrs.field_start_date?.value ||
+            attrs.field_event_date?.value || attrs.field_date?.value ||
+            attrs.created || null;
+          if (!startDate) continue;
+
+          const endDate = attrs.field_date_time?.end_value || attrs.field_end_date?.value || null;
+          const desc = (attrs.field_description?.value || attrs.body?.value || "")
+            .replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+
+          allEvents.push({
+            title,
+            start_date: startDate,
+            end_date: endDate,
+            description: desc || null,
+            source_url: `${origin}${attrs.path?.alias || `/node/${item.id}`}`,
+            is_free: attrs.field_free || attrs.field_is_free || false,
+          });
+        }
+
+        // Paginate
+        let nextUrl = data.links?.next?.href || null;
+        let pages = 1;
+        while (nextUrl && pages < 5) {
+          const nextRes = await fetch(nextUrl, {
+            headers: { Accept: "application/vnd.api+json, application/json" },
+          });
+          if (!nextRes.ok) break;
+          const nextData = await nextRes.json();
+          const nextItems = nextData.data || [];
+          if (nextItems.length === 0) break;
+          for (const item of nextItems) {
+            const attrs = item.attributes || {};
+            const title = attrs.title || "";
+            const startDate = attrs.field_date_time?.value || attrs.field_start_date?.value ||
+              attrs.field_event_date?.value || attrs.created || null;
+            if (!title || !startDate) continue;
+            const desc = (attrs.body?.value || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+            allEvents.push({
+              title, start_date: startDate, end_date: attrs.field_date_time?.end_value || null,
+              description: desc || null, source_url: `${origin}${attrs.path?.alias || ""}`,
+            });
+          }
+          nextUrl = nextData.links?.next?.href || null;
+          pages++;
+          await new Promise((r) => setTimeout(r, 300));
+        }
+
+        break; // Found events, stop trying endpoints
+      } catch (_) {
+        continue;
+      }
+    }
+
+    if (allEvents.length === 0) return null; // Fall back to HTML
+
+    const rows = allEvents.map((e) => normalizeEvent(e, venue));
+    if (rows.length > 0) await upsertEvents(rows);
+    await updateVenueCrawlStatus(venue.id, true, venue.crawl_success_rate);
+    return { venue: venue.name, events: rows.length, status: "ok (drupal)" };
+  } catch (err) {
+    console.log(`    Drupal crawl error: ${err.message}`);
+    return null;
+  }
+}
+
+// ── Platform detection helper ──
+
+async function detectAndCrawlPlatform(venue) {
+  const url = venue.events_url;
+
+  // 1. BiblioCommons
+  const biblioMatch = url.match(/(\w+)\.bibliocommons\.com/);
+  if (biblioMatch) return await crawlBiblioCommons(venue, biblioMatch[1]);
+
+  // 2. Localist (university calendars)
+  const localistDomains = ["calendar.mit.edu", "calendar.northeastern.edu", "events.bc.edu",
+    "events.tufts.edu", "events.brown.edu", "calendar.uri.edu", "events.uconn.edu"];
+  try {
+    const hostname = new URL(url).hostname;
+    if (localistDomains.some((d) => hostname.includes(d)) || url.includes("localist.com")) {
+      return await crawlLocalist(venue, url);
+    }
+  } catch (_) {}
+
+  // 3. Try WordPress API (detect from HTML or try wp-json)
+  // We'll try this after HTML fetch below
+
+  // 4. Drupal — detect from HTML markers
+  // We'll try this after HTML fetch below
+
+  return null; // No platform detected pre-fetch
+}
+
 // ── Crawl a single venue ──
 
 async function crawlVenue(venue) {
@@ -402,6 +793,10 @@ async function crawlVenue(venue) {
   }
 
   try {
+    // Try platform-specific API crawlers first
+    const platformResult = await detectAndCrawlPlatform(venue);
+    if (platformResult) return platformResult;
+
     // Fetch HTML
     const rawHtml = await fetchPage(venue.events_url);
     const cleanedHtml = stripHtml(rawHtml);
@@ -409,6 +804,27 @@ async function crawlVenue(venue) {
     if (cleanedHtml.length < 100) {
       await updateVenueCrawlStatus(venue.id, false, venue.crawl_success_rate);
       return { venue: venue.name, events: 0, status: "empty", reason: "page too short" };
+    }
+
+    // Post-fetch platform detection — try structured APIs before Claude
+    const htmlLc = rawHtml.toLowerCase();
+
+    // WordPress detection
+    if (htmlLc.includes("wp-content") || htmlLc.includes("wordpress") || htmlLc.includes("wp-json")) {
+      const wpResult = await crawlWordPress(venue, venue.events_url);
+      if (wpResult) return wpResult;
+    }
+
+    // Drupal detection
+    if (htmlLc.includes("drupal") || htmlLc.includes("jsonapi") || htmlLc.includes("drupal.settings")) {
+      const drupalResult = await crawlDrupal(venue, venue.events_url);
+      if (drupalResult) return drupalResult;
+    }
+
+    // Tessitura detection
+    if (htmlLc.includes("tessitura") || htmlLc.includes("tnew") || htmlLc.includes("tessituraservice")) {
+      console.log(`    Tessitura detected for ${venue.name} — using HTML crawl`);
+      // Tessitura sites often have structured data in the HTML, so continue to Claude extraction
     }
 
     // Extract events via Claude
