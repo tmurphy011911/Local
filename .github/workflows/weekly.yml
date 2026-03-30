@@ -3,7 +3,12 @@ name: Weekly — Crawl Venues & Classify Events
 on:
   schedule:
     - cron: '0 9 * * 0'  # 9am UTC / 4am EST every Sunday
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      venue_filter:
+        description: 'Comma-separated venue names to crawl (empty = all venues)'
+        required: false
+        default: ''
 
 jobs:
   crawl-venues:
@@ -14,10 +19,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Crawl All Venues
+      - name: Crawl Venues
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          VENUE_NAME: ${{ github.event.inputs.venue_filter }}
         run: node run_crawls.js
 
   classify-events:
