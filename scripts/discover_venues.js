@@ -79,7 +79,7 @@ async function discoverVenues(cat) {
 Return a JSON object with a "venues" array. Each venue object must have:
 - name (string, required)
 - website (string or null — the venue's main website, e.g. "https://www.paradiserockclub.com")
-- events_url (string or null — direct link to their events/calendar page, e.g. "https://www.paradiserockclub.com/events")
+- events_url (string or null — direct link to their events/calendar page, e.g. "https://www.paradiserockclub.com/events". If a venue has multiple event pages like separate calendars, exhibitions, and programs, comma-separate them: "https://example.com/programs, https://example.com/exhibitions")
 - category (string: "${cat.category}")
 - city (string — the city name, e.g. "Boston", "Cambridge", "Providence")
 - metro_area (string: "${METRO}")
