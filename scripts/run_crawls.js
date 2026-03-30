@@ -792,6 +792,21 @@ async function crawlVenue(venue) {
     return { venue: venue.name, events: 0, status: "skipped", reason: "no events_url" };
   }
 
+  // Support multiple URLs separated by commas
+  const urls = venue.events_url.split(",").map((u) => u.trim()).filter(Boolean);
+  if (urls.length > 1) {
+    let totalEvents = 0;
+    let anySuccess = false;
+    for (const url of urls) {
+      const subVenue = { ...venue, events_url: url };
+      const result = await crawlVenue(subVenue);
+      if (result.status?.startsWith("ok")) anySuccess = true;
+      totalEvents += result.events || 0;
+    }
+    await updateVenueCrawlStatus(venue.id, anySuccess, venue.crawl_success_rate);
+    return { venue: venue.name, events: totalEvents, status: anySuccess ? "ok (multi-url)" : "error" };
+  }
+
   try {
     // Try platform-specific API crawlers first
     const platformResult = await detectAndCrawlPlatform(venue);
