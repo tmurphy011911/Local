@@ -757,6 +757,70 @@ async function crawlDrupal(venue, baseUrl) {
   }
 }
 
+// ── Ticketure API crawler (Museum of Science, etc.) ──
+
+async function crawlTicketure(venue, baseUrl) {
+  try {
+    const urlObj = new URL(baseUrl);
+    const apiUrl = `${urlObj.origin}/api/events/available`;
+
+    const res = await fetch(apiUrl, {
+      headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0" },
+    });
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const templates = data.event_template?._data || [];
+    if (templates.length === 0) return null;
+
+    const allEvents = [];
+    for (const evt of templates) {
+      if (!evt.name) continue;
+      // Skip memberships and private events
+      const cat = (evt.category || "").toLowerCase();
+      if (cat.includes("membership") || cat.includes("private") || cat.includes("gift")) continue;
+
+      const desc = (evt.description || "")
+        .replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300);
+
+      // For timed/repeating events, try to get sessions
+      let startDate = null;
+      if (evt.event_type === "single" || evt.event_type === "timed_entry") {
+        try {
+          const sessRes = await fetch(`${urlObj.origin}/api/events/${evt.id}/sessions?_limit=5`, {
+            headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0" },
+          });
+          if (sessRes.ok) {
+            const sessData = await sessRes.json();
+            const sessions = sessData.event_session?._data || [];
+            if (sessions.length > 0) {
+              startDate = sessions[0].start_datetime || null;
+            }
+          }
+          await new Promise((r) => setTimeout(r, 200));
+        } catch (_) {}
+      }
+
+      allEvents.push({
+        title: evt.name,
+        start_date: startDate || new Date().toISOString(),
+        description: desc || null,
+        source_url: `${urlObj.origin}/events/${evt.id}`,
+        is_free: false,
+        category_hint: evt.category || null,
+      });
+    }
+
+    const rows = allEvents.map((e) => normalizeEvent(e, venue));
+    if (rows.length > 0) await upsertEvents(rows);
+    await updateVenueCrawlStatus(venue.id, true, venue.crawl_success_rate);
+    return { venue: venue.name, events: rows.length, status: "ok (ticketure)" };
+  } catch (err) {
+    console.log(`    Ticketure crawl error: ${err.message}`);
+    return null;
+  }
+}
+
 // ── Platform detection helper ──
 
 async function detectAndCrawlPlatform(venue) {
@@ -836,10 +900,15 @@ async function crawlVenue(venue) {
       if (drupalResult) return drupalResult;
     }
 
+    // Ticketure detection (MOS, etc.)
+    if (htmlLc.includes("ticketure")) {
+      const ticketureResult = await crawlTicketure(venue, venue.events_url);
+      if (ticketureResult) return ticketureResult;
+    }
+
     // Tessitura detection
     if (htmlLc.includes("tessitura") || htmlLc.includes("tnew") || htmlLc.includes("tessituraservice")) {
       console.log(`    Tessitura detected for ${venue.name} — using HTML crawl`);
-      // Tessitura sites often have structured data in the HTML, so continue to Claude extraction
     }
 
     // Extract events via Claude
