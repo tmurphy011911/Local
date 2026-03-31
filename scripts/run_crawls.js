@@ -822,6 +822,47 @@ async function crawlTicketure(venue, baseUrl) {
   }
 }
 
+// ── LiveWhale API crawler (Brown, Tufts, etc.) ──
+
+async function crawlLiveWhale(venue, baseUrl) {
+  try {
+    const urlObj = new URL(baseUrl);
+    const apiUrl = `${urlObj.origin}/live/json/events/`;
+
+    const res = await fetch(apiUrl, {
+      headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0" },
+    });
+    if (!res.ok) return null;
+
+    const events = await res.json();
+    if (!Array.isArray(events) || events.length === 0) return null;
+
+    const allEvents = [];
+    for (const evt of events) {
+      if (!evt.title) continue;
+      const dateStr = evt.date_utc || evt.date || null;
+      if (!dateStr) continue;
+
+      allEvents.push({
+        title: evt.title,
+        start_date: dateStr,
+        end_date: evt.date2_utc || null,
+        description: (evt.description || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim().slice(0, 300) || null,
+        source_url: evt.url || `${urlObj.origin}/live/events/${evt.id}`,
+        is_free: false,
+      });
+    }
+
+    const rows = allEvents.map((e) => normalizeEvent(e, venue));
+    if (rows.length > 0) await upsertEvents(rows);
+    await updateVenueCrawlStatus(venue.id, true, venue.crawl_success_rate);
+    return { venue: venue.name, events: rows.length, status: "ok (livewhale)" };
+  } catch (err) {
+    console.log(`    LiveWhale crawl error: ${err.message}`);
+    return null;
+  }
+}
+
 // ── Platform detection helper ──
 
 async function detectAndCrawlPlatform(venue) {
@@ -833,12 +874,20 @@ async function detectAndCrawlPlatform(venue) {
 
   // 2. Localist (university calendars)
   const localistDomains = ["calendar.mit.edu", "calendar.northeastern.edu", "events.bc.edu",
-    "events.tufts.edu", "events.brown.edu", "calendar.uri.edu", "events.uconn.edu",
+    "calendar.uri.edu", "events.uconn.edu",
     "events.wellesley.edu", "calendar.emerson.edu"];
+
+  // LiveWhale domains (Brown, Tufts, etc.)
+  const liveWhaleDomains = ["events.brown.edu", "events.tufts.edu"];
   try {
     const hostname = new URL(url).hostname;
     if (localistDomains.some((d) => hostname.includes(d)) || url.includes("localist.com")) {
       return await crawlLocalist(venue, url);
+    }
+
+    // 3b. LiveWhale
+    if (liveWhaleDomains.some((d) => hostname.includes(d))) {
+      return await crawlLiveWhale(venue, url);
     }
   } catch (_) {}
 
@@ -900,6 +949,12 @@ async function crawlVenue(venue) {
     if (htmlLc.includes("drupal") || htmlLc.includes("jsonapi") || htmlLc.includes("drupal.settings")) {
       const drupalResult = await crawlDrupal(venue, venue.events_url);
       if (drupalResult) return drupalResult;
+    }
+
+    // LiveWhale detection
+    if (htmlLc.includes("livewhale") || htmlLc.includes("live/json/events")) {
+      const lwResult = await crawlLiveWhale(venue, venue.events_url);
+      if (lwResult) return lwResult;
     }
 
     // Ticketure detection (MOS, etc.)
