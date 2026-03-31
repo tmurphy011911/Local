@@ -833,7 +833,8 @@ async function detectAndCrawlPlatform(venue) {
 
   // 2. Localist (university calendars)
   const localistDomains = ["calendar.mit.edu", "calendar.northeastern.edu", "events.bc.edu",
-    "events.tufts.edu", "events.brown.edu", "calendar.uri.edu", "events.uconn.edu"];
+    "events.tufts.edu", "events.brown.edu", "calendar.uri.edu", "events.uconn.edu",
+    "events.wellesley.edu", "calendar.emerson.edu"];
   try {
     const hostname = new URL(url).hostname;
     if (localistDomains.some((d) => hostname.includes(d)) || url.includes("localist.com")) {
