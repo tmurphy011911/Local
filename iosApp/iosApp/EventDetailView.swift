@@ -549,8 +549,10 @@ struct EventDetailView: View {
                                 countdownUnit(value: countdown.minutes, label: "min")
                                 countdownSep
                                 countdownUnit(value: countdown.seconds, label: "sec")
+                                Spacer()
                             }
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
                 .padding(.horizontal, 20)

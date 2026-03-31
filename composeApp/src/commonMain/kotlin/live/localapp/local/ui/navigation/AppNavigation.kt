@@ -95,6 +95,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.geometry.Rect
 import kotlinx.coroutines.launch
 import live.localapp.local.ui.progress.ProgressScreen
+import live.localapp.local.domain.repository.UserPreferencesRepository
 import live.localapp.local.ui.progress.CelebrationEvent
 import live.localapp.local.ui.progress.ProgressViewModel
 import live.localapp.local.platform.closeChatSheet
@@ -131,8 +132,20 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     var detailEvent by remember { mutableStateOf<Event?>(null) }
     var detailFromPlans by remember { mutableStateOf(false) }
     var showChat by remember { mutableStateOf(false) }
+    var showLoginPrompt by remember { mutableStateOf(false) }
     var pendingChatMessage by remember { mutableStateOf<String?>(null) }
     var chatOpenCount by remember { mutableStateOf(0) }
+    val userPrefsRepo: UserPreferencesRepository = remember { koin.get() }
+
+    // Gate chat behind auth
+    val openChatOrLogin: () -> Unit = {
+        val userId = userPrefsRepo.getLocalUserId()
+        if (userId != null) {
+            showChat = true
+        } else {
+            showLoginPrompt = true
+        }
+    }
 
     // Hoist HomeViewModel so data starts loading immediately (for splash screen)
     val homeVm: HomeViewModel = viewModel {
@@ -197,7 +210,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                     detailEvent = event
                                 }
                             },
-                            onConciergeClick = { showChat = true },
+                            onConciergeClick = { openChatOrLogin() },
                             onProfileClick = { selectedTab = Tab.PROFILE },
                             onDebugLocationChange = { lat, lng, name ->
                                 placesVm.debugSetLocation(lat, lng, name)
@@ -209,7 +222,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     }
                     Tab.CHAT -> {
                         // Chat is now a bottom sheet, not a tab — show home instead
-                        showChat = true
+                        openChatOrLogin()
                         selectedTab = Tab.HOME
                     }
                     Tab.PLACES -> {
@@ -235,7 +248,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         LaunchedEffect(selectedTab) { plansVm.refresh() }
                         PlansScreen(
                             viewModel = plansVm,
-                            onNewPlan = { showChat = true },
+                            onNewPlan = { openChatOrLogin() },
                             userInitial = homeState.userName.firstOrNull()?.uppercase() ?: "",
                             onProfileClick = { selectedTab = Tab.PROFILE },
                             locationName = homeState.locationName,
@@ -243,12 +256,12 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             onBuildPlanFromEvent = { eventTitle ->
                                 pendingChatMessage = "Build a plan around $eventTitle"
                                 chatOpenCount++
-                                showChat = true
+                                openChatOrLogin()
                             },
                             onBuildPlanFromTemplate = { templateMessage ->
                                 pendingChatMessage = templateMessage
                                 chatOpenCount++
-                                showChat = true
+                                openChatOrLogin()
                             },
                             onEventClick = { eventId ->
                                 scope.launch {
@@ -294,7 +307,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             // Floating tab bar — overlays content at bottom
             Box(modifier = Modifier.align(Alignment.BottomCenter)) {
                 val tabInitial = homeState.userName.firstOrNull()?.uppercase() ?: ""
-                BottomTabBar(selectedTab, onSelect = { selectedTab = it }, onChatClick = { showChat = true }, userInitial = tabInitial)
+                BottomTabBar(selectedTab, onSelect = { selectedTab = it }, onChatClick = { openChatOrLogin() }, userInitial = tabInitial)
             }
 
         // Venue detail
@@ -349,6 +362,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         val cat = detailEvent?.let { it.subcategory ?: it.category }
                         homeVm.toggleEventFavorite(eventId, cat)
                     },
+                    initialFavorited = detailEvent?.id in homeState.favoriteEventIds,
                 )
             }
             }
@@ -429,6 +443,71 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             }
                         },
                         onNavigateHome = { dismissChat { selectedTab = Tab.HOME } },
+                        onLoginRequired = {
+                            // Close chat and navigate to auth
+                            dismissChat {
+                                // TODO: show auth sheet or navigate to login
+                                // For now, show an alert-style message
+                            }
+                        },
+                    )
+                }
+            }
+        }
+
+        // ── Login Required Overlay ──
+        if (showLoginPrompt) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.5f))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = { showLoginPrompt = false },
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 32.dp)
+                        .clip(RoundedCornerShape(24.dp))
+                        .background(AppColors.White)
+                        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {})
+                        .padding(28.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        "Sign in to use Yocal",
+                        style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = AppColors.Ink),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Create an account to build plans, save events, and get personalized recommendations.",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink3, lineHeight = 20.sp),
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(Modifier.height(24.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(AppColors.Coral)
+                            .clickable {
+                                showLoginPrompt = false
+                                onLogout() // triggers re-auth flow
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text("Sign in", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, color = AppColors.White))
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    Text(
+                        "Maybe later",
+                        modifier = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = { showLoginPrompt = false }),
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = AppColors.Ink3),
                     )
                 }
             }

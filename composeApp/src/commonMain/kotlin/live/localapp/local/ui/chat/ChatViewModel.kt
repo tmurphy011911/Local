@@ -120,6 +120,8 @@ data class ChatUiState(
     val planAttendeeCount: Int = 1,
     // Plan success overlay
     val showPlanSuccess: Boolean = false,
+    // Auth required prompt
+    val showAuthPrompt: Boolean = false,
     // "Also Happening" recommendations
     val recommendations: List<Event> = emptyList(),
     // User info

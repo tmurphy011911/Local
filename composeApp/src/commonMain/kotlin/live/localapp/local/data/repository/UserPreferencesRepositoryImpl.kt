@@ -2,6 +2,7 @@ package live.localapp.local.data.repository
 
 import com.russhwolf.settings.Settings
 import io.github.jan.supabase.SupabaseClient
+import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.query.Order
 import kotlinx.serialization.SerialName
@@ -120,15 +121,20 @@ class UserPreferencesRepositoryImpl(
 
     override suspend fun recoverProfile(): String? {
         return try {
-            // Find the most recent completed onboarding profile
+            // Only recover if we have a Supabase auth session
+            val session = supabaseClient.auth.currentSessionOrNull()
+            val authUserId = session?.user?.id
+            if (authUserId == null) return null
+
+            // Recover the profile matching the authenticated user
             val dto = supabaseClient.from("user_profiles")
                 .select {
-                    filter { eq("onboarding_complete", true) }
-                    order("id", Order.DESCENDING)
-                    limit(1)
+                    filter { eq("id", authUserId) }
                 }
                 .decodeSingleOrNull<UserProfileDto>()
                 ?: return null
+
+            if (!dto.onboardingComplete) return null
 
             val userId = dto.id ?: return null
             // Re-cache locally

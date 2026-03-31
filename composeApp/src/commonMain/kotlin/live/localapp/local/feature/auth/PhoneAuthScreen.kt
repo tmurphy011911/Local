@@ -30,7 +30,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -182,11 +185,13 @@ private fun PhoneInputContent(
         modifier = Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.statusBars)
+            .imePadding()
             .padding(top = 20.dp),
     ) {
         Column(
             modifier = Modifier
                 .weight(1f)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 28.dp),
         ) {
             Spacer(Modifier.height(48.dp))
@@ -400,6 +405,7 @@ private fun OtpVerificationContent(
         modifier = Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.statusBars)
+            .imePadding()
             .padding(top = 20.dp),
     ) {
         // Back button
@@ -583,11 +589,13 @@ private fun NameInputContent(
         modifier = Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.statusBars)
+            .imePadding()
             .padding(top = 20.dp),
     ) {
         Column(
             modifier = Modifier
                 .weight(1f)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 28.dp),
         ) {
             Spacer(Modifier.height(48.dp))

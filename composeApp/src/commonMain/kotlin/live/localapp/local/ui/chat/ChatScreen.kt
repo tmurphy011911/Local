@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -66,6 +67,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -94,6 +96,7 @@ fun ChatScreen(
     onBack: (() -> Unit)? = null,
     onNavigateToPlans: (() -> Unit)? = null,
     onNavigateHome: (() -> Unit)? = null,
+    onLoginRequired: (() -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
     val listState = rememberLazyListState()
@@ -163,7 +166,8 @@ fun ChatScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(AppColors.Snow),
+            .background(AppColors.Snow)
+            .imePadding(),
     ) {
         // ── Header ──
         ChatHeader(onBack = onBack, onReset = { viewModel.resetChat() })
@@ -266,6 +270,8 @@ fun ChatScreen(
             onSend = { viewModel.sendMessage(it) },
         )
     }
+
+    // Auth prompt is now handled at navigation level
 
     // ── Plan Success Overlay ──
     if (state.showPlanSuccess) {
@@ -1355,6 +1361,96 @@ private fun categoryGradientColors(category: String): List<Color> {
         "arts", "performing-arts", "theater" -> listOf(AppColors.BgSkyStart, AppColors.BgSkyEnd)
         "food", "food-drink" -> listOf(AppColors.BgCoralStart, AppColors.BgCoralEnd)
         else -> listOf(AppColors.BgSkyStart, AppColors.BgSkyEnd)
+    }
+}
+
+@Composable
+private fun AuthRequiredOverlay(
+    onLogin: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color.Black.copy(alpha = 0.5f))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onDismiss,
+            ),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 32.dp)
+                .clip(RoundedCornerShape(24.dp))
+                .background(AppColors.White)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = {}, // consume clicks
+                )
+                .padding(28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                "Sign in to save plans",
+                style = TextStyle(
+                    fontFamily = AppFonts.Heading,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp,
+                    color = AppColors.Ink,
+                ),
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Create an account or sign in to save your plans and access them anywhere.",
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    color = AppColors.Ink3,
+                    lineHeight = 20.sp,
+                ),
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(24.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp)
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(AppColors.Coral)
+                    .clickable(onClick = onLogin),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "Sign in",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 15.sp,
+                        color = AppColors.White,
+                    ),
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            Text(
+                "Maybe later",
+                modifier = Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismiss,
+                ),
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = AppColors.Ink3,
+                ),
+            )
+        }
     }
 }
 

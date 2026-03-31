@@ -116,11 +116,12 @@ fun EventDetailScreen(
     onBack: () -> Unit,
     onShareTracked: ((String) -> Unit)? = null,
     onFavoriteTracked: ((String) -> Unit)? = null,
+    initialFavorited: Boolean = false,
 ) {
     val uriHandler = LocalUriHandler.current
     val clipboardManager = LocalClipboardManager.current
 
-    var isFavorited by remember { mutableStateOf(false) }
+    var isFavorited by remember { mutableStateOf(initialFavorited) }
     var countdown by remember { mutableStateOf(computeCountdown(event.startAt)) }
     var mapsExpanded by remember { mutableStateOf(false) }
     var rideExpanded by remember { mutableStateOf(false) }
