@@ -39,6 +39,9 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Place
+import androidx.compose.material.icons.rounded.Star
+import androidx.compose.material3.Icon
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Home
@@ -439,6 +442,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     is CelebrationEvent.MilestoneEarned -> GlobalMilestoneToast(
                         event = event,
                         onDismiss = { progressVm.dismissCelebration() },
+                        onTap = { selectedTab = Tab.PROFILE },
                     )
                     is CelebrationEvent.StatusLevelUp -> GlobalLevelUpOverlay(
                         event = event,
@@ -447,6 +451,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     is CelebrationEvent.NewState -> GlobalNewStateToast(
                         event = event,
                         onDismiss = { progressVm.dismissCelebration() },
+                        onTap = { selectedTab = Tab.PROFILE },
                     )
                 }
             }
@@ -727,7 +732,7 @@ private fun stateAbbrevToFull(abbrev: String): String = when (abbrev.uppercase()
 }
 
 @Composable
-private fun GlobalMilestoneToast(event: CelebrationEvent.MilestoneEarned, onDismiss: () -> Unit) {
+private fun GlobalMilestoneToast(event: CelebrationEvent.MilestoneEarned, onDismiss: () -> Unit, onTap: () -> Unit = {}) {
     var visible by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
@@ -752,14 +757,22 @@ private fun GlobalMilestoneToast(event: CelebrationEvent.MilestoneEarned, onDism
                 modifier = Modifier.fillMaxWidth()
                     .clip(RoundedCornerShape(18.dp))
                     .background(AppColors.Ink)
+                    .clickable { onDismiss(); onTap() }
                     .padding(14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Box(
                     modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp))
-                        .background(AppColors.CoralLt.copy(alpha = 0.15f)),
+                        .background(AppColors.SkyLt.copy(alpha = 0.2f)),
                     contentAlignment = Alignment.Center,
-                ) { Text("\uD83C\uDF89", fontSize = 20.sp) }
+                ) {
+                    Icon(
+                        Icons.Rounded.Star,
+                        contentDescription = null,
+                        tint = AppColors.Sun,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
                 Spacer(Modifier.width(12.dp))
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
@@ -767,8 +780,8 @@ private fun GlobalMilestoneToast(event: CelebrationEvent.MilestoneEarned, onDism
                         style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = AppColors.White),
                     )
                     Text(
-                        "+${event.points} PTS",
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, color = AppColors.Coral, letterSpacing = 0.5.sp),
+                        "+${formatNumber(event.points)} PTS",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, color = AppColors.Sun, letterSpacing = 0.5.sp),
                     )
                 }
             }
@@ -877,7 +890,7 @@ private fun formatNumber(n: Int): String {
 }
 
 @Composable
-private fun GlobalNewStateToast(event: CelebrationEvent.NewState, onDismiss: () -> Unit) {
+private fun GlobalNewStateToast(event: CelebrationEvent.NewState, onDismiss: () -> Unit, onTap: () -> Unit = {}) {
     var visible by remember { mutableStateOf(false) }
     val stateFullName = stateAbbrevToFull(event.state)
 
@@ -898,10 +911,12 @@ private fun GlobalNewStateToast(event: CelebrationEvent.NewState, onDismiss: () 
         Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 56.dp)) {
             Row(
                 modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))
-                    .background(Brush.linearGradient(listOf(AppColors.Sage, AppColors.SageDk))).padding(14.dp),
+                    .background(Brush.linearGradient(listOf(AppColors.Sage, AppColors.SageDk)))
+                    .clickable { onDismiss(); onTap() }
+                    .padding(14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("\uD83D\uDCCD", fontSize = 28.sp)
+                Icon(Icons.Rounded.Place, contentDescription = null, tint = AppColors.White, modifier = Modifier.size(28.dp))
                 Spacer(Modifier.width(12.dp))
                 Column {
                     Text("Welcome to $stateFullName!", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = AppColors.White))

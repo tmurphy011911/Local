@@ -39,7 +39,13 @@ import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Favorite
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.LocalDining
@@ -124,6 +130,7 @@ private fun String.toTitleCase(): String {
 fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onProfileClick: () -> Unit = {}, onDebugLocationChange: ((Double, Double, String) -> Unit)? = null, onFavorite: ((Event) -> Unit)? = null) {
     val state by viewModel.uiState.collectAsState()
     var showDebugMenu by remember { mutableStateOf(false) }
+    var seeAllSection by remember { mutableStateOf<CarouselSection?>(null) }
     var previouslyLoading by remember { mutableStateOf(true) }
     val haptic = LocalHapticFeedback.current
 
@@ -147,6 +154,20 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                 // TODO: wire to user state management
                 showDebugMenu = false
             },
+        )
+    }
+
+    // See All sheet
+    seeAllSection?.let { section ->
+        SeeAllSheet(
+            section = section,
+            onDismiss = { seeAllSection = null },
+            onEventClick = { event ->
+                seeAllSection = null
+                onEventClick(event, null)
+            },
+            onFavorite = onFavorite,
+            favoriteIds = state.favoriteEventIds,
         )
     }
 
@@ -285,7 +306,13 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                     }
                     displayCarousels.forEach { section ->
                         item(key = section.slug) {
-                            CarouselSectionView(section, onEventClick, showTags = isForYou, onFavorite = onFavorite, favoriteIds = state.favoriteEventIds)
+                            CarouselSectionView(
+                                section, onEventClick,
+                                showTags = isForYou,
+                                onFavorite = onFavorite,
+                                favoriteIds = state.favoriteEventIds,
+                                onSeeAll = { seeAllSection = it },
+                            )
                         }
                     }
                 }
@@ -392,8 +419,11 @@ private fun EmptyState(title: String, subtitle: String) {
 // ── Dynamic Carousel Section ──
 
 @Composable
-private fun CarouselSectionView(section: CarouselSection, onEventClick: (Event, CardTransitionInfo?) -> Unit, showTags: Boolean = true, onFavorite: ((Event) -> Unit)? = null, favoriteIds: Set<String> = emptySet()) {
-    SectionHeader(section.title)
+private fun CarouselSectionView(section: CarouselSection, onEventClick: (Event, CardTransitionInfo?) -> Unit, showTags: Boolean = true, onFavorite: ((Event) -> Unit)? = null, favoriteIds: Set<String> = emptySet(), onSeeAll: ((CarouselSection) -> Unit)? = null) {
+    SectionHeader(
+        title = section.title,
+        onSeeAll = if (section.events.size >= 4) {{ onSeeAll?.invoke(section) }} else null,
+    )
     EventCardRow(section.events, onEventClick, showTags = showTags, showSaves = section.showSaves, onFavorite = onFavorite, favoriteIds = favoriteIds)
 }
 
@@ -570,15 +600,309 @@ private fun CategoryTileItem(
 
 // ── Section Header ──
 
+// ═══════════════════════════════════════
+// ── See All Sheet ──
+// ═══════════════════════════════════════
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SectionHeader(title: String) {
-    Box(
+private fun SeeAllSheet(
+    section: CarouselSection,
+    onDismiss: () -> Unit,
+    onEventClick: (Event) -> Unit,
+    onFavorite: ((Event) -> Unit)? = null,
+    favoriteIds: Set<String> = emptySet(),
+) {
+    var searchQuery by remember { mutableStateOf("") }
+
+    val filteredEvents = remember(searchQuery, section.events) {
+        if (searchQuery.isBlank()) section.events
+        else {
+            val q = searchQuery.lowercase()
+            section.events.filter { event ->
+                event.title.lowercase().contains(q) ||
+                    (event.venueName ?: "").lowercase().contains(q) ||
+                    event.venueCity.lowercase().contains(q) ||
+                    (event.subcategory ?: "").lowercase().contains(q)
+            }
+        }
+    }
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = AppColors.Snow,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        dragHandle = {
+            Box(
+                modifier = Modifier
+                    .padding(top = 10.dp, bottom = 6.dp)
+                    .width(36.dp)
+                    .height(4.dp)
+                    .clip(RoundedCornerShape(2.dp))
+                    .background(AppColors.Pebble),
+            )
+        },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(0.92f),
+        ) {
+            // Title
+            Text(
+                section.title,
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                style = TextStyle(
+                    fontFamily = AppFonts.Heading,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 22.sp,
+                    color = AppColors.Ink,
+                    letterSpacing = (-0.5).sp,
+                ),
+            )
+
+            // Search bar
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 12.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(AppColors.Mist)
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+            ) {
+                if (searchQuery.isEmpty()) {
+                    Text(
+                        "Search events...",
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp,
+                            color = AppColors.Ink3,
+                        ),
+                    )
+                }
+                BasicTextField(
+                    value = searchQuery,
+                    onValueChange = { searchQuery = it },
+                    textStyle = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 14.sp,
+                        color = AppColors.Ink,
+                    ),
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+
+            // Event count
+            Text(
+                "${filteredEvents.size} event${if (filteredEvents.size != 1) "s" else ""}",
+                modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                    color = AppColors.Ink3,
+                ),
+            )
+
+            // Event list
+            LazyColumn(
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                items(filteredEvents.size) { index ->
+                    val event = filteredEvents[index]
+                    SeeAllEventRow(
+                        event = event,
+                        onClick = { onEventClick(event) },
+                        onFavorite = onFavorite?.let { fav -> { fav(event) } },
+                        isFavorited = event.id in favoriteIds,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SeeAllEventRow(
+    event: Event,
+    onClick: () -> Unit,
+    onFavorite: (() -> Unit)? = null,
+    isFavorited: Boolean = false,
+) {
+    val timeDisplay = event.startAt?.let { iso ->
+        try {
+            val instant = kotlinx.datetime.Instant.parse(iso)
+            val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+            val hour = local.hour
+            val min = local.minute
+            val amPm = if (hour < 12) "am" else "pm"
+            val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
+            if (min == 0) "${displayHour}${amPm}" else "${displayHour}:${min.toString().padStart(2, '0')}${amPm}"
+        } catch (_: Exception) { "" }
+    } ?: ""
+
+    val dayDisplay = event.startAt?.let { iso ->
+        try {
+            val instant = kotlinx.datetime.Instant.parse(iso)
+            val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+            val dayNames = arrayOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+            val monthNames = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+            "${dayNames[local.dayOfWeek.ordinal]} ${monthNames[local.monthNumber - 1]} ${local.dayOfMonth}"
+        } catch (_: Exception) { "" }
+    } ?: ""
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(AppColors.White)
+            .border(1.dp, AppColors.Mist, RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Image placeholder
+        Box(
+            modifier = Modifier
+                .size(52.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(
+                    Brush.linearGradient(
+                        colors = categoryGradient(event.subcategory ?: event.category),
+                    )
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (event.isFree) {
+                Text(
+                    "FREE",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 9.sp,
+                        color = Color.White,
+                    ),
+                )
+            }
+        }
+
+        Spacer(Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                event.title,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 14.sp,
+                    color = AppColors.Ink,
+                    lineHeight = 17.sp,
+                ),
+            )
+            Spacer(Modifier.height(3.dp))
+            Text(
+                buildString {
+                    if (event.venueName != null) append(event.venueName)
+                    if (timeDisplay.isNotBlank()) {
+                        if (isNotEmpty()) append(" · ")
+                        append(timeDisplay)
+                    }
+                    if (dayDisplay.isNotBlank()) {
+                        if (isNotEmpty()) append(" · ")
+                        append(dayDisplay)
+                    }
+                },
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 12.sp,
+                    color = AppColors.Ink3,
+                ),
+            )
+            if (event.priceDisplay.isNotBlank() && !event.isFree) {
+                Text(
+                    event.priceDisplay,
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        color = AppColors.Ink2,
+                    ),
+                )
+            }
+        }
+
+        // Favorite button
+        if (onFavorite != null) {
+            Spacer(Modifier.width(8.dp))
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .clip(CircleShape)
+                    .clickable(onClick = onFavorite),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (isFavorited) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                    contentDescription = null,
+                    tint = if (isFavorited) AppColors.Coral else AppColors.Ink3,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        }
+    }
+}
+
+private fun categoryGradient(category: String): List<Color> {
+    return when (category.lowercase()) {
+        "music", "live-music", "concerts" -> listOf(AppColors.BgPlumStart, AppColors.BgPlumEnd)
+        "comedy" -> listOf(AppColors.BgSunStart, AppColors.BgSunEnd)
+        "sports" -> listOf(AppColors.BgSageStart, AppColors.BgSageEnd)
+        "arts", "performing-arts", "theater" -> listOf(AppColors.BgSkyStart, AppColors.BgSkyEnd)
+        "food", "food-drink" -> listOf(AppColors.BgCoralStart, AppColors.BgCoralEnd)
+        else -> listOf(AppColors.BgSkyStart, AppColors.BgSkyEnd)
+    }
+}
+
+@Composable
+private fun SectionHeader(title: String, onSeeAll: (() -> Unit)? = null) {
+    Row(
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = 20.dp)
             .padding(top = 18.dp, bottom = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(title, style = AppType.SectionTitle)
+        Text(title, style = AppType.SectionTitle, modifier = Modifier.weight(1f))
+        if (onSeeAll != null) {
+            Text(
+                "See all",
+                modifier = Modifier
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onSeeAll,
+                    )
+                    .padding(start = 8.dp),
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = AppColors.Coral,
+                ),
+            )
+        }
     }
 }
 

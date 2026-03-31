@@ -98,23 +98,38 @@ fun ProgressScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
 
-    // Track tier-change animation
-    val tierChanged = viewModel.lastSeenTier != state.currentTier && viewModel.lastSeenTier != StatusTier.NEW_IN_TOWN
-    var displayTier by remember { mutableStateOf(if (tierChanged) viewModel.lastSeenTier else state.currentTier) }
-    var displayNextTier by remember { mutableStateOf(if (tierChanged) state.currentTier else state.nextTier) }
+    // Use current state directly for display — tier change animation only when lastSeen differs
+    var displayTier by remember { mutableStateOf(state.currentTier) }
+    var displayNextTier by remember { mutableStateOf(state.nextTier) }
     var animateToPoints by remember { mutableStateOf(viewModel.lastSeenPoints) }
     var animateToProgress by remember { mutableStateOf(viewModel.lastSeenProgress) }
     var showTierCelebration by remember { mutableStateOf(false) }
+    var tierAnimationDone by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
+    // Keep display tier in sync with state (handles initial load race)
+    LaunchedEffect(state.currentTier) {
+        if (!tierAnimationDone) {
+            displayTier = state.currentTier
+            displayNextTier = state.nextTier
+        }
+    }
+
+    LaunchedEffect(state.totalPoints) {
+        if (state.totalPoints == 0) return@LaunchedEffect // data not loaded yet
         delay(300)
+
+        val lastTier = viewModel.lastSeenTier
+        val tierChanged = lastTier != state.currentTier
+            && lastTier != StatusTier.NEW_IN_TOWN
+            && viewModel.lastSeenPoints > 0 // only animate if we had a real previous session
+
         if (tierChanged) {
+            tierAnimationDone = true
+            displayTier = lastTier
+            displayNextTier = state.currentTier
             // Step 1: Fill old bar to 100%
             animateToProgress = 1f
-            animateToPoints = viewModel.lastSeenTier.let { old ->
-                val next = nextStatusTier(old)
-                next?.threshold ?: state.totalPoints
-            }
+            animateToPoints = nextStatusTier(lastTier)?.threshold ?: state.totalPoints
             delay(1000)
             // Step 2: Flash celebration
             showTierCelebration = true
@@ -124,7 +139,7 @@ fun ProgressScreen(
             displayTier = state.currentTier
             displayNextTier = state.nextTier
             animateToProgress = 0f
-            animateToPoints = displayTier.threshold
+            animateToPoints = state.currentTier.threshold
             delay(100)
             animateToProgress = state.tierProgress
             animateToPoints = state.totalPoints
@@ -134,12 +149,16 @@ fun ProgressScreen(
         }
     }
 
-    // If state updates while on screen (no tier change), animate immediately
+    // If state updates while on screen, animate immediately
     LaunchedEffect(state.totalPoints) {
-        if (!tierChanged) animateToPoints = state.totalPoints
+        if (tierAnimationDone || viewModel.lastSeenPoints == 0) {
+            animateToPoints = state.totalPoints
+        }
     }
     LaunchedEffect(state.tierProgress) {
-        if (!tierChanged) animateToProgress = state.tierProgress
+        if (tierAnimationDone || viewModel.lastSeenPoints == 0) {
+            animateToProgress = state.tierProgress
+        }
     }
 
     // Save snapshot and collapse states when leaving
@@ -618,7 +637,7 @@ private fun OneTimeChallengeRow(progress: ActionProgress) {
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.SemiBold,
                         fontSize = 11.sp,
-                        color = AppColors.Coral,
+                        color = AppColors.Sky,
                     ),
                 )
             }
@@ -718,8 +737,8 @@ private fun JourneyCard(currentTier: StatusTier, totalPoints: Int) {
                             .then(
                                 when {
                                     isCurrent -> Modifier
-                                        .background(AppColors.Coral)
-                                        .shadow(8.dp, CircleShape, ambientColor = AppColors.Coral)
+                                        .background(AppColors.Sky)
+                                        .shadow(8.dp, CircleShape, ambientColor = AppColors.Sky)
                                     isReached -> Modifier
                                         .background(AppColors.SageLt)
                                         .border(2.dp, AppColors.Sage, CircleShape)
@@ -793,7 +812,7 @@ private fun JourneyCard(currentTier: StatusTier, totalPoints: Int) {
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(20.dp))
-                                .background(AppColors.CoralLt.copy(alpha = 0.5f))
+                                .background(AppColors.SkyLt)
                                 .padding(horizontal = 10.dp, vertical = 3.dp),
                         ) {
                             Text(
@@ -802,7 +821,7 @@ private fun JourneyCard(currentTier: StatusTier, totalPoints: Int) {
                                     fontFamily = AppFonts.Body,
                                     fontWeight = FontWeight.ExtraBold,
                                     fontSize = 11.sp,
-                                    color = AppColors.CoralDk,
+                                    color = AppColors.SkyDk,
                                     letterSpacing = 0.5.sp,
                                 ),
                             )
@@ -928,7 +947,7 @@ private fun CollapsedStateCard(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.sp,
-                    color = AppColors.Coral,
+                    color = AppColors.Sky,
                 ),
             )
         }
@@ -981,7 +1000,7 @@ private fun ExpandedStateCard(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.Bold,
                     fontSize = 12.sp,
-                    color = AppColors.Coral,
+                    color = AppColors.Sky,
                 ),
             )
         }
@@ -1018,16 +1037,67 @@ private fun MilestoneRow(progress: ActionProgress, lastSeenCount: Int = progress
         BadgeAction.GROUP_10_CONFIRMED -> Icons.Rounded.Celebration
     }
 
-    // Animate count from last-seen to current
-    var countTarget by remember { mutableStateOf(lastSeenCount) }
-    LaunchedEffect(progress.currentCount) {
-        delay(300)
-        countTarget = progress.currentCount
-    }
+    // If lastSeenCount is 0 and we have progress, this is first session — skip animation
+    val hasRealLastSeen = lastSeenCount > 0 || progress.currentCount == 0
+    val effectiveLastSeen = if (hasRealLastSeen) lastSeenCount else progress.currentCount
+
+    // Detect milestone crossing: did we pass a threshold since last seen?
+    val thresholds = live.localapp.local.domain.model.thresholdsFor(progress.action)
+    val crossedMilestone = if (hasRealLastSeen) thresholds.lastOrNull { it in (effectiveLastSeen + 1)..progress.currentCount } else null
+    val didCrossMilestone = crossedMilestone != null
+
+    // Display milestone: during fill-up animation show old milestone, then switch
+    var displayMilestone by remember { mutableStateOf(if (didCrossMilestone) crossedMilestone!! else progress.nextMilestone) }
+    var showPointsEarned by remember { mutableStateOf(false) }
+    val pointsEarned = if (didCrossMilestone) live.localapp.local.domain.model.pointsForMilestone(progress.action, crossedMilestone!!) else 0
+
+    // Animate count
+    var countTarget by remember { mutableStateOf(effectiveLastSeen) }
     val animatedCount by animateIntAsState(
         targetValue = countTarget,
         animationSpec = tween(800, easing = FastOutSlowInEasing),
     )
+
+    // Progress bar
+    fun progressFor(count: Int, milestone: Int?): Float {
+        if (milestone == null) return 1f
+        return (count.toFloat() / milestone.toFloat()).coerceIn(0f, 1f)
+    }
+
+    var barTarget by remember { mutableStateOf(progressFor(effectiveLastSeen, displayMilestone)) }
+    var barColor by remember { mutableStateOf(AppColors.Sky) }
+
+    val animatedBar by animateFloatAsState(
+        targetValue = barTarget,
+        animationSpec = tween(800, easing = FastOutSlowInEasing),
+    )
+
+    LaunchedEffect(progress.currentCount) {
+        delay(300)
+        if (didCrossMilestone) {
+            // Step 1: Fill to 100% of old milestone
+            countTarget = crossedMilestone
+            barTarget = 1f
+            delay(900)
+            // Step 2: Flash green + show points
+            barColor = AppColors.Sage
+            showPointsEarned = true
+            delay(1200)
+            showPointsEarned = false
+            barColor = AppColors.Sky
+            // Step 3: Reset to new milestone
+            displayMilestone = progress.nextMilestone
+            barTarget = 0f
+            countTarget = crossedMilestone
+            delay(100)
+            // Step 4: Animate to current position
+            countTarget = progress.currentCount
+            barTarget = progressFor(progress.currentCount, progress.nextMilestone)
+        } else {
+            countTarget = progress.currentCount
+            barTarget = progressFor(progress.currentCount, progress.nextMilestone)
+        }
+    }
 
     Row(
         modifier = Modifier
@@ -1041,14 +1111,14 @@ private fun MilestoneRow(progress: ActionProgress, lastSeenCount: Int = progress
                 .size(32.dp)
                 .clip(RoundedCornerShape(10.dp))
                 .background(
-                    if (isComplete) AppColors.SageLt else AppColors.CoralLt.copy(alpha = 0.5f)
+                    if (isComplete) AppColors.SageLt else AppColors.SkyLt
                 ),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
                 icon,
                 contentDescription = null,
-                tint = if (isComplete) AppColors.Sage else AppColors.Coral,
+                tint = if (isComplete) AppColors.Sage else AppColors.Sky,
                 modifier = Modifier.size(16.dp),
             )
         }
@@ -1057,37 +1127,36 @@ private fun MilestoneRow(progress: ActionProgress, lastSeenCount: Int = progress
 
         // Name + progress bar
         Column(modifier = Modifier.weight(1f)) {
-            Text(
-                progress.action.label,
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
-                    color = AppColors.Ink,
-                ),
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    progress.action.label,
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = AppColors.Ink,
+                    ),
+                )
+                // Points earned flash
+                AnimatedVisibility(
+                    visible = showPointsEarned,
+                    enter = fadeIn(tween(200)) + expandVertically(),
+                    exit = fadeOut(tween(200)) + shrinkVertically(),
+                ) {
+                    Text(
+                        "  +${formatNumber(pointsEarned)} pts",
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 12.sp,
+                            color = AppColors.Sage,
+                        ),
+                    )
+                }
+            }
             Spacer(Modifier.height(5.dp))
 
-            // Mini progress bar — fill is count/nextMilestone (total progress, not segment)
-            fun progressFor(count: Int): Float {
-                if (progress.nextMilestone == null) return 1f
-                return (count.toFloat() / progress.nextMilestone.toFloat()).coerceIn(0f, 1f)
-            }
-
-            // Start from last-seen, animate to current
-            var barTarget by remember { mutableStateOf(progressFor(lastSeenCount)) }
-            LaunchedEffect(progress.currentCount) {
-                delay(300)
-                barTarget = progressFor(progress.currentCount)
-            }
-
-            val barProgress = barTarget
-
-            val animatedBar by animateFloatAsState(
-                targetValue = barProgress,
-                animationSpec = tween(800, easing = FastOutSlowInEasing),
-            )
-
+            // Mini progress bar
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -1100,15 +1169,16 @@ private fun MilestoneRow(progress: ActionProgress, lastSeenCount: Int = progress
                         .fillMaxWidth(animatedBar.coerceAtLeast(0.01f))
                         .height(4.dp)
                         .clip(RoundedCornerShape(4.dp))
-                        .background(if (isComplete) AppColors.Sage else AppColors.Coral),
+                        .background(if (isComplete) AppColors.Sage else barColor),
                 )
             }
 
-            // Points hint
-            if (!isComplete && progress.pointsAtNext != null) {
+            // Points hint — show current display milestone
+            if (!isComplete && displayMilestone != null) {
+                val ptsAtDisplay = live.localapp.local.domain.model.pointsForMilestone(progress.action, displayMilestone!!)
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "${formatNumber(progress.pointsAtNext)} pts at ${formatNumber(progress.nextMilestone!!)}",
+                    "${formatNumber(ptsAtDisplay)} pts at ${formatNumber(displayMilestone!!)}",
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.SemiBold,
@@ -1139,7 +1209,7 @@ private fun MilestoneRow(progress: ActionProgress, lastSeenCount: Int = progress
             }
         } else {
             Text(
-                "$animatedCount/${progress.nextMilestone}",
+                "$animatedCount/${displayMilestone ?: progress.nextMilestone}",
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.ExtraBold,
@@ -1182,7 +1252,7 @@ private fun RadialRing(
                 style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
             )
             // Progress ring
-            val sweepColor = if (progress >= 1f) AppColors.Sage else AppColors.Coral
+            val sweepColor = if (progress >= 1f) AppColors.Sage else AppColors.Sky
             drawArc(
                 color = sweepColor,
                 startAngle = -90f,

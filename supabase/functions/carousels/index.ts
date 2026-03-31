@@ -861,6 +861,55 @@ function isDailyEvent(event: ProcessedEvent): boolean {
 // Affinity carousel titles
 // ════════════════════════════════════════════════════════════════
 
+function neighborhoodTitle(name: string, index: number): string {
+  const titles = [
+    `The ${name} Scene`,
+    `Over in ${name}`,
+    `What's On in ${name}`,
+    `${name} Highlights`,
+    `Out & About in ${name}`,
+    `Happening in ${name}`,
+    `${name} This Week`,
+    `Explore ${name}`,
+  ];
+  return titles[index % titles.length];
+}
+
+function favCategoryTitle(cat: string, index: number): string {
+  const name = categoryDisplayName(cat);
+  const catLc = cat.toLowerCase();
+  if (catLc === "music" || catLc === "live-music") {
+    const titles = ["Your Music Radar", "On Your Wavelength", `${name} You'll Love`, `Don't Miss This ${name}`];
+    return titles[index % titles.length];
+  }
+  if (catLc === "comedy") {
+    const titles = ["Get Ready to Laugh", "Comedy Calling", "Your Comedy Picks", "LOL-Worthy Events"];
+    return titles[index % titles.length];
+  }
+  if (catLc === "food" || catLc === "food-drink") {
+    const titles = ["For Foodies Like You", "Tasty Events Nearby", "Bites & Sips", "Your Food Scene"];
+    return titles[index % titles.length];
+  }
+  if (catLc === "arts" || catLc === "performing-arts") {
+    const titles = ["Your Arts Picks", "Culture Calling", `${name} Worth Seeing`, "Artsy & Awesome"];
+    return titles[index % titles.length];
+  }
+  if (catLc === "sports") {
+    const titles = ["Game Day Picks", "Your Sports Calendar", "Don't Miss the Game", "Sports Lineup"];
+    return titles[index % titles.length];
+  }
+  if (catLc === "for-kids" || catLc === "family") {
+    const titles = ["Fun for the Whole Family", "Kid-Approved Events", "Family Day Out", "Bring the Kids"];
+    return titles[index % titles.length];
+  }
+  if (catLc === "outdoors") {
+    const titles = ["Get Outside", "Fresh Air Finds", "Outdoor Adventures", "Nature Calling"];
+    return titles[index % titles.length];
+  }
+  const titles = [`Your ${name} Picks`, `${name} You'll Love`, `${name} This Month`, `More ${name}`];
+  return titles[index % titles.length];
+}
+
 function affinityCarouselTitle(cat: string, index: number): string {
   const name = categoryDisplayName(cat);
   const catLc = cat.toLowerCase();
@@ -1267,75 +1316,58 @@ function buildCarousels(
 
   // ── Personalized carousels (only on "For You" tab) ──
   if (filter.type === "none") {
-    // Position 1: Events for You This Week
+    // Build carousel pools by type, then interleave
+    const monthCutoff = daysFromNowIso(31);
+
+    // Pool: Personalized
     const weekCutoff = daysFromNowIso(7);
     const weekPool = filtered.filter(e => (e.start_at ?? "") <= weekCutoff);
     const ranked = rankForColdStart(weekPool, prefs, CAROUSEL_DISPLAY_LIMIT, affinityMap);
-    const backfilled = backfillToMinimum(ranked, seenEventIds, filtered);
-    if (backfilled.length > 0) {
-      backfilled.forEach(e => seenEventIds.add(e.id));
-      result.push({
-        slug: "top-events-personalized",
-        title: "Events for You This Week",
-        subtitle: null,
-        filter_type: "personalized",
-        events: backfilled,
-      });
-    }
+    const personalizedEvents = backfillToMinimum(ranked, seenEventIds, filtered);
 
-    // Position 2: Plan Your Weekend
+    // Pool: Weekend
     const weekendStart = startOfNextFridayIso();
     const weekendEnd = endOfNextSundayIso();
     const weekendEvents = filtered
       .filter(e => { const s = e.start_at ?? ""; return s >= weekendStart && s < weekendEnd; })
-      .filter(e => !seenEventIds.has(e.id))
-      .slice(0, CAROUSEL_DISPLAY_LIMIT);
-    if (weekendEvents.length > 0) {
-      weekendEvents.forEach(e => seenEventIds.add(e.id));
-      result.push({
-        slug: "plan-your-weekend",
-        title: "Plan Your Weekend",
-        subtitle: null,
-        filter_type: "weekend",
-        events: weekendEvents,
-      });
-    }
+      .filter(e => !seenEventIds.has(e.id));
 
+    // Pool: Favorite categories
+    const favCatCarousels: CarouselSection[] = [];
     if (prefs) {
-      // Favorite category carousels
-      const monthCutoff = daysFromNowIso(31);
+      let favCatIdx = 0;
       for (const cat of prefs.selected_categories) {
         const catEvents = allEvents
           .filter(e => (e.subcategory ?? "").toLowerCase() === cat.toLowerCase())
           .filter(e => !e.start_at || e.start_at <= monthCutoff)
           .map(e => withDistance(e, userLat, userLng))
           .sort(sortFn)
-          .filter(e => !seenEventIds.has(e.id))
           .slice(0, CAROUSEL_DISPLAY_LIMIT);
         if (catEvents.length === 0) continue;
-        catEvents.forEach(e => seenEventIds.add(e.id));
-        result.push({
+        favCatCarousels.push({
           slug: `fav-cat-${cat.toLowerCase()}`,
-          title: `Top ${categoryDisplayName(cat)} Events This Month`,
+          title: favCategoryTitle(cat, favCatIdx),
           subtitle: null,
           filter_type: "favorite_category",
           events: catEvents,
         });
+        favCatIdx++;
       }
+    }
 
-      // Favorite venue carousels
+    // Pool: Favorite venues
+    const favVenueCarousels: CarouselSection[] = [];
+    if (prefs) {
       for (const venue of prefs.selected_venues) {
         const venueEvents = allEvents
           .filter(e => (e.venue_name ?? "").toLowerCase().includes(venue.toLowerCase()))
           .map(e => withDistance(e, userLat, userLng))
           .sort(sortFn)
-          .filter(e => !seenEventIds.has(e.id))
           .slice(0, CAROUSEL_DISPLAY_LIMIT);
         if (venueEvents.length === 0) continue;
-        venueEvents.forEach(e => seenEventIds.add(e.id));
-        result.push({
+        favVenueCarousels.push({
           slug: `fav-venue-${venue.toLowerCase().replace(/ /g, "-")}`,
-          title: `Happening at ${venue}`,
+          title: `Coming Up at ${venue}`,
           subtitle: null,
           filter_type: "favorite_venue",
           events: venueEvents,
@@ -1343,7 +1375,8 @@ function buildCarousels(
       }
     }
 
-    // Neighborhood carousels
+    // Pool: Neighborhoods
+    const neighborhoodCarousels: CarouselSection[] = [];
     const neighborhoods: string[] = [nearestCity];
     if (prefs) {
       for (const n of prefs.selected_neighborhoods) {
@@ -1355,42 +1388,36 @@ function buildCarousels(
         .filter(e => e.venue_city.toLowerCase().includes(neighborhood.toLowerCase()))
         .map(e => withDistance(e, userLat, userLng))
         .sort(sortFn)
-        .filter(e => !seenEventIds.has(e.id))
         .slice(0, CAROUSEL_DISPLAY_LIMIT);
       if (neighborhoodEvents.length === 0) continue;
-      neighborhoodEvents.forEach(e => seenEventIds.add(e.id));
-      result.push({
+      neighborhoodCarousels.push({
         slug: `neighborhood-${neighborhood.toLowerCase().replace(/ /g, "-")}`,
-        title: `Happening in ${neighborhood}`,
+        title: neighborhoodTitle(neighborhood, neighborhoodCarousels.length),
         subtitle: null,
         filter_type: "neighborhood",
         events: neighborhoodEvents,
       });
     }
 
-    // Affinity-based carousels
-    const existingCatSlugs = new Set(result.map(r => r.slug));
+    // Pool: Affinity
+    const affinityCarousels: CarouselSection[] = [];
     const skipCategories = new Set(["other", "general", "unknown"]);
-    let affinityCount = 0;
+    const favCatSlugs = new Set(favCatCarousels.map(c => c.slug));
     const sortedAffinity = [...affinityMap.entries()].sort((a, b) => b[1] - a[1]);
-
+    let affinityCount = 0;
     for (const [cat, score] of sortedAffinity) {
       if (score < 0.4) break;
       if (affinityCount >= 6) break;
       if (skipCategories.has(cat.toLowerCase())) continue;
-      const slugKey = `affinity-${cat.toLowerCase().replace(/ /g, "-")}`;
-      if (existingCatSlugs.has(slugKey)) continue;
-      if (existingCatSlugs.has(`fav-cat-${cat.toLowerCase()}`)) continue;
+      if (favCatSlugs.has(`fav-cat-${cat.toLowerCase()}`)) continue;
       const affinityEvents = allEvents
         .filter(e => (e.subcategory ?? e.category).toLowerCase() === cat.toLowerCase())
         .map(e => withDistance(e, userLat, userLng))
         .sort(sortFn)
-        .filter(e => !seenEventIds.has(e.id))
         .slice(0, CAROUSEL_DISPLAY_LIMIT);
       if (affinityEvents.length === 0) continue;
-      affinityEvents.forEach(e => seenEventIds.add(e.id));
-      result.push({
-        slug: slugKey,
+      affinityCarousels.push({
+        slug: `affinity-${cat.toLowerCase().replace(/ /g, "-")}`,
         title: affinityCarouselTitle(cat, affinityCount),
         subtitle: null,
         filter_type: "affinity",
@@ -1399,58 +1426,123 @@ function buildCarousels(
       affinityCount++;
     }
 
-    // Popular Events (community saves > 10)
+    // Pool: Popular
     const popularEvents = filtered
       .filter(e => totalSaves(e.id, communityScores) > 10)
       .sort((a, b) => totalSaves(b.id, communityScores) - totalSaves(a.id, communityScores))
-      .filter(e => !seenEventIds.has(e.id))
       .slice(0, CAROUSEL_DISPLAY_LIMIT);
-    if (popularEvents.length > 0) {
-      popularEvents.forEach(e => seenEventIds.add(e.id));
-      result.push({
-        slug: "popular-events",
-        title: `Popular Events in ${nearestCity}`,
-        subtitle: null,
-        filter_type: "popular",
-        events: popularEvents,
-        show_saves: true,
-      });
-    }
 
-    // Free events (intentionally ignores seenEventIds)
-    const freeEvents = filtered
-      .filter(e => e.is_free)
-      .slice(0, CAROUSEL_DISPLAY_LIMIT);
-    if (freeEvents.length > 0) {
-      result.push({
-        slug: "free-events",
-        title: "Free Events Near You",
-        subtitle: null,
-        filter_type: "free",
-        events: freeEvents,
-      });
-    }
+    // Pool: Free
+    const freeEvents = filtered.filter(e => e.is_free).slice(0, CAROUSEL_DISPLAY_LIMIT);
 
-    // Experiences carousel (curated always-on events)
+    // Pool: Experiences
     const experiences = allEvents
       .filter(e => e.source === "curated")
       .map(e => withDistance(e, userLat, userLng))
       .filter(e => maxRadius === Infinity || (e.distance_miles ?? 999) <= maxRadius)
       .sort(sortFn)
-      .filter(e => !seenEventIds.has(e.id))
       .slice(0, CAROUSEL_DISPLAY_LIMIT);
-    if (experiences.length > 0) {
-      experiences.forEach(e => seenEventIds.add(e.id));
-      result.push({
-        slug: "experiences",
-        title: "Experiences Near You",
+
+    // ── Interleave: build the final ordered feed ──
+    // Fixed positions 1-2
+    function addCarousel(c: CarouselSection) {
+      // Dedupe events against seenEventIds
+      c.events = c.events.filter(e => !seenEventIds.has(e.id));
+      if (c.events.length === 0) return;
+      c.events.forEach(e => seenEventIds.add(e.id));
+      result.push(c);
+    }
+
+    // 1. Picked for You
+    if (personalizedEvents.length > 0) {
+      addCarousel({
+        slug: "top-events-personalized",
+        title: "Picked for You",
         subtitle: null,
-        filter_type: "experiences",
-        events: experiences,
+        filter_type: "personalized",
+        events: personalizedEvents,
       });
     }
 
-    // Daily / Weekly / Monthly (For You — mixed)
+    // 2. Weekend Lineup
+    if (weekendEvents.length > 0) {
+      addCarousel({
+        slug: "plan-your-weekend",
+        title: "Your Weekend Lineup",
+        subtitle: null,
+        filter_type: "weekend",
+        events: weekendEvents.slice(0, CAROUSEL_DISPLAY_LIMIT),
+      });
+    }
+
+    // 3+. Interleave remaining pools — never two of the same type in a row
+    const pools = {
+      favCat: [...favCatCarousels],
+      neighborhood: [...neighborhoodCarousels],
+      favVenue: [...favVenueCarousels],
+      affinity: [...affinityCarousels],
+    };
+
+    // Desired interleave order pattern
+    const interleavePattern = [
+      "favCat", "neighborhood", "popular", "favCat", "favVenue", "free",
+      "affinity", "neighborhood", "affinity", "favCat", "experiences",
+      "affinity", "favVenue", "affinity", "neighborhood", "affinity", "favCat",
+    ];
+
+    for (const slot of interleavePattern) {
+      if (slot === "popular" && popularEvents.length > 0) {
+        addCarousel({
+          slug: "popular-events",
+          title: "Buzzing Right Now",
+          subtitle: null,
+          filter_type: "popular",
+          events: popularEvents,
+          show_saves: true,
+        });
+      } else if (slot === "free" && freeEvents.length > 0) {
+        // Free intentionally allows dupes
+        const freeFiltered = freeEvents.slice(0, CAROUSEL_DISPLAY_LIMIT);
+        if (freeFiltered.length > 0) {
+          freeFiltered.forEach(e => seenEventIds.add(e.id));
+          result.push({
+            slug: "free-events",
+            title: "No Cover, No Problem",
+            subtitle: null,
+            filter_type: "free",
+            events: freeFiltered,
+          });
+        }
+      } else if (slot === "experiences" && experiences.length > 0) {
+        addCarousel({
+          slug: "experiences",
+          title: "Things to Do Anytime",
+          subtitle: null,
+          filter_type: "experiences",
+          events: experiences,
+        });
+      } else if (slot in pools) {
+        const pool = pools[slot as keyof typeof pools];
+        if (pool.length > 0) {
+          addCarousel(pool.shift()!);
+        }
+      }
+    }
+
+    // Interleave any remaining — round-robin across pools so no type clusters
+    let hasMore = true;
+    while (hasMore) {
+      hasMore = false;
+      for (const key of Object.keys(pools)) {
+        const pool = pools[key as keyof typeof pools];
+        if (pool.length > 0) {
+          addCarousel(pool.shift()!);
+          hasMore = true;
+        }
+      }
+    }
+
+    // Daily / Weekly / Monthly (recurring — last)
     result.push(...buildRecurringCarousels(
       allEvents, null, maxRadius, userLat, userLng, prefs, seenEventIds,
       weights, venueCache, communityScores, affinityMap,

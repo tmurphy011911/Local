@@ -66,6 +66,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.text.style.TextOverflow
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
+import live.localapp.local.domain.model.Event
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -228,6 +232,14 @@ fun ChatScreen(
                             dayNames = state.days.map { it.shortName },
                         )
                     }
+                    is MessageContent.AlsoHappeningRef -> {
+                        if (state.recommendations.isNotEmpty()) {
+                            AlsoHappeningRow(
+                                events = state.recommendations,
+                                onEventTap = { event -> viewModel.addRecommendationToPlan(event) },
+                            )
+                        }
+                    }
                 }
             }
 
@@ -362,7 +374,7 @@ private fun MessageRow(role: MessageRole, text: String) {
                     .padding(horizontal = 14.dp, vertical = 11.dp),
             ) {
                 Text(
-                    stripMarkdown(text),
+                    cleanMarkdown(text),
                     style = TextStyle(
                         fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
                         color = if (isUser) AppColors.White else AppColors.Ink2, lineHeight = (13 * 1.55).sp,
@@ -1210,14 +1222,151 @@ private fun detectRecurrenceTag(name: String, detail: String): String? {
 }
 
 /** Strip markdown formatting (bold, italic, bullets) that renders as raw text */
-private fun stripMarkdown(text: String): String {
+// ═══════════════════════════════════════
+// ── Also Happening Row ──
+// ═══════════════════════════════════════
+
+@Composable
+private fun AlsoHappeningRow(
+    events: List<Event>,
+    onEventTap: (Event) -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            "ALSO HAPPENING",
+            modifier = Modifier.padding(start = 14.dp, bottom = 8.dp),
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 11.sp,
+                color = AppColors.Ink3,
+                letterSpacing = 1.sp,
+            ),
+        )
+
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            items(events, key = { it.id }) { event ->
+                AlsoHappeningCard(event = event, onClick = { onEventTap(event) })
+            }
+        }
+    }
+}
+
+@Composable
+private fun AlsoHappeningCard(
+    event: Event,
+    onClick: () -> Unit,
+) {
+    val timeDisplay = event.startAt?.let { iso ->
+        try {
+            val instant = kotlinx.datetime.Instant.parse(iso)
+            val local = instant.toLocalDateTime(TimeZone.currentSystemDefault())
+            val hour = local.hour
+            val min = local.minute
+            val amPm = if (hour < 12) "am" else "pm"
+            val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
+            if (min == 0) "${displayHour}${amPm}" else "${displayHour}:${min.toString().padStart(2, '0')}${amPm}"
+        } catch (_: Exception) { "" }
+    } ?: ""
+
+    Column(
+        modifier = Modifier
+            .width(150.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(AppColors.White)
+            .border(1.5.dp, AppColors.Mist, RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(10.dp),
+    ) {
+        // Image or gradient placeholder
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(80.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(
+                    Brush.linearGradient(
+                        colors = categoryGradientColors(event.subcategory ?: event.category),
+                    )
+                ),
+        ) {
+            // Price badge
+            if (event.priceDisplay.isNotBlank()) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(4.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(if (event.isFree) AppColors.Sage else AppColors.Ink.copy(alpha = 0.7f))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                ) {
+                    Text(
+                        event.priceDisplay,
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 9.sp,
+                            color = AppColors.White,
+                        ),
+                    )
+                }
+            }
+        }
+
+        Spacer(Modifier.height(8.dp))
+
+        Text(
+            event.title,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                color = AppColors.Ink,
+                lineHeight = 15.sp,
+            ),
+        )
+
+        Spacer(Modifier.height(3.dp))
+
+        Text(
+            "${event.venueName ?: ""} · $timeDisplay",
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 10.sp,
+                color = AppColors.Ink3,
+            ),
+        )
+    }
+}
+
+private fun categoryGradientColors(category: String): List<Color> {
+    return when (category.lowercase()) {
+        "music", "live-music", "concerts" -> listOf(AppColors.BgPlumStart, AppColors.BgPlumEnd)
+        "comedy" -> listOf(AppColors.BgSunStart, AppColors.BgSunEnd)
+        "sports" -> listOf(AppColors.BgSageStart, AppColors.BgSageEnd)
+        "arts", "performing-arts", "theater" -> listOf(AppColors.BgSkyStart, AppColors.BgSkyEnd)
+        "food", "food-drink" -> listOf(AppColors.BgCoralStart, AppColors.BgCoralEnd)
+        else -> listOf(AppColors.BgSkyStart, AppColors.BgSkyEnd)
+    }
+}
+
+private fun cleanMarkdown(text: String): String {
     return text
         .replace(Regex("\\*\\*(.+?)\\*\\*"), "$1")  // **bold** → bold
         .replace(Regex("\\*(.+?)\\*"), "$1")          // *italic* → italic
         .replace(Regex("__(.+?)__"), "$1")             // __bold__ → bold
         .replace(Regex("_(.+?)_"), "$1")               // _italic_ → italic
-        .replace(Regex("^\\s*[-*•]\\s+", RegexOption.MULTILINE), "")  // bullet points
-        .replace(Regex("^#+\\s+", RegexOption.MULTILINE), "")         // headers
+        .replace(Regex("^#+\\s+", RegexOption.MULTILINE), "")  // headers
+        // Keep bullet points but normalize to •
+        .replace(Regex("^\\s*[-*]\\s+", RegexOption.MULTILINE), "• ")
         .trim()
 }
 

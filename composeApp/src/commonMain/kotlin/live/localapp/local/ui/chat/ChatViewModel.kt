@@ -59,6 +59,7 @@ sealed interface MessageContent {
     data class MultiDayPlanRef(val dayCount: Int) : MessageContent
     data class SummaryRef(val dummy: Unit = Unit) : MessageContent
     data class ProgressRef(val dummy: Unit = Unit) : MessageContent
+    data class AlsoHappeningRef(val dummy: Unit = Unit) : MessageContent
 }
 
 data class ChatMessage(
@@ -119,6 +120,8 @@ data class ChatUiState(
     val planAttendeeCount: Int = 1,
     // Plan success overlay
     val showPlanSuccess: Boolean = false,
+    // "Also Happening" recommendations
+    val recommendations: List<Event> = emptyList(),
     // User info
     val userName: String = "",
     val userPreferences: UserPreferences? = null,
@@ -138,6 +141,9 @@ class ChatViewModel(
 
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
+
+    /** Cache of all events returned by search_events calls in the current turn. */
+    private val searchResultCache = mutableListOf<Event>()
 
     // One-shot navigation events
     private val _navigateToPlans = Channel<Unit>(Channel.BUFFERED)
@@ -234,8 +240,9 @@ class ChatViewModel(
 
     fun onQuickReply(reply: QuickReply) {
         if (_uiState.value.isBusy) return
-        when (reply.action) {
-            "reset" -> resetChat()
+        when {
+            reply.action == "reset" -> resetChat()
+            reply.action.startsWith("swap_recommendation:") -> handleSwapRecommendation(reply.action)
             else -> sendMessage(reply.label)
         }
     }
@@ -357,6 +364,7 @@ class ChatViewModel(
 
     private fun handleMessage(text: String) {
         _uiState.update { it.copy(quickReplies = emptyList()) }
+        searchResultCache.clear()
         viewModelScope.launch {
             setBusy(true)
             appendTextToHistory("user", text)
@@ -439,10 +447,13 @@ class ChatViewModel(
                 stripToolMessagesFromHistory()
                 appendTextToHistory("assistant", text)
                 return try {
+                    println("sendWithToolLoop: Attempting parse, text length=${text.length}, stopReason=${response.stopReason}")
+                    println("sendWithToolLoop: First 200 chars: ${text.take(200)}")
+                    println("sendWithToolLoop: Last 200 chars: ${text.takeLast(200)}")
                     claudeApi.parseStructured(text)
                 } catch (e: Exception) {
                     println("sendWithToolLoop: JSON parse failed: ${e.message}")
-                    println("Raw text: ${text.take(500)}")
+                    println("sendWithToolLoop: Full raw text (${text.length} chars): $text")
                     // Auto-retry once: ask Claude to reformat as valid JSON (no tools needed)
                     try {
                         appendTextToHistory("user", "Your response had a JSON formatting issue. Please resend the EXACT same plan as valid JSON — no markdown fences, no text before or after. Just the JSON object.")
@@ -456,6 +467,7 @@ class ChatViewModel(
                         }
                     } catch (retryEx: Exception) {
                         println("sendWithToolLoop: Retry also failed: ${retryEx.message}")
+                        println("sendWithToolLoop: Retry stopReason may be max_tokens — check logs above")
                         val cleanText = text.substringBefore("{").substringBefore("```").trim()
                         val displayText = if (cleanText.length > 20) cleanText
                             else "I put together a plan but had trouble formatting it. Let me try again — what were you looking for?"
@@ -592,6 +604,9 @@ class ChatViewModel(
             userLng = userLng,
             radiusMiles = 15.0,
         )
+
+        // Cache full event objects for "Also Happening" recommendations
+        searchResultCache.addAll(events)
 
         val today = kotlin.time.Clock.System.now().toEpochMilliseconds()
         return events.joinToString("\n") { e ->
@@ -749,6 +764,14 @@ class ChatViewModel(
                 } else {
                     // Single day: show as a regular day card
                     addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(0)))
+                }
+
+                // "Also Happening" recommendations from unused search results
+                val recommendations = computeRecommendations(enrichedDays)
+                if (recommendations.isNotEmpty()) {
+                    _uiState.update { it.copy(recommendations = recommendations) }
+                    delay(200)
+                    addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.AlsoHappeningRef()))
                 }
 
                 finishTurn(withApproveChip(envelope.chips))
@@ -1131,6 +1154,153 @@ class ChatViewModel(
     // Track consecutive question (chat-type) responses for "surprise me" chip injection
     private var consecutiveQuestionCount = 0
 
+    // ── "Also Happening" Recommendations ──
+
+    private fun scoreEventUniqueness(event: Event): Double {
+        var score = 0.0
+        val titleLc = event.title.lowercase()
+
+        // Ticketed/produced event
+        if (event.ticketUrl != null) score += 3.0
+
+        // Fixed-time (not always-on)
+        if (event.category != "always_on" && event.startAt != null) score += 2.0
+
+        // Special keywords in title
+        val specialKeywords = listOf("premiere", "opening night", "farewell", "reunion",
+            "one night only", "limited", "sold out", "presents:", "feat.", "vs.", "album release",
+            "debut", "residency", "anniversary", "benefit", "gala", "festival")
+        if (specialKeywords.any { titleLc.contains(it) }) score += 2.0
+
+        // Has an image (better card presentation)
+        if (event.imageUrl != null) score += 1.0
+
+        // Free at what seems like a notable venue
+        if (event.isFree && event.venueName != null) score += 1.5
+
+        // Source is a major platform
+        if (event.source == "ticketmaster" || event.source == "eventbrite") score += 1.0
+
+        // Niche category (not the most common ones)
+        val nicheCategories = listOf("comedy", "film", "food", "arts", "theater", "dance",
+            "literary", "wellness", "experiences")
+        if (nicheCategories.any { event.subcategory?.lowercase()?.contains(it) == true }) score += 1.0
+
+        return score
+    }
+
+    private fun computeRecommendations(planDays: List<ItineraryDay>): List<Event> {
+        val usedEventIds = planDays.flatMap { it.slots.mapNotNull { s -> s.eventId } }.toSet()
+
+        return searchResultCache
+            .filter { it.id !in usedEventIds }
+            .distinctBy { it.id }
+            .map { it to scoreEventUniqueness(it) }
+            .filter { it.second >= 3.0 }
+            .sortedByDescending { it.second }
+            .take(8)
+            .map { it.first }
+    }
+
+    fun addRecommendationToPlan(event: Event) {
+        viewModelScope.launch {
+            val state = _uiState.value
+            if (state.days.isEmpty()) return@launch
+
+            // Parse event time
+            val eventTime = event.startAt?.let { iso ->
+                try {
+                    val instant = kotlinx.datetime.Instant.parse(iso)
+                    val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+                    val hour = local.hour
+                    val min = local.minute
+                    val amPm = if (hour < 12) "AM" else "PM"
+                    val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
+                    if (min == 0) "${displayHour} ${amPm}" else "${displayHour}:${min.toString().padStart(2, '0')} ${amPm}"
+                } catch (_: Exception) { "TBD" }
+            } ?: "TBD"
+
+            // Find the right day (match by date)
+            val eventDate = event.startAt?.take(10) ?: ""
+            var targetDayIndex = 0
+            state.days.forEachIndexed { idx, day ->
+                val dayDate = extractDateFromLabel(day.label)
+                if (dayDate != null && eventDate.contains("${dayDate.second.toString().padStart(2, '0')}")) {
+                    targetDayIndex = idx
+                }
+            }
+
+            val targetDay = state.days.getOrNull(targetDayIndex) ?: return@launch
+
+            // Check for time conflicts (within ~2 hours)
+            val eventMinutes = parseTimeForSort(eventTime)
+            val conflicting = targetDay.slots.firstOrNull { slot ->
+                val slotMinutes = parseTimeForSort(slot.time)
+                slotMinutes != Int.MAX_VALUE && eventMinutes != Int.MAX_VALUE &&
+                    kotlin.math.abs(slotMinutes - eventMinutes) < 120
+            }
+
+            val newSlot = ItinerarySlot(
+                id = generateId(),
+                time = eventTime,
+                emoji = "",
+                name = event.title,
+                detail = "${event.venueName ?: ""} · ${event.venueCity}",
+                price = event.priceDisplay,
+                isFree = event.isFree,
+                imageUrl = event.imageUrl,
+                eventId = event.id,
+            )
+
+            if (conflicting != null) {
+                // Show conflict message with chips
+                addAiMessage("\"${event.title}\" at $eventTime overlaps with \"${conflicting.name}\" at ${conflicting.time}. Want to swap it in?")
+                _uiState.update {
+                    it.copy(
+                        quickReplies = listOf(
+                            QuickReply("Swap it in", action = "swap_recommendation:${event.id}:${conflicting.id}:$targetDayIndex"),
+                            QuickReply("Keep current"),
+                        ),
+                        inputEnabled = true,
+                        isBusy = false,
+                    )
+                }
+                // Store the new slot for the swap
+                pendingRecommendationSlot = newSlot
+            } else {
+                // No conflict — add directly
+                _uiState.update { s ->
+                    val days = s.days.toMutableList()
+                    val day = days[targetDayIndex]
+                    val newSlots = (day.slots + newSlot).sortedBy { parseTimeForSort(it.time) }
+                    days[targetDayIndex] = day.copy(slots = newSlots)
+                    s.copy(days = days)
+                }
+                addAiMessage("Added \"${event.title}\" at $eventTime!")
+            }
+        }
+    }
+
+    private var pendingRecommendationSlot: ItinerarySlot? = null
+
+    private fun handleSwapRecommendation(action: String) {
+        val parts = action.removePrefix("swap_recommendation:").split(":")
+        if (parts.size < 3) return
+        val conflictSlotId = parts[1]
+        val dayIndex = parts[2].toIntOrNull() ?: return
+        val newSlot = pendingRecommendationSlot ?: return
+
+        _uiState.update { s ->
+            val days = s.days.toMutableList()
+            val day = days[dayIndex]
+            val newSlots = day.slots.filter { it.id != conflictSlotId } + newSlot
+            days[dayIndex] = day.copy(slots = newSlots.sortedBy { parseTimeForSort(it.time) })
+            s.copy(days = days)
+        }
+        pendingRecommendationSlot = null
+        addAiMessage("Swapped in \"${newSlot.name}\"!")
+    }
+
     private fun cityToState(city: String): String = when (city.lowercase().trim()) {
         "boston", "cambridge", "somerville", "newton", "waltham",
         "brookline", "worcester", "springfield", "lowell" -> "MA"
@@ -1269,21 +1439,34 @@ SINGLE vs MULTI-EVENT — CRITICAL:
 - If the user asks for a specific event ("Matt Berninger Monday", "Soul Rebels tonight") → 1 event plan. ONLY that event. Do NOT add dinner, drinks, or anything else. The user will ask if they want more.
 - "Plan a night out" → 2-3 events including food/drinks is fine.
 - "Full day trip" → 4-5 events with meals.
-- "Date night", "weekend plans", "day out" → include restaurants/bars as part of the experience. Use recommend_and_save_venue to find real dining spots.
+- "Date night" → MUST include at least 2 slots: dinner (use recommend_and_save_venue) AND an activity/show/event (use search_events). A single restaurant is NOT a date night plan.
+- "Weekend plans", "day out" → include restaurants/bars as part of the experience. Use recommend_and_save_venue for dining, search_events for activities.
 - Only skip restaurants when the user explicitly asks for a single specific event.
+- A plan with only 1 slot is almost never correct unless the user asked for a specific single event. Plans should feel complete.
 
 DISCOVERY/BROWSING QUERIES:
-When the user is browsing ("what's happening", "live music this week", "shows tonight", "free things to do", "events this weekend") — FIRST call search_events to find matching events, THEN respond with type "chat" (NOT "plan") containing the results as a bulleted text list. You MUST search and include actual events with real names, venues, and times:
-• Event Name — Venue · Time · Price
-Group by day if spanning multiple days (e.g. "**Thursday March 27**" then bullets). Keep it scannable. Then offer chips like "Plan around [event]", "Tell me more", "This weekend". NEVER respond with just a summary sentence — always list the actual events.
+When the user is browsing ("what's happening", "live music this week", "shows tonight", "free things to do", "events this weekend") — FIRST call search_events to find matching events, THEN respond with type "chat" (NOT "plan") listing the results. You MUST search and include actual events. Format each event on its own line with a bullet:
 
+• Event Name — Venue · Time · Price
+
+Use a blank line between the intro and the list, and between day headers. Group by day if spanning multiple days. Keep it scannable. Then offer chips like "Plan around [event]", "Tell me more". NEVER respond with just a summary sentence — always list the actual events.
+
+WHEN TO BUILD A PLAN — CRITICAL:
+Once you know WHAT and WHEN, BUILD THE PLAN immediately. Do NOT respond with type "chat" saying "I found great options" — that's useless without the actual plan card. Search for events, find venues, and return type "plan" with real slots.
+- "Date night next weekend" → you know what (date night) and when (next weekend) → BUILD IT
+- "Things to do Saturday" → you know when → search and BUILD IT
+- Only ask a question if you genuinely don't have enough info (no date, no idea what they want)
 GATHERING INFO: For plan requests, you may need: When, What area, Group size, Vibe. Ask the MOST important missing piece FIRST (one question). If user says "surprise me", skip all questions and build immediately.
 LOCATION: The user's home area is ${state.userPreferences?.city ?: "the Boston area"}. If they say "near me" or don't specify a location, search their home area. Never ask "where are you located" — they already told us. Instead say "What area are you thinking?" or "Anywhere specific, or should I search broadly?"
 NO RESULTS: If search returns no matching events, don't just say "not finding events". Instead: 1) Try searching nearby areas automatically. 2) If still nothing, use recommend_and_save_venue to build a venue-based plan (restaurants, bars, activities). Always offer a path forward. Do NOT say "those dates are still being added" — the events may genuinely not exist.
 NEVER mention "database", "my database", "system", or any implementation details to the user. You are a concierge, not a search engine. Speak naturally.
 RESTAURANT/DINING REQUESTS: When the user asks for dinner, restaurants, food, brunch, drinks, bars, or any dining — go STRAIGHT to recommend_and_save_venue. Do NOT search events first. Dining is not an event.
-PRESENTING OPTIONS: When recommending multiple options for the SAME slot (e.g. 3 restaurant choices for dinner, 3 bar options for drinks), respond with type "chat" as a bulleted text list, NOT a plan. The user hasn't chosen yet. Format:
+PRESENTING OPTIONS: When recommending multiple options for the SAME slot (e.g. 3 restaurant choices for dinner, 3 bar options for drinks), respond with type "chat" as a bulleted text list, NOT a plan. The user hasn't chosen yet. You MUST include the actual venue details in your text response. Format:
+Here are some great spots:
 • Restaurant Name — Neighborhood · Cuisine · $$ · "Known for X"
+• Restaurant Name — Neighborhood · Cuisine · $$$ · "Known for Y"
+• Restaurant Name — Neighborhood · Cuisine · $$ · "Known for Z"
+CRITICAL: The bullet points with venue names MUST appear in the "text" field of your JSON response. Do NOT leave the text empty or just include an intro sentence. The venues must be listed.
 Then offer chips like "Let's go with [Name]", "Tell me more about [Name]", "Something else" so the user picks one. ONLY build a plan card after the user chooses.
 PRICING: Use "Free" tag for free events. For paid events, show the price (e.g. "$25-40"). Never use the phrase "admission fee" — just show the price.
 BREVITY: Keep the text before a plan to 1 sentence max. The plan cards speak for themselves. Don't restate what the user asked for.
