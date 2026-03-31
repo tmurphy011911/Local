@@ -40,7 +40,7 @@ val appModule = module {
     single<BadgeRepository> { BadgeRepositoryImpl(get()) }
     single { BadgeService(get(), get()) }
     single { ClaudeApiService() }
-    single { HomeViewModel(get(), get(), get(), get(), get()) }
+    single { HomeViewModel(get(), get(), get(), get(), get(), get()) }
     single { ChatViewModel(get(), get(), get(), get(), get(), get()) }
     single { PlacesViewModel(get(), get(), get()) }
     single { PlansViewModel(get(), get(), get(), get(), get()) }

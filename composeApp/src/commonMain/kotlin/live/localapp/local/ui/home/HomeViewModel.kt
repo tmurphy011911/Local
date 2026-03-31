@@ -20,6 +20,7 @@ import live.localapp.local.domain.repository.InteractionType
 import live.localapp.local.domain.model.BadgeAction
 import live.localapp.local.domain.repository.UserPreferences
 import live.localapp.local.domain.repository.UserPreferencesRepository
+import live.localapp.local.domain.repository.VenueRepository
 import live.localapp.local.domain.service.BadgeService
 
 data class HomeUiState(
@@ -46,6 +47,7 @@ class HomeViewModel(
     private val communityInterestRepository: CommunityInterestRepository,
     private val eventRepository: EventRepository,
     private val badgeService: BadgeService,
+    private val venueRepo: VenueRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(HomeUiState())
@@ -167,7 +169,23 @@ class HomeViewModel(
                 val eventIds = communityInterestRepository.getFavoriteEventIds(userId)
                 _uiState.update { it.copy(favoriteEventIds = eventIds.toSet()) }
                 if (eventIds.isEmpty()) return@launch
-                val events = eventRepository.getEventsByIds(eventIds)
+                val rawEvents = eventRepository.getEventsByIds(eventIds)
+
+                // Enrich events missing images with venue photos
+                val venueNames = rawEvents.filter { it.imageUrl == null }.mapNotNull { it.venueName }.distinct()
+                val venuePhotos = mutableMapOf<String, String>()
+                for (name in venueNames) {
+                    try {
+                        val venue = venueRepo.findVenueByNameAndCity(name, rawEvents.firstOrNull { it.venueName == name }?.venueCity ?: "Boston")
+                        if (venue?.photoUrl != null) venuePhotos[name] = venue.photoUrl
+                    } catch (_: Throwable) {}
+                }
+                val events = rawEvents.map { event ->
+                    if (event.imageUrl == null && event.venueName != null) {
+                        val photo = venuePhotos[event.venueName]
+                        if (photo != null) event.copy(imageUrl = photo) else event
+                    } else event
+                }
 
                 val now = kotlinx.datetime.Instant.fromEpochMilliseconds(kotlin.time.Clock.System.now().toEpochMilliseconds())
                 val tz = TimeZone.currentSystemDefault()
