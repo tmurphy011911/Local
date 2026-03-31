@@ -137,15 +137,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     var chatOpenCount by remember { mutableStateOf(0) }
     val userPrefsRepo: UserPreferencesRepository = remember { koin.get() }
 
-    // Gate chat behind auth
-    val openChatOrLogin: () -> Unit = {
-        val userId = userPrefsRepo.getLocalUserId()
-        if (userId != null) {
-            showChat = true
-        } else {
-            showLoginPrompt = true
-        }
-    }
+    // Gate chat behind auth + sync location (defined as a lambda referencing hoisted VMs below)
 
     // Hoist HomeViewModel so data starts loading immediately (for splash screen)
     val homeVm: HomeViewModel = viewModel {
@@ -173,6 +165,16 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     val chatVm: ChatViewModel = viewModel { koin.get<ChatViewModel>() }
     val chatState by chatVm.uiState.collectAsState()
     val deferCelebrations = chatState.showPlanSuccess
+
+    val openChatOrLogin: () -> Unit = {
+        val userId = userPrefsRepo.getLocalUserId()
+        if (userId != null) {
+            chatVm.setCurrentLocation(homeState.userLat, homeState.userLng, homeState.locationName)
+            showChat = true
+        } else {
+            showLoginPrompt = true
+        }
+    }
 
     Box(
         modifier = Modifier

@@ -127,6 +127,10 @@ data class ChatUiState(
     // User info
     val userName: String = "",
     val userPreferences: UserPreferences? = null,
+    // Current location (may differ from prefs if user switched via debug menu)
+    val currentLat: Double? = null,
+    val currentLng: Double? = null,
+    val currentLocationName: String = "",
 )
 
 private var idCounter = 0L
@@ -146,6 +150,11 @@ class ChatViewModel(
 
     /** Cache of all events returned by search_events calls in the current turn. */
     private val searchResultCache = mutableListOf<Event>()
+
+    /** Update current location (called from AppNavigation when location changes). */
+    fun setCurrentLocation(lat: Double, lng: Double, name: String) {
+        _uiState.update { it.copy(currentLat = lat, currentLng = lng, currentLocationName = name) }
+    }
 
     // One-shot navigation events
     private val _navigateToPlans = Channel<Unit>(Channel.BUFFERED)
@@ -589,10 +598,10 @@ class ChatViewModel(
             dateRange = "custom"
         }
 
-        // Use user's coordinates for geo-radius search
-        val prefs = _uiState.value.userPreferences
-        val userLat = prefs?.userLat
-        val userLng = prefs?.userLng
+        // Use current location for geo-radius search (falls back to prefs)
+        val state = _uiState.value
+        val userLat = state.currentLat ?: state.userPreferences?.userLat
+        val userLng = state.currentLng ?: state.userPreferences?.userLng
 
         val events = eventRepo.searchEvents(
             location = location,
@@ -1459,7 +1468,7 @@ Once you know WHAT and WHEN, BUILD THE PLAN immediately. Do NOT respond with typ
 - "Things to do Saturday" → you know when → search and BUILD IT
 - Only ask a question if you genuinely don't have enough info (no date, no idea what they want)
 GATHERING INFO: For plan requests, you may need: When, What area, Group size, Vibe. Ask the MOST important missing piece FIRST (one question). If user says "surprise me", skip all questions and build immediately.
-LOCATION: The user's home area is ${state.userPreferences?.city ?: "the Boston area"}. If they say "near me" or don't specify a location, search their home area. Never ask "where are you located" — they already told us. Instead say "What area are you thinking?" or "Anywhere specific, or should I search broadly?"
+LOCATION: The user is currently in ${state.currentLocationName.ifBlank { state.userPreferences?.city ?: "the Boston area" }}. If they say "near me" or don't specify a location, search their current area. Never ask "where are you located" — we already know. Instead say "What area are you thinking?" or "Anywhere specific, or should I search broadly?"
 NO RESULTS: If search returns no matching events, don't just say "not finding events". Instead: 1) Try searching nearby areas automatically. 2) If still nothing, use recommend_and_save_venue to build a venue-based plan (restaurants, bars, activities). Always offer a path forward. Do NOT say "those dates are still being added" — the events may genuinely not exist.
 NEVER mention "database", "my database", "system", or any implementation details to the user. You are a concierge, not a search engine. Speak naturally.
 RESTAURANT/DINING REQUESTS: When the user asks for dinner, restaurants, food, brunch, drinks, bars, or any dining — go STRAIGHT to recommend_and_save_venue. Do NOT search events first. Dining is not an event.
