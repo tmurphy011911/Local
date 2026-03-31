@@ -571,6 +571,8 @@ function deduplicateCrossSource(events: ProcessedEvent[]): ProcessedEvent[] {
   function normalizeVenue(name: string): string {
     return name.toLowerCase().trim()
       .replace(/,.*/, "")
+      .replace(/^the\s+/, "")
+      .replace(/\s+(theatre|theater|hall|center|arena|club|room|lounge|stage|pavilion|amphitheater|amphitheatre)$/i, "")
       .replace(/\s+/g, " ")
       .trim();
   }
