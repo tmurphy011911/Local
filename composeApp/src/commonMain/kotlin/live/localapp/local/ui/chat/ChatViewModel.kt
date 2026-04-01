@@ -87,6 +87,8 @@ data class ItinerarySlot(
     val imageUrl: String? = null,
     val eventId: String? = null,
     val isCustom: Boolean = false,
+    val ticketUrl: String? = null,
+    val venueRating: Double? = null,
 )
 
 data class TravelInfo(
@@ -1044,6 +1046,7 @@ class ChatViewModel(
             price = event.priceDisplay,
             imageUrl = event.imageUrl ?: slot.imageUrl,
             isFree = event.isFree,
+            ticketUrl = event.ticketUrl,
         )
     }
 
@@ -1411,7 +1414,7 @@ RESTAURANT DETAILS: When recommending restaurants via recommend_and_save_venue, 
 - Whether it's hard to get reservations (e.g., "Book 2+ weeks ahead")
 Include these in the slot's "detail" field, e.g.: "North End · $$ · Reservations recommended"
 
-FIRST QUESTION: If the user's request involves a date/trip, ask if they have any existing plans or commitments to build around (e.g., "Do you have anything already locked in, like dinner reservations or tickets?"). Only ask once, at the start.
+SPEED IS EVERYTHING: Build the plan as fast as possible. Do NOT ask about existing commitments. Do NOT ask about group size unless it's a group activity. If you have enough to search (what + when), SEARCH AND BUILD IMMEDIATELY. The user can always modify after.
 
 AMENDMENTS — THIS IS THE #1 RULE:
 When a plan exists and the user asks to change WITHIN a day (add/remove/move/replace/swap slots, "more events", "less expensive", "add brunch"), respond with type "plan_update" with the modified day. NEVER use "plan" for changes to existing days — always "plan_update".
@@ -1456,10 +1459,12 @@ Use a blank line between the intro and the list, and between day headers. Group 
 
 WHEN TO BUILD A PLAN — CRITICAL:
 Once you know WHAT and WHEN, BUILD THE PLAN immediately. Do NOT respond with type "chat" saying "I found great options" — that's useless without the actual plan card. Search for events, find venues, and return type "plan" with real slots.
-- "Date night next weekend" → you know what (date night) and when (next weekend) → BUILD IT
-- "Things to do Saturday" → you know when → search and BUILD IT
-- Only ask a question if you genuinely don't have enough info (no date, no idea what they want)
-GATHERING INFO: For plan requests, you may need: When, What area, Group size, Vibe. Ask the MOST important missing piece FIRST (one question). If user says "surprise me", skip all questions and build immediately.
+- "Date night next weekend" → BUILD IT. Don't ask about area, group size, or vibe.
+- "Things to do Saturday" → BUILD IT. Use their current location.
+- "Live music" with no date → ask ONLY "When are you thinking?" — nothing else.
+- "Surprise me" → BUILD IT immediately with this weekend's best events.
+- The ONLY question worth asking is WHEN if no date is given. Everything else, just build and let them modify.
+GATHERING INFO: The only thing you might need to ask is WHEN. Default everything else: area = user's current location, group size = 2, vibe = fun/casual. If the user says "surprise me" or gives you a date, skip ALL questions and build immediately.
 LOCATION: The user is currently in ${state.currentLocationName.ifBlank { state.userPreferences?.city ?: "the Boston area" }}. If they say "near me" or don't specify a location, search their current area. Never ask "where are you located" — we already know. Instead say "What area are you thinking?" or "Anywhere specific, or should I search broadly?"
 NO RESULTS: If search returns no matching events, don't just say "not finding events". Instead: 1) Try searching nearby areas automatically. 2) If still nothing, use recommend_and_save_venue to build a venue-based plan (restaurants, bars, activities). Always offer a path forward. Do NOT say "those dates are still being added" — the events may genuinely not exist.
 NEVER mention "database", "my database", "system", or any implementation details to the user. You are a concierge, not a search engine. Speak naturally.

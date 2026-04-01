@@ -67,6 +67,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import kotlinx.datetime.TimeZone
@@ -909,6 +910,24 @@ private fun SlotRow(
                     style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, color = AppColors.Ink3),
                     maxLines = 1,
                 )
+                // Ticket link
+                if (slot.ticketUrl != null) {
+                    val uriHandler = LocalUriHandler.current
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        "Get Tickets →",
+                        modifier = Modifier.clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                        ) { uriHandler.openUri(slot.ticketUrl) },
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 10.sp,
+                            color = AppColors.Coral,
+                        ),
+                    )
+                }
             }
 
             // Remove button (only if not approved)
