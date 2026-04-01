@@ -373,15 +373,24 @@ class ChatViewModel(
      * Uses Claude's suggested time if provided, otherwise falls back to event's start_at.
      */
     private suspend fun buildPlanFromRefs(parsed: ParsedChatResponse): List<ItineraryDay> {
+        println("buildPlanFromRefs: ${parsed.days.size} days, searchResultCache size=${searchResultCache.size}")
         return parsed.days.map { parsedDay ->
+            println("buildPlanFromRefs: day='${parsedDay.label}' with ${parsedDay.events.size} refs")
+            parsedDay.events.forEach { ref ->
+                println("  ref: id='${ref.id}' time='${ref.time}' isVenue=${ref.isVenue} note='${ref.note.take(50)}'")
+            }
+
             // Collect all event IDs (non-venue refs)
             val eventIds = parsedDay.events.filter { !it.isVenue }.map { it.id }
             val eventsById = if (eventIds.isNotEmpty()) {
-                eventRepo.getEventsByIds(eventIds).associateBy { it.id }
+                val fetched = eventRepo.getEventsByIds(eventIds)
+                println("buildPlanFromRefs: fetched ${fetched.size}/${eventIds.size} events from DB")
+                fetched.associateBy { it.id }
             } else emptyMap()
 
             // Also check searchResultCache for any events not found in batch query
             val cacheById = searchResultCache.associateBy { it.id }
+            println("buildPlanFromRefs: cache has ${cacheById.size} events")
 
             val slots = parsedDay.events.mapNotNull { ref ->
                 if (ref.isVenue) {
@@ -952,6 +961,10 @@ class ChatViewModel(
     }
 
     private fun withApproveChip(chips: List<String>): List<String> {
+        // Only show approve chip if there are actual events in the plan
+        val hasEvents = _uiState.value.days.any { it.slots.isNotEmpty() }
+        if (!hasEvents) return chips
+
         val approveLabel = "Looks good, add to My Plans"
         val rest = chips.filter {
             !it.contains("Looks good", ignoreCase = true) &&
