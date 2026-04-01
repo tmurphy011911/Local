@@ -589,7 +589,7 @@ class ChatViewModel(
         val category = input["category"]?.jsonPrimitive?.contentOrNull
         var dateRange = input["date_range"]?.jsonPrimitive?.contentOrNull
         val keyword = input["keyword"]?.jsonPrimitive?.contentOrNull
-        val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 20
+        val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 50
         val startDate = input["start_date"]?.jsonPrimitive?.contentOrNull
         val endDate = input["end_date"]?.jsonPrimitive?.contentOrNull
 
@@ -613,7 +613,7 @@ class ChatViewModel(
             endDate = endDate,
             userLat = userLat,
             userLng = userLng,
-            radiusMiles = 15.0,
+            radiusMiles = 30.0,
         )
 
         // Cache full event objects for "Also Happening" recommendations
@@ -658,7 +658,7 @@ class ChatViewModel(
         val location = input["location"]?.jsonPrimitive?.contentOrNull
         val category = input["category"]?.jsonPrimitive?.contentOrNull
         val keyword = input["keyword"]?.jsonPrimitive?.contentOrNull
-        val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 20
+        val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 50
 
         val venues = venueRepo.searchVenues(location, category, keyword, limit)
 
@@ -775,14 +775,6 @@ class ChatViewModel(
                 } else {
                     // Single day: show as a regular day card
                     addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(0)))
-                }
-
-                // "Also Happening" recommendations from unused search results
-                val recommendations = computeRecommendations(enrichedDays)
-                if (recommendations.isNotEmpty()) {
-                    _uiState.update { it.copy(recommendations = recommendations) }
-                    delay(200)
-                    addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.AlsoHappeningRef()))
                 }
 
                 finishTurn(withApproveChip(envelope.chips))
