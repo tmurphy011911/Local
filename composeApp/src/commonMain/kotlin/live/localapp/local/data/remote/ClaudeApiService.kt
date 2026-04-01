@@ -64,7 +64,7 @@ data class ClaudeContentBlock(
     val input: JsonObject? = null,  // tool input
 )
 
-// ── Structured AI response envelope ──
+// ── Structured AI response envelope (legacy, kept for backward compat) ──
 
 @Serializable
 data class AiChip(
@@ -111,6 +111,33 @@ data class AiItinerarySlot(
 data class AiTravelInfo(
     val mode: String,
     val mins: Int,
+)
+
+// ── Natural language parsed response (Phase 1 architecture) ──
+
+enum class ParsedResponseType {
+    CHAT, PLAN, PLAN_UPDATE, APPROVE
+}
+
+data class EventRef(
+    val id: String,
+    val time: String,
+    val note: String,
+    val isVenue: Boolean,
+)
+
+data class ParsedDay(
+    val label: String,
+    val events: List<EventRef>,
+)
+
+data class ParsedChatResponse(
+    val type: ParsedResponseType,
+    val text: String,
+    val planTitle: String? = null,
+    val days: List<ParsedDay> = emptyList(),
+    val chips: List<String> = emptyList(),
+    val dayIndex: Int? = null,
 )
 
 // ── Mappers to domain models ──
@@ -408,5 +435,119 @@ class ClaudeApiService {
      */
     fun parseStructured(rawText: String): AiResponseEnvelope {
         return json.decodeFromString<AiResponseEnvelope>(cleanJson(rawText))
+    }
+
+    /**
+     * Parse Claude's natural language response with embedded markers.
+     *
+     * Format:
+     * PLAN: "Title"
+     * DAY: Saturday, April 5
+     * - [evt:abc123] at 6:30 PM — Note
+     * - [venue:Name] at 8 PM — Note
+     * CHIPS: chip1 | chip2
+     *
+     * Or for plan updates:
+     * UPDATE_DAY: 0
+     * DAY: Saturday, April 5
+     * - [evt:abc123] at 6:30 PM — Note
+     * CHIPS: chip1 | chip2
+     */
+    fun parseNaturalResponse(text: String, userMessage: String = ""): ParsedChatResponse {
+        val lines = text.lines()
+
+        // Detect type
+        val type = when {
+            lines.any { it.trimStart().startsWith("PLAN:") } -> ParsedResponseType.PLAN
+            lines.any { it.trimStart().startsWith("UPDATE_DAY:") } -> ParsedResponseType.PLAN_UPDATE
+            userMessage.lowercase().let { msg ->
+                msg.contains("looks good") || msg.contains("approve") ||
+                    msg.contains("save") || msg.contains("add to my plans")
+            } -> ParsedResponseType.APPROVE
+            else -> ParsedResponseType.CHAT
+        }
+
+        // Extract plan title
+        val planTitle = lines.firstOrNull { it.trimStart().startsWith("PLAN:") }
+            ?.substringAfter("PLAN:")?.trim()?.removeSurrounding("\"")
+
+        // Extract day index for updates
+        val dayIndex = lines.firstOrNull { it.trimStart().startsWith("UPDATE_DAY:") }
+            ?.substringAfter("UPDATE_DAY:")?.trim()?.toIntOrNull()
+
+        // Extract chips
+        val chipsLine = lines.lastOrNull { it.trimStart().startsWith("CHIPS:") }
+        val chips = chipsLine?.substringAfter("CHIPS:")?.split("|")
+            ?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
+
+        // Extract days with events
+        val days = mutableListOf<ParsedDay>()
+        var currentDayLabel: String? = null
+        var currentEvents = mutableListOf<EventRef>()
+
+        // Regex patterns for event/venue refs
+        val evtPattern = Regex("""\[evt:([^\]]+)\]\s*at\s+([^—\n]+?)(?:\s*—\s*(.*))?$""")
+        val venuePattern = Regex("""\[venue:([^\]]+)\]\s*at\s+([^—\n]+?)(?:\s*—\s*(.*))?$""")
+
+        for (line in lines) {
+            val trimmed = line.trim()
+
+            if (trimmed.startsWith("DAY:")) {
+                // Flush previous day
+                if (currentDayLabel != null && currentEvents.isNotEmpty()) {
+                    days.add(ParsedDay(label = currentDayLabel!!, events = currentEvents.toList()))
+                }
+                currentDayLabel = trimmed.substringAfter("DAY:").trim()
+                currentEvents = mutableListOf()
+                continue
+            }
+
+            if (trimmed.startsWith("- [evt:") || trimmed.startsWith("- [venue:")) {
+                val lineContent = trimmed.removePrefix("- ").trim()
+
+                val evtMatch = evtPattern.find(lineContent)
+                if (evtMatch != null) {
+                    currentEvents.add(EventRef(
+                        id = evtMatch.groupValues[1].trim(),
+                        time = evtMatch.groupValues[2].trim(),
+                        note = evtMatch.groupValues[3].trim(),
+                        isVenue = false,
+                    ))
+                    continue
+                }
+
+                val venueMatch = venuePattern.find(lineContent)
+                if (venueMatch != null) {
+                    currentEvents.add(EventRef(
+                        id = venueMatch.groupValues[1].trim(),
+                        time = venueMatch.groupValues[2].trim(),
+                        note = venueMatch.groupValues[3].trim(),
+                        isVenue = true,
+                    ))
+                    continue
+                }
+            }
+        }
+        // Flush last day
+        if (currentDayLabel != null && currentEvents.isNotEmpty()) {
+            days.add(ParsedDay(label = currentDayLabel!!, events = currentEvents.toList()))
+        }
+
+        // Build the natural language text (everything that's not a marker line)
+        val markerPrefixes = listOf("PLAN:", "DAY:", "UPDATE_DAY:", "CHIPS:", "- [evt:", "- [venue:")
+        val textParts = lines.filter { line ->
+            val trimmed = line.trim()
+            markerPrefixes.none { trimmed.startsWith(it) } && trimmed.isNotBlank()
+        }
+        val naturalText = textParts.joinToString("\n").trim()
+
+        return ParsedChatResponse(
+            type = type,
+            text = naturalText,
+            planTitle = planTitle,
+            days = days,
+            chips = chips,
+            dayIndex = dayIndex,
+        )
     }
 }

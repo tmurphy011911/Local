@@ -16,13 +16,11 @@ import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
-import live.localapp.local.data.remote.AiChip
-import live.localapp.local.data.remote.AiResponseEnvelope
 import live.localapp.local.data.remote.ClaudeApiService
 import live.localapp.local.data.remote.ClaudeMessage
-import live.localapp.local.data.remote.ClaudeResponse
+import live.localapp.local.data.remote.ParsedChatResponse
+import live.localapp.local.data.remote.ParsedResponseType
 import live.localapp.local.data.remote.claudeTools
-import live.localapp.local.data.remote.toDomain
 import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.Config
 import live.localapp.local.domain.model.Event
@@ -336,20 +334,23 @@ class ChatViewModel(
             try {
                 appendTextToHistory("user", instruction)
                 val systemPrompt = buildSystemPrompt()
-                val envelope = sendWithToolLoop(systemPrompt)
+                val parsed = sendWithToolLoop(systemPrompt)
                 // Only process if Claude returned a plan_update for this day
-                if (envelope.type == "plan_update" && envelope.day != null) {
-                    val enrichedDay = resolveDayFromDb(envelope.day.toDomain())
-                    _uiState.update { state ->
-                        val days = state.days.toMutableList()
-                        val idx = envelope.dayIndex ?: dayIndex
-                        if (idx in days.indices) {
-                            days[idx] = enrichedDay
+                if (parsed.type == ParsedResponseType.PLAN_UPDATE && parsed.days.isNotEmpty()) {
+                    val builtDays = buildPlanFromRefs(parsed)
+                    val updatedDay = builtDays.firstOrNull()
+                    if (updatedDay != null) {
+                        _uiState.update { state ->
+                            val days = state.days.toMutableList()
+                            val idx = parsed.dayIndex ?: dayIndex
+                            if (idx in days.indices) {
+                                days[idx] = updatedDay
+                            }
+                            state.copy(days = days)
                         }
-                        state.copy(days = days)
                     }
-                    if (!envelope.text.isNullOrBlank()) {
-                        appendTextToHistory("assistant", envelope.text)
+                    if (parsed.text.isNotBlank()) {
+                        appendTextToHistory("assistant", parsed.text)
                     }
                 }
             } catch (e: Throwable) {
@@ -367,6 +368,96 @@ class ChatViewModel(
         return venueRepo.searchByName(name)
     }
 
+    /**
+     * Build ItineraryDay list from ParsedChatResponse by batch-fetching events from the DB.
+     * Uses Claude's suggested time if provided, otherwise falls back to event's start_at.
+     */
+    private suspend fun buildPlanFromRefs(parsed: ParsedChatResponse): List<ItineraryDay> {
+        return parsed.days.map { parsedDay ->
+            // Collect all event IDs (non-venue refs)
+            val eventIds = parsedDay.events.filter { !it.isVenue }.map { it.id }
+            val eventsById = if (eventIds.isNotEmpty()) {
+                eventRepo.getEventsByIds(eventIds).associateBy { it.id }
+            } else emptyMap()
+
+            // Also check searchResultCache for any events not found in batch query
+            val cacheById = searchResultCache.associateBy { it.id }
+
+            val slots = parsedDay.events.mapNotNull { ref ->
+                if (ref.isVenue) {
+                    // Venue ref — look up by name in the venue repo or use the name directly
+                    val venue = try { venueRepo.searchByName(ref.id) } catch (_: Exception) { null }
+                    ItinerarySlot(
+                        id = generateId(),
+                        time = ref.time,
+                        emoji = "",
+                        name = venue?.name ?: ref.id,
+                        detail = ref.note.ifBlank {
+                            buildString {
+                                if (venue != null) {
+                                    append(venue.city ?: "")
+                                    if (venue.googleRating != null) append(" · ${venue.googleRating}")
+                                }
+                            }.ifBlank { ref.id }
+                        },
+                        price = "",
+                        isFree = false,
+                        imageUrl = venue?.photoUrl,
+                        eventId = null,
+                        isCustom = false,
+                        venueRating = venue?.googleRating,
+                    )
+                } else {
+                    // Event ref — look up from DB
+                    val event = eventsById[ref.id] ?: cacheById[ref.id]
+                    if (event == null) {
+                        println("buildPlanFromRefs: event '${ref.id}' not found in DB or cache, dropping")
+                        return@mapNotNull null
+                    }
+
+                    // Use Claude's suggested time if provided, otherwise derive from event
+                    val time = if (ref.time.isNotBlank()) ref.time else {
+                        event.startAt?.let { iso ->
+                            try {
+                                val instant = kotlinx.datetime.Instant.parse(iso)
+                                val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+                                val hour = local.hour
+                                val minute = local.minute
+                                val amPm = if (hour < 12) "AM" else "PM"
+                                val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
+                                if (minute == 0) "$displayHour $amPm" else "$displayHour:${minute.toString().padStart(2, '0')} $amPm"
+                            } catch (_: Exception) { "" }
+                        } ?: ""
+                    }
+
+                    ItinerarySlot(
+                        id = generateId(),
+                        time = time,
+                        emoji = "",
+                        name = event.title,
+                        detail = ref.note.ifBlank { "${event.venueName ?: ""} · ${event.venueCity}" },
+                        price = event.priceDisplay,
+                        isFree = event.isFree,
+                        imageUrl = event.imageUrl,
+                        eventId = event.id,
+                        isCustom = false,
+                        ticketUrl = event.ticketUrl,
+                    )
+                }
+            }
+
+            // Derive shortName from day label (e.g. "Saturday, April 5" -> "SAT")
+            val shortName = parsedDay.label.split(",").firstOrNull()?.trim()?.take(3)?.uppercase() ?: "DAY"
+
+            ItineraryDay(
+                label = parsedDay.label,
+                shortName = shortName,
+                slots = slots.map { it.copy(time = normalizeTimeDisplay(it.time)) }
+                    .sortedBy { parseTimeForSort(it.time) },
+            )
+        }
+    }
+
     fun resetChat() {
         conversationHistory.clear()
         _uiState.value = ChatUiState()
@@ -375,18 +466,22 @@ class ChatViewModel(
 
     // ── Core: Single unified message handler ──
 
+    /** Stores the last user message for APPROVE detection in parseNaturalResponse. */
+    private var lastUserMessage: String = ""
+
     private fun handleMessage(text: String) {
         _uiState.update { it.copy(quickReplies = emptyList()) }
         searchResultCache.clear()
+        lastUserMessage = text
         viewModelScope.launch {
             setBusy(true)
             appendTextToHistory("user", text)
 
             try {
                 val systemPrompt = buildSystemPrompt()
-                val envelope = sendWithToolLoop(systemPrompt)
-                println("Claude response: type=${envelope.type} text=${envelope.text?.take(100)} days=${envelope.days?.size} day=${envelope.day != null} chips=${envelope.chips?.size}")
-                handleClaudeResponse(envelope)
+                val parsed = sendWithToolLoop(systemPrompt)
+                println("Claude response: type=${parsed.type} text=${parsed.text.take(100)} days=${parsed.days.size} chips=${parsed.chips.size}")
+                handleClaudeResponse(parsed)
             } catch (e: Throwable) {
                 // Catch Throwable (not just Exception) to handle Kotlin/Native errors
                 // that bypass Exception hierarchy (IrLinkageError, etc.)
@@ -409,11 +504,12 @@ class ChatViewModel(
      * Send the conversation to Claude and handle the tool-use loop:
      * send → if tool_use → execute tool → append tool_result → send again → repeat
      * until Claude gives a final text (stop_reason == "end_turn").
+     *
+     * Returns a ParsedChatResponse parsed from Claude's natural language with markers.
      */
-    private suspend fun sendWithToolLoop(systemPrompt: String): AiResponseEnvelope {
+    private suspend fun sendWithToolLoop(systemPrompt: String): ParsedChatResponse {
         val maxToolRounds = 5 // Cap tool calls to avoid runaway loops
         var toolRounds = 0
-        var lastResponse: ClaudeResponse? = null
 
         while (true) {
             val response = claudeApi.sendRaw(
@@ -421,7 +517,6 @@ class ChatViewModel(
                 messages = conversationHistory,
                 tools = claudeTools,
             )
-            lastResponse = response
 
             val toolCalls = claudeApi.extractToolCalls(response)
 
@@ -435,58 +530,18 @@ class ChatViewModel(
                 if (text == null) {
                     println("sendWithToolLoop: No text in Claude response, returning fallback")
                     stripToolMessagesFromHistory()
-                    return AiResponseEnvelope(type = "chat", text = "Sorry, I had trouble generating a response. Could you try again?")
-                }
-
-                // If response was truncated (max_tokens), ask Claude to generate a shorter version
-                if (response.stopReason == "max_tokens") {
-                    println("sendWithToolLoop: Response truncated (max_tokens), requesting shorter version")
-                    stripToolMessagesFromHistory()
-                    appendTextToHistory("assistant", text)
-                    appendTextToHistory("user", "Your response was cut off. Please give me the same plan but more concise — shorter detail fields, fewer words. Respond with ONLY the JSON object, no other text.")
-                    try {
-                        val retryResponse = claudeApi.sendRaw(systemPrompt, conversationHistory, null)
-                        val retryText = claudeApi.extractText(retryResponse)
-                        if (retryText != null) {
-                            appendTextToHistory("assistant", retryText)
-                            return claudeApi.parseStructured(retryText)
-                        }
-                    } catch (e: Exception) {
-                        println("sendWithToolLoop: Truncation retry failed: ${e.message}")
-                    }
-                    return AiResponseEnvelope(type = "chat", text = "I put together a plan but it was too large to display. Could you try a simpler request?")
+                    return ParsedChatResponse(
+                        type = ParsedResponseType.CHAT,
+                        text = "Sorry, I had trouble generating a response. Could you try again?",
+                    )
                 }
 
                 stripToolMessagesFromHistory()
                 appendTextToHistory("assistant", text)
-                return try {
-                    println("sendWithToolLoop: Attempting parse, text length=${text.length}, stopReason=${response.stopReason}")
-                    println("sendWithToolLoop: First 200 chars: ${text.take(200)}")
-                    println("sendWithToolLoop: Last 200 chars: ${text.takeLast(200)}")
-                    claudeApi.parseStructured(text)
-                } catch (e: Exception) {
-                    println("sendWithToolLoop: JSON parse failed: ${e.message}")
-                    println("sendWithToolLoop: Full raw text (${text.length} chars): $text")
-                    // Auto-retry once: ask Claude to reformat as valid JSON (no tools needed)
-                    try {
-                        appendTextToHistory("user", "Your response had a JSON formatting issue. Please resend the EXACT same plan as valid JSON — no markdown fences, no text before or after. Just the JSON object.")
-                        val retryResponse = claudeApi.sendRaw(systemPrompt, conversationHistory, null)
-                        val retryText = claudeApi.extractText(retryResponse)
-                        if (retryText != null) {
-                            appendTextToHistory("assistant", retryText)
-                            claudeApi.parseStructured(retryText)
-                        } else {
-                            throw RuntimeException("No text in retry response")
-                        }
-                    } catch (retryEx: Exception) {
-                        println("sendWithToolLoop: Retry also failed: ${retryEx.message}")
-                        println("sendWithToolLoop: Retry stopReason may be max_tokens — check logs above")
-                        val cleanText = text.substringBefore("{").substringBefore("```").trim()
-                        val displayText = if (cleanText.length > 20) cleanText
-                            else "I put together a plan but had trouble formatting it. Let me try again — what were you looking for?"
-                        AiResponseEnvelope(type = "chat", text = displayText)
-                    }
-                }
+
+                println("sendWithToolLoop: Parsing natural response, text length=${text.length}")
+                println("sendWithToolLoop: First 300 chars: ${text.take(300)}")
+                return claudeApi.parseNaturalResponse(text, lastUserMessage)
             }
 
             // Check if we've hit the tool round cap
@@ -506,7 +561,7 @@ class ChatViewModel(
                     }
                 }
                 conversationHistory.add(ClaudeMessage.blocks("user", toolResultBlocks))
-                conversationHistory.add(ClaudeMessage.text("user", "You have enough information now. Respond ONLY with valid JSON (plan, plan_update, or chat type). No other text. Do NOT call any more tools."))
+                conversationHistory.add(ClaudeMessage.text("user", "You have enough information now. Respond with your plan using the natural language format (PLAN:/DAY:/CHIPS:). Do NOT call any more tools."))
                 val finalResponse = claudeApi.sendRaw(
                     systemPrompt = systemPrompt,
                     messages = conversationHistory,
@@ -516,19 +571,14 @@ class ChatViewModel(
                 if (text == null) {
                     println("sendWithToolLoop: No text after cap nudge, returning fallback")
                     stripToolMessagesFromHistory()
-                    return AiResponseEnvelope(type = "chat", text = "I found some great options but had trouble putting them together. Could you try asking again?")
+                    return ParsedChatResponse(
+                        type = ParsedResponseType.CHAT,
+                        text = "I found some great options but had trouble putting them together. Could you try asking again?",
+                    )
                 }
                 stripToolMessagesFromHistory()
                 appendTextToHistory("assistant", text)
-                return try {
-                    claudeApi.parseStructured(text)
-                } catch (e: Exception) {
-                    println("sendWithToolLoop: JSON parse failed after cap: ${e.message}")
-                    val cleanText = text.substringBefore("{").substringBefore("```").trim()
-                    val displayText = if (cleanText.length > 20) cleanText
-                        else "I put together a plan but had trouble formatting it. Let me try again."
-                    AiResponseEnvelope(type = "chat", text = displayText)
-                }
+                return claudeApi.parseNaturalResponse(text, lastUserMessage)
             }
 
             // Claude wants to use tools — add its full response to history
@@ -626,29 +676,65 @@ class ChatViewModel(
         val totalFound = events.size
         val displayEvents = events.take(100)
 
-        val today = kotlin.time.Clock.System.now().toEpochMilliseconds()
-        val header = if (totalFound > 100) "$totalFound events found. Top 100:\n" else "${totalFound} events found:\n"
-        return header + displayEvents.joinToString("\n") { e ->
+        if (displayEvents.isEmpty()) return "No events found matching your search."
+
+        // Group events by date, then by category for compact display
+        data class EventEntry(
+            val id: String, val title: String, val venue: String,
+            val dateKey: String, val dateLabel: String, val time: String,
+            val category: String, val price: String,
+        )
+
+        val entries = displayEvents.map { e ->
             val venue = e.venueName ?: "TBD"
             val isFlexible = e.category == "always_on" || e.startAt == null
-            val dateInfo = if (isFlexible) "Flexible" else {
+            val (dateKey, dateLabel, time) = if (isFlexible) {
+                Triple("Flexible", "Flexible", "anytime")
+            } else {
                 try {
                     val instant = kotlinx.datetime.Instant.parse(e.startAt!!)
                     val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
-                    val dow = local.dayOfWeek.name.take(3)
-                    val mon = local.monthNumber
-                    val day = local.dayOfMonth
+                    val dowFull = local.dayOfWeek.name.lowercase().replaceFirstChar { it.uppercase() }
+                    val monthNames = arrayOf("January","February","March","April","May","June","July","August","September","October","November","December")
+                    val monthName = monthNames[local.monthNumber - 1]
+                    val label = "$dowFull, $monthName ${local.dayOfMonth}"
+                    val key = "${local.date}"
                     val h = local.hour
                     val m = local.minute
                     val ampm = if (h < 12) "am" else "pm"
                     val dh = if (h == 0) 12 else if (h > 12) h - 12 else h
-                    val time = if (m == 0) "${dh}${ampm}" else "${dh}:${m.toString().padStart(2, '0')}${ampm}"
-                    "$dow $mon/$day $time"
-                } catch (_: Exception) { e.startAt?.take(10) ?: "?" }
+                    val timeStr = if (m == 0) "${dh}${ampm}" else "${dh}:${m.toString().padStart(2, '0')}${ampm}"
+                    Triple(key, label, timeStr)
+                } catch (_: Exception) {
+                    Triple(e.startAt?.take(10) ?: "?", e.startAt?.take(10) ?: "?", "?")
+                }
             }
             val price = if (e.isFree) "FREE" else e.priceDisplay.ifBlank { "" }
-            "[${e.id}] ${e.title} | $venue | $dateInfo${if (price.isNotBlank()) " | $price" else ""}"
-        }.ifEmpty { "No events found matching your search." }
+            val cat = (e.subcategory ?: e.category ?: "other").uppercase()
+            EventEntry(e.id, e.title, venue, dateKey, dateLabel, time, cat, price)
+        }
+
+        // Build compact grouped output
+        val grouped = entries.groupBy { it.dateKey }
+        return buildString {
+            for ((_, dateEntries) in grouped) {
+                val dateLabel = dateEntries.first().dateLabel
+                val count = dateEntries.size
+                appendLine("=== $dateLabel ($count events) ===")
+                val byCategory = dateEntries.groupBy { it.category }
+                for ((cat, catEntries) in byCategory) {
+                    val items = catEntries.joinToString(", ") { e ->
+                        val priceTag = if (e.price.isNotBlank()) " ${e.price}" else ""
+                        "${e.title} at ${e.venue} ${e.time}$priceTag [evt:${e.id}]"
+                    }
+                    appendLine("$cat: $items")
+                }
+                appendLine()
+            }
+            if (totalFound > 100) {
+                appendLine("($totalFound total events, showing top 100)")
+            }
+        }.trim()
     }
 
     private suspend fun searchVenues(input: JsonObject): String {
@@ -722,39 +808,38 @@ class ChatViewModel(
         }
     }
 
-    // ── Process Claude's structured response ──
+    // ── Process Claude's parsed natural language response ──
 
-    private suspend fun handleClaudeResponse(envelope: AiResponseEnvelope) {
-        val responseText = envelope.text ?: envelope.intro ?: ""
+    private suspend fun handleClaudeResponse(parsed: ParsedChatResponse) {
+        val responseText = parsed.text
 
-        when (envelope.type) {
-            "chat" -> {
+        when (parsed.type) {
+            ParsedResponseType.CHAT -> {
                 // Pure conversation — Claude is gathering info or answering questions
                 consecutiveQuestionCount++
                 if (responseText.isNotBlank()) {
                     addAiMessage(responseText)
                 }
                 // After 2+ consecutive questions, inject a "Just surprise me" chip
-                val chips = envelope.chips?.toMutableList() ?: mutableListOf()
-                if (consecutiveQuestionCount >= 2 && chips.none { it.label.contains("surprise", ignoreCase = true) }) {
-                    chips.add(AiChip(label = "Just surprise me"))
+                val chips = parsed.chips.toMutableList()
+                if (consecutiveQuestionCount >= 2 && chips.none { it.contains("surprise", ignoreCase = true) }) {
+                    chips.add("Just surprise me")
                 }
                 finishTurn(chips)
             }
 
-            "plan" -> {
+            ParsedResponseType.PLAN -> {
                 consecutiveQuestionCount = 0
                 // Claude is confident — delivering a full plan
-                val title = envelope.planTitle ?: "Your Plan"
-                val days = envelope.days?.map { it.toDomain() } ?: emptyList()
-                val validatedDays = validatePlanDates(days)
-                val enrichedDays = validatedDays.map { resolveDayFromDb(it) }
+                val title = parsed.planTitle ?: "Your Plan"
+                val builtDays = buildPlanFromRefs(parsed)
+                val validatedDays = validatePlanDates(builtDays)
 
                 _uiState.update {
                     it.copy(
-                        days = enrichedDays,
+                        days = validatedDays,
                         planTitle = title,
-                        planAttendeeCount = envelope.attendeeCount ?: 1,
+                        planAttendeeCount = 1,
                         currentDayIndex = 0,
                         approvedDayCount = 0,
                     )
@@ -766,28 +851,28 @@ class ChatViewModel(
 
                 delay(350)
 
-                if (enrichedDays.size > 1) {
+                if (validatedDays.size > 1) {
                     // Multi-day: show all days in a single horizontally scrollable card
-                    addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.MultiDayPlanRef(enrichedDays.size)))
+                    addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.MultiDayPlanRef(validatedDays.size)))
                 } else {
                     // Single day: show as a regular day card
                     addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(0)))
                 }
 
-                finishTurn(withApproveChip(envelope.chips))
+                finishTurn(withApproveChip(parsed.chips))
             }
 
-            "plan_update" -> {
+            ParsedResponseType.PLAN_UPDATE -> {
                 consecutiveQuestionCount = 0
-                val dayIndex = envelope.dayIndex ?: _uiState.value.currentDayIndex
-                val updatedDay = envelope.day?.toDomain()
+                val dayIndex = parsed.dayIndex ?: _uiState.value.currentDayIndex
+                val builtDays = buildPlanFromRefs(parsed)
+                val updatedDay = builtDays.firstOrNull()
 
                 if (updatedDay != null) {
                     val validatedDay = validatePlanDates(listOf(updatedDay)).first()
-                    val enrichedDay = resolveDayFromDb(validatedDay)
                     val previousDay = _uiState.value.days.getOrNull(dayIndex)
                     val previousSlotCount = previousDay?.slots?.size ?: 0
-                    val newSlotCount = enrichedDay.slots.size
+                    val newSlotCount = validatedDay.slots.size
 
                     // Validate: if text says "Added" but new plan has same or fewer slots, re-prompt
                     val textLower = responseText.lowercase()
@@ -795,23 +880,25 @@ class ChatViewModel(
                     val slotsMissing = claimsAdded && newSlotCount <= previousSlotCount
 
                     if (slotsMissing) {
-                        // Claude said it added something but didn't — re-prompt
-                        println("Plan update validation failed: text claims addition but slots didn't increase ($previousSlotCount → $newSlotCount). Re-prompting.")
-                        appendTextToHistory("user", "The plan you returned is missing the event you mentioned adding. Please include ALL existing slots plus the new one in the slots array.")
+                        println("Plan update validation failed: text claims addition but slots didn't increase ($previousSlotCount -> $newSlotCount). Re-prompting.")
+                        appendTextToHistory("user", "The plan you returned is missing the event you mentioned adding. Please include ALL existing slots plus the new one.")
                         try {
-                            val retryEnvelope = sendWithToolLoop(buildSystemPrompt())
-                            if (retryEnvelope.type == "plan_update" && retryEnvelope.day != null) {
-                                val retryDay = resolveDayFromDb(retryEnvelope.day.toDomain())
-                                _uiState.update { state ->
-                                    val days = state.days.toMutableList()
-                                    if (dayIndex in days.indices) days[dayIndex] = retryDay
-                                    state.copy(days = days, currentDayIndex = dayIndex)
+                            val retryParsed = sendWithToolLoop(buildSystemPrompt())
+                            if (retryParsed.type == ParsedResponseType.PLAN_UPDATE && retryParsed.days.isNotEmpty()) {
+                                val retryDays = buildPlanFromRefs(retryParsed)
+                                val retryDay = retryDays.firstOrNull()
+                                if (retryDay != null) {
+                                    _uiState.update { state ->
+                                        val days = state.days.toMutableList()
+                                        if (dayIndex in days.indices) days[dayIndex] = retryDay
+                                        state.copy(days = days, currentDayIndex = dayIndex)
+                                    }
+                                    val retryText = retryParsed.text.ifBlank { responseText }
+                                    if (retryText.isNotBlank()) addAiMessage(retryText)
+                                    addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(dayIndex)))
+                                    finishTurn(withApproveChip(retryParsed.chips))
+                                    return
                                 }
-                                val retryText = retryEnvelope.text ?: responseText
-                                if (retryText.isNotBlank()) addAiMessage(retryText)
-                                addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(dayIndex)))
-                                finishTurn(withApproveChip(retryEnvelope.chips))
-                                return
                             }
                         } catch (e: Throwable) {
                             println("Re-prompt failed: ${e.message}")
@@ -838,7 +925,7 @@ class ChatViewModel(
                     _uiState.update { state ->
                         val days = state.days.toMutableList()
                         if (dayIndex in days.indices) {
-                            days[dayIndex] = enrichedDay
+                            days[dayIndex] = validatedDay
                         }
                         state.copy(days = days, currentDayIndex = dayIndex)
                     }
@@ -851,45 +938,36 @@ class ChatViewModel(
                 // Add the new live plan card
                 addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(dayIndex)))
 
-                finishTurn(withApproveChip(envelope.chips))
+                finishTurn(withApproveChip(parsed.chips))
             }
 
-            "approve" -> {
+            ParsedResponseType.APPROVE -> {
                 // Claude recognized an approval — lock in the whole plan
                 if (responseText.isNotBlank()) {
                     addAiMessage(responseText)
                 }
                 approvePlan()
             }
-
-            else -> {
-                // Fallback — treat as chat
-                if (responseText.isNotBlank()) {
-                    addAiMessage(responseText)
-                }
-                finishTurn(envelope.chips)
-            }
         }
     }
 
-    private fun withApproveChip(aiChips: List<AiChip>?): List<AiChip> {
-        val approve = AiChip(label = "Looks good, add to My Plans", action = "save_plan")
-        val rest = (aiChips ?: emptyList()).filter {
-            !it.label.contains("Looks good", ignoreCase = true) &&
-                it.action != "save_plan"
+    private fun withApproveChip(chips: List<String>): List<String> {
+        val approveLabel = "Looks good, add to My Plans"
+        val rest = chips.filter {
+            !it.contains("Looks good", ignoreCase = true) &&
+                !it.contains("add to My Plans", ignoreCase = true)
         }
-        return listOf(approve) + rest
+        return listOf(approveLabel) + rest
     }
 
-    private fun finishTurn(aiChips: List<AiChip>?) {
-        val quickReplies = aiChips?.map { chip ->
+    private fun finishTurn(chips: List<String>) {
+        val quickReplies = chips.map { label ->
             QuickReply(
-                label = chip.label,
-                action = chip.action ?: chip.label,
-                isGreen = chip.action == "save_plan" ||
-                        chip.label.contains("Looks good", ignoreCase = true),
+                label = label,
+                action = if (label.contains("Looks good", ignoreCase = true)) "save_plan" else label,
+                isGreen = label.contains("Looks good", ignoreCase = true),
             )
-        } ?: emptyList()
+        }
 
         _uiState.update {
             it.copy(
@@ -1374,141 +1452,59 @@ You are Local, an events concierge in a mobile app.
 Today: $todayDate ($dayOfWeek)
 Calendar: $calendarRef
 
-######## ABSOLUTE RULE — ONE QUESTION PER MESSAGE ########
-You MUST ask exactly ONE question per message. Not two. Not "X or Y, and also Z?"
-If your message contains more than one question mark, REWRITE IT with only one.
-BAD: "When are you thinking? And what area?" — TWO questions, VIOLATION.
-BAD: "Do you have tickets, or would you like me to find some?" — this is OK, it's one question with options.
-GOOD: "When are you thinking?" — ONE question.
-GOOD: "What area?" — ONE question.
-########################################################
+After searching, respond in this format:
 
-ABSOLUTE RULE — DATE AND TIME ACCURACY:
-- ALWAYS check the calendar above to confirm which day of the week a date falls on. Do NOT guess.
-- Each search result includes the day of week (e.g. "Saturday"). ONLY include an event in a plan if its day of week EXACTLY matches the day being planned.
-- A Monday event CANNOT go on a Saturday plan. A Friday event CANNOT go on a Sunday plan. ALWAYS verify.
-- If a search returns events for the wrong day, skip them. Only use events whose date matches.
-- Use the EXACT start time from search results. Never change it.
-- Anytime events (tagged [FLEXIBLE]): can go on any day at any time you choose.
-- Anytime events: schedule at reasonable times (10am-9pm) during typical venue hours.
-- If you cannot find scheduled events for the requested date, say so honestly and suggest anytime alternatives.
-- Never use terms like "fixed-time" or "flexible" when talking to the user. Just say the event name and time.
+For plans:
+PLAN: "Title"
+DAY: Saturday, April 5
+- [evt:EVENT_ID] at TIME — Your reason for picking this
+- [venue:VENUE_NAME] at TIME — Your reason
+CHIPS: chip1 | chip2 | chip3
 
-TOOLS: Always search before recommending. Use search_events for events, search_venues for places, recommend_and_save_venue for restaurants/bars not in the DB, get_event_details for full info. Search broadly first, then narrow down. Pass the user's location and category as tool parameters.
+For updating an existing day:
+UPDATE_DAY: 0
+DAY: Saturday, April 5
+- [evt:EVENT_ID] at TIME — Your reason
+- [venue:VENUE_NAME] at TIME — Your reason
+CHIPS: chip1 | chip2
 
-RULES:
-- Events: only from search_events results (must have event_id).
-- Restaurants/bars: search_venues first, then recommend_and_save_venue if needed. Restaurant/venue slots use event_id: null, is_custom: false. NEVER use filler like "Dinner" or "Custom dinner" — always a real restaurant name.
-- No emoji. No markdown (no **bold**, no *italic*, no bullet points). Plain text only. 1-3 sentences. Warm and concise.
-- NEVER set is_custom: true — that is only for user-added items via "Add my own".
-- 2-3 real results beat 5 slots with filler.
+For conversation (no plan):
+Just write naturally. No PLAN/DAY markers.
+CHIPS: chip1 | chip2
 
-RESTAURANT DETAILS: When recommending restaurants via recommend_and_save_venue, also indicate in the plan slot:
-- Price level: $ (under $15), $$ ($15-30), $$$ ($30-60), $$$$ ($60-100), $$$$$ ($100+)
-- Whether reservations are recommended
-- Whether it's hard to get reservations (e.g., "Book 2+ weeks ahead")
-Include these in the slot's "detail" field, e.g.: "North End · $$ · Reservations recommended"
+Rules:
+- Reference events ONLY by [evt:ID] using IDs from search results (the [evt:xxx] tags after each event).
+- Reference venues by [venue:NAME] using the name from recommend_and_save_venue results.
+- Keep explanations to 1 sentence per slot.
+- Include 2-3 chips at the end, separated by |.
+- No emoji. No markdown. Plain text only for the natural language parts.
+- 1 question per message max. Be direct.
 
-######## ABSOLUTE RULE — NEVER DESCRIBE A PLAN WITHOUT BUILDING IT ########
-After searching for events, you MUST respond with type "plan" containing actual slots.
-NEVER respond with type "chat" saying "Let me build..." or "I found great options for..." or "Here's what I'm thinking..."
-That is USELESS. The user wants to SEE the plan card, not read about it.
-If you searched and found results → respond with type "plan" with slots. ALWAYS.
-########
+DATE AND TIME ACCURACY:
+- Check the calendar to confirm day-of-week for any date. Do NOT guess.
+- Only include events whose date matches the day being planned.
+- Use the EXACT start time from search results.
+- Anytime events: schedule at reasonable times (10am-9pm).
 
-SPEED IS EVERYTHING: Build the plan as fast as possible. Do NOT ask about existing commitments. Do NOT ask about group size unless it's a group activity. If you have enough to search (what + when), SEARCH AND BUILD IMMEDIATELY. The user can always modify after.
+TOOLS: Always search before recommending. Use search_events for events, search_venues for places, recommend_and_save_venue for restaurants/bars not in the DB, get_event_details for full info. Search broadly, then curate. Make MULTIPLE tool calls for plans with 2+ slots.
 
-AMENDMENTS — THIS IS THE #1 RULE:
-When a plan exists and the user asks to change WITHIN a day (add/remove/move/replace/swap slots, "more events", "less expensive", "add brunch"), respond with type "plan_update" with the modified day. NEVER use "plan" for changes to existing days — always "plan_update".
-When the user asks to ADD NEW DAYS to a plan (e.g., "add Friday and Saturday"), respond with type "plan" that includes ALL days (existing + new).
-DUPLICATES: NEVER add the same event twice in one day. Check event_id — if it already appears, skip it.
-Examples: "No music" = remove music events, keep everything else. "Less food" = remove some food slots. "Add drinks" = add a drinks slot to the existing plan.
-RELATIVE REFERENCES: "before the concert" means BEFORE that event's start time, not after. "after dinner" means AFTER dinner's time.
-DUPLICATES: Never add the same venue twice in one day unless the user explicitly asks for it.
-AMENDMENT ACCURACY: When adding a slot, include it exactly once. When removing, remove only the specified slots and keep everything else.
-CRITICAL: The slots in your JSON response MUST match what you say in the text. If you say "Added X" then X MUST appear in the slots array. If you say "Removed Y" then Y must NOT be in the slots. Never say you added something but leave it out of the slots.
+SPEED: If you know WHAT and WHEN, search and build immediately. Only ask about WHEN if not given. Default: area = current location, group = 2, vibe = fun/casual.
 
-CONFLICTS: If adding at a time already taken, flag it and offer options via chips.
+AMENDMENTS: When a plan exists and user wants changes WITHIN a day, use UPDATE_DAY format. For adding NEW days, use PLAN format with ALL days. Never duplicate events. When removing, keep everything else.
 
-CUSTOM EVENTS ("Add my own"):
-When the user says "Add my own" or wants to add their own event/activity:
-1. Ask: what is it and what time? If the plan is only 1 day, do NOT ask which day — it's obvious.
-2. Return plan_update with ALL existing slots PLUS the custom slot
-3. Custom slot MUST have: is_custom: true, event_id: null
-4. Use the user's exact name and time for the custom slot
+PLAN SIZE: "Date night" = 2-3 slots (dinner + activity + optional drinks). "Night out" = 2-3. "Full day" = 4-5. "Weekend" = 3-5 per day. Single event = 1 slot.
 
-ALTERNATIVE PLANS:
-When user asks for "something different", "cheaper", "more active", "option B", etc:
-- Respond with type "plan" (a complete new plan), NOT "chat"
-- Search for different events than the current plan
-- Make it genuinely different — different venues, different vibe
+BROWSING: For "what's happening" / "live music this week" / etc, search first, then list results as natural text (no PLAN markers). Include event names, venues, times. Offer chips like "Plan around [event]".
 
-MULTI-SEARCH STRATEGY — CRITICAL:
-For any plan with 2+ slots, you MUST make MULTIPLE tool calls to find the best options:
-- Call search_events with different categories (music, comedy, arts, etc.) to find activities
-- Call recommend_and_save_venue for dining/drinks
-- Combine the best results into a cohesive plan
-DO NOT rely on a single search call. Cast a wide net, then curate.
+DINING: For restaurant/bar requests, go straight to recommend_and_save_venue. When presenting multiple options for the SAME slot, list them in text (no plan), let user choose.
 
-PLAN SIZE REQUIREMENTS:
-- "Date night" → EXACTLY 2-3 slots: dinner (recommend_and_save_venue) + an activity (search_events) + optional drinks. The activity can be ANYTHING interesting — comedy, live music, art opening, museum night, escape room, bowling, trivia, wine tasting, cooking class, theater, film screening, arcade bar, etc. Be creative. A single restaurant is NOT a date night. You MUST search for events AND recommend a restaurant.
-- "Night out" → 2-3 slots including food/drinks + activity
-- "Day trip" / "full day" → 4-5 slots with meals
-- "Weekend plans" → 3-5 slots per day across both days
-- Specific single event ("tickets to X") → 1 slot only
-- A plan with only 1 slot is WRONG unless the user asked for a specific single event.
+LOCATION: User is in ${state.currentLocationName.ifBlank { state.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "their area" }} (lat: ${state.currentLat ?: state.userPreferences?.userLat ?: "unknown"}, lng: ${state.currentLng ?: state.userPreferences?.userLng ?: "unknown"}). Searches auto-use coordinates. Never ask location.
 
-PLAN QUALITY:
-- Plans should feel curated and intentional, not random
-- Include variety: don't put 3 concerts in one night
-- Time the plan logically: dinner before the show, drinks after
-- Include real venue details: neighborhood, cuisine, price level
-- If search returns few results, try different keywords or broader categories
-
-DISCOVERY/BROWSING QUERIES:
-When the user is browsing ("what's happening", "live music this week", "shows tonight", "free things to do", "events this weekend") — FIRST call search_events to find matching events, THEN respond with type "chat" (NOT "plan") listing the results. You MUST search and include actual events. Format each event on its own line with a bullet:
-
-• Event Name — Venue · Time · Price
-
-Use a blank line between the intro and the list, and between day headers. Group by day if spanning multiple days. Keep it scannable. Then offer chips like "Plan around [event]", "Tell me more". NEVER respond with just a summary sentence — always list the actual events.
-
-WHEN TO BUILD A PLAN — CRITICAL:
-Once you know WHAT and WHEN, BUILD THE PLAN immediately. Do NOT respond with type "chat" saying "I found great options" — that's useless without the actual plan card. Search for events, find venues, and return type "plan" with real slots.
-- "Date night next weekend" → BUILD IT. Don't ask about area, group size, or vibe.
-- "Things to do Saturday" → BUILD IT. Use their current location.
-- "Live music" with no date → ask ONLY "When are you thinking?" — nothing else.
-- "Surprise me" → BUILD IT immediately with this weekend's best events.
-- The ONLY question worth asking is WHEN if no date is given. Everything else, just build and let them modify.
-GATHERING INFO: The only thing you might need to ask is WHEN. Default everything else: area = user's current location, group size = 2, vibe = fun/casual. If the user says "surprise me" or gives you a date, skip ALL questions and build immediately.
-LOCATION: The user is currently in ${state.currentLocationName.ifBlank { state.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "their area" }} (lat: ${state.currentLat ?: state.userPreferences?.userLat ?: "unknown"}, lng: ${state.currentLng ?: state.userPreferences?.userLng ?: "unknown"}). All searches automatically use the user's coordinates — you do NOT need to pass a location parameter to search_events unless the user asks for a specific different area. Never ask "where are you located" — we already know.
-NO RESULTS: If search returns no matching events, don't just say "not finding events". Instead: 1) Try searching nearby areas automatically. 2) If still nothing, use recommend_and_save_venue to build a venue-based plan (restaurants, bars, activities). Always offer a path forward. Do NOT say "those dates are still being added" — the events may genuinely not exist.
-NEVER mention "database", "my database", "system", or any implementation details to the user. You are a concierge, not a search engine. Speak naturally.
-RESTAURANT/DINING REQUESTS: When the user asks for dinner, restaurants, food, brunch, drinks, bars, or any dining — go STRAIGHT to recommend_and_save_venue. Do NOT search events first. Dining is not an event.
-PRESENTING OPTIONS: When recommending multiple options for the SAME slot (e.g. 3 restaurant choices for dinner, 3 bar options for drinks), respond with type "chat" as a bulleted text list, NOT a plan. The user hasn't chosen yet. You MUST include the actual venue details in your text response. Format:
-Here are some great spots:
-• Restaurant Name — Neighborhood · Cuisine · $$ · "Known for X"
-• Restaurant Name — Neighborhood · Cuisine · $$$ · "Known for Y"
-• Restaurant Name — Neighborhood · Cuisine · $$ · "Known for Z"
-CRITICAL: The bullet points with venue names MUST appear in the "text" field of your JSON response. Do NOT leave the text empty or just include an intro sentence. The venues must be listed.
-Then offer chips like "Let's go with [Name]", "Tell me more about [Name]", "Something else" so the user picks one. ONLY build a plan card after the user chooses.
-PRICING: Use "Free" tag for free events. For paid events, show the price (e.g. "$25-40"). Never use the phrase "admission fee" — just show the price.
-BREVITY: Keep the text before a plan to 1 sentence max. The plan cards speak for themselves. Don't restate what the user asked for.
-DATE NIGHT RULE: If the user mentions "date night", "date", or "couple", automatically assume 2 people. Do NOT ask about group size — just proceed with planning for 2.
-TONE FOR QUESTIONS: Be direct. Don't say "Great, I can help with that! First, let me ask..." — just ask the question. Example: "When are you thinking — this weekend or a specific date?" not "That sounds fun! I'd love to help plan that. To get started, could you tell me when you're thinking?"
+NO RESULTS: Try nearby areas. If still nothing, use recommend_and_save_venue for a venue-based plan. Never mention "database" or implementation details.
 
 $prefsContext
 
 $currentPlanContext
-
-RESPONSE FORMAT (JSON only, no markdown fences, keep detail fields SHORT to avoid truncation):
-chat: {"type":"chat","text":"...","chips":[{"label":"..."}]}
-plan: {"type":"plan","text":"...","plan_title":"...","attendee_count":N,"days":[{"label":"...","short_name":"...","slots":[{"time":"...","emoji":"","name":"...","detail":"...","price":"...","is_free":false,"image_url":"...","event_id":"..."}],"travel":[{"mode":"...","mins":N}]}],"chips":[...]}
-plan_update: {"type":"plan_update","text":"...","day_index":N,"day":{same day structure},"chips":[...]}
-approve: {"type":"approve","text":"..."}
-Keep "detail" fields concise. Omit image_url if null.
-
-CHIPS: 2-4 contextual suggestions. After plans: approve + modify options + "Add my own". After questions: common answers.
-SLOTS: Match count to request. Every slot needs event_id from search, EXCEPT venue slots from recommend_and_save_venue (event_id: null, is_custom: false) and user custom items (is_custom: true, event_id: null). Sort chronologically. Copy image URLs exactly.
         """.trimIndent()
     }
 
