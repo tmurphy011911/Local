@@ -622,43 +622,32 @@ class ChatViewModel(
         // Cache full event objects
         searchResultCache.addAll(events)
 
-        // If too many results, include a summary header so Claude knows the full scope
+        // Cap what Claude sees to keep token usage manageable
         val totalFound = events.size
-        val displayEvents = if (totalFound > 200) events.take(200) else events
+        val displayEvents = events.take(100)
 
         val today = kotlin.time.Clock.System.now().toEpochMilliseconds()
-        val header = if (totalFound > 200) "Found $totalFound events matching your search. Showing top 200 by date:\n\n" else ""
+        val header = if (totalFound > 100) "$totalFound events found. Top 100:\n" else "${totalFound} events found:\n"
         return header + displayEvents.joinToString("\n") { e ->
-            val price = e.priceDisplay.ifBlank { "Price TBD" }
             val venue = e.venueName ?: "TBD"
-            val img = e.imageUrl ?: ""
             val isFlexible = e.category == "always_on" || e.startAt == null
-            val typeTag = if (isFlexible) "FLEXIBLE" else "FIXED-TIME"
-            // For fixed-time events, show the full ISO date + day of week so Claude can match days
-            val dateInfo = if (isFlexible) {
-                "Anytime (no fixed date)"
-            } else {
-                val isoDate = e.startAt ?: ""
+            val dateInfo = if (isFlexible) "Flexible" else {
                 try {
-                    val instant = kotlinx.datetime.Instant.parse(isoDate)
+                    val instant = kotlinx.datetime.Instant.parse(e.startAt!!)
                     val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
-                    val dow = local.dayOfWeek.name.uppercase()
-                    val monthNames = arrayOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
-                    val monthName = monthNames[local.monthNumber - 1]
-                    val dayNum = local.dayOfMonth
-                    val hour = local.hour
-                    val minute = local.minute
-                    val amPm = if (hour < 12) "am" else "pm"
-                    val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
-                    val timeStr = if (minute == 0) "${displayHour}${amPm}" else "${displayHour}:${minute.toString().padStart(2, '0')}${amPm}"
-                    "\u26A0\uFE0F $dow $monthName $dayNum — $timeStr ($isoDate)"
-                } catch (_: Exception) {
-                    val dateStr = e.dateDisplay.ifBlank { isoDate.take(10) }
-                    dateStr
-                }
+                    val dow = local.dayOfWeek.name.take(3)
+                    val mon = local.monthNumber
+                    val day = local.dayOfMonth
+                    val h = local.hour
+                    val m = local.minute
+                    val ampm = if (h < 12) "am" else "pm"
+                    val dh = if (h == 0) 12 else if (h > 12) h - 12 else h
+                    val time = if (m == 0) "${dh}${ampm}" else "${dh}:${m.toString().padStart(2, '0')}${ampm}"
+                    "$dow $mon/$day $time"
+                } catch (_: Exception) { e.startAt?.take(10) ?: "?" }
             }
-            val flexNote = if (isFlexible) " | Schedule anytime during venue hours" else ""
-            "[$typeTag] [${e.id}] ${e.title} | $venue (${e.venueCity}) | DATE: $dateInfo | $price | ${e.category}${if (e.isFree) " | FREE" else ""}$flexNote${if (img.isNotBlank()) " | img:$img" else ""}"
+            val price = if (e.isFree) "FREE" else e.priceDisplay.ifBlank { "" }
+            "[${e.id}] ${e.title} | $venue | $dateInfo${if (price.isNotBlank()) " | $price" else ""}"
         }.ifEmpty { "No events found matching your search." }
     }
 
