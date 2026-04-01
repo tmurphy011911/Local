@@ -191,18 +191,18 @@ class EventRepositoryImpl(
                     }
                 }
                 order("start_at", Order.ASCENDING)
-                limit(if (userLat != null) 200L else limit.toLong())
+                limit(limit.toLong().coerceAtMost(10000))
             }
             .decodeList<EventDto>()
             .map { it.toDomain() }
             .let { events ->
                 if (userLat != null && userLng != null) {
-                    val radius = radiusMiles ?: 15.0
+                    val radius = radiusMiles ?: 20.0
                     events.filter { e ->
                         val lat = e.venueLat ?: return@filter false
                         val lng = e.venueLng ?: return@filter false
                         live.localapp.local.domain.model.distanceMiles(userLat, userLng, lat, lng) <= radius
-                    }.take(limit)
+                    }
                 } else events
             }
     }

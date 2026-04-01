@@ -591,7 +591,7 @@ class ChatViewModel(
         val category = input["category"]?.jsonPrimitive?.contentOrNull
         var dateRange = input["date_range"]?.jsonPrimitive?.contentOrNull
         val keyword = input["keyword"]?.jsonPrimitive?.contentOrNull
-        val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 200
+        val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 10000
         val startDate = input["start_date"]?.jsonPrimitive?.contentOrNull
         val endDate = input["end_date"]?.jsonPrimitive?.contentOrNull
 
@@ -619,11 +619,16 @@ class ChatViewModel(
             radiusMiles = 20.0,
         )
 
-        // Cache full event objects for "Also Happening" recommendations
+        // Cache full event objects
         searchResultCache.addAll(events)
 
+        // If too many results, include a summary header so Claude knows the full scope
+        val totalFound = events.size
+        val displayEvents = if (totalFound > 200) events.take(200) else events
+
         val today = kotlin.time.Clock.System.now().toEpochMilliseconds()
-        return events.joinToString("\n") { e ->
+        val header = if (totalFound > 200) "Found $totalFound events matching your search. Showing top 200 by date:\n\n" else ""
+        return header + displayEvents.joinToString("\n") { e ->
             val price = e.priceDisplay.ifBlank { "Price TBD" }
             val venue = e.venueName ?: "TBD"
             val img = e.imageUrl ?: ""
@@ -661,7 +666,7 @@ class ChatViewModel(
         val location = input["location"]?.jsonPrimitive?.contentOrNull
         val category = input["category"]?.jsonPrimitive?.contentOrNull
         val keyword = input["keyword"]?.jsonPrimitive?.contentOrNull
-        val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 200
+        val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 10000
 
         val venues = venueRepo.searchVenues(location, category, keyword, limit)
 
