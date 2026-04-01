@@ -216,6 +216,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             onProfileClick = { selectedTab = Tab.PROFILE },
                             onDebugLocationChange = { lat, lng, name ->
                                 placesVm.debugSetLocation(lat, lng, name)
+                                chatVm.setCurrentLocation(lat, lng, name)
                             },
                             onFavorite = { event ->
                                 homeVm.toggleEventFavorite(event.id, event.subcategory ?: event.category)

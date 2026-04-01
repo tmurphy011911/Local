@@ -600,10 +600,11 @@ class ChatViewModel(
             dateRange = "custom"
         }
 
-        // Use current location for geo-radius search (falls back to prefs)
+        // Always use current location for geo-radius search
         val state = _uiState.value
         val userLat = state.currentLat ?: state.userPreferences?.userLat
         val userLng = state.currentLng ?: state.userPreferences?.userLng
+        println("searchEvents: lat=$userLat lng=$userLng location=$location currentLocationName=${state.currentLocationName}")
 
         val events = eventRepo.searchEvents(
             location = location,
@@ -615,7 +616,7 @@ class ChatViewModel(
             endDate = endDate,
             userLat = userLat,
             userLng = userLng,
-            radiusMiles = 30.0,
+            radiusMiles = 20.0,
         )
 
         // Cache full event objects for "Also Happening" recommendations
@@ -1478,7 +1479,7 @@ Once you know WHAT and WHEN, BUILD THE PLAN immediately. Do NOT respond with typ
 - "Surprise me" → BUILD IT immediately with this weekend's best events.
 - The ONLY question worth asking is WHEN if no date is given. Everything else, just build and let them modify.
 GATHERING INFO: The only thing you might need to ask is WHEN. Default everything else: area = user's current location, group size = 2, vibe = fun/casual. If the user says "surprise me" or gives you a date, skip ALL questions and build immediately.
-LOCATION: The user is currently in ${state.currentLocationName.ifBlank { state.userPreferences?.city ?: "the Boston area" }}. If they say "near me" or don't specify a location, search their current area. Never ask "where are you located" — we already know. Instead say "What area are you thinking?" or "Anywhere specific, or should I search broadly?"
+LOCATION: The user is currently in ${state.currentLocationName.ifBlank { state.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "their area" }} (lat: ${state.currentLat ?: state.userPreferences?.userLat ?: "unknown"}, lng: ${state.currentLng ?: state.userPreferences?.userLng ?: "unknown"}). All searches automatically use the user's coordinates — you do NOT need to pass a location parameter to search_events unless the user asks for a specific different area. Never ask "where are you located" — we already know.
 NO RESULTS: If search returns no matching events, don't just say "not finding events". Instead: 1) Try searching nearby areas automatically. 2) If still nothing, use recommend_and_save_venue to build a venue-based plan (restaurants, bars, activities). Always offer a path forward. Do NOT say "those dates are still being added" — the events may genuinely not exist.
 NEVER mention "database", "my database", "system", or any implementation details to the user. You are a concierge, not a search engine. Speak naturally.
 RESTAURANT/DINING REQUESTS: When the user asks for dinner, restaurants, food, brunch, drinks, bars, or any dining — go STRAIGHT to recommend_and_save_venue. Do NOT search events first. Dining is not an event.
