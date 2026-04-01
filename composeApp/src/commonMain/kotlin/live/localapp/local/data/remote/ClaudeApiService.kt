@@ -5,11 +5,18 @@ import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.preparePost
 import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
+import io.ktor.utils.io.ByteReadChannel
+import io.ktor.utils.io.readUTF8Line
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.channels.awaitClose
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -63,6 +70,19 @@ data class ClaudeContentBlock(
     val name: String? = null,       // tool name
     val input: JsonObject? = null,  // tool input
 )
+
+// ── Streaming event types ──
+
+sealed interface StreamEvent {
+    /** A chunk of text from a content_block_delta */
+    data class TextDelta(val text: String) : StreamEvent
+    /** A tool_use block started — accumulate input JSON via InputDelta */
+    data class ToolUseStart(val index: Int, val id: String, val name: String) : StreamEvent
+    /** A chunk of tool input JSON */
+    data class InputDelta(val partialJson: String) : StreamEvent
+    /** The stream completed — carries the assembled ClaudeResponse */
+    data class Done(val response: ClaudeResponse) : StreamEvent
+}
 
 // ── Structured AI response envelope (legacy, kept for backward compat) ──
 
@@ -273,6 +293,127 @@ val claudeTools: JsonArray = buildJsonArray {
             }
         }
     }
+    addJsonObject {
+        put("name", "present_plan")
+        put("description", "Display a plan card to the user with organized event/venue slots. Call this when you have enough information to present a concrete plan. Your text response will appear as a conversational message above the plan card.")
+        putJsonObject("input_schema") {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("title") {
+                    put("type", "string")
+                    put("description", "Short plan title (e.g. 'Date Night in Boston', 'Weekend in Cambridge')")
+                }
+                putJsonObject("days") {
+                    put("type", "array")
+                    putJsonObject("items") {
+                        put("type", "object")
+                        putJsonObject("properties") {
+                            putJsonObject("label") {
+                                put("type", "string")
+                                put("description", "Day label (e.g. 'Saturday, April 5')")
+                            }
+                            putJsonObject("slots") {
+                                put("type", "array")
+                                putJsonObject("items") {
+                                    put("type", "object")
+                                    putJsonObject("properties") {
+                                        putJsonObject("event_id") {
+                                            put("type", "string")
+                                            put("description", "Event ID from search_events results. Use this for events.")
+                                        }
+                                        putJsonObject("venue_name") {
+                                            put("type", "string")
+                                            put("description", "Venue name from recommend_and_save_venue. Use this for restaurants/bars instead of event_id.")
+                                        }
+                                        putJsonObject("time") {
+                                            put("type", "string")
+                                            put("description", "Time slot (e.g. '7 PM', '6:30 PM')")
+                                        }
+                                        putJsonObject("note") {
+                                            put("type", "string")
+                                            put("description", "Brief reason for picking this (1 sentence)")
+                                        }
+                                    }
+                                    putJsonArray("required") {
+                                        add(JsonPrimitive("time"))
+                                        add(JsonPrimitive("note"))
+                                    }
+                                }
+                            }
+                        }
+                        putJsonArray("required") {
+                            add(JsonPrimitive("label"))
+                            add(JsonPrimitive("slots"))
+                        }
+                    }
+                }
+                putJsonObject("chips") {
+                    put("type", "array")
+                    putJsonObject("items") { put("type", "string") }
+                    put("description", "2-3 short follow-up suggestions for the user (e.g. 'Add drinks after', 'Make it a full day', 'Swap to Saturday')")
+                }
+            }
+            putJsonArray("required") {
+                add(JsonPrimitive("title"))
+                add(JsonPrimitive("days"))
+            }
+        }
+    }
+    addJsonObject {
+        put("name", "update_plan")
+        put("description", "Update a specific day in the user's existing plan. Use when the user wants to swap, add, or remove events from a day.")
+        putJsonObject("input_schema") {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("day_index") {
+                    put("type", "integer")
+                    put("description", "Zero-based index of the day to update")
+                }
+                putJsonObject("label") {
+                    put("type", "string")
+                    put("description", "Day label (e.g. 'Saturday, April 5')")
+                }
+                putJsonObject("slots") {
+                    put("type", "array")
+                    putJsonObject("items") {
+                        put("type", "object")
+                        putJsonObject("properties") {
+                            putJsonObject("event_id") {
+                                put("type", "string")
+                                put("description", "Event ID from search_events results")
+                            }
+                            putJsonObject("venue_name") {
+                                put("type", "string")
+                                put("description", "Venue name from recommend_and_save_venue")
+                            }
+                            putJsonObject("time") {
+                                put("type", "string")
+                                put("description", "Time slot (e.g. '7 PM')")
+                            }
+                            putJsonObject("note") {
+                                put("type", "string")
+                                put("description", "Brief reason for picking this")
+                            }
+                        }
+                        putJsonArray("required") {
+                            add(JsonPrimitive("time"))
+                            add(JsonPrimitive("note"))
+                        }
+                    }
+                }
+                putJsonObject("chips") {
+                    put("type", "array")
+                    putJsonObject("items") { put("type", "string") }
+                    put("description", "2-3 short follow-up suggestions for the user")
+                }
+            }
+            putJsonArray("required") {
+                add(JsonPrimitive("day_index"))
+                add(JsonPrimitive("label"))
+                add(JsonPrimitive("slots"))
+            }
+        }
+    }
 }
 
 // ── Helper builder functions for JSON DSL ──
@@ -360,6 +501,167 @@ class ClaudeApiService {
     }
 
     /**
+     * Send a streaming request to Claude. Returns a Flow that emits:
+     * - TextDelta: each chunk of text as it arrives
+     * - ToolUseStart: when Claude begins a tool call
+     * - InputDelta: chunks of tool input JSON
+     * - Done: final assembled ClaudeResponse when stream completes
+     */
+    fun sendRawStreaming(
+        systemPrompt: String,
+        messages: List<ClaudeMessage>,
+        tools: JsonArray? = null,
+    ): Flow<StreamEvent> = callbackFlow {
+        val body = buildJsonObject {
+            put("model", "claude-sonnet-4-5-20250929")
+            put("max_tokens", 16384)
+            put("stream", true)
+            put("system", systemPrompt)
+            put("messages", json.encodeToJsonElement(
+                kotlinx.serialization.serializer<List<ClaudeMessage>>(),
+                messages,
+            ))
+            if (tools != null && tools.isNotEmpty()) {
+                put("tools", tools)
+            }
+        }
+
+        val statement = client.preparePost(apiUrl) {
+            header("x-api-key", Config.CLAUDE_API_KEY)
+            header("anthropic-version", "2023-06-01")
+            contentType(ContentType.Application.Json)
+            setBody(body)
+        }
+
+        statement.execute { httpResponse ->
+            if (httpResponse.status.value !in 200..299) {
+                val errorBody = httpResponse.bodyAsText()
+                throw RuntimeException("Claude streaming error ${httpResponse.status.value}: $errorBody")
+            }
+
+            val channel: ByteReadChannel = httpResponse.bodyAsChannel()
+
+            // Accumulators for building the final ClaudeResponse
+            val contentBlocks = mutableListOf<ClaudeContentBlock>()
+            val inputBuffers = mutableMapOf<Int, StringBuilder>() // index -> partial JSON
+            var stopReason: String? = null
+            var responseId = ""
+            var currentTextBuffer = StringBuilder()
+            var currentTextIndex = -1
+
+            while (!channel.isClosedForRead) {
+                val line = channel.readUTF8Line() ?: break
+                if (!line.startsWith("data: ")) continue
+                val data = line.removePrefix("data: ").trim()
+                if (data.isEmpty() || data == "[DONE]") continue
+
+                try {
+                    val event = json.parseToJsonElement(data).jsonObject
+                    val type = event["type"]?.jsonPrimitive?.content ?: continue
+
+                    when (type) {
+                        "message_start" -> {
+                            val message = event["message"]?.jsonObject
+                            responseId = message?.get("id")?.jsonPrimitive?.content ?: ""
+                        }
+
+                        "content_block_start" -> {
+                            val index = event["index"]?.jsonPrimitive?.content?.toIntOrNull() ?: continue
+                            val block = event["content_block"]?.jsonObject ?: continue
+                            val blockType = block["type"]?.jsonPrimitive?.content ?: continue
+
+                            when (blockType) {
+                                "text" -> {
+                                    // Flush previous text block if any
+                                    if (currentTextIndex >= 0) {
+                                        while (contentBlocks.size <= currentTextIndex) contentBlocks.add(ClaudeContentBlock())
+                                        contentBlocks[currentTextIndex] = ClaudeContentBlock(type = "text", text = currentTextBuffer.toString())
+                                    }
+                                    currentTextIndex = index
+                                    currentTextBuffer = StringBuilder()
+                                }
+                                "tool_use" -> {
+                                    val id = block["id"]?.jsonPrimitive?.content ?: ""
+                                    val name = block["name"]?.jsonPrimitive?.content ?: ""
+                                    inputBuffers[index] = StringBuilder()
+                                    // Ensure contentBlocks list is big enough
+                                    while (contentBlocks.size <= index) contentBlocks.add(ClaudeContentBlock())
+                                    contentBlocks[index] = ClaudeContentBlock(type = "tool_use", id = id, name = name)
+                                    trySend(StreamEvent.ToolUseStart(index, id, name))
+                                }
+                            }
+                        }
+
+                        "content_block_delta" -> {
+                            val index = event["index"]?.jsonPrimitive?.content?.toIntOrNull() ?: continue
+                            val delta = event["delta"]?.jsonObject ?: continue
+                            val deltaType = delta["type"]?.jsonPrimitive?.content ?: continue
+
+                            when (deltaType) {
+                                "text_delta" -> {
+                                    val text = delta["text"]?.jsonPrimitive?.content ?: continue
+                                    currentTextBuffer.append(text)
+                                    trySend(StreamEvent.TextDelta(text))
+                                }
+                                "input_json_delta" -> {
+                                    val partial = delta["partial_json"]?.jsonPrimitive?.content ?: continue
+                                    inputBuffers[index]?.append(partial)
+                                    trySend(StreamEvent.InputDelta(partial))
+                                }
+                            }
+                        }
+
+                        "content_block_stop" -> {
+                            val index = event["index"]?.jsonPrimitive?.content?.toIntOrNull() ?: continue
+                            // Finalize text block
+                            if (index == currentTextIndex) {
+                                while (contentBlocks.size <= index) contentBlocks.add(ClaudeContentBlock())
+                                contentBlocks[index] = ClaudeContentBlock(type = "text", text = currentTextBuffer.toString())
+                                currentTextIndex = -1
+                            }
+                            // Finalize tool_use block — parse accumulated JSON input
+                            val inputJson = inputBuffers[index]?.toString()
+                            if (inputJson != null) {
+                                val existing = contentBlocks.getOrNull(index)
+                                if (existing != null && existing.type == "tool_use") {
+                                    val parsedInput = try {
+                                        json.parseToJsonElement(inputJson).jsonObject
+                                    } catch (_: Exception) {
+                                        JsonObject(emptyMap())
+                                    }
+                                    contentBlocks[index] = existing.copy(input = parsedInput)
+                                }
+                                inputBuffers.remove(index)
+                            }
+                        }
+
+                        "message_delta" -> {
+                            stopReason = event["delta"]?.jsonObject?.get("stop_reason")?.jsonPrimitive?.content
+                        }
+
+                        "message_stop" -> {
+                            // Stream complete
+                        }
+                    }
+                } catch (e: Exception) {
+                    println("SSE parse error: ${e.message} for data: ${data.take(200)}")
+                }
+            }
+
+            // Build final ClaudeResponse
+            val response = ClaudeResponse(
+                id = responseId,
+                content = contentBlocks.filter { it.type.isNotEmpty() },
+                stopReason = stopReason,
+            )
+            trySend(StreamEvent.Done(response))
+        }
+
+        close()
+        awaitClose()
+    }
+
+    /**
      * Extract tool calls from a Claude response.
      */
     fun extractToolCalls(response: ClaudeResponse): List<ToolCall> {
@@ -438,121 +740,14 @@ class ClaudeApiService {
     }
 
     /**
-     * Parse Claude's natural language response with embedded markers.
-     *
-     * Format:
-     * PLAN: "Title"
-     * DAY: Saturday, April 5
-     * - [evt:abc123] at 6:30 PM — Note
-     * - [venue:Name] at 8 PM — Note
-     * CHIPS: chip1 | chip2
-     *
-     * Or for plan updates:
-     * UPDATE_DAY: 0
-     * DAY: Saturday, April 5
-     * - [evt:abc123] at 6:30 PM — Note
-     * CHIPS: chip1 | chip2
+     * Parse Claude's natural language text response.
+     * Plans now come from present_plan/update_plan tool calls, not text markers.
+     * This just returns the text as a CHAT response.
      */
     fun parseNaturalResponse(text: String, userMessage: String = ""): ParsedChatResponse {
-        val lines = text.lines()
-
-        // Detect type
-        val type = when {
-            lines.any { it.trimStart().startsWith("PLAN:") } -> ParsedResponseType.PLAN
-            lines.any { it.trimStart().startsWith("UPDATE_DAY:") } -> ParsedResponseType.PLAN_UPDATE
-            userMessage.lowercase().let { msg ->
-                msg.contains("looks good") || msg.contains("approve") ||
-                    msg.contains("save") || msg.contains("add to my plans")
-            } -> ParsedResponseType.APPROVE
-            else -> ParsedResponseType.CHAT
-        }
-
-        // Extract plan title
-        val planTitle = lines.firstOrNull { it.trimStart().startsWith("PLAN:") }
-            ?.substringAfter("PLAN:")?.trim()?.removeSurrounding("\"")
-
-        // Extract day index for updates
-        val dayIndex = lines.firstOrNull { it.trimStart().startsWith("UPDATE_DAY:") }
-            ?.substringAfter("UPDATE_DAY:")?.trim()?.toIntOrNull()
-
-        // Extract chips
-        val chipsLine = lines.lastOrNull { it.trimStart().startsWith("CHIPS:") }
-        val chips = chipsLine?.substringAfter("CHIPS:")?.split("|")
-            ?.map { it.trim() }?.filter { it.isNotBlank() } ?: emptyList()
-
-        // Extract days with events
-        val days = mutableListOf<ParsedDay>()
-        var currentDayLabel: String? = null
-        var currentEvents = mutableListOf<EventRef>()
-
-        // Regex patterns for event/venue refs
-        val evtPattern = Regex("""\[evt:([^\]]+)\]\s*at\s+([^—\n]+?)(?:\s*—\s*(.*))?$""")
-        val venuePattern = Regex("""\[venue:([^\]]+)\]\s*at\s+([^—\n]+?)(?:\s*—\s*(.*))?$""")
-
-        for (line in lines) {
-            val trimmed = line.trim()
-
-            if (trimmed.startsWith("DAY:")) {
-                // Flush previous day
-                if (currentDayLabel != null && currentEvents.isNotEmpty()) {
-                    days.add(ParsedDay(label = currentDayLabel!!, events = currentEvents.toList()))
-                }
-                currentDayLabel = trimmed.substringAfter("DAY:").trim()
-                currentEvents = mutableListOf()
-                continue
-            }
-
-            if (trimmed.startsWith("- [evt:") || trimmed.startsWith("- [venue:")) {
-                val lineContent = trimmed.removePrefix("- ").trim()
-
-                val evtMatch = evtPattern.find(lineContent)
-                if (evtMatch != null) {
-                    currentEvents.add(EventRef(
-                        id = evtMatch.groupValues[1].trim(),
-                        time = evtMatch.groupValues[2].trim(),
-                        note = evtMatch.groupValues[3].trim(),
-                        isVenue = false,
-                    ))
-                    continue
-                }
-
-                val venueMatch = venuePattern.find(lineContent)
-                if (venueMatch != null) {
-                    currentEvents.add(EventRef(
-                        id = venueMatch.groupValues[1].trim(),
-                        time = venueMatch.groupValues[2].trim(),
-                        note = venueMatch.groupValues[3].trim(),
-                        isVenue = true,
-                    ))
-                    continue
-                }
-            }
-        }
-        // Flush last day
-        if (currentDayLabel != null && currentEvents.isNotEmpty()) {
-            days.add(ParsedDay(label = currentDayLabel!!, events = currentEvents.toList()))
-        }
-
-        // Build the natural language text (everything that's not a marker line or search data)
-        val markerPrefixes = listOf("PLAN:", "DAY:", "UPDATE_DAY:", "CHIPS:", "- [evt:", "- [venue:")
-        val textParts = lines.filter { line ->
-            val trimmed = line.trim()
-            markerPrefixes.none { trimmed.startsWith(it) } &&
-                !trimmed.contains("[evt:") &&
-                !trimmed.contains("[venue:") &&
-                !trimmed.startsWith("===") &&
-                !trimmed.matches(Regex("^[A-Z]+:.*\\[evt:.*")) &&
-                trimmed.isNotBlank()
-        }
-        val naturalText = textParts.joinToString("\n").trim()
-
         return ParsedChatResponse(
-            type = type,
-            text = naturalText,
-            planTitle = planTitle,
-            days = days,
-            chips = chips,
-            dayIndex = dayIndex,
+            type = ParsedResponseType.CHAT,
+            text = text.trim(),
         )
     }
 }

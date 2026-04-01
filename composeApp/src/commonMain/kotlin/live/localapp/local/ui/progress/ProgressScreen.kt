@@ -93,6 +93,7 @@ import kotlin.random.Random
 fun ProgressScreen(
     viewModel: ProgressViewModel,
     onLogout: () -> Unit = {},
+    onTasteProfile: () -> Unit = {},
     locationName: String = "Waltham, MA",
     streakDays: Int = 2,
 ) {
@@ -205,6 +206,30 @@ fun ProgressScreen(
                 ProgressTrackingCard(state, viewModel)
 
                 Spacer(Modifier.height(24.dp))
+
+                // ── Taste Profile ──
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 20.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(AppColors.PlumLt)
+                        .clickable(onClick = onTasteProfile)
+                        .padding(vertical = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Your Taste Profile",
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            color = AppColors.Plum,
+                        ),
+                    )
+                }
+
+                Spacer(Modifier.height(10.dp))
 
                 // ── Log Out ──
                 Box(

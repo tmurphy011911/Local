@@ -98,6 +98,8 @@ import live.localapp.local.ui.progress.ProgressScreen
 import live.localapp.local.domain.repository.UserPreferencesRepository
 import live.localapp.local.ui.progress.CelebrationEvent
 import live.localapp.local.ui.progress.ProgressViewModel
+import live.localapp.local.ui.taste.TasteProfileScreen
+import live.localapp.local.ui.taste.TasteProfileViewModel
 import live.localapp.local.platform.closeChatSheet
 import live.localapp.local.platform.hasNativeHeroTransition
 import live.localapp.local.platform.hasNativeTabBar
@@ -135,6 +137,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     var showLoginPrompt by remember { mutableStateOf(false) }
     var pendingChatMessage by remember { mutableStateOf<String?>(null) }
     var chatOpenCount by remember { mutableStateOf(0) }
+    var showTasteProfile by remember { mutableStateOf(false) }
     val userPrefsRepo: UserPreferencesRepository = remember { koin.get() }
 
     // Gate chat behind auth + sync location (defined as a lambda referencing hoisted VMs below)
@@ -242,6 +245,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         ProgressScreen(
                             progressVm,
                             onLogout = onLogout,
+                            onTasteProfile = { showTasteProfile = true },
                             locationName = homeState.locationName,
                             streakDays = homeState.streakDays,
                         )
@@ -330,6 +334,15 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     onDismiss = { placesVm.dismissSheet() },
                 )
             }
+        }
+
+        // Taste profile overlay
+        if (showTasteProfile) {
+            val tasteVm: TasteProfileViewModel = viewModel { koin.get<TasteProfileViewModel>() }
+            TasteProfileScreen(
+                viewModel = tasteVm,
+                onBack = { showTasteProfile = false },
+            )
         }
 
         // Event detail overlay

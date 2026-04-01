@@ -46,6 +46,14 @@ private data class PlanSlotDto(
     @SerialName("is_free") val isFree: Boolean = false,
     @SerialName("event_id") val eventId: String? = null,
     @SerialName("is_custom") val isCustom: Boolean = false,
+    @SerialName("image_url") val imageUrl: String? = null,
+    @SerialName("ticket_url") val ticketUrl: String? = null,
+    @SerialName("venue_rating") val venueRating: Double? = null,
+    @SerialName("venue_address") val venueAddress: String? = null,
+    @SerialName("venue_lat") val venueLat: Double? = null,
+    @SerialName("venue_lng") val venueLng: Double? = null,
+    @SerialName("price_min") val priceMin: Double? = null,
+    @SerialName("price_max") val priceMax: Double? = null,
 )
 
 @Serializable
@@ -84,6 +92,14 @@ private fun PlanSlotDto.toDomain() = PlanSlot(
     isFree = isFree,
     eventId = eventId,
     isCustom = isCustom,
+    imageUrl = imageUrl,
+    ticketUrl = ticketUrl,
+    venueRating = venueRating,
+    venueAddress = venueAddress,
+    venueLat = venueLat,
+    venueLng = venueLng,
+    priceMin = priceMin,
+    priceMax = priceMax,
 )
 
 private fun PlanDto.toDomain(): Plan {

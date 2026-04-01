@@ -20,14 +20,22 @@ data class PlanDay(
 
 data class PlanSlot(
     val id: String,
-    val time: String,        // "7pm"
+    val time: String,
     val emoji: String,
     val name: String,
-    val detail: String,      // venue name + context
+    val detail: String,
     val price: String,
     val isFree: Boolean,
     val eventId: String? = null,
     val isCustom: Boolean = false,
+    val imageUrl: String? = null,
+    val ticketUrl: String? = null,
+    val venueRating: Double? = null,
+    val venueAddress: String? = null,
+    val venueLat: Double? = null,
+    val venueLng: Double? = null,
+    val priceMin: Double? = null,
+    val priceMax: Double? = null,
 )
 
 data class PlanTravel(

@@ -85,6 +85,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import androidx.compose.ui.layout.ContentScale
 import coil3.compose.AsyncImage
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
@@ -190,67 +191,43 @@ fun ChatScreen(
                             day = day,
                             dayIndex = dayIdx,
                             totalDays = state.days.size,
-                            onRemoveSlot = { slotId -> viewModel.removeSlot(dayIdx, slotId) },
                             onEventClick = { id ->
+                                viewModel.recordEventTap(id.removePrefix("venue:"))
                                 if (id.startsWith("venue:")) {
                                     selectedVenueName = id.removePrefix("venue:")
                                 } else {
                                     selectedEventId = id
                                 }
                             },
+                            weather = state.weather[dayIdx],
+                            onSave = { viewModel.sendMessage("Looks good, add to My Plans") },
+                            showSaveButton = !day.isApproved,
                         )
-                    }
-                    is MessageContent.DayCardSnapshot -> {
-                        val snapshot = message.content as MessageContent.DayCardSnapshot
-                        // Old version — dimmed, no interaction
-                        Box(modifier = Modifier.alpha(0.45f)) {
-                            DayCard(
-                                day = snapshot.day,
-                                dayIndex = snapshot.dayIndex,
-                                totalDays = snapshot.totalDays,
-                                onRemoveSlot = { },
-                                onEventClick = { },
-                            )
-                        }
                     }
                     is MessageContent.MultiDayPlanRef -> {
                         MultiDayPlanCard(
                             days = state.days,
-                            onRemoveSlot = { dayIdx, slotId -> viewModel.removeSlot(dayIdx, slotId) },
                             onEventClick = { id ->
+                                viewModel.recordEventTap(id.removePrefix("venue:"))
                                 if (id.startsWith("venue:")) {
                                     selectedVenueName = id.removePrefix("venue:")
                                 } else {
                                     selectedEventId = id
                                 }
                             },
+                            weather = state.weather,
+                            onSave = { viewModel.sendMessage("Looks good, add to My Plans") },
+                            showSaveButton = state.days.none { it.isApproved },
                         )
-                    }
-                    is MessageContent.SummaryRef -> {
-                        SummaryCard(state)
-                    }
-                    is MessageContent.ProgressRef -> {
-                        ProgressIndicator(
-                            totalDays = state.days.size,
-                            approvedDays = state.approvedDayCount,
-                            currentDay = state.currentDayIndex,
-                            dayNames = state.days.map { it.shortName },
-                        )
-                    }
-                    is MessageContent.AlsoHappeningRef -> {
-                        if (state.recommendations.isNotEmpty()) {
-                            AlsoHappeningRow(
-                                events = state.recommendations,
-                                onEventTap = { event -> viewModel.addRecommendationToPlan(event) },
-                            )
-                        }
                     }
                 }
             }
 
-            // Typing / searching indicator
+            // Streaming text / searching / typing indicator
             if (state.isSearching) {
                 item { SearchingIndicator() }
+            } else if (state.streamingText.isNotEmpty()) {
+                item { MessageRow(role = MessageRole.AI, text = state.streamingText) }
             } else if (state.isTyping) {
                 item { TypingIndicator() }
             }
@@ -656,35 +633,51 @@ private fun SearchingIndicator() {
     }
 }
 
-// ── Day Card ──
+// ── Plan Cards (read-only, magazine style) ──
 
 @Composable
 private fun MultiDayPlanCard(
     days: List<ItineraryDay>,
-    onRemoveSlot: (Int, String) -> Unit,
     onEventClick: (String) -> Unit = {},
+    weather: Map<Int, live.localapp.local.data.remote.WeatherForecast> = emptyMap(),
+    onSave: () -> Unit = {},
+    showSaveButton: Boolean = true,
 ) {
-    // Fixed height so all day cards are the same size in horizontal scroll
-    val maxSlots = days.maxOfOrNull { it.slots.size } ?: 3
-    val cardHeight = (120 + maxSlots * 60).coerceIn(250, 500)
+    Column {
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            contentPadding = PaddingValues(horizontal = 4.dp),
+            modifier = Modifier.height(420.dp),
+        ) {
+            itemsIndexed(days) { index, day ->
+                Box(modifier = Modifier.width(300.dp).fillMaxHeight()) {
+                    DayCard(
+                        day = day,
+                        dayIndex = index,
+                        totalDays = days.size,
+                        onEventClick = onEventClick,
+                        weather = weather[index],
+                        showSaveButton = false,
+                    )
+                }
+            }
+        }
 
-    LazyRow(
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        contentPadding = PaddingValues(horizontal = 4.dp),
-        modifier = Modifier.height(cardHeight.dp),
-    ) {
-        itemsIndexed(days) { index, day ->
+        if (showSaveButton) {
+            Spacer(Modifier.height(10.dp))
             Box(
                 modifier = Modifier
-                    .width(300.dp)
-                    .fillMaxHeight(),
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Brush.linearGradient(listOf(AppColors.Sage, AppColors.SageDk)))
+                    .clickable(onClick = onSave)
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center,
             ) {
-                DayCard(
-                    day = day,
-                    dayIndex = index,
-                    totalDays = days.size,
-                    onRemoveSlot = { slotId -> onRemoveSlot(index, slotId) },
-                    onEventClick = onEventClick,
+                Text(
+                    "Save to My Plans",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 14.sp, color = AppColors.White),
                 )
             }
         }
@@ -696,252 +689,235 @@ private fun DayCard(
     day: ItineraryDay,
     dayIndex: Int,
     totalDays: Int,
-    onRemoveSlot: (String) -> Unit,
     onEventClick: (String) -> Unit = {},
+    weather: live.localapp.local.data.remote.WeatherForecast? = null,
+    onSave: () -> Unit = {},
+    showSaveButton: Boolean = true,
 ) {
     val color = Color(dayColor(dayIndex))
     val cardShape = RoundedCornerShape(18.dp)
 
     Box(modifier = Modifier.fillMaxWidth()) {
-        // Shadow
-        Box(
-            Modifier.fillMaxWidth().matchParentSize().offset(y = 5.dp)
-                .background(if (day.isApproved) AppColors.SageDk else AppColors.Pebble, cardShape),
-        )
+        Box(Modifier.fillMaxWidth().matchParentSize().offset(y = 5.dp).background(AppColors.Pebble, cardShape))
 
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
+            modifier = Modifier.fillMaxWidth()
                 .background(AppColors.White, cardShape)
-                .border(2.dp, if (day.isApproved) AppColors.Sage else AppColors.Pebble, cardShape)
-                .clip(cardShape),
+                .border(2.dp, AppColors.Pebble, cardShape)
+                .clip(cardShape)
+                .verticalScroll(rememberScrollState()),
         ) {
             // Header
-            Column(
-                modifier = Modifier.fillMaxWidth().background(color).padding(horizontal = 16.dp, vertical = 12.dp),
-            ) {
+            Column(modifier = Modifier.fillMaxWidth().background(color).padding(horizontal = 16.dp, vertical = 12.dp)) {
                 if (totalDays > 1) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                    ) {
-                        Text(
-                            "DAY ${dayIndex + 1} OF $totalDays",
-                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 10.sp,
-                                color = AppColors.White.copy(alpha = 0.7f), letterSpacing = 0.8.sp),
-                        )
-                        Text(
-                            "${day.slots.size} ${if (day.slots.size == 1) "event" else "events"}",
-                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp,
-                                color = AppColors.White.copy(alpha = 0.7f)),
-                        )
-                    }
+                    Text(
+                        "DAY ${dayIndex + 1} OF $totalDays",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 10.sp,
+                            color = AppColors.White.copy(alpha = 0.7f), letterSpacing = 0.8.sp),
+                    )
                     Spacer(Modifier.height(2.dp))
                 }
                 Text(
                     day.label.replace("Today ", "").replace("Tomorrow ", "").ifBlank { "Your Plan" },
                     style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 16.sp, color = AppColors.White),
                 )
-                if (totalDays <= 1) {
-                    Spacer(Modifier.height(2.dp))
-                    Text(
-                        "${day.slots.size} ${if (day.slots.size == 1) "event" else "events"}",
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp,
-                            color = AppColors.White.copy(alpha = 0.7f)),
-                    )
-                }
+                Text(
+                    "${day.slots.size} ${if (day.slots.size == 1) "stop" else "stops"}",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp,
+                        color = AppColors.White.copy(alpha = 0.7f)),
+                )
             }
 
-            // Approved banner
-            if (day.isApproved) {
+            // Weather bar
+            if (weather != null) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().background(AppColors.SageLt)
-                        .border(width = 1.5.dp, color = AppColors.Sage)
-                        .padding(vertical = 7.dp),
-                    horizontalArrangement = Arrangement.Center,
+                    modifier = Modifier.fillMaxWidth().background(AppColors.SkyLt).padding(horizontal = 14.dp, vertical = 6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(Icons.Outlined.Check, null, Modifier.size(14.dp), tint = AppColors.SageDk)
-                    Spacer(Modifier.width(6.dp))
-                    Text("Approved", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = AppColors.SageDk))
+                    Text(
+                        "${weather.tempHigh}°F  ${weather.description}",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = AppColors.SkyDk),
+                    )
                 }
             }
 
-            // Slots
-            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
-                day.slots.forEachIndexed { index, slot ->
-                    val isLast = index == day.slots.lastIndex
-                    SlotRow(
+            // Slots — stacked photo cards
+            Column(
+                modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                for (slot in day.slots) {
+                    SlotCard(
                         slot = slot,
-                        color = color,
-                        isLast = isLast,
-                        isApproved = day.isApproved,
-                        onRemove = { onRemoveSlot(slot.id) },
                         onEventClick = {
-                            if (slot.eventId != null) {
-                                onEventClick(slot.eventId)
-                            } else if (!slot.isCustom && slot.name.length > 2) {
-                                onEventClick("venue:${slot.name}")
-                            }
+                            if (slot.eventId != null) onEventClick(slot.eventId)
+                            else if (!slot.isCustom && slot.name.length > 2) onEventClick("venue:${slot.name}")
                         },
                     )
-
-                    if (!isLast) {
-                        Spacer(Modifier.height(6.dp))
-                    }
                 }
             }
+
+            // Cost estimate
+            val pricedSlots = day.slots.filter { !it.isFree && (it.priceMin != null || it.price.isNotBlank()) }
+            if (pricedSlots.isNotEmpty()) {
+                val totalMin = pricedSlots.sumOf { it.priceMin ?: extractPriceValue(it.price) ?: 0.0 }
+                val totalMax = pricedSlots.sumOf { it.priceMax ?: it.priceMin ?: extractPriceValue(it.price) ?: 0.0 }
+                if (totalMin > 0 || totalMax > 0) {
+                    val attendees = 2
+                    val minEst = (totalMin * attendees).toInt()
+                    val maxEst = (totalMax * attendees).toInt()
+                    val estimate = if (minEst == maxEst) "~$$minEst" else "$$minEst-$maxEst"
+                    Text(
+                        "$estimate estimated for $attendees",
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = AppColors.Ink3),
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                }
+            }
+
+            // Save button
+            if (showSaveButton) {
+                Spacer(Modifier.height(4.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 8.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Brush.linearGradient(listOf(AppColors.Sage, AppColors.SageDk)))
+                        .clickable(onClick = onSave)
+                        .padding(vertical = 12.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Save to My Plans",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 14.sp, color = AppColors.White),
+                    )
+                }
+            }
+
+            Spacer(Modifier.height(4.dp))
         }
     }
 }
 
+/** Individual slot rendered as a standalone photo card. */
 @Composable
-private fun SlotRow(
+private fun SlotCard(
     slot: ItinerarySlot,
-    color: Color,
-    isLast: Boolean,
-    isApproved: Boolean,
-    onRemove: () -> Unit,
     onEventClick: () -> Unit = {},
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min),
+    val uriHandler = LocalUriHandler.current
+    val hasImage = slot.imageUrl != null
+    val cardShape = RoundedCornerShape(13.dp)
+
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (hasImage) Modifier.height(120.dp) else Modifier)
+            .clip(cardShape)
+            .background(AppColors.Snow)
+            .border(if (hasImage) 0.dp else 1.5.dp, if (hasImage) Color.Transparent else AppColors.Pebble, cardShape)
+            .pressable(
+                onClick = onEventClick,
+                enabled = slot.eventId != null || (!slot.isCustom && slot.name.length > 2),
+            ),
     ) {
-        // Time column
-        Column(
-            horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.width(44.dp).fillMaxHeight(),
-        ) {
-            Text(
-                slot.time,
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Ink3),
-                maxLines = 1,
+        if (hasImage) {
+            AsyncImage(
+                model = slot.imageUrl,
+                contentDescription = slot.name,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
             )
-            Spacer(Modifier.height(4.dp))
-            Box(
-                Modifier.size(11.dp).background(color, CircleShape)
-                    .border(3.dp, color.copy(alpha = 0.2f), CircleShape),
-            )
-            if (!isLast) {
-                Box(Modifier.width(2.dp).weight(1f).background(AppColors.Mist))
-            }
+            Box(Modifier.fillMaxSize().background(
+                Brush.verticalGradient(
+                    colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.8f)),
+                    startY = 20f,
+                )
+            ))
         }
 
-        Spacer(Modifier.width(10.dp))
+        val textColor = if (hasImage) AppColors.White else AppColors.Ink
+        val subColor = if (hasImage) AppColors.White.copy(alpha = 0.85f) else AppColors.Ink3
 
-        // Slot content card — tappable to open event detail
-        Row(
+        Column(
             modifier = Modifier
-                .weight(1f)
-                .background(AppColors.Snow, RoundedCornerShape(13.dp))
-                .border(1.5.dp, AppColors.Pebble, RoundedCornerShape(13.dp))
-                .clip(RoundedCornerShape(13.dp))
-                .pressable(
-                    onClick = onEventClick,
-                    enabled = slot.eventId != null || (!slot.isCustom && slot.name.length > 2),
-                )
-                .padding(horizontal = 11.dp, vertical = 9.dp),
-            verticalAlignment = Alignment.CenterVertically,
+                .fillMaxSize()
+                .padding(12.dp)
+                .then(if (hasImage) Modifier else Modifier),
+            verticalArrangement = if (hasImage) Arrangement.Bottom else Arrangement.Center,
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        stripEmoji(slot.name),
-                        modifier = Modifier.weight(1f, fill = false),
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, color = AppColors.Ink),
-                        maxLines = 1,
-                    )
-                    if (slot.isFree && !slot.isCustom) {
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            "Free",
-                            modifier = Modifier
-                                .background(Color(0xFFE8F5E9), AppShapes.Pill)
-                                .border(1.dp, Color(0xFFA5D6A7), AppShapes.Pill)
-                                .padding(horizontal = 6.dp, vertical = 1.dp),
-                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 8.sp, color = Color(0xFF2E7D32)),
-                        )
-                    }
-                    val recurrenceTag = detectRecurrenceTag(slot.name, slot.detail)
-                    if (recurrenceTag != null) {
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            recurrenceTag,
-                            modifier = Modifier
-                                .background(Color(0xFFE3F2FD), AppShapes.Pill)
-                                .border(1.dp, Color(0xFF90CAF9), AppShapes.Pill)
-                                .padding(horizontal = 6.dp, vertical = 1.dp),
-                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 8.sp, color = Color(0xFF1565C0)),
-                        )
-                    }
-                    // Restaurant price level ($$) — show in black next to name
-                    val isRestaurantPrice = slot.price.isNotBlank() && slot.price.all { it == '$' || it == ' ' }
-                    if (isRestaurantPrice) {
-                        Spacer(Modifier.width(4.dp))
-                        Text(
-                            slot.price.trim(),
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp,
-                                color = AppColors.Ink,
-                            ),
-                        )
-                    } else if (slot.price.isNotBlank() && !slot.isFree) {
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            slot.price,
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 11.sp,
-                                color = AppColors.Ink2,
-                            ),
-                        )
-                    }
-                }
-                // Detail line — for restaurants, strip duplicate $$ from detail
-                val displayDetail = if (slot.price.isNotBlank() && slot.price.all { it == '$' || it == ' ' }) {
-                    stripEmoji(slot.detail)
-                        .replace(Regex("\\$+\\s*[·\\-]?\\s*"), "") // remove "$$  · " from detail
-                        .replace(Regex("^\\s*[·\\-]\\s*"), "") // remove leading separator
-                        .trim()
-                } else {
-                    stripEmoji(slot.detail)
-                }
+            // Time
+            Text(
+                slot.time,
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 10.sp,
+                    color = if (hasImage) AppColors.White.copy(alpha = 0.7f) else AppColors.Ink3,
+                    letterSpacing = 0.5.sp),
+            )
+            Spacer(Modifier.height(2.dp))
+
+            // Name + badges
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    displayDetail,
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, color = AppColors.Ink3),
+                    stripEmoji(slot.name),
+                    modifier = Modifier.weight(1f, fill = false),
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = textColor),
                     maxLines = 1,
                 )
-                // Ticket link
-                if (slot.ticketUrl != null) {
-                    val uriHandler = LocalUriHandler.current
-                    Spacer(Modifier.height(2.dp))
+                if (slot.isFree && !slot.isCustom) {
+                    Spacer(Modifier.width(6.dp))
                     Text(
-                        "Get Tickets →",
-                        modifier = Modifier.clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                        ) { uriHandler.openUri(slot.ticketUrl) },
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 10.sp,
-                            color = AppColors.Coral,
-                        ),
+                        "Free",
+                        modifier = Modifier
+                            .background(Color(0xFFE8F5E9).copy(alpha = if (hasImage) 0.9f else 1f), AppShapes.Pill)
+                            .border(1.dp, Color(0xFFA5D6A7), AppShapes.Pill)
+                            .padding(horizontal = 6.dp, vertical = 1.dp),
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 8.sp, color = Color(0xFF2E7D32)),
                     )
+                }
+                val isRestaurantPrice = slot.price.isNotBlank() && slot.price.all { it == '$' || it == ' ' }
+                if (isRestaurantPrice) {
+                    Spacer(Modifier.width(4.dp))
+                    Text(slot.price.trim(), style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = textColor))
+                } else if (slot.price.isNotBlank() && !slot.isFree) {
+                    Spacer(Modifier.width(6.dp))
+                    Text(slot.price, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 11.sp, color = subColor))
                 }
             }
 
-            // Remove button (only if not approved)
-            if (!isApproved) {
-                Spacer(Modifier.width(4.dp))
-                Box(
-                    modifier = Modifier
-                        .size(24.dp)
-                        .background(AppColors.Mist, RoundedCornerShape(8.dp))
-                        .clip(RoundedCornerShape(8.dp))
-                        .clickable(onClick = onRemove),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Outlined.Close, "Remove", Modifier.size(12.dp), tint = AppColors.Ink3)
+            // Detail
+            val displayDetail = if (slot.price.isNotBlank() && slot.price.all { it == '$' || it == ' ' }) {
+                stripEmoji(slot.detail).replace(Regex("\\$+\\s*[·\\-]?\\s*"), "").replace(Regex("^\\s*[·\\-]\\s*"), "").trim()
+            } else { stripEmoji(slot.detail) }
+            Text(displayDetail, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, color = subColor), maxLines = 1)
+
+            // Actions
+            val hasActions = slot.venueRating != null || (slot.venueLat != null && slot.venueLng != null) || slot.ticketUrl != null
+            if (hasActions) {
+                Spacer(Modifier.height(4.dp))
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    if (slot.venueRating != null) {
+                        Text("★ ${slot.venueRating}", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = AppColors.Sun))
+                    }
+                    if (slot.venueLat != null && slot.venueLng != null) {
+                        Text(
+                            "Directions",
+                            modifier = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                                uriHandler.openUri("https://maps.apple.com/?daddr=${slot.venueLat},${slot.venueLng}")
+                            },
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = if (hasImage) AppColors.White else AppColors.Sky),
+                        )
+                    }
+                    if (slot.ticketUrl != null) {
+                        Text(
+                            "Get Tickets",
+                            modifier = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                                uriHandler.openUri(slot.ticketUrl)
+                            },
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = if (hasImage) AppColors.White else AppColors.Coral),
+                        )
+                    }
                 }
             }
         }
@@ -1496,6 +1472,19 @@ private fun stripEmoji(text: String): String {
     }.replace(Regex("\\s{2,}"), " ").trim()
 }
 
+/** Extract a numeric price from strings like "$25", "From $15", "$$" */
+private fun extractPriceValue(price: String): Double? {
+    if (price.isBlank()) return null
+    if (price.trim().all { it == '$' || it == ' ' }) {
+        return when (price.trim().count { it == '$' }) {
+            1 -> 10.0; 2 -> 25.0; 3 -> 45.0; 4 -> 80.0; 5 -> 120.0
+            else -> null
+        }
+    }
+    val match = Regex("\\$?(\\d+\\.?\\d*)").find(price)
+    return match?.groupValues?.get(1)?.toDoubleOrNull()
+}
+
 // ── Plan Success Overlay ──
 
 @Composable
@@ -1732,16 +1721,14 @@ private fun PlanSuccessOverlay(
                 if (days.size > 1) {
                     MultiDayPlanCard(
                         days = days,
-                        onRemoveSlot = { _, _ -> },
-                        onEventClick = { },
+                        showSaveButton = false,
                     )
                 } else {
                     DayCard(
                         day = days.firstOrNull() ?: ItineraryDay(label = "", shortName = ""),
                         dayIndex = 0,
                         totalDays = 1,
-                        onRemoveSlot = { },
-                        onEventClick = { },
+                        showSaveButton = false,
                     )
                 }
             }

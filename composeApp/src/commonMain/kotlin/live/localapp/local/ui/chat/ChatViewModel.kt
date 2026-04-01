@@ -10,16 +10,21 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import live.localapp.local.data.remote.ClaudeApiService
+import live.localapp.local.data.remote.WeatherService
 import live.localapp.local.data.remote.ClaudeMessage
+import live.localapp.local.data.remote.ClaudeResponse
 import live.localapp.local.data.remote.ParsedChatResponse
 import live.localapp.local.data.remote.ParsedResponseType
+import live.localapp.local.data.remote.StreamEvent
 import live.localapp.local.data.remote.claudeTools
 import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.Config
@@ -31,10 +36,12 @@ import live.localapp.local.domain.model.PlanDay
 import live.localapp.local.domain.model.PlanSlot
 import live.localapp.local.domain.model.PlanTravel
 import live.localapp.local.domain.model.BadgeAction
+import live.localapp.local.domain.model.TasteProfile
 import live.localapp.local.domain.repository.PlanRepository
 import live.localapp.local.domain.service.BadgeService
 import live.localapp.local.domain.repository.UserPreferences
 import live.localapp.local.domain.repository.UserPreferencesRepository
+import live.localapp.local.domain.repository.TasteRepository
 import live.localapp.local.domain.repository.VenueRepository
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
@@ -53,11 +60,7 @@ enum class MessageRole { AI, USER }
 sealed interface MessageContent {
     data class Text(val text: String) : MessageContent
     data class DayCardRef(val dayIndex: Int) : MessageContent
-    data class DayCardSnapshot(val day: ItineraryDay, val dayIndex: Int, val totalDays: Int) : MessageContent
     data class MultiDayPlanRef(val dayCount: Int) : MessageContent
-    data class SummaryRef(val dummy: Unit = Unit) : MessageContent
-    data class ProgressRef(val dummy: Unit = Unit) : MessageContent
-    data class AlsoHappeningRef(val dummy: Unit = Unit) : MessageContent
 }
 
 data class ChatMessage(
@@ -87,6 +90,11 @@ data class ItinerarySlot(
     val isCustom: Boolean = false,
     val ticketUrl: String? = null,
     val venueRating: Double? = null,
+    val venueAddress: String? = null,
+    val venueLat: Double? = null,
+    val venueLng: Double? = null,
+    val priceMin: Double? = null,
+    val priceMax: Double? = null,
 )
 
 data class TravelInfo(
@@ -112,6 +120,10 @@ data class ChatUiState(
     val isSearching: Boolean = false,
     val inputEnabled: Boolean = true,
     val inputPlaceholder: String = "What are you looking for?",
+    // Streaming text — words appearing in real-time from Claude
+    val streamingText: String = "",
+    // Weather forecasts keyed by day index
+    val weather: Map<Int, live.localapp.local.data.remote.WeatherForecast> = emptyMap(),
     // Itinerary state
     val days: List<ItineraryDay> = emptyList(),
     val approvedDayCount: Int = 0,
@@ -122,8 +134,6 @@ data class ChatUiState(
     val showPlanSuccess: Boolean = false,
     // Auth required prompt
     val showAuthPrompt: Boolean = false,
-    // "Also Happening" recommendations
-    val recommendations: List<Event> = emptyList(),
     // User info
     val userName: String = "",
     val userPreferences: UserPreferences? = null,
@@ -143,6 +153,7 @@ class ChatViewModel(
     private val userPrefsRepo: UserPreferencesRepository,
     private val planRepo: PlanRepository,
     private val badgeService: BadgeService,
+    private val tasteRepo: TasteRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
@@ -150,6 +161,11 @@ class ChatViewModel(
 
     /** Cache of all events returned by search_events calls in the current turn. */
     private val searchResultCache = mutableListOf<Event>()
+
+    /** Cached taste profile — loaded at init, refreshed after plan approvals. */
+    private var tasteProfile: TasteProfile? = null
+
+    private val weatherService = WeatherService()
 
     /** Update current location (called from AppNavigation when location changes). */
     fun setCurrentLocation(lat: Double, lng: Double, name: String) {
@@ -181,6 +197,8 @@ class ChatViewModel(
                         )
                     }
                 }
+                // Load taste profile for personalized recommendations
+                try { tasteProfile = tasteRepo.getTasteProfile(userId) } catch (_: Throwable) {}
             }
             showWelcome()
         }
@@ -253,110 +271,19 @@ class ChatViewModel(
         if (_uiState.value.isBusy) return
         when {
             reply.action == "reset" -> resetChat()
-            reply.action.startsWith("swap_recommendation:") -> handleSwapRecommendation(reply.action)
             else -> sendMessage(reply.label)
         }
     }
 
-    fun removeSlot(dayIndex: Int, slotId: String) {
-        val day = _uiState.value.days.getOrNull(dayIndex) ?: return
-        val slotName = day.slots.firstOrNull { it.id == slotId }?.name ?: return
+    // Plan editing is conversation-driven — no interactive card manipulation.
+    // Users say "swap the dinner spot" or "remove the last event" and Claude
+    // responds with a fresh plan card.
 
-        // Remove the slot immediately for instant UI feedback (clear travel since it's stale)
-        _uiState.update { state ->
-            val days = state.days.toMutableList()
-            val d = days[dayIndex]
-            val newSlots = d.slots.filter { it.id != slotId }
-            days[dayIndex] = d.copy(slots = newSlots, travel = emptyList())
-            state.copy(days = days)
-        }
-
-        // Check if day is now empty → remove the day entirely and notify
-        val updatedDay = _uiState.value.days.getOrNull(dayIndex)
-        if (updatedDay != null && updatedDay.slots.isEmpty()) {
-            val dayLabel = updatedDay.label
-            _uiState.update { state ->
-                val days = state.days.toMutableList()
-                days.removeAt(dayIndex)
-                state.copy(days = days)
-            }
-            // Add a brief AI message confirming day removal
-            addAiMessage("Removed $dayLabel since it had no events left.")
-            return
-        }
-
-        // Ask Claude to recalculate travel for the updated day
-        requestTravelRecalc(dayIndex, "I removed \"$slotName\" from Day ${dayIndex + 1}. Update the travel times between the remaining events.")
-    }
-
-    fun moveSlot(dayIndex: Int, fromIndex: Int, toIndex: Int) {
-        if (fromIndex == toIndex) return
-        _uiState.update { state ->
-            val days = state.days.toMutableList()
-            val day = days[dayIndex]
-            val slots = day.slots.toMutableList()
-            val item = slots.removeAt(fromIndex)
-            slots.add(toIndex, item)
-            days[dayIndex] = day.copy(slots = slots)
-            state.copy(days = days)
-        }
-    }
-
-    fun addCustomSlot(dayIndex: Int, name: String, time: String = "") {
-        _uiState.update { state ->
-            val days = state.days.toMutableList()
-            val day = days[dayIndex]
-            val newSlot = ItinerarySlot(
-                id = generateId(),
-                time = time.ifBlank { "" },
-                emoji = "",
-                name = name,
-                detail = "Your custom event",
-                price = "",
-                isFree = true,
-                isCustom = true,
-            )
-            // Clear travel since it's now stale
-            days[dayIndex] = day.copy(slots = day.slots + newSlot, travel = emptyList())
-            state.copy(days = days)
-        }
-
-        // Ask Claude to recalculate travel with the new slot
-        requestTravelRecalc(dayIndex, "I added \"$name\" at $time to Day ${dayIndex + 1}. Reorder the slots chronologically and update travel times.")
-    }
-
-    /**
-     * Ask Claude to return a plan_update with recalculated travel times.
-     * Sends a silent message (no user bubble) so the plan card refreshes.
-     */
-    private fun requestTravelRecalc(dayIndex: Int, instruction: String) {
+    fun recordEventTap(eventId: String) {
         viewModelScope.launch {
-            try {
-                appendTextToHistory("user", instruction)
-                val systemPrompt = buildSystemPrompt()
-                val parsed = sendWithToolLoop(systemPrompt)
-                // Only process if Claude returned a plan_update for this day
-                if (parsed.type == ParsedResponseType.PLAN_UPDATE && parsed.days.isNotEmpty()) {
-                    val builtDays = buildPlanFromRefs(parsed)
-                    val updatedDay = builtDays.firstOrNull()
-                    if (updatedDay != null) {
-                        _uiState.update { state ->
-                            val days = state.days.toMutableList()
-                            val idx = parsed.dayIndex ?: dayIndex
-                            if (idx in days.indices) {
-                                days[idx] = updatedDay
-                            }
-                            state.copy(days = days)
-                        }
-                    }
-                    if (parsed.text.isNotBlank()) {
-                        appendTextToHistory("assistant", parsed.text)
-                    }
-                }
-            } catch (e: Throwable) {
-                println("Travel recalc failed: ${e::class.simpleName}: ${e.message}")
-                // Non-critical — the plan still works, just without updated travel
-            }
+            val userId = userPrefsRepo.getLocalUserId() ?: return@launch
+            val event = try { eventRepo.getEvent(eventId) } catch (_: Throwable) { null } ?: return@launch
+            try { tasteRepo.recordEventTap(userId, event) } catch (_: Throwable) {}
         }
     }
 
@@ -415,6 +342,9 @@ class ChatViewModel(
                         eventId = null,
                         isCustom = false,
                         venueRating = venue?.googleRating,
+                        venueAddress = venue?.address,
+                        venueLat = venue?.latitude,
+                        venueLng = venue?.longitude,
                     )
                 } else {
                     // Event ref — look up from DB
@@ -439,6 +369,11 @@ class ChatViewModel(
                         } ?: ""
                     }
 
+                    // Fall back to venue photo if event has no image
+                    val slotImage = event.imageUrl ?: event.venueName?.let { name ->
+                        try { venueRepo.searchByName(name)?.photoUrl } catch (_: Exception) { null }
+                    }
+
                     ItinerarySlot(
                         id = generateId(),
                         time = time,
@@ -447,10 +382,15 @@ class ChatViewModel(
                         detail = ref.note.ifBlank { "${event.venueName ?: ""} · ${event.venueCity}" },
                         price = event.priceDisplay,
                         isFree = event.isFree,
-                        imageUrl = event.imageUrl,
+                        imageUrl = slotImage,
                         eventId = event.id,
                         isCustom = false,
                         ticketUrl = event.ticketUrl,
+                        venueAddress = event.venueAddress,
+                        venueLat = event.venueLat,
+                        venueLng = event.venueLng,
+                        priceMin = event.priceMin,
+                        priceMax = event.priceMax,
                     )
                 }
             }
@@ -475,7 +415,7 @@ class ChatViewModel(
 
     // ── Core: Single unified message handler ──
 
-    /** Stores the last user message for APPROVE detection in parseNaturalResponse. */
+    /** Stores the last user message for APPROVE detection. */
     private var lastUserMessage: String = ""
 
     private fun handleMessage(text: String) {
@@ -496,6 +436,7 @@ class ChatViewModel(
                 // that bypass Exception hierarchy (IrLinkageError, etc.)
                 println("Claude error: ${e::class.simpleName}: ${e.message}")
                 e.printStackTrace()
+                _uiState.update { it.copy(streamingText = "") }
                 try {
                     handleAiError(if (e is Exception) e else RuntimeException(e.message ?: "Unknown error"))
                 } catch (_: Throwable) {
@@ -510,50 +451,194 @@ class ChatViewModel(
     // ── Tool execution loop ──
 
     /**
+     * Send a single streaming request to Claude. Emits text deltas to the UI
+     * in real-time via streamingText, then returns the assembled ClaudeResponse.
+     * For tool-use rounds (isToolRound=true), streaming text is hidden and
+     * the searching indicator is shown instead.
+     */
+    private suspend fun sendStreaming(
+        systemPrompt: String,
+        tools: JsonArray?,
+        isToolRound: Boolean,
+    ): ClaudeResponse {
+        var response: ClaudeResponse? = null
+
+        claudeApi.sendRawStreaming(
+            systemPrompt = systemPrompt,
+            messages = conversationHistory,
+            tools = tools,
+        ).collect { event ->
+            when (event) {
+                is StreamEvent.TextDelta -> {
+                    if (!isToolRound) {
+                        _uiState.update { it.copy(
+                            streamingText = it.streamingText + event.text,
+                            isTyping = false,
+                        ) }
+                    }
+                }
+                is StreamEvent.ToolUseStart -> {
+                    // Claude is about to call a tool — show searching indicator
+                    _uiState.update { it.copy(isSearching = true, streamingText = "") }
+                }
+                is StreamEvent.InputDelta -> { /* Accumulated internally by the Flow */ }
+                is StreamEvent.Done -> {
+                    response = event.response
+                }
+            }
+        }
+
+        return response ?: throw RuntimeException("Stream ended without a complete response")
+    }
+
+    /** Terminal tool names — these produce UI output, not results for Claude. */
+    private val terminalTools = setOf("present_plan", "update_plan")
+
+    /**
+     * Build a ParsedChatResponse from a present_plan or update_plan tool call.
+     */
+    private fun parsePlanToolCall(
+        toolCall: live.localapp.local.data.remote.ToolCall,
+        text: String,
+    ): ParsedChatResponse {
+        val input = toolCall.input
+        val chips = input["chips"]?.jsonArray?.mapNotNull { it.jsonPrimitive.contentOrNull } ?: emptyList()
+
+        if (toolCall.name == "update_plan") {
+            val dayIndex = input["day_index"]?.jsonPrimitive?.intOrNull ?: 0
+            val label = input["label"]?.jsonPrimitive?.contentOrNull ?: ""
+            val slots = input["slots"]?.jsonArray?.map { parsePlanSlot(it.jsonObject) } ?: emptyList()
+            return ParsedChatResponse(
+                type = ParsedResponseType.PLAN_UPDATE,
+                text = text,
+                dayIndex = dayIndex,
+                days = listOf(live.localapp.local.data.remote.ParsedDay(label = label, events = slots)),
+                chips = chips,
+            )
+        }
+
+        // present_plan
+        val title = input["title"]?.jsonPrimitive?.contentOrNull ?: "Your Plan"
+        val daysArray = input["days"]?.jsonArray ?: kotlinx.serialization.json.buildJsonArray {}
+        val parsedDays = daysArray.map { dayEl ->
+            val dayObj = dayEl.jsonObject
+            val label = dayObj["label"]?.jsonPrimitive?.contentOrNull ?: ""
+            val slots = dayObj["slots"]?.jsonArray?.map { parsePlanSlot(it.jsonObject) } ?: emptyList()
+            live.localapp.local.data.remote.ParsedDay(label = label, events = slots)
+        }
+
+        return ParsedChatResponse(
+            type = ParsedResponseType.PLAN,
+            text = text,
+            planTitle = title,
+            days = parsedDays,
+            chips = chips,
+        )
+    }
+
+    /** Parse a single slot from present_plan/update_plan JSON into an EventRef. */
+    private fun parsePlanSlot(slotObj: JsonObject): live.localapp.local.data.remote.EventRef {
+        val eventId = slotObj["event_id"]?.jsonPrimitive?.contentOrNull
+        val venueName = slotObj["venue_name"]?.jsonPrimitive?.contentOrNull
+        val time = slotObj["time"]?.jsonPrimitive?.contentOrNull ?: ""
+        val note = slotObj["note"]?.jsonPrimitive?.contentOrNull ?: ""
+        return live.localapp.local.data.remote.EventRef(
+            id = eventId ?: venueName ?: "",
+            time = time,
+            note = note,
+            isVenue = eventId == null && venueName != null,
+        )
+    }
+
+    /**
      * Send the conversation to Claude and handle the tool-use loop:
      * send → if tool_use → execute tool → append tool_result → send again → repeat
-     * until Claude gives a final text (stop_reason == "end_turn").
+     * until Claude gives a final text (stop_reason == "end_turn") or calls a
+     * terminal tool (present_plan/update_plan).
      *
-     * Returns a ParsedChatResponse parsed from Claude's natural language with markers.
+     * Uses streaming so users see words appearing in real-time.
      */
     private suspend fun sendWithToolLoop(systemPrompt: String): ParsedChatResponse {
-        val maxToolRounds = 5 // Cap tool calls to avoid runaway loops
+        val maxToolRounds = 5
         var toolRounds = 0
 
         while (true) {
-            val response = claudeApi.sendRaw(
-                systemPrompt = systemPrompt,
-                messages = conversationHistory,
-                tools = claudeTools,
-            )
+            // Only stream text to UI after tools have been called at least once.
+            // On round 0 we don't know if Claude will call tools, so showing text
+            // that then vanishes feels jarring. After tools run, the next response
+            // is almost certainly the final one, so streaming is safe.
+            val hideStreamingText = toolRounds == 0
+            val response = sendStreaming(systemPrompt, claudeTools, isToolRound = hideStreamingText)
 
             val toolCalls = claudeApi.extractToolCalls(response)
+            val text = claudeApi.extractText(response) ?: ""
 
-            // Show searching indicator when Claude is about to use tools
-            if (toolCalls.isNotEmpty() && toolRounds == 0) {
-                _uiState.update { it.copy(isSearching = true) }
-            }
-
-            if (toolCalls.isEmpty() || response.stopReason == "end_turn") {
-                val text = claudeApi.extractText(response)
-                if (text == null) {
-                    println("sendWithToolLoop: No text in Claude response, returning fallback")
-                    stripToolMessagesFromHistory()
-                    return ParsedChatResponse(
-                        type = ParsedResponseType.CHAT,
-                        text = "Sorry, I had trouble generating a response. Could you try again?",
-                    )
+            // Check for terminal tools (present_plan / update_plan)
+            val terminalCall = toolCalls.firstOrNull { it.name in terminalTools }
+            if (terminalCall != null) {
+                // Execute any non-terminal tools first (shouldn't happen often, but just in case)
+                val searchCalls = toolCalls.filter { it.name !in terminalTools }
+                if (searchCalls.isNotEmpty()) {
+                    val assistantBlocks = claudeApi.buildAssistantContentBlocks(response)
+                    conversationHistory.add(ClaudeMessage.blocks("assistant", assistantBlocks))
+                    val toolResultBlocks = kotlinx.serialization.json.buildJsonArray {
+                        for (call in searchCalls) {
+                            val result = executeToolCall(call.name, call.input)
+                            add(kotlinx.serialization.json.buildJsonObject {
+                                put("type", JsonPrimitive("tool_result"))
+                                put("tool_use_id", JsonPrimitive(call.id))
+                                put("content", JsonPrimitive(result))
+                            })
+                        }
+                        // Send a synthetic result for the terminal tool so history stays valid
+                        add(kotlinx.serialization.json.buildJsonObject {
+                            put("type", JsonPrimitive("tool_result"))
+                            put("tool_use_id", JsonPrimitive(terminalCall.id))
+                            put("content", JsonPrimitive("Plan displayed to user."))
+                        })
+                    }
+                    conversationHistory.add(ClaudeMessage.blocks("user", toolResultBlocks))
+                } else {
+                    // Just the terminal tool — add assistant response + synthetic result to history
+                    val assistantBlocks = claudeApi.buildAssistantContentBlocks(response)
+                    conversationHistory.add(ClaudeMessage.blocks("assistant", assistantBlocks))
+                    val toolResultBlocks = kotlinx.serialization.json.buildJsonArray {
+                        add(kotlinx.serialization.json.buildJsonObject {
+                            put("type", JsonPrimitive("tool_result"))
+                            put("tool_use_id", JsonPrimitive(terminalCall.id))
+                            put("content", JsonPrimitive("Plan displayed to user."))
+                        })
+                    }
+                    conversationHistory.add(ClaudeMessage.blocks("user", toolResultBlocks))
                 }
 
-                stripToolMessagesFromHistory()
-                appendTextToHistory("assistant", text)
-
-                println("sendWithToolLoop: Parsing natural response, text length=${text.length}")
-                println("sendWithToolLoop: First 300 chars: ${text.take(300)}")
-                return claudeApi.parseNaturalResponse(text, lastUserMessage)
+                println("sendWithToolLoop: Terminal tool ${terminalCall.name}, text=${text.take(200)}")
+                return parsePlanToolCall(terminalCall, text)
             }
 
-            // Check if we've hit the tool round cap
+            // No tool calls at all — pure text response
+            if (toolCalls.isEmpty() || response.stopReason == "end_turn") {
+                stripToolMessagesFromHistory()
+                if (text.isNotEmpty()) appendTextToHistory("assistant", text)
+
+                // Check for approval based on user message
+                val isApproval = _uiState.value.days.isNotEmpty() && lastUserMessage.lowercase().let { msg ->
+                    msg.contains("looks good") || msg.contains("approve") ||
+                        msg.contains("save") || msg.contains("add to my plans")
+                }
+
+                return ParsedChatResponse(
+                    type = if (isApproval) ParsedResponseType.APPROVE else ParsedResponseType.CHAT,
+                    text = text.ifEmpty { "Sorry, I had trouble generating a response. Could you try again?" },
+                )
+            }
+
+            // Show searching indicator on first tool call round
+            if (toolRounds == 0) {
+                _uiState.update { it.copy(isSearching = true, streamingText = "") }
+            }
+
+            // Check tool round cap
             toolRounds++
             if (toolRounds >= maxToolRounds) {
                 println("Tool loop capped at $maxToolRounds rounds — forcing completion")
@@ -570,31 +655,39 @@ class ChatViewModel(
                     }
                 }
                 conversationHistory.add(ClaudeMessage.blocks("user", toolResultBlocks))
-                conversationHistory.add(ClaudeMessage.text("user", "You have enough information now. Respond with your plan using the natural language format (PLAN:/DAY:/CHIPS:). Do NOT call any more tools."))
-                val finalResponse = claudeApi.sendRaw(
-                    systemPrompt = systemPrompt,
-                    messages = conversationHistory,
-                    tools = null,
-                )
-                val text = claudeApi.extractText(finalResponse)
-                if (text == null) {
-                    println("sendWithToolLoop: No text after cap nudge, returning fallback")
-                    stripToolMessagesFromHistory()
-                    return ParsedChatResponse(
-                        type = ParsedResponseType.CHAT,
-                        text = "I found some great options but had trouble putting them together. Could you try asking again?",
-                    )
+                conversationHistory.add(ClaudeMessage.text("user", "You have enough information now. Please present a plan using the present_plan tool, or just respond naturally."))
+
+                // Final response — stream with text visible
+                val finalResponse = sendStreaming(systemPrompt, claudeTools, isToolRound = false)
+                val finalText = claudeApi.extractText(finalResponse) ?: ""
+                val finalTerminal = claudeApi.extractToolCalls(finalResponse).firstOrNull { it.name in terminalTools }
+
+                if (finalTerminal != null) {
+                    val ab = claudeApi.buildAssistantContentBlocks(finalResponse)
+                    conversationHistory.add(ClaudeMessage.blocks("assistant", ab))
+                    val tr = kotlinx.serialization.json.buildJsonArray {
+                        add(kotlinx.serialization.json.buildJsonObject {
+                            put("type", JsonPrimitive("tool_result"))
+                            put("tool_use_id", JsonPrimitive(finalTerminal.id))
+                            put("content", JsonPrimitive("Plan displayed to user."))
+                        })
+                    }
+                    conversationHistory.add(ClaudeMessage.blocks("user", tr))
+                    return parsePlanToolCall(finalTerminal, finalText)
                 }
+
                 stripToolMessagesFromHistory()
-                appendTextToHistory("assistant", text)
-                return claudeApi.parseNaturalResponse(text, lastUserMessage)
+                if (finalText.isNotEmpty()) appendTextToHistory("assistant", finalText)
+                return ParsedChatResponse(
+                    type = ParsedResponseType.CHAT,
+                    text = finalText.ifEmpty { "I found some great options but had trouble putting them together. Could you try asking again?" },
+                )
             }
 
-            // Claude wants to use tools — add its full response to history
+            // Regular tool execution — add response to history and continue loop
             val assistantBlocks = claudeApi.buildAssistantContentBlocks(response)
             conversationHistory.add(ClaudeMessage.blocks("assistant", assistantBlocks))
 
-            // Execute each tool call and build tool_result blocks
             val toolResultBlocks = kotlinx.serialization.json.buildJsonArray {
                 for (call in toolCalls) {
                     println("Executing tool: ${call.name} with input: ${call.input}")
@@ -820,26 +913,28 @@ class ChatViewModel(
     // ── Process Claude's parsed natural language response ──
 
     private suspend fun handleClaudeResponse(parsed: ParsedChatResponse) {
+        // Clear streaming text immediately — stream is done, permanent messages take over
+        _uiState.update { it.copy(streamingText = "") }
+
         val responseText = parsed.text
 
         when (parsed.type) {
             ParsedResponseType.CHAT -> {
-                // Pure conversation — Claude is gathering info or answering questions
-                consecutiveQuestionCount++
                 if (responseText.isNotBlank()) {
                     addAiMessage(responseText)
                 }
-                // After 2+ consecutive questions, inject a "Just surprise me" chip
-                val chips = parsed.chips.toMutableList()
-                if (consecutiveQuestionCount >= 2 && chips.none { it.contains("surprise", ignoreCase = true) }) {
-                    chips.add("Just surprise me")
+                // Smart auto-chips based on context
+                val chips = if (_uiState.value.days.isNotEmpty()) {
+                    // Plan exists — offer approval
+                    listOf("Looks good, add to My Plans")
+                } else {
+                    emptyList()
                 }
                 finishTurn(chips)
             }
 
             ParsedResponseType.PLAN -> {
                 consecutiveQuestionCount = 0
-                // Claude is confident — delivering a full plan
                 val title = parsed.planTitle ?: "Your Plan"
                 val builtDays = buildPlanFromRefs(parsed)
                 val validatedDays = validatePlanDates(builtDays)
@@ -861,76 +956,22 @@ class ChatViewModel(
                 delay(350)
 
                 if (validatedDays.size > 1) {
-                    // Multi-day: show all days in a single horizontally scrollable card
                     addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.MultiDayPlanRef(validatedDays.size)))
                 } else {
-                    // Single day: show as a regular day card
                     addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(0)))
                 }
 
+                fetchWeatherForPlan(validatedDays)
                 finishTurn(withApproveChip(parsed.chips))
             }
 
             ParsedResponseType.PLAN_UPDATE -> {
-                consecutiveQuestionCount = 0
                 val dayIndex = parsed.dayIndex ?: _uiState.value.currentDayIndex
                 val builtDays = buildPlanFromRefs(parsed)
                 val updatedDay = builtDays.firstOrNull()
 
                 if (updatedDay != null) {
                     val validatedDay = validatePlanDates(listOf(updatedDay)).first()
-                    val previousDay = _uiState.value.days.getOrNull(dayIndex)
-                    val previousSlotCount = previousDay?.slots?.size ?: 0
-                    val newSlotCount = validatedDay.slots.size
-
-                    // Validate: if text says "Added" but new plan has same or fewer slots, re-prompt
-                    val textLower = responseText.lowercase()
-                    val claimsAdded = textLower.contains("added") || textLower.contains("here's") || textLower.contains("included")
-                    val slotsMissing = claimsAdded && newSlotCount <= previousSlotCount
-
-                    if (slotsMissing) {
-                        println("Plan update validation failed: text claims addition but slots didn't increase ($previousSlotCount -> $newSlotCount). Re-prompting.")
-                        appendTextToHistory("user", "The plan you returned is missing the event you mentioned adding. Please include ALL existing slots plus the new one.")
-                        try {
-                            val retryParsed = sendWithToolLoop(buildSystemPrompt())
-                            if (retryParsed.type == ParsedResponseType.PLAN_UPDATE && retryParsed.days.isNotEmpty()) {
-                                val retryDays = buildPlanFromRefs(retryParsed)
-                                val retryDay = retryDays.firstOrNull()
-                                if (retryDay != null) {
-                                    _uiState.update { state ->
-                                        val days = state.days.toMutableList()
-                                        if (dayIndex in days.indices) days[dayIndex] = retryDay
-                                        state.copy(days = days, currentDayIndex = dayIndex)
-                                    }
-                                    val retryText = retryParsed.text.ifBlank { responseText }
-                                    if (retryText.isNotBlank()) addAiMessage(retryText)
-                                    addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(dayIndex)))
-                                    finishTurn(withApproveChip(retryParsed.chips))
-                                    return
-                                }
-                            }
-                        } catch (e: Throwable) {
-                            println("Re-prompt failed: ${e.message}")
-                        }
-                    }
-
-                    // Snapshot old plan cards so they show the previous version
-                    if (previousDay != null) {
-                        _uiState.update { state ->
-                            val messages = state.messages.map { msg ->
-                                if (msg.content is MessageContent.DayCardRef &&
-                                    (msg.content as MessageContent.DayCardRef).dayIndex == dayIndex) {
-                                    msg.copy(content = MessageContent.DayCardSnapshot(
-                                        day = previousDay,
-                                        dayIndex = dayIndex,
-                                        totalDays = state.days.size,
-                                    ))
-                                } else msg
-                            }
-                            state.copy(messages = messages)
-                        }
-                    }
-
                     _uiState.update { state ->
                         val days = state.days.toMutableList()
                         if (dayIndex in days.indices) {
@@ -944,14 +985,13 @@ class ChatViewModel(
                     addAiMessage(responseText)
                 }
 
-                // Add the new live plan card
                 addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(dayIndex)))
 
+                fetchWeatherForPlan(_uiState.value.days)
                 finishTurn(withApproveChip(parsed.chips))
             }
 
             ParsedResponseType.APPROVE -> {
-                // Claude recognized an approval — lock in the whole plan
                 if (responseText.isNotBlank()) {
                     addAiMessage(responseText)
                 }
@@ -1022,6 +1062,14 @@ class ChatViewModel(
                                     isFree = slot.isFree,
                                     eventId = slot.eventId,
                                     isCustom = slot.isCustom,
+                                    imageUrl = slot.imageUrl,
+                                    ticketUrl = slot.ticketUrl,
+                                    venueRating = slot.venueRating,
+                                    venueAddress = slot.venueAddress,
+                                    venueLat = slot.venueLat,
+                                    venueLng = slot.venueLng,
+                                    priceMin = slot.priceMin,
+                                    priceMax = slot.priceMax,
                                 )
                             },
                             travel = day.travel.map { PlanTravel(it.mode, it.mins) },
@@ -1043,6 +1091,21 @@ class ChatViewModel(
                 // Badge: track plan created
                 val userState = cityToState(state.userPreferences?.city ?: "boston")
                 badgeService.recordAction(BadgeAction.PLAN_CREATED, userState)
+
+                // Taste: learn from approved plan
+                val userId = userPrefsRepo.getLocalUserId()
+                if (userId != null) {
+                    val allSlots = state.days.flatMap { it.slots }
+                    val allEvents = allSlots.mapNotNull { slot ->
+                        slot.eventId?.let { id ->
+                            searchResultCache.find { it.id == id } ?: try { eventRepo.getEvent(id) } catch (_: Throwable) { null }
+                        }
+                    }
+                    try {
+                        tasteRepo.recordPlanApproval(userId, allSlots, allEvents)
+                        tasteProfile = tasteRepo.getTasteProfile(userId)
+                    } catch (_: Throwable) {}
+                }
             } catch (e: Throwable) {
                 println("Failed to save plan: ${e.message}")
             }
@@ -1173,6 +1236,36 @@ class ChatViewModel(
         }
     }
 
+    /** Fetch weather forecasts for each day in the current plan. */
+    private fun fetchWeatherForPlan(days: List<ItineraryDay>) {
+        viewModelScope.launch {
+            val todayDate = kotlin.time.Clock.System.now().toString().take(10)
+            val todayLocal = try {
+                val now = kotlinx.datetime.Instant.fromEpochMilliseconds(kotlin.time.Clock.System.now().toEpochMilliseconds())
+                now.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+            } catch (_: Exception) { return@launch }
+
+            val weatherMap = mutableMapOf<Int, live.localapp.local.data.remote.WeatherForecast>()
+            for ((index, day) in days.withIndex()) {
+                // Get coordinates from first slot with lat/lng
+                val slot = day.slots.firstOrNull { it.venueLat != null && it.venueLng != null } ?: continue
+                val lat = slot.venueLat ?: continue
+                val lng = slot.venueLng ?: continue
+
+                // Derive ISO date from day label
+                val dateMonthDay = extractDateFromLabel(day.label) ?: continue
+                val year = if (dateMonthDay.first < todayLocal.monthNumber) todayLocal.year + 1 else todayLocal.year
+                val isoDate = "$year-${dateMonthDay.first.toString().padStart(2, '0')}-${dateMonthDay.second.toString().padStart(2, '0')}"
+
+                val forecast = try { weatherService.getDayForecast(lat, lng, isoDate) } catch (_: Throwable) { null }
+                if (forecast != null) weatherMap[index] = forecast
+            }
+            if (weatherMap.isNotEmpty()) {
+                _uiState.update { it.copy(weather = weatherMap) }
+            }
+        }
+    }
+
     /** Extract month and day from a day label like "Saturday, March 28" -> Pair(3, 28) */
     private fun extractDateFromLabel(label: String): Pair<Int, Int>? {
         val monthNames = mapOf(
@@ -1243,155 +1336,8 @@ class ChatViewModel(
 
     // ── System Prompt ──
 
-    // Track consecutive question (chat-type) responses for "surprise me" chip injection
-    private var consecutiveQuestionCount = 0
-
-    // ── "Also Happening" Recommendations ──
-
-    private fun scoreEventUniqueness(event: Event): Double {
-        var score = 0.0
-        val titleLc = event.title.lowercase()
-
-        // Ticketed/produced event
-        if (event.ticketUrl != null) score += 3.0
-
-        // Fixed-time (not always-on)
-        if (event.category != "always_on" && event.startAt != null) score += 2.0
-
-        // Special keywords in title
-        val specialKeywords = listOf("premiere", "opening night", "farewell", "reunion",
-            "one night only", "limited", "sold out", "presents:", "feat.", "vs.", "album release",
-            "debut", "residency", "anniversary", "benefit", "gala", "festival")
-        if (specialKeywords.any { titleLc.contains(it) }) score += 2.0
-
-        // Has an image (better card presentation)
-        if (event.imageUrl != null) score += 1.0
-
-        // Free at what seems like a notable venue
-        if (event.isFree && event.venueName != null) score += 1.5
-
-        // Source is a major platform
-        if (event.source == "ticketmaster" || event.source == "eventbrite") score += 1.0
-
-        // Niche category (not the most common ones)
-        val nicheCategories = listOf("comedy", "film", "food", "arts", "theater", "dance",
-            "literary", "wellness", "experiences")
-        if (nicheCategories.any { event.subcategory?.lowercase()?.contains(it) == true }) score += 1.0
-
-        return score
-    }
-
-    private fun computeRecommendations(planDays: List<ItineraryDay>): List<Event> {
-        val usedEventIds = planDays.flatMap { it.slots.mapNotNull { s -> s.eventId } }.toSet()
-
-        return searchResultCache
-            .filter { it.id !in usedEventIds }
-            .distinctBy { it.id }
-            .map { it to scoreEventUniqueness(it) }
-            .filter { it.second >= 3.0 }
-            .sortedByDescending { it.second }
-            .take(8)
-            .map { it.first }
-    }
-
-    fun addRecommendationToPlan(event: Event) {
-        viewModelScope.launch {
-            val state = _uiState.value
-            if (state.days.isEmpty()) return@launch
-
-            // Parse event time
-            val eventTime = event.startAt?.let { iso ->
-                try {
-                    val instant = kotlinx.datetime.Instant.parse(iso)
-                    val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
-                    val hour = local.hour
-                    val min = local.minute
-                    val amPm = if (hour < 12) "AM" else "PM"
-                    val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
-                    if (min == 0) "${displayHour} ${amPm}" else "${displayHour}:${min.toString().padStart(2, '0')} ${amPm}"
-                } catch (_: Exception) { "TBD" }
-            } ?: "TBD"
-
-            // Find the right day (match by date)
-            val eventDate = event.startAt?.take(10) ?: ""
-            var targetDayIndex = 0
-            state.days.forEachIndexed { idx, day ->
-                val dayDate = extractDateFromLabel(day.label)
-                if (dayDate != null && eventDate.contains("${dayDate.second.toString().padStart(2, '0')}")) {
-                    targetDayIndex = idx
-                }
-            }
-
-            val targetDay = state.days.getOrNull(targetDayIndex) ?: return@launch
-
-            // Check for time conflicts (within ~2 hours)
-            val eventMinutes = parseTimeForSort(eventTime)
-            val conflicting = targetDay.slots.firstOrNull { slot ->
-                val slotMinutes = parseTimeForSort(slot.time)
-                slotMinutes != Int.MAX_VALUE && eventMinutes != Int.MAX_VALUE &&
-                    kotlin.math.abs(slotMinutes - eventMinutes) < 120
-            }
-
-            val newSlot = ItinerarySlot(
-                id = generateId(),
-                time = eventTime,
-                emoji = "",
-                name = event.title,
-                detail = "${event.venueName ?: ""} · ${event.venueCity}",
-                price = event.priceDisplay,
-                isFree = event.isFree,
-                imageUrl = event.imageUrl,
-                eventId = event.id,
-            )
-
-            if (conflicting != null) {
-                // Show conflict message with chips
-                addAiMessage("\"${event.title}\" at $eventTime overlaps with \"${conflicting.name}\" at ${conflicting.time}. Want to swap it in?")
-                _uiState.update {
-                    it.copy(
-                        quickReplies = listOf(
-                            QuickReply("Swap it in", action = "swap_recommendation:${event.id}:${conflicting.id}:$targetDayIndex"),
-                            QuickReply("Keep current"),
-                        ),
-                        inputEnabled = true,
-                        isBusy = false,
-                    )
-                }
-                // Store the new slot for the swap
-                pendingRecommendationSlot = newSlot
-            } else {
-                // No conflict — add directly
-                _uiState.update { s ->
-                    val days = s.days.toMutableList()
-                    val day = days[targetDayIndex]
-                    val newSlots = (day.slots + newSlot).sortedBy { parseTimeForSort(it.time) }
-                    days[targetDayIndex] = day.copy(slots = newSlots)
-                    s.copy(days = days)
-                }
-                addAiMessage("Added \"${event.title}\" at $eventTime!")
-            }
-        }
-    }
-
-    private var pendingRecommendationSlot: ItinerarySlot? = null
-
-    private fun handleSwapRecommendation(action: String) {
-        val parts = action.removePrefix("swap_recommendation:").split(":")
-        if (parts.size < 3) return
-        val conflictSlotId = parts[1]
-        val dayIndex = parts[2].toIntOrNull() ?: return
-        val newSlot = pendingRecommendationSlot ?: return
-
-        _uiState.update { s ->
-            val days = s.days.toMutableList()
-            val day = days[dayIndex]
-            val newSlots = day.slots.filter { it.id != conflictSlotId } + newSlot
-            days[dayIndex] = day.copy(slots = newSlots.sortedBy { parseTimeForSort(it.time) })
-            s.copy(days = days)
-        }
-        pendingRecommendationSlot = null
-        addAiMessage("Swapped in \"${newSlot.name}\"!")
-    }
+    @Suppress("unused")
+    private var consecutiveQuestionCount = 0 // legacy, kept for field ordering
 
     private fun cityToState(city: String): String = when (city.lowercase().trim()) {
         "boston", "cambridge", "somerville", "newton", "waltham",
@@ -1460,62 +1406,59 @@ Prioritize events and venues matching these preferences.
             """.trimIndent()
         } ?: ""
 
+        val tasteContext = tasteProfile?.let { taste ->
+            if (taste.interactionCount < 3) return@let ""
+            val topCuisines = taste.topN(taste.cuisineScores, 5).joinToString(", ")
+            val topCategories = taste.topN(taste.categoryScores, 5).joinToString(", ")
+            val topNeighborhoods = taste.topN(taste.neighborhoodScores, 3).joinToString(", ")
+            val priceRange = "$${taste.priceComfort.avgMin.toInt()}-${taste.priceComfort.avgMax.toInt()}"
+            val timePrefs = taste.topN(taste.timePreferences, 2).joinToString(", ")
+            """
+LEARNED TASTE (from ${taste.interactionCount} interactions):
+Cuisines: ${topCuisines.ifEmpty { "exploring" }}
+Categories: ${topCategories.ifEmpty { "varied" }}
+Neighborhoods: ${topNeighborhoods.ifEmpty { "no preference" }}
+Price comfort: $priceRange per person (${(taste.priceComfort.freeRatio * 100).toInt()}% free events)
+Preferred times: ${timePrefs.ifEmpty { "flexible" }}
+Weight these but still surprise them occasionally.
+            """.trimIndent()
+        } ?: ""
+
         return """
-You are Local, an events concierge in a mobile app.
+You are Yocal, an AI assistant inside a local events and dining app. Talk naturally — be warm, opinionated, and helpful, just like you would in any conversation. Keep responses concise since this is a mobile chat.
+
 Today: $todayDate ($dayOfWeek)
 Calendar: $calendarRef
+Location: ${state.currentLocationName.ifBlank { state.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "their area" }} (lat: ${state.currentLat ?: state.userPreferences?.userLat ?: "unknown"}, lng: ${state.currentLng ?: state.userPreferences?.userLng ?: "unknown"})
 
-After searching, respond in this format:
+HOW TO HELP:
+- When the user wants to plan something, search the database FIRST, then present a plan using the present_plan tool. Search broadly — make multiple search_events calls across different categories and date ranges to find everything relevant. The more you search, the better your recommendations.
+- When chatting or answering questions, just respond naturally. No special formatting needed.
+- When the user wants to modify an existing plan, use update_plan with the full updated slot list for that day.
 
-For plans:
-PLAN: "Title"
-DAY: Saturday, April 5
-- [evt:EVENT_ID] at TIME — Your reason for picking this
-- [venue:VENUE_NAME] at TIME — Your reason
-CHIPS: chip1 | chip2 | chip3
+TOOLS:
+- search_events: Search the local event database. Always search before recommending events. Cast a wide net — search multiple categories, date ranges, and keywords to surface the best options. The search covers a 20-mile radius automatically.
+- search_venues: Search the venue database for places.
+- recommend_and_save_venue: Recommend a restaurant, bar, or venue from your own knowledge when the database doesn't have a good match. The system validates it via Google Places and saves it.
+- get_event_details: Get full details on a specific event.
+- present_plan: Show a plan card to the user. Call this when you've curated a concrete plan. Use event_id for events from search results, venue_name for venues from recommend_and_save_venue. Your text response appears as a message above the card.
+- update_plan: Modify a specific day in the existing plan. Include ALL slots for that day (not just changed ones).
 
-For updating an existing day:
-UPDATE_DAY: 0
-DAY: Saturday, April 5
-- [evt:EVENT_ID] at TIME — Your reason
-- [venue:VENUE_NAME] at TIME — Your reason
-CHIPS: chip1 | chip2
-
-For conversation (no plan):
-Just write naturally. No PLAN/DAY markers.
-CHIPS: chip1 | chip2
-
-Rules:
-- Reference events ONLY by [evt:ID] using IDs from search results (the [evt:xxx] tags after each event).
-- Reference venues by [venue:NAME] using the name from recommend_and_save_venue results.
-- Keep explanations to 1 sentence per slot.
-- Include 2-3 chips at the end, separated by |.
-- No emoji. No markdown. Plain text only for the natural language parts.
-- 1 question per message max. Be direct.
-
-DATE AND TIME ACCURACY:
-- Check the calendar to confirm day-of-week for any date. Do NOT guess.
-- Only include events whose date matches the day being planned.
-- Use the EXACT start time from search results.
-- Anytime events: schedule at reasonable times (10am-9pm).
-
-TOOLS: Always search before recommending. Use search_events for events, search_venues for places, recommend_and_save_venue for restaurants/bars not in the DB, get_event_details for full info. Search broadly, then curate. Make MULTIPLE tool calls for plans with 2+ slots.
-
-SPEED: If you know WHAT and WHEN, search and build immediately. Only ask about WHEN if not given. Default: area = current location, group = 2, vibe = fun/casual.
-
-AMENDMENTS: When a plan exists and user wants changes WITHIN a day, use UPDATE_DAY format. For adding NEW days, use PLAN format with ALL days. Never duplicate events. When removing, keep everything else.
-
-PLAN SIZE: "Date night" = 2-3 slots (dinner + activity + optional drinks). "Night out" = 2-3. "Full day" = 4-5. "Weekend" = 3-5 per day. Single event = 1 slot.
-
-BROWSING: For "what's happening" / "live music this week" / etc, search first, then list results as natural text (no PLAN markers). Include event names, venues, times. Offer chips like "Plan around [event]".
-
-DINING: For restaurant/bar requests, go straight to recommend_and_save_venue. When presenting multiple options for the SAME slot, list them in text (no plan), let user choose.
-
-LOCATION: User is in ${state.currentLocationName.ifBlank { state.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "their area" }} (lat: ${state.currentLat ?: state.userPreferences?.userLat ?: "unknown"}, lng: ${state.currentLng ?: state.userPreferences?.userLng ?: "unknown"}). Searches auto-use coordinates. Never ask location.
-
-NO RESULTS: Try nearby areas. If still nothing, use recommend_and_save_venue for a venue-based plan. Never mention "database" or implementation details.
+GUIDELINES:
+- Always search before building a plan. Make multiple search calls to cover different categories.
+- Use the EXACT event IDs from search results in present_plan slots.
+- Check the calendar reference above to verify day-of-week for dates. Only include events whose date matches the planned day.
+- Use exact start times from search results. For flexible/anytime events, pick reasonable times (10am-9pm).
+- For dining: use recommend_and_save_venue to suggest real restaurants you know about.
+- If search returns no results, try broader searches or nearby areas. Use recommend_and_save_venue for a venue-based plan as a fallback.
+- Plan sizes: "date night" = 2-3 stops, "night out" = 2-3, "full day" = 4-5, "weekend" = 3-5 per day.
+- If you know what and when, search and build immediately. Only ask about timing if it's truly ambiguous.
+- NEVER use emoji in your responses. No emoji at all — they don't render in this app.
+- Never mention the database, tools, or implementation details to the user.
 
 $prefsContext
+
+$tasteContext
 
 $currentPlanContext
         """.trimIndent()
@@ -1568,7 +1511,12 @@ $currentPlanContext
     }
 
     private fun addAiMessage(text: String) {
-        addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.Text(text)))
+        // Atomically clear streaming text and add the permanent message
+        // so there's no flash/gap between the two.
+        _uiState.update { it.copy(
+            messages = it.messages + ChatMessage(role = MessageRole.AI, content = MessageContent.Text(text)),
+            streamingText = "",
+        ) }
     }
 
     private fun addUserMessage(text: String) {
