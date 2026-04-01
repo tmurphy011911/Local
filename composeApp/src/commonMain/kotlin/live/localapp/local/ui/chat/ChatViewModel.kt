@@ -591,7 +591,7 @@ class ChatViewModel(
         val category = input["category"]?.jsonPrimitive?.contentOrNull
         var dateRange = input["date_range"]?.jsonPrimitive?.contentOrNull
         val keyword = input["keyword"]?.jsonPrimitive?.contentOrNull
-        val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 50
+        val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 200
         val startDate = input["start_date"]?.jsonPrimitive?.contentOrNull
         val endDate = input["end_date"]?.jsonPrimitive?.contentOrNull
 
@@ -660,7 +660,7 @@ class ChatViewModel(
         val location = input["location"]?.jsonPrimitive?.contentOrNull
         val category = input["category"]?.jsonPrimitive?.contentOrNull
         val keyword = input["keyword"]?.jsonPrimitive?.contentOrNull
-        val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 50
+        val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 200
 
         val venues = venueRepo.searchVenues(location, category, keyword, limit)
 
