@@ -533,11 +533,16 @@ class ClaudeApiService {
             days.add(ParsedDay(label = currentDayLabel!!, events = currentEvents.toList()))
         }
 
-        // Build the natural language text (everything that's not a marker line)
+        // Build the natural language text (everything that's not a marker line or search data)
         val markerPrefixes = listOf("PLAN:", "DAY:", "UPDATE_DAY:", "CHIPS:", "- [evt:", "- [venue:")
         val textParts = lines.filter { line ->
             val trimmed = line.trim()
-            markerPrefixes.none { trimmed.startsWith(it) } && trimmed.isNotBlank()
+            markerPrefixes.none { trimmed.startsWith(it) } &&
+                !trimmed.contains("[evt:") &&
+                !trimmed.contains("[venue:") &&
+                !trimmed.startsWith("===") &&
+                !trimmed.matches(Regex("^[A-Z]+:.*\\[evt:.*")) &&
+                trimmed.isNotBlank()
         }
         val naturalText = textParts.joinToString("\n").trim()
 
