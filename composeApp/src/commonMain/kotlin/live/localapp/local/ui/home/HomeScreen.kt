@@ -768,7 +768,7 @@ private fun SeeAllEventRow(
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Image placeholder
+        // Image or gradient fallback
         Box(
             modifier = Modifier
                 .size(52.dp)
@@ -780,6 +780,16 @@ private fun SeeAllEventRow(
                 ),
             contentAlignment = Alignment.Center,
         ) {
+            if (!event.imageUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = coil3.request.ImageRequest.Builder(coil3.compose.LocalPlatformContext.current)
+                        .data(event.imageUrl)
+                        .build(),
+                    contentDescription = event.title,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            }
             if (event.isFree) {
                 Text(
                     "FREE",
