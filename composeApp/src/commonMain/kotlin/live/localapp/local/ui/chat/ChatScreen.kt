@@ -68,7 +68,10 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.style.TextOverflow
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
@@ -357,13 +360,17 @@ private fun MessageRow(role: MessageRole, text: String) {
                     .border(2.dp, if (isUser) AppColors.CoralDk else Color(0xFFE2DCF0), bubbleShape)
                     .padding(horizontal = 14.dp, vertical = 11.dp),
             ) {
-                Text(
-                    cleanMarkdown(text),
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
-                        color = if (isUser) AppColors.White else AppColors.Ink2, lineHeight = (13 * 1.55).sp,
-                    ),
-                )
+                if (isUser) {
+                    Text(
+                        cleanMarkdown(text),
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
+                            color = AppColors.White, lineHeight = (13 * 1.55).sp,
+                        ),
+                    )
+                } else {
+                    RichChatText(text = text, textColor = AppColors.Ink2)
+                }
             }
         }
 
@@ -1447,6 +1454,118 @@ private fun AuthRequiredOverlay(
             )
         }
     }
+}
+
+/** Renders chat text with bold headers, formatted bullets, and visual hierarchy. */
+@Composable
+private fun RichChatText(text: String, textColor: Color) {
+    val annotated = remember(text) {
+        buildAnnotatedString {
+            val lines = text.lines()
+            for ((i, rawLine) in lines.withIndex()) {
+                val line = rawLine.trim()
+                if (line.isEmpty()) {
+                    if (i > 0 && i < lines.lastIndex) append("\n")
+                    continue
+                }
+
+                // Headers: lines ending with ":" that are short (e.g. "Venues in Waltham:")
+                // or lines that are **bold**
+                val isBoldLine = line.startsWith("**") && line.endsWith("**")
+                val isHeader = (line.endsWith(":") && line.length < 60 && !line.startsWith("•")) || isBoldLine
+
+                if (isHeader) {
+                    if (i > 0) append("\n")
+                    val headerText = line.removeSurrounding("**").removeSuffix(":")
+                    withStyle(SpanStyle(
+                        fontWeight = FontWeight.Black,
+                        fontSize = 15.sp,
+                        color = textColor.copy(alpha = 1f),
+                    )) {
+                        append(headerText)
+                    }
+                    append("\n")
+                } else if (line.startsWith("•") || line.startsWith("-") || line.startsWith("*")) {
+                    // Bullet point — format as structured item
+                    val content = line.removePrefix("•").removePrefix("-").removePrefix("*").trim()
+
+                    // Try to parse "Name - Description, Time" or "Name at Venue, Time (Price)"
+                    val parts = content.split(" - ", limit = 2)
+                    if (parts.size == 2) {
+                        append("  ")
+                        withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = textColor)) {
+                            append(parts[0].trim())
+                        }
+                        append("\n  ")
+                        withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = textColor.copy(alpha = 0.65f))) {
+                            append(parts[1].trim())
+                        }
+                    } else {
+                        append("  ")
+                        // Bold the name part (before "at" or first comma)
+                        val atIdx = content.indexOf(" at ")
+                        val commaIdx = content.indexOf(",")
+                        val splitIdx = when {
+                            atIdx > 0 && (commaIdx < 0 || atIdx < commaIdx) -> atIdx
+                            commaIdx > 0 -> commaIdx
+                            else -> -1
+                        }
+                        if (splitIdx > 0) {
+                            withStyle(SpanStyle(fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = textColor)) {
+                                append(content.substring(0, splitIdx))
+                            }
+                            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = textColor.copy(alpha = 0.65f))) {
+                                append(content.substring(splitIdx))
+                            }
+                        } else {
+                            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = textColor)) {
+                                append(content)
+                            }
+                        }
+                    }
+                    append("\n")
+                } else {
+                    // Regular text — handle inline **bold**
+                    var remaining = line
+                    while (remaining.isNotEmpty()) {
+                        val boldStart = remaining.indexOf("**")
+                        if (boldStart < 0) {
+                            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = textColor)) {
+                                append(remaining)
+                            }
+                            break
+                        }
+                        if (boldStart > 0) {
+                            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = textColor)) {
+                                append(remaining.substring(0, boldStart))
+                            }
+                        }
+                        remaining = remaining.substring(boldStart + 2)
+                        val boldEnd = remaining.indexOf("**")
+                        if (boldEnd < 0) {
+                            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = textColor)) {
+                                append("**$remaining")
+                            }
+                            break
+                        }
+                        withStyle(SpanStyle(fontWeight = FontWeight.Black, fontSize = 13.sp, color = textColor)) {
+                            append(remaining.substring(0, boldEnd))
+                        }
+                        remaining = remaining.substring(boldEnd + 2)
+                    }
+                    append("\n")
+                }
+            }
+        }
+    }
+
+    Text(
+        text = annotated,
+        style = TextStyle(
+            fontFamily = AppFonts.Body,
+            lineHeight = 19.sp,
+        ),
+    )
 }
 
 private fun cleanMarkdown(text: String): String {
