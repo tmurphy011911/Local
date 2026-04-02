@@ -784,7 +784,7 @@ class ChatViewModel(
 
         // Group events by date, then by category for compact display
         data class EventEntry(
-            val id: String, val title: String, val venue: String,
+            val id: String, val title: String, val venue: String, val venueCity: String,
             val dateKey: String, val dateLabel: String, val time: String,
             val category: String, val price: String,
         )
@@ -815,7 +815,7 @@ class ChatViewModel(
             }
             val price = if (e.isFree) "FREE" else e.priceDisplay.ifBlank { "" }
             val cat = (e.subcategory ?: e.category ?: "other").uppercase()
-            EventEntry(e.id, e.title, venue, dateKey, dateLabel, time, cat, price)
+            EventEntry(e.id, e.title, venue, e.venueCity, dateKey, dateLabel, time, cat, price)
         }
 
         // Build compact grouped output
@@ -829,7 +829,7 @@ class ChatViewModel(
                 for ((cat, catEntries) in byCategory) {
                     val items = catEntries.joinToString(", ") { e ->
                         val priceTag = if (e.price.isNotBlank()) " ${e.price}" else ""
-                        "${e.title} at ${e.venue} ${e.time}$priceTag [evt:${e.id}]"
+                        "${e.title} at ${e.venue} (${e.venueCity}) ${e.time}$priceTag [evt:${e.id}]"
                     }
                     appendLine("$cat: $items")
                 }
@@ -1487,6 +1487,7 @@ GUIDELINES:
 - For dining: use recommend_and_save_venue to suggest real restaurants you know about.
 - If search returns no results, try broader searches or nearby areas. Use recommend_and_save_venue for a venue-based plan as a fallback.
 - Plan sizes: "date night" = 2-3 stops, "night out" = 2-3, "full day" = 4-5, "weekend" = 3-5 per day.
+- GEOGRAPHY: Keep all stops in a plan within a reasonable area. Do NOT mix events 30+ miles apart in the same day. If events are in different cities (e.g. Boston and Tewksbury), pick one area and stick with it. Check the venue cities in search results — if two events are in very different locations, don't put them in the same plan.
 - If you know what and when, search and build immediately. Only ask about timing if it's truly ambiguous.
 - NEVER use emoji in your responses. No emoji at all — they don't render in this app.
 - Never mention the database, tools, or implementation details to the user.
