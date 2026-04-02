@@ -711,8 +711,7 @@ private fun DayCard(
             modifier = Modifier.fillMaxWidth()
                 .background(AppColors.White, cardShape)
                 .border(2.dp, AppColors.Pebble, cardShape)
-                .clip(cardShape)
-                .verticalScroll(rememberScrollState()),
+                .clip(cardShape),
         ) {
             // Header
             Column(modifier = Modifier.fillMaxWidth().background(color).padding(horizontal = 16.dp, vertical = 12.dp)) {
