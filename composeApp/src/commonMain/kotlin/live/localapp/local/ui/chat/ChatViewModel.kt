@@ -752,11 +752,13 @@ class ChatViewModel(
             dateRange = "custom"
         }
 
-        // Always use current location for geo-radius search
+        // If Claude passes a specific location different from user's current,
+        // use that location's coordinates for the geo search
         val state = _uiState.value
-        val userLat = state.currentLat ?: state.userPreferences?.userLat
-        val userLng = state.currentLng ?: state.userPreferences?.userLng
-        println("searchEvents: lat=$userLat lng=$userLng location=$location currentLocationName=${state.currentLocationName}")
+        val locationCoords = if (!location.isNullOrBlank()) geocodeCity(location) else null
+        val userLat = locationCoords?.first ?: state.currentLat ?: state.userPreferences?.userLat
+        val userLng = locationCoords?.second ?: state.currentLng ?: state.userPreferences?.userLng
+        println("searchEvents: lat=$userLat lng=$userLng location=$location currentLocationName=${state.currentLocationName} geocoded=${locationCoords != null}")
 
         val events = eventRepo.searchEvents(
             location = location,
@@ -1338,6 +1340,39 @@ class ChatViewModel(
 
     @Suppress("unused")
     private var consecutiveQuestionCount = 0 // legacy, kept for field ordering
+
+    /** Simple geocoder for known cities so search works when user asks for a different location. */
+    private fun geocodeCity(city: String): Pair<Double, Double>? {
+        val known = mapOf(
+            "boston" to (42.3601 to -71.0589),
+            "cambridge" to (42.3736 to -71.1097),
+            "somerville" to (42.3876 to -71.0995),
+            "waltham" to (42.3765 to -71.2356),
+            "brookline" to (42.3318 to -71.1212),
+            "newton" to (42.3370 to -71.2092),
+            "worcester" to (42.2626 to -71.8023),
+            "springfield" to (42.1015 to -72.5898),
+            "lowell" to (42.6334 to -71.3162),
+            "providence" to (41.8240 to -71.4128),
+            "newport" to (41.4901 to -71.3128),
+            "new york" to (40.7128 to -74.0060),
+            "nyc" to (40.7128 to -74.0060),
+            "manhattan" to (40.7831 to -73.9712),
+            "brooklyn" to (40.6782 to -73.9442),
+            "portland" to (43.6591 to -70.2568),
+            "portsmouth" to (43.0718 to -70.7626),
+            "burlington" to (44.4759 to -73.2121),
+            "hartford" to (41.7658 to -72.6734),
+            "new haven" to (41.3083 to -72.9279),
+            "northampton" to (42.3251 to -72.6412),
+            "salem" to (42.5195 to -70.8967),
+            "cape cod" to (41.6688 to -70.2962),
+            "pittsfield" to (42.4501 to -73.2454),
+            "philadelphia" to (39.9526 to -75.1652),
+        )
+        val key = city.lowercase().trim()
+        return known[key] ?: known.entries.firstOrNull { key.contains(it.key) }?.value
+    }
 
     private fun cityToState(city: String): String = when (city.lowercase().trim()) {
         "boston", "cambridge", "somerville", "newton", "waltham",
