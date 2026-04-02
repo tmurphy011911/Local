@@ -1477,7 +1477,8 @@ private fun RichChatText(text: String, textColor: Color) {
                 // Headers: lines ending with ":" that are short (e.g. "Venues in Waltham:")
                 // or lines that are **bold**
                 val isBoldLine = line.startsWith("**") && line.endsWith("**")
-                val isHeader = (line.endsWith(":") && line.length < 60 && !line.startsWith("•")) || isBoldLine
+                // Only treat standalone bold lines as headers (no other text on the line)
+                val isHeader = isBoldLine && !line.contains(":")  // "**Title**" but not "**Friday night**: stuff"
 
                 if (isHeader) {
                     if (i > 0) append("\n")
