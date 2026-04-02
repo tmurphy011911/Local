@@ -181,7 +181,7 @@ fun ChatScreen(
         LazyColumn(
             state = listState,
             modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(horizontal = 14.dp, vertical = 14.dp),
+            contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 14.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             items(state.messages, key = { it.id }) { message ->
