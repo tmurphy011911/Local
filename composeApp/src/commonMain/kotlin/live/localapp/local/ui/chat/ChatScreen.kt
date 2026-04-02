@@ -651,10 +651,16 @@ private fun MultiDayPlanCard(
     showSaveButton: Boolean = true,
 ) {
     Column {
+        val maxSlots = days.maxOfOrNull { it.slots.size } ?: 3
+        val headerHeight = 80  // header + weather
+        val slotHeight = 130   // each slot card
+        val footerHeight = 60  // cost estimate
+        val cardHeight = (headerHeight + maxSlots * slotHeight + footerHeight).coerceIn(300, 800)
+
         LazyRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = PaddingValues(horizontal = 4.dp),
-            modifier = Modifier.height(420.dp),
+            modifier = Modifier.height(cardHeight.dp),
         ) {
             itemsIndexed(days) { index, day ->
                 Box(modifier = Modifier.width(300.dp).fillMaxHeight()) {
