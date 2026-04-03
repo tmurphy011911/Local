@@ -3,6 +3,18 @@ import UIKit
 
 // MARK: - Venue Data Model (Swift side)
 
+struct VenueUpcomingEvent: Identifiable {
+    let id: String
+    let title: String
+    let startAt: String?
+    let category: String?
+    let subcategory: String?
+    let imageUrl: String?
+    let isFree: Bool
+    let priceDisplay: String?
+    let dateDisplay: String?
+}
+
 struct VenueDetailData {
     let name: String
     let address: String?
@@ -16,6 +28,8 @@ struct VenueDetailData {
     let website: String?
     let distanceMiles: Double?
     let upcomingEventCount: Int
+    let upcomingEvents: [VenueUpcomingEvent]
+    let reservationUrl: String?
 
     var hasLocation: Bool { lat != 0 && lng != 0 }
 
@@ -224,7 +238,19 @@ struct VenueDetailView: View {
             }
 
             // Upcoming Events
-            if venue.upcomingEventCount > 0 {
+            if !venue.upcomingEvents.isEmpty {
+                Spacer().frame(height: 8)
+
+                Text("Upcoming Events")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(AppColor.ink)
+
+                Spacer().frame(height: 10)
+
+                ForEach(venue.upcomingEvents) { event in
+                    upcomingEventRow(event)
+                }
+            } else if venue.upcomingEventCount > 0 {
                 Spacer().frame(height: 8)
 
                 Text("Upcoming Events")
@@ -260,10 +286,120 @@ struct VenueDetailView: View {
         }
     }
 
+    // MARK: - Upcoming Event Row
+
+    private func upcomingEventRow(_ event: VenueUpcomingEvent) -> some View {
+        HStack(spacing: 10) {
+            // Thumbnail
+            if let urlStr = event.imageUrl, let url = URL(string: urlStr) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image.resizable().scaledToFill()
+                            .frame(width: 56, height: 56)
+                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                    default:
+                        eventPlaceholder(event)
+                    }
+                }
+                .frame(width: 56, height: 56)
+            } else {
+                eventPlaceholder(event)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text(event.title)
+                    .font(.system(size: 13, weight: .bold))
+                    .foregroundColor(AppColor.ink)
+                    .lineLimit(2)
+
+                if let dateDisplay = event.dateDisplay, !dateDisplay.isEmpty {
+                    Text(dateDisplay)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(AppColor.ink3)
+                }
+            }
+
+            Spacer()
+
+            // Price badge
+            if event.isFree {
+                Text("Free")
+                    .font(.system(size: 9, weight: .heavy))
+                    .foregroundColor(Color(hex: 0x2E7D32))
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Color(hex: 0xE8F5E9))
+                    .clipShape(Capsule())
+                    .overlay(Capsule().stroke(Color(hex: 0xA5D6A7), lineWidth: 1))
+            } else if let price = event.priceDisplay, !price.isEmpty {
+                Text(price)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(AppColor.ink3)
+            }
+        }
+        .padding(10)
+        .background(AppColor.white)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppColor.pebble, lineWidth: 1.5))
+        .padding(.bottom, 4)
+    }
+
+    private func eventPlaceholder(_ event: VenueUpcomingEvent) -> some View {
+        ZStack {
+            LinearGradient(
+                colors: [Color(hex: 0xFFE8E0), Color(hex: 0xFFF0E8)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Image(systemName: "calendar")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundColor(AppColor.ink3.opacity(0.4))
+        }
+        .frame(width: 56, height: 56)
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
     // MARK: - CTA Bar
 
     private var ctaBar: some View {
         VStack(spacing: 10) {
+            // Reserve button — prominent, full-width
+            if let resUrl = venue.reservationUrl, !resUrl.isEmpty {
+                Button(action: {
+                    // Build deep link with today's date and 2 seats
+                    let today = ISO8601DateFormatter().string(from: Date()).prefix(10)
+                    var deepLink = resUrl
+                    if resUrl.contains("resy.com") {
+                        deepLink = "\(resUrl)?date=\(today)&seats=2"
+                    } else if resUrl.contains("opentable.com") {
+                        deepLink = "\(resUrl)?dateTime=\(today)T19:00&covers=2&partySize=2"
+                    }
+                    if let url = URL(string: deepLink) {
+                        UIApplication.shared.open(url)
+                    }
+                }) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "calendar.badge.clock")
+                            .font(.system(size: 14, weight: .semibold))
+                        Text("Reserve a Table")
+                            .font(.system(size: 14, weight: .heavy))
+                    }
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 13)
+                    .background(
+                        LinearGradient(
+                            colors: [AppColor.coral, AppColor.coralDk],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+            }
+
             // Secondary row
             HStack(spacing: 8) {
                 if venue.hasLocation {

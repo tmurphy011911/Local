@@ -187,7 +187,7 @@ fun NeighbourhoodsScreen(
                         ) {
                             if (searchQuery.isEmpty()) {
                                 Text(
-                                    "Search neighbourhoods...",
+                                    "Search neighborhoods...",
                                     style = TextStyle(
                                         fontFamily = AppFonts.Body,
                                         fontWeight = FontWeight.SemiBold,
@@ -253,7 +253,7 @@ fun NeighbourhoodsScreen(
                 modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
             ) {
                 OnboardingButton(
-                    text = "Next: Favourite venues \u2192",
+                    text = "Next: Favorite venues \u2192",
                     color = AppColors.Plum,
                     shadowColor = AppColors.PlumDk,
                     onClick = onNext,

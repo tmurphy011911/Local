@@ -31,6 +31,7 @@ private data class EventSummaryDto(
 private data class VenueRankDto(
     val name: String,
     @SerialName("public_interest_rank") val publicInterestRank: Int? = null,
+    @SerialName("photo_url") val photoUrl: String? = null,
 )
 
 @Serializable
@@ -109,11 +110,11 @@ class OnboardingRepositoryImpl(
         // Get venue ranks from venues table
         val venueRanks = try {
             supabaseClient.from("venues")
-                .select(columns = Columns.list("name", "public_interest_rank")) {
+                .select(columns = Columns.list("name", "public_interest_rank", "photo_url")) {
                     filter { eq("is_active", true) }
                 }
                 .decodeList<VenueRankDto>()
-                .associate { it.name.lowercase() to (it.publicInterestRank ?: 0) }
+                .associateBy { it.name.lowercase() }
         } catch (_: Exception) {
             emptyMap()
         }
@@ -127,11 +128,13 @@ class OnboardingRepositoryImpl(
                 val dist = if (rep.venueLat != null && rep.venueLng != null) {
                     distanceMiles(userLat, userLng, rep.venueLat, rep.venueLng)
                 } else null
+                val venueData = venueRanks[name.lowercase()]
                 VenueSummary(
                     name = name,
                     city = rep.venueCity,
                     distanceMiles = dist,
-                    publicInterestRank = venueRanks[name.lowercase()] ?: 0,
+                    publicInterestRank = venueData?.publicInterestRank ?: 0,
+                    photoUrl = venueData?.photoUrl,
                 )
             }
             .sortedBy { it.distanceMiles ?: Double.MAX_VALUE }

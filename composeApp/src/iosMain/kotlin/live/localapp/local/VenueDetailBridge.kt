@@ -21,6 +21,8 @@ object VenueDetailBridge {
         category: String?, googleRating: Double?,
         website: String?, distanceMiles: Double?,
         upcomingEventCount: Int,
+        upcomingEventsJson: String,
+        reservationUrl: String?,
         cardX: Float, cardY: Float, cardW: Float, cardH: Float
     ) -> Unit)? = null
 

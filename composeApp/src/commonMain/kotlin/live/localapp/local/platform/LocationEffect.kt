@@ -17,4 +17,5 @@ expect fun RequestLocationEffect(
     active: Boolean,
     onLocation: (lat: Double, lng: Double) -> Unit,
     onDenied: () -> Unit,
+    onDeniedPermanently: (() -> Unit)? = null,
 )

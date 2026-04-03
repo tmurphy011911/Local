@@ -95,6 +95,7 @@ data class ItinerarySlot(
     val venueLng: Double? = null,
     val priceMin: Double? = null,
     val priceMax: Double? = null,
+    val reservationUrl: String? = null,
 )
 
 data class TravelInfo(
@@ -345,6 +346,7 @@ class ChatViewModel(
                         venueAddress = venue?.address,
                         venueLat = venue?.latitude,
                         venueLng = venue?.longitude,
+                        reservationUrl = venue?.reservationUrl,
                     )
                 } else {
                     // Event ref — look up from DB
@@ -927,8 +929,8 @@ class ChatViewModel(
                 }
                 // Smart auto-chips based on context
                 val chips = if (_uiState.value.days.isNotEmpty()) {
-                    // Plan exists — offer approval
-                    listOf("Looks good, add to My Plans")
+                    // Plan exists — offer approval + contextual update option
+                    listOf("Looks good, add to My Plans", "Show me other options")
                 } else {
                     emptyList()
                 }
@@ -1072,6 +1074,7 @@ class ChatViewModel(
                                     venueLng = slot.venueLng,
                                     priceMin = slot.priceMin,
                                     priceMax = slot.priceMax,
+                                    reservationUrl = slot.reservationUrl,
                                 )
                             },
                             travel = day.travel.map { PlanTravel(it.mode, it.mins) },
@@ -1394,9 +1397,14 @@ class ChatViewModel(
                 val approved = if (day.isApproved) " [APPROVED]" else ""
                 val slots = if (day.slots.isEmpty()) "  (no slots yet)"
                 else day.slots.joinToString("\n") { s ->
-                    "  ${s.time} ${s.name} — ${s.detail} (${s.price})${if (s.isCustom) " [CUSTOM]" else ""}"
+                    val ref = when {
+                        s.eventId != null -> " [event_id: ${s.eventId}]"
+                        !s.isCustom -> " [venue: ${s.name}]"
+                        else -> " [custom]"
+                    }
+                    "  ${s.time} ${s.name} — ${s.detail} (${s.price})$ref${if (s.isCustom) " [CUSTOM]" else ""}"
                 }
-                "Day ${i + 1}: ${day.label}$approved\n$slots"
+                "Day ${i + 1} (index $i): ${day.label}$approved\n$slots"
             }.joinToString("\n\n")
             """
 CURRENT PLAN (title: "${state.planTitle}"):
@@ -1469,7 +1477,7 @@ Location: ${state.currentLocationName.ifBlank { state.userPreferences?.city?.rep
 HOW TO HELP:
 - When the user wants to plan something, search the database FIRST, then present a plan using the present_plan tool. Search broadly — make multiple search_events calls across different categories and date ranges to find everything relevant. The more you search, the better your recommendations.
 - When chatting or answering questions, just respond naturally. No special formatting needed.
-- When the user wants to modify an existing plan, use update_plan with the full updated slot list for that day.
+- When the user wants to modify an existing plan (swap something, add something, change a slot, try something different), you MUST search for alternatives and then call update_plan. NEVER respond with just text when a plan exists and the user is asking to change it. Search for what they want, find the best match (or use recommend_and_save_venue), and call update_plan with the full slot list for that day — keeping unchanged slots (use their existing event_id/venue_name) and replacing the modified one. The CURRENT PLAN section below has event_ids and venue names you need to preserve unchanged slots.
 
 TOOLS:
 - search_events: Search the local event database. Always search before recommending events. Cast a wide net — search multiple categories, date ranges, and keywords to surface the best options. The search covers a 20-mile radius automatically.
@@ -1484,7 +1492,7 @@ GUIDELINES:
 - Use the EXACT event IDs from search results in present_plan slots.
 - Check the calendar reference above to verify day-of-week for dates. Only include events whose date matches the planned day.
 - Use exact start times from search results. For flexible/anytime events, pick reasonable times (10am-9pm).
-- For dining: use recommend_and_save_venue to suggest real restaurants you know about.
+- For dining: use recommend_and_save_venue to suggest real restaurants you know about. STRONGLY prefer restaurants that are on OpenTable, since our app can offer one-tap reservations for OpenTable venues. When you have multiple good dining options, pick the one most likely to be on OpenTable.
 - If search returns no results, try broader searches or nearby areas. Use recommend_and_save_venue for a venue-based plan as a fallback.
 - Plan sizes: "date night" = 2-3 stops, "night out" = 2-3, "full day" = 4-5, "weekend" = 3-5 per day.
 - GEOGRAPHY: Keep all stops in a plan within a reasonable area. Do NOT mix events 30+ miles apart in the same day. If events are in different cities (e.g. Boston and Tewksbury), pick one area and stick with it. Check the venue cities in search results — if two events are in very different locations, don't put them in the same plan.

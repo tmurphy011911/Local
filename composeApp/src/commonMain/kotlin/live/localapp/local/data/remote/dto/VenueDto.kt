@@ -20,6 +20,7 @@ data class VenueDto(
     @SerialName("place_type") val placeType: String? = null,
     @SerialName("google_rating") val googleRating: Double? = null,
     val website: String? = null,
+    @SerialName("reservation_url") val reservationUrl: String? = null,
 )
 
 fun VenueDto.toDomain(): Venue = Venue(
@@ -39,4 +40,5 @@ fun VenueDto.toDomain(): Venue = Venue(
     placeType = placeType,
     googleRating = googleRating,
     website = website,
+    reservationUrl = reservationUrl,
 )

@@ -36,6 +36,7 @@ data class PlanSlot(
     val venueLng: Double? = null,
     val priceMin: Double? = null,
     val priceMax: Double? = null,
+    val reservationUrl: String? = null,
 )
 
 data class PlanTravel(

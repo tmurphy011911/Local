@@ -141,6 +141,8 @@ struct ComposeView: UIViewControllerRepresentable {
             category, googleRating,
             website, distanceMiles,
             upcomingEventCount,
+            upcomingEventsJson,
+            reservationUrl,
             cardX, cardY, cardW, cardH in
 
             DispatchQueue.main.async {
@@ -149,6 +151,27 @@ struct ComposeView: UIViewControllerRepresentable {
                     .flatMap({ $0.windows })
                     .first(where: { $0.isKeyWindow })
                 else { return }
+
+                // Parse upcoming events JSON
+                var events: [VenueUpcomingEvent] = []
+                if let data = (upcomingEventsJson as String).data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                    events = json.compactMap { dict in
+                        guard let id = dict["id"] as? String,
+                              let title = dict["title"] as? String else { return nil }
+                        return VenueUpcomingEvent(
+                            id: id,
+                            title: title,
+                            startAt: dict["startAt"] as? String,
+                            category: dict["category"] as? String,
+                            subcategory: dict["subcategory"] as? String,
+                            imageUrl: dict["imageUrl"] as? String,
+                            isFree: dict["isFree"] as? Bool ?? false,
+                            priceDisplay: dict["priceDisplay"] as? String,
+                            dateDisplay: dict["dateDisplay"] as? String
+                        )
+                    }
+                }
 
                 let venue = VenueDetailData(
                     name: name,
@@ -162,7 +185,9 @@ struct ComposeView: UIViewControllerRepresentable {
                     googleRating: googleRating?.doubleValue,
                     website: website,
                     distanceMiles: distanceMiles?.doubleValue,
-                    upcomingEventCount: Int(upcomingEventCount)
+                    upcomingEventCount: Int(upcomingEventCount),
+                    upcomingEvents: events,
+                    reservationUrl: reservationUrl as? String
                 )
 
                 let cardFrame = CGRect(

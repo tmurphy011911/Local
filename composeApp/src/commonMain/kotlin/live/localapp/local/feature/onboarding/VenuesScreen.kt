@@ -45,7 +45,7 @@ import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 
 private const val PAGE_SIZE = 30
-private val CARD_HEIGHT = 96.dp
+private val CARD_HEIGHT = 120.dp
 
 @Composable
 fun VenuesScreen(
@@ -86,9 +86,10 @@ fun VenuesScreen(
             val subtitle = if (distText.isNotEmpty()) "${venue.city} \u00B7 $distText" else venue.city
             SelectionItem(
                 id = venue.name.lowercase().replace(" ", "-"),
-                icon = OnboardingViewModel.venueIcon(index),
+                icon = if (venue.photoUrl == null) OnboardingViewModel.venueIcon(index) else null,
                 name = venue.name,
                 subtitle = subtitle,
+                imageUrl = venue.photoUrl,
             )
         }
     }

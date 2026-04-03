@@ -67,6 +67,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.text.style.TextOverflow
 import coil3.compose.AsyncImage
 import coil3.compose.LocalPlatformContext
@@ -85,7 +87,7 @@ import live.localapp.local.ui.theme.AppType
 fun PlansScreen(
     viewModel: PlansViewModel,
     onNewPlan: () -> Unit,
-    onEventClick: (String) -> Unit = {},
+    onEventClick: (String, androidx.compose.ui.geometry.Rect) -> Unit = { _, _ -> },
     onBuildPlanFromEvent: ((String) -> Unit)? = null,
     onBuildPlanFromTemplate: ((String) -> Unit)? = null,
     onSharePlan: ((Plan) -> Unit)? = null,
@@ -219,7 +221,7 @@ fun PlansScreen(
                         state.savedEvents.forEach { event ->
                             SavedEventCard(
                                 event = event,
-                                onClick = { onEventClick(event.id) },
+                                onClick = { bounds -> onEventClick(event.id, bounds) },
                                 onBuildPlan = { onBuildPlanFromEvent?.invoke(event.title) },
                             )
                         }
@@ -257,16 +259,18 @@ fun PlansScreen(
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
-private fun SavedEventCard(event: Event, onClick: () -> Unit, onBuildPlan: () -> Unit = {}) {
+private fun SavedEventCard(event: Event, onClick: (androidx.compose.ui.geometry.Rect) -> Unit, onBuildPlan: () -> Unit = {}) {
     val cardShape = RoundedCornerShape(14.dp)
+    var cardBounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
     Column(
         modifier = Modifier
             .width(140.dp)
             .height(150.dp)
+            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
             .background(AppColors.White, cardShape)
             .border(1.5.dp, AppColors.Pebble, cardShape)
             .clip(cardShape)
-            .clickable(onClick = onClick),
+            .clickable { onClick(cardBounds) },
     ) {
         // Image with Yocal button overlay
         Box(
@@ -795,44 +799,104 @@ private fun SwipeToRevealDelete(
     content: @Composable () -> Unit,
 ) {
     var revealed by remember { mutableStateOf(false) }
+    var confirming by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
     val offsetX by animateFloatAsState(
-        targetValue = if (revealed) -80f else 0f,
-        animationSpec = tween(200),
+        targetValue = if (revealed) -76f else 0f,
+        animationSpec = androidx.compose.animation.core.spring(
+            dampingRatio = 0.75f,
+            stiffness = 400f,
+        ),
     )
 
-    Box(modifier = Modifier.fillMaxWidth().clipToBounds()) {
-        // Delete button behind
-        Box(
-            modifier = Modifier
-                .align(Alignment.CenterEnd)
-                .width(80.dp)
-                .fillMaxHeight()
-                .background(Color(0xFFFF3B30), RoundedCornerShape(topEnd = 14.dp, bottomEnd = 14.dp))
-                .clickable {
-                    revealed = false
-                    onDelete()
-                },
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(Icons.Outlined.Delete, contentDescription = "Delete", tint = Color.White, modifier = Modifier.size(22.dp))
+    // Auto-dismiss after 4 seconds
+    androidx.compose.runtime.LaunchedEffect(revealed) {
+        if (revealed) {
+            kotlinx.coroutines.delay(4000)
+            revealed = false
         }
+    }
 
-        // Content on top — slides left
+    // Confirmation shrink-away animation
+    val dismissProgress by animateFloatAsState(
+        targetValue = if (confirming) 0f else 1f,
+        animationSpec = tween(280),
+        finishedListener = {
+            if (confirming) {
+                onDelete()
+                confirming = false
+            }
+        },
+    )
+
+    if (confirming) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .graphicsLayer { translationX = offsetX * density }
-                .pointerInput(Unit) {
-                    detectHorizontalDragGestures(
-                        onDragEnd = { },
-                        onHorizontalDrag = { _, dragAmount ->
-                            if (dragAmount < -10) revealed = true
-                            else if (dragAmount > 10) revealed = false
-                        },
-                    )
-                },
+                .height((56 * dismissProgress).dp)
+                .graphicsLayer {
+                    alpha = dismissProgress
+                    scaleX = 0.95f + 0.05f * dismissProgress
+                }
+                .clip(RoundedCornerShape(14.dp))
+                .background(AppColors.CoralLt),
+            contentAlignment = Alignment.Center,
         ) {
-            content()
+            if (dismissProgress > 0.5f) {
+                Text(
+                    "Deleted",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = AppColors.Coral),
+                )
+            }
+        }
+    } else {
+        Box(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min).clipToBounds()) {
+            // Delete action — rounded pill behind the card
+            Row(
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .padding(end = 4.dp)
+                    .fillMaxHeight()
+                    .width(68.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(AppColors.Coral)
+                    .clickable {
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                        revealed = false
+                        confirming = true
+                    }
+                    .padding(horizontal = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.Center,
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Outlined.Delete, contentDescription = "Delete", tint = Color.White, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.height(2.dp))
+                    Text("Delete", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 9.sp, color = Color.White))
+                }
+            }
+
+            // Content slides left
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .graphicsLayer { translationX = offsetX * density }
+                    .pointerInput(Unit) {
+                        detectHorizontalDragGestures(
+                            onDragEnd = { },
+                            onHorizontalDrag = { change, dragAmount ->
+                                if (dragAmount < -10) {
+                                    if (!revealed) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    revealed = true
+                                } else if (dragAmount > 10) {
+                                    revealed = false
+                                }
+                            },
+                        )
+                    },
+            ) {
+                content()
+            }
         }
     }
 }
@@ -846,7 +910,7 @@ private fun HeroPlanCard(
     plan: Plan,
     isExpanded: Boolean,
     onToggleExpand: () -> Unit,
-    onEventClick: (String) -> Unit = {},
+    onEventClick: (String, androidx.compose.ui.geometry.Rect) -> Unit = { _, _ -> },
     onShare: () -> Unit = {},
     onRemoveSlot: (dayIndex: Int, slotId: String) -> Unit = { _, _ -> },
 ) {
@@ -979,7 +1043,7 @@ private fun CompactPlanCard(
     plan: Plan,
     isExpanded: Boolean,
     onToggleExpand: () -> Unit,
-    onEventClick: (String) -> Unit = {},
+    onEventClick: (String, androidx.compose.ui.geometry.Rect) -> Unit = { _, _ -> },
     onShare: () -> Unit = {},
     onRemoveSlot: (dayIndex: Int, slotId: String) -> Unit = { _, _ -> },
 ) {
@@ -1078,7 +1142,7 @@ private fun CompactPlanCard(
 @Composable
 private fun TimelineView(
     day: PlanDay,
-    onEventClick: (String) -> Unit = {},
+    onEventClick: (String, androidx.compose.ui.geometry.Rect) -> Unit = { _, _ -> },
     onRemoveSlot: ((String) -> Unit)? = null,
 ) {
     Column {
@@ -1086,6 +1150,7 @@ private fun TimelineView(
             val isLast = index == day.slots.lastIndex
 
             val slotContent = @Composable {
+                var slotBounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
                 Row(modifier = Modifier.fillMaxWidth()) {
                     // Time + line
                     Column(
@@ -1117,10 +1182,11 @@ private fun TimelineView(
                         modifier = Modifier
                             .weight(1f)
                             .padding(bottom = if (isLast) 0.dp else 8.dp)
+                            .onGloballyPositioned { slotBounds = it.boundsInRoot() }
                             .background(AppColors.White, RoundedCornerShape(10.dp))
                             .border(1.5.dp, AppColors.Pebble, RoundedCornerShape(10.dp))
                             .then(
-                                if (slot.eventId != null) Modifier.clickable { onEventClick(slot.eventId) }
+                                if (slot.eventId != null) Modifier.clickable { onEventClick(slot.eventId, slotBounds) }
                                 else Modifier
                             )
                             .padding(horizontal = 12.dp, vertical = 8.dp),
@@ -1151,6 +1217,56 @@ private fun TimelineView(
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
+                        }
+
+                        // Action buttons
+                        val hasActions = (slot.venueLat != null && slot.venueLng != null) || slot.ticketUrl != null || slot.reservationUrl != null
+                        if (hasActions) {
+                            Spacer(Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (slot.reservationUrl != null) {
+                                    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                                    Text(
+                                        "Reserve",
+                                        modifier = Modifier
+                                            .background(AppColors.CoralLt, RoundedCornerShape(6.dp))
+                                            .border(1.dp, AppColors.Coral.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+                                            .clickable {
+                                                val today = kotlin.time.Clock.System.now().toString().take(10)
+                                                val url = if (slot.reservationUrl.contains("opentable")) {
+                                                    "${slot.reservationUrl}?dateTime=${today}T19:00&covers=2&partySize=2"
+                                                } else slot.reservationUrl
+                                                uriHandler.openUri(url)
+                                            }
+                                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Coral),
+                                    )
+                                }
+                                if (slot.ticketUrl != null) {
+                                    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                                    Text(
+                                        "Tickets",
+                                        modifier = Modifier
+                                            .background(AppColors.CoralLt, RoundedCornerShape(6.dp))
+                                            .border(1.dp, AppColors.Coral.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+                                            .clickable { uriHandler.openUri(slot.ticketUrl) }
+                                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Coral),
+                                    )
+                                }
+                                if (slot.venueLat != null && slot.venueLng != null) {
+                                    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                                    Text(
+                                        "Directions",
+                                        modifier = Modifier
+                                            .background(AppColors.SkyLt, RoundedCornerShape(6.dp))
+                                            .border(1.dp, AppColors.Sky.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
+                                            .clickable { uriHandler.openUri("https://maps.apple.com/?daddr=${slot.venueLat},${slot.venueLng}") }
+                                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Sky),
+                                    )
+                                }
+                            }
                         }
                     }
                 }

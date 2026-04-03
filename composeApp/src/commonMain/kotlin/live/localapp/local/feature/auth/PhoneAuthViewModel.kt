@@ -61,6 +61,12 @@ class PhoneAuthViewModel(
             return
         }
 
+        if (live.localapp.local.Config.TEST_AUTH_BYPASS) {
+            // Test mode: skip SMS, go straight to OTP entry
+            _state.update { it.copy(step = AuthStep.OTP) }
+            return
+        }
+
         viewModelScope.launch {
             _state.update { it.copy(isLoading = true, error = null) }
             try {
@@ -85,6 +91,26 @@ class PhoneAuthViewModel(
         val s = _state.value
         if (s.otpCode.length < 6) {
             _state.update { it.copy(error = "Please enter the full 6-digit code") }
+            return
+        }
+
+        if (live.localapp.local.Config.TEST_AUTH_BYPASS) {
+            // Test mode: any 6-digit code works, create a local test user
+            viewModelScope.launch {
+                _state.update { it.copy(isLoading = true, error = null) }
+                val testUserId = "test-${s.phone}"
+                // Check if this test user already has a profile
+                val existing = try { userPreferencesRepository.loadPreferences(testUserId) } catch (_: Throwable) { null }
+                if (existing?.onboardingComplete == true) {
+                    _state.update {
+                        it.copy(isLoading = false, isExistingUser = true, authComplete = true, authUserId = testUserId)
+                    }
+                } else {
+                    _state.update {
+                        it.copy(isLoading = false, step = AuthStep.NAME, authUserId = testUserId)
+                    }
+                }
+            }
             return
         }
 

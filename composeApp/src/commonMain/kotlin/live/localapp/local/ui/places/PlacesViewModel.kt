@@ -22,9 +22,9 @@ data class PlacesUiState(
     val selectedFilter: String = "All",
     val selectedSubFilter: String? = null,
     val searchQuery: String = "",
-    val userLat: Double = 42.3897,
-    val userLng: Double = -71.2358,
-    val locationName: String = "Waltham, MA",
+    val userLat: Double? = null,
+    val userLng: Double? = null,
+    val locationName: String = "",
     val streakDays: Int = 2,
     val isLoading: Boolean = false,
     val isRefreshing: Boolean = false,
@@ -133,7 +133,10 @@ class PlacesViewModel(
             _uiState.update { it.copy(isLoading = true, error = null) }
             try {
                 val state = _uiState.value
-                val venues = venueRepository.getVenues("boston", state.userLat, state.userLng)
+                val city = state.locationName.split(",").firstOrNull()?.trim()?.lowercase() ?: "boston"
+                val lat = state.userLat ?: 42.3601
+                val lng = state.userLng ?: -71.0589
+                val venues = venueRepository.getVenues(city, lat, lng)
                 _uiState.update {
                     it.copy(venues = venues, isLoading = false, isRefreshing = false)
                 }
@@ -186,7 +189,7 @@ class PlacesViewModel(
         val venueIds = result.map { it.venue.id }
 
         // Same decay divisor logic as CarouselRepositoryImpl — steeper falloff the further from metro
-        val milesFromMetro = distanceMiles(state.userLat, state.userLng, METRO_LAT, METRO_LNG)
+        val milesFromMetro = distanceMiles(state.userLat ?: METRO_LAT, state.userLng ?: METRO_LNG, METRO_LAT, METRO_LNG)
         val decayDivisor = when {
             milesFromMetro <= 12.0 -> 6.0
             milesFromMetro <= 25.0 -> 3.5

@@ -218,7 +218,11 @@ class CommunityInterestRepositoryImpl(
     }
 
     private fun persistInteraction(itemId: String, type: InteractionType, interaction: String, category: String?) {
-        val userId = userPreferencesRepository.getLocalUserId() ?: return
+        val userId = userPreferencesRepository.getLocalUserId()
+        if (userId == null) {
+            println("persistInteraction: SKIPPED — no userId")
+            return
+        }
         scope.launch {
             try {
                 supabaseClient.from("community_interactions").insert(
@@ -233,8 +237,9 @@ class CommunityInterestRepositoryImpl(
                         category = category,
                     )
                 )
-            } catch (_: Exception) {
-                // Fire-and-forget: don't crash the app if persistence fails
+                println("persistInteraction: SUCCESS $interaction $itemId for user $userId")
+            } catch (e: Exception) {
+                println("persistInteraction: FAILED $interaction $itemId — ${e.message}")
             }
         }
     }

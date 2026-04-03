@@ -54,6 +54,7 @@ private data class PlanSlotDto(
     @SerialName("venue_lng") val venueLng: Double? = null,
     @SerialName("price_min") val priceMin: Double? = null,
     @SerialName("price_max") val priceMax: Double? = null,
+    @SerialName("reservation_url") val reservationUrl: String? = null,
 )
 
 @Serializable
@@ -74,6 +75,14 @@ private data class PlanInsertDto(
 )
 
 // ── Mappers ──
+
+private fun PlanSlot.toDto() = PlanSlotDto(
+    id = id, time = time, emoji = emoji, name = name, detail = detail, price = price,
+    isFree = isFree, eventId = eventId, isCustom = isCustom, imageUrl = imageUrl,
+    ticketUrl = ticketUrl, venueRating = venueRating, venueAddress = venueAddress,
+    venueLat = venueLat, venueLng = venueLng, priceMin = priceMin, priceMax = priceMax,
+    reservationUrl = reservationUrl,
+)
 
 private fun PlanDayDto.toDomain() = PlanDay(
     label = label,
@@ -100,6 +109,7 @@ private fun PlanSlotDto.toDomain() = PlanSlot(
     venueLng = venueLng,
     priceMin = priceMin,
     priceMax = priceMax,
+    reservationUrl = reservationUrl,
 )
 
 private fun PlanDto.toDomain(): Plan {
@@ -178,19 +188,7 @@ class PlanRepositoryImpl(
                 PlanDayDto(
                     label = day.label,
                     shortName = day.shortName,
-                    slots = day.slots.map { slot ->
-                        PlanSlotDto(
-                            id = slot.id,
-                            time = slot.time,
-                            emoji = slot.emoji,
-                            name = slot.name,
-                            detail = slot.detail,
-                            price = slot.price,
-                            isFree = slot.isFree,
-                            eventId = slot.eventId,
-                            isCustom = slot.isCustom,
-                        )
-                    },
+                    slots = day.slots.map { it.toDto() },
                     travel = day.travel.map { PlanTravelDto(it.mode, it.mins) },
                 )
             }
@@ -233,13 +231,7 @@ class PlanRepositoryImpl(
                 PlanDayDto(
                     label = day.label,
                     shortName = day.shortName,
-                    slots = day.slots.map { slot ->
-                        PlanSlotDto(
-                            id = slot.id, time = slot.time, emoji = slot.emoji,
-                            name = slot.name, detail = slot.detail, price = slot.price,
-                            isFree = slot.isFree, eventId = slot.eventId, isCustom = slot.isCustom,
-                        )
-                    },
+                    slots = day.slots.map { it.toDto() },
                     travel = day.travel.map { PlanTravelDto(it.mode, it.mins) },
                 )
             }

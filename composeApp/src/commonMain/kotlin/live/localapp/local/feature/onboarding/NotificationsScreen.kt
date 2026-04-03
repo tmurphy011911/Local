@@ -145,7 +145,7 @@ fun NotificationsScreen(
                 Spacer(Modifier.height(8.dp))
 
                 Text(
-                    "Get notified before tickets sell out or your favourite venues have something on.",
+                    "Get notified before tickets sell out or your favorite venues have something on.",
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.SemiBold,
@@ -162,7 +162,7 @@ fun NotificationsScreen(
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     NotifRow(Icons.Outlined.ConfirmationNumber, "Ticket alerts", "Events near selling out", tickets, onToggleTickets)
                     NotifRow(Icons.Outlined.NearMe, "Nearby events", "Things happening around you", nearby, onToggleNearby)
-                    NotifRow(Icons.Outlined.Star, "Saved venue updates", "New events at your favourites", venues, onToggleVenues)
+                    NotifRow(Icons.Outlined.Star, "Saved venue updates", "New events at your favorites", venues, onToggleVenues)
                 }
 
                 Spacer(Modifier.height(28.dp))

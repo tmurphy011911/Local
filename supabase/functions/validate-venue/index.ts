@@ -77,6 +77,7 @@ Deno.serve(async (req) => {
             google_rating: venue.google_rating,
             website: venue.website,
             photo_url: venue.photo_url,
+            reservation_url: venue.reservation_url,
           },
         }),
         { status: 200, headers: { "Content-Type": "application/json", ...CORS_HEADERS } },
@@ -163,7 +164,34 @@ Deno.serve(async (req) => {
       else if (place.types.includes("bakery")) category = "cafe";
     }
 
-    // 3. Insert into venues table
+    // 4. Check for reservation platform (Resy / OpenTable)
+    let reservationUrl: string | null = null;
+    const isDining = category === "restaurant" || category === "bar" || category === "cafe" ||
+      (place.types && (place.types.includes("restaurant") || place.types.includes("bar")));
+
+    if (isDining) {
+      const slug = displayName.toLowerCase().replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-");
+      const citySlug = city.toLowerCase().replace(/[^a-z0-9\s-]/g, "").replace(/\s+/g, "-");
+      const stateSlug = state ? state.toLowerCase() : "ma";
+
+      // Check OpenTable: /r/{name-city}
+      const otUrl = `https://www.opentable.com/r/${slug}-${citySlug}`;
+      try {
+        const otRes = await fetch(otUrl, { method: "HEAD", redirect: "follow" });
+        if (otRes.ok && !otRes.url.includes("/s?")) {
+          reservationUrl = otUrl;
+        }
+      } catch (_) { /* ignore */ }
+
+      // Resy is a React SPA — returns 200 for all URLs, can't distinguish valid
+      // from invalid server-side. Skipping until we have Resy API access.
+
+      if (reservationUrl) {
+        console.log(`Found reservation URL for ${displayName}: ${reservationUrl}`);
+      }
+    }
+
+    // 5. Insert into venues table
     const newVenue = {
       name: displayName,
       city: city,
@@ -178,6 +206,7 @@ Deno.serve(async (req) => {
       place_type: category,
       is_active: true,
       metro_area: city?.toLowerCase() || null,
+      reservation_url: reservationUrl,
     };
 
     const { data: inserted, error: insertError } = await supabase
@@ -215,6 +244,7 @@ Deno.serve(async (req) => {
           website: inserted.website,
           photo_url: inserted.photo_url,
           description: inserted.description,
+          reservation_url: inserted.reservation_url,
         },
       }),
       { status: 200, headers: { "Content-Type": "application/json", ...CORS_HEADERS } },

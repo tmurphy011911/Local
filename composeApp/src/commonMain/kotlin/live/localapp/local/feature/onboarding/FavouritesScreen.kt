@@ -126,7 +126,7 @@ fun FavouritesScreen(
                             ),
                         )
                         Text(
-                            " in Boston",
+                            " near you",
                             style = TextStyle(
                                 fontFamily = AppFonts.Heading,
                                 fontWeight = FontWeight.Black,

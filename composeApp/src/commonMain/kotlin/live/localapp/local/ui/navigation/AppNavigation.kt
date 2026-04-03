@@ -129,6 +129,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     val koin = KoinPlatform.getKoin()
     val scope = rememberCoroutineScope()
     val eventRepo: EventRepository = remember { koin.get() }
+    val venueRepo: live.localapp.local.domain.repository.VenueRepository = remember { koin.get() }
     val density = LocalDensity.current.density
     var selectedTab by remember { mutableStateOf(Tab.HOME) }
     var detailEvent by remember { mutableStateOf<Event?>(null) }
@@ -172,7 +173,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     val openChatOrLogin: () -> Unit = {
         val userId = userPrefsRepo.getLocalUserId()
         if (userId != null) {
-            chatVm.setCurrentLocation(homeState.userLat, homeState.userLng, homeState.locationName)
+            chatVm.setCurrentLocation(homeState.userLat ?: 42.3601, homeState.userLng ?: -71.0589, homeState.locationName)
             showChat = true
         } else {
             showLoginPrompt = true
@@ -238,6 +239,16 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             placesVm,
                             onProfileClick = { selectedTab = Tab.PROFILE },
                             userInitial = initial,
+                            onVenueClickWithBounds = if (hasNativeHeroTransition) { venue, bounds ->
+                                showNativeVenueDetail(
+                                    venueWithMeta = venue,
+                                    cardX = bounds.left / density,
+                                    cardY = bounds.top / density,
+                                    cardW = bounds.width / density,
+                                    cardH = bounds.height / density,
+                                    onDismissed = {},
+                                )
+                            } else null,
                         )
                     }
                     Tab.PROFILE -> {
@@ -270,13 +281,16 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 chatOpenCount++
                                 openChatOrLogin()
                             },
-                            onEventClick = { eventId ->
+                            onEventClick = { eventId, bounds ->
                                 scope.launch {
                                     val event = eventRepo.getEvent(eventId) ?: return@launch
                                     if (hasNativeHeroTransition) {
                                         showNativeEventDetail(
                                             event = event,
-                                            cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                                            cardX = bounds.left / density,
+                                            cardY = bounds.top / density,
+                                            cardW = bounds.width / density,
+                                            cardH = bounds.height / density,
                                             cardImageUrl = event.imageUrl,
                                             onDismissed = {},
                                             onFavorited = { id -> homeVm.toggleEventFavorite(id, event.subcategory ?: event.category) },
@@ -466,6 +480,39 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 // For now, show an alert-style message
                             }
                         },
+                        onNativeEventClick = if (hasNativeHeroTransition) { eventId, fallbackImageUrl ->
+                            dismissChat {
+                                scope.launch {
+                                    val event = eventRepo.getEvent(eventId) ?: return@launch
+                                    showNativeEventDetail(
+                                        event = event,
+                                        cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                                        cardImageUrl = event.imageUrl ?: fallbackImageUrl,
+                                        onDismissed = {},
+                                        onFavorited = { id -> homeVm.toggleEventFavorite(id, event.subcategory ?: event.category) },
+                                        showDirections = true,
+                                    )
+                                }
+                            }
+                        } else null,
+                        onNativeVenueClick = if (hasNativeHeroTransition) { venueName ->
+                            dismissChat {
+                                scope.launch {
+                                    val venue = venueRepo.searchByName(venueName) ?: return@launch
+                                    val events = try { venueRepo.getUpcomingEventsForVenue(venueName, venue.city) } catch (_: Throwable) { emptyList() }
+                                    val venueWithMeta = VenueWithMeta(
+                                        venue = venue,
+                                        upcomingEventCount = events.size,
+                                        upcomingEvents = events,
+                                    )
+                                    showNativeVenueDetail(
+                                        venueWithMeta = venueWithMeta,
+                                        cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                                        onDismissed = {},
+                                    )
+                                }
+                            }
+                        } else null,
                     )
                 }
             }
@@ -543,11 +590,10 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         event = event,
                         onDismiss = { progressVm.dismissCelebration() },
                     )
-                    is CelebrationEvent.NewState -> GlobalNewStateToast(
-                        event = event,
-                        onDismiss = { progressVm.dismissCelebration() },
-                        onTap = { selectedTab = Tab.PROFILE },
-                    )
+                    is CelebrationEvent.NewState -> {
+                        // State-specific toasts removed — dismiss silently
+                        progressVm.dismissCelebration()
+                    }
                 }
             }
         }

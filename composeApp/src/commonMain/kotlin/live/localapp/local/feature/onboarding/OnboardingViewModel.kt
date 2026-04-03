@@ -131,8 +131,14 @@ class OnboardingViewModel(
         _state.update { it.copy(currentStep = OnboardingStep.MANUAL_ADDRESS) }
     }
 
-    fun onManualAddressSubmit() {
-        _state.update { it.copy(currentStep = OnboardingStep.SUCCESS) }
+    fun onManualAddressSubmit(lat: Double, lng: Double, city: String) {
+        _state.update {
+            it.copy(
+                userLat = lat,
+                userLng = lng,
+                currentStep = OnboardingStep.SUCCESS,
+            )
+        }
         loadOnboardingData()
     }
 

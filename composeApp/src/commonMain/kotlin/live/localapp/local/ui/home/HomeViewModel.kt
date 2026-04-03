@@ -25,9 +25,9 @@ import live.localapp.local.domain.service.BadgeService
 
 data class HomeUiState(
     val userName: String = "",
-    val locationName: String = "Waltham, MA",
-    val userLat: Double = 42.3897,
-    val userLng: Double = -71.2358,
+    val locationName: String = "",
+    val userLat: Double? = null,
+    val userLng: Double? = null,
     val streakDays: Int = 2,
     val selectedCategory: String = "foryou",
     val availableCategories: List<CategoryInfo> = emptyList(),
@@ -217,19 +217,22 @@ class HomeViewModel(
                 val state = _uiState.value
                 val category = state.selectedCategory
 
+                val lat = state.userLat ?: state.userPreferences?.userLat ?: 42.3601
+                val lng = state.userLng ?: state.userPreferences?.userLng ?: -71.0589
+
                 val categories = if (loadCategories || state.availableCategories.isEmpty()) {
                     carouselRepository.getAvailableCategories(
                         userPreferences = state.userPreferences,
-                        userLat = state.userLat,
-                        userLng = state.userLng,
+                        userLat = lat,
+                        userLng = lng,
                     )
                 } else {
                     state.availableCategories
                 }
 
                 val carousels = carouselRepository.getCarousels(
-                    userLat = state.userLat,
-                    userLng = state.userLng,
+                    userLat = lat,
+                    userLng = lng,
                     category = if (category == "foryou") null else category,
                     userPreferences = state.userPreferences,
                     locationName = state.locationName,

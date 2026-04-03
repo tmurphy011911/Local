@@ -28,6 +28,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.sp
+import live.localapp.local.ui.theme.AppFonts
 import androidx.compose.ui.unit.dp
 import live.localapp.local.platform.RequestLocationEffect
 import live.localapp.local.ui.theme.AppColors
@@ -41,6 +45,7 @@ fun OnboardingScreen(
 ) {
     val state by viewModel.state.collectAsState()
     var requestingLocation by remember { mutableStateOf(false) }
+    var showSettingsAlert by remember { mutableStateOf(false) }
     var previousStepIndex by remember { mutableStateOf(0) }
 
     val currentIndex = STEP_ORDER.indexOf(state.currentStep)
@@ -79,11 +84,11 @@ fun OnboardingScreen(
                         onComplete = { viewModel.onSplashComplete() },
                     )
                     OnboardingStep.LOCATION -> LocationAskScreen(
-                        onAllow = { requestingLocation = true },
+                        onAllow = { println("LOCATION: Allow tapped, setting requestingLocation=true"); requestingLocation = true },
                         onManual = { viewModel.onDenyLocation() },
                     )
                     OnboardingStep.MANUAL_ADDRESS -> ManualAddressScreen(
-                        onSubmit = { viewModel.onManualAddressSubmit() },
+                        onSubmit = { lat, lng, city -> viewModel.onManualAddressSubmit(lat, lng, city) },
                         onBack = { viewModel.onBackFromManualAddress() },
                     )
                     OnboardingStep.SUCCESS -> SuccessScreen(

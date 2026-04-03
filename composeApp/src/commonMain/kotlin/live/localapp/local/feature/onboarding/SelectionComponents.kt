@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.defaultMinSize
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
@@ -27,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -45,15 +47,131 @@ data class SelectionItem(
     val name: String,
     val subtitle: String? = null,
     val tag: String? = null,
+    val imageUrl: String? = null,
 )
 
-/** A selection card used in Neighbourhoods (3-col) / Venues / Categories (2-col) grids */
+/** A selection card used in Neighborhoods (3-col) / Venues / Categories (2-col) grids */
 @Composable
 fun SelectionCard(
     item: SelectionItem,
     isSelected: Boolean,
     onClick: () -> Unit,
     fixedHeight: Dp = Dp.Unspecified,
+) {
+    if (item.imageUrl != null) {
+        ImageSelectionCard(item = item, isSelected = isSelected, onClick = onClick, fixedHeight = fixedHeight)
+    } else {
+        IconSelectionCard(item = item, isSelected = isSelected, onClick = onClick, fixedHeight = fixedHeight)
+    }
+}
+
+/** Photo-forward card — full-bleed image with text overlay at the bottom */
+@Composable
+private fun ImageSelectionCard(
+    item: SelectionItem,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    fixedHeight: Dp,
+) {
+    val interactionSource = remember { MutableInteractionSource() }
+    val isPressed by interactionSource.collectIsPressedAsState()
+    val offsetY by animateFloatAsState(
+        targetValue = if (isPressed) 3f else 0f,
+        animationSpec = tween(80),
+    )
+
+    val borderColor = if (isSelected) AppColors.Plum else Color.Transparent
+    val shadowColor = if (isSelected) AppColors.PlumDk else AppColors.Pebble
+    val cardHeight = if (fixedHeight != Dp.Unspecified) fixedHeight else 120.dp
+
+    Box(
+        modifier = Modifier
+            .graphicsLayer { translationY = offsetY * density }
+            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick),
+    ) {
+        // Shadow
+        Box(
+            modifier = Modifier.matchParentSize()
+                .offset(y = if (!isPressed) 4.dp else 1.dp)
+                .background(shadowColor, RoundedCornerShape(14.dp)),
+        )
+
+        Box(
+            modifier = Modifier.fillMaxWidth().height(cardHeight)
+                .clip(RoundedCornerShape(14.dp))
+                .border(if (isSelected) 2.5.dp else 0.dp, borderColor, RoundedCornerShape(14.dp)),
+        ) {
+            // Full-bleed image
+            coil3.compose.AsyncImage(
+                model = item.imageUrl,
+                contentDescription = item.name,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = androidx.compose.ui.layout.ContentScale.Crop,
+            )
+
+            // Gradient overlay at bottom
+            Box(
+                modifier = Modifier.fillMaxSize()
+                    .background(
+                        androidx.compose.ui.graphics.Brush.verticalGradient(
+                            colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f)),
+                            startY = 30f,
+                        ),
+                    ),
+            )
+
+            // Check circle — top right
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .size(20.dp)
+                    .background(
+                        if (isSelected) AppColors.Plum else Color.Black.copy(alpha = 0.3f),
+                        CircleShape,
+                    )
+                    .border(2.dp, if (isSelected) AppColors.PlumDk else Color.White.copy(alpha = 0.5f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (isSelected) {
+                    Text("\u2713", style = TextStyle(fontWeight = FontWeight.Black, fontSize = 10.sp, color = Color.White))
+                }
+            }
+
+            // Text overlay — bottom
+            Column(
+                modifier = Modifier.align(Alignment.BottomStart).padding(10.dp),
+            ) {
+                Text(
+                    item.name,
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp,
+                        color = Color.White, lineHeight = 15.sp,
+                    ),
+                    maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
+                if (item.subtitle != null) {
+                    Text(
+                        item.subtitle,
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp,
+                            color = Color.White.copy(alpha = 0.8f),
+                        ),
+                        maxLines = 1,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Icon-based card — original layout for items without images */
+@Composable
+private fun IconSelectionCard(
+    item: SelectionItem,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    fixedHeight: Dp,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -65,118 +183,59 @@ fun SelectionCard(
     val borderColor = if (isSelected) AppColors.Plum else AppColors.Pebble
     val shadowColor = if (isSelected) AppColors.PlumDk else AppColors.Pebble
     val bgColor = if (isSelected) AppColors.PlumLt else AppColors.White
-
     val heightMod = if (fixedHeight != Dp.Unspecified) Modifier.height(fixedHeight) else Modifier
 
     Box(
         modifier = Modifier
             .graphicsLayer { translationY = offsetY * density }
-            .clickable(
-                interactionSource = interactionSource,
-                indication = null,
-                onClick = onClick,
-            ),
+            .clickable(interactionSource = interactionSource, indication = null, onClick = onClick),
     ) {
-        // Shadow
         Box(
-            modifier = Modifier
-                .matchParentSize()
+            modifier = Modifier.matchParentSize()
                 .offset(y = if (!isPressed) 4.dp else 1.dp)
                 .background(shadowColor, RoundedCornerShape(16.dp)),
         )
 
         Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(heightMod)
+            modifier = Modifier.fillMaxWidth().then(heightMod)
                 .background(bgColor, RoundedCornerShape(16.dp))
                 .border(2.dp, borderColor, RoundedCornerShape(16.dp))
                 .padding(11.dp),
             verticalArrangement = Arrangement.SpaceBetween,
         ) {
-            // Top section: icon/check + name + tag
             Column {
-                // Top: icon/spacer + check
                 Box(modifier = Modifier.fillMaxWidth()) {
                     if (item.icon != null) {
-                        Icon(
-                            item.icon,
-                            contentDescription = null,
-                            modifier = Modifier.size(22.dp),
-                            tint = if (isSelected) AppColors.PlumDk else AppColors.Ink2,
-                        )
+                        Icon(item.icon, contentDescription = null, modifier = Modifier.size(22.dp),
+                            tint = if (isSelected) AppColors.PlumDk else AppColors.Ink2)
                     } else {
                         Spacer(Modifier.size(22.dp))
                     }
-
                     Box(
-                        modifier = Modifier
-                            .size(18.dp)
-                            .align(Alignment.TopEnd)
-                            .background(
-                                if (isSelected) AppColors.Plum else Color.Transparent,
-                                CircleShape,
-                            )
+                        modifier = Modifier.size(18.dp).align(Alignment.TopEnd)
+                            .background(if (isSelected) AppColors.Plum else Color.Transparent, CircleShape)
                             .border(2.dp, if (isSelected) AppColors.PlumDk else AppColors.Pebble, CircleShape),
                         contentAlignment = Alignment.Center,
                     ) {
                         if (isSelected) {
-                            Text(
-                                "\u2713",
-                                style = TextStyle(
-                                    fontWeight = FontWeight.Black,
-                                    fontSize = 9.sp,
-                                    color = AppColors.White,
-                                ),
-                            )
+                            Text("\u2713", style = TextStyle(fontWeight = FontWeight.Black, fontSize = 9.sp, color = AppColors.White))
                         }
                     }
                 }
-
                 Spacer(Modifier.height(6.dp))
-
-                Text(
-                    item.name,
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 12.sp,
-                        color = if (isSelected) AppColors.PlumDk else AppColors.Ink,
-                        lineHeight = 16.sp,
-                    ),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-
+                Text(item.name, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold,
+                    fontSize = 12.sp, color = if (isSelected) AppColors.PlumDk else AppColors.Ink, lineHeight = 16.sp),
+                    maxLines = 2, overflow = TextOverflow.Ellipsis)
                 if (item.tag != null) {
                     Spacer(Modifier.height(3.dp))
-                    Text(
-                        item.tag,
-                        modifier = Modifier
-                            .background(AppColors.Coral.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
-                            .padding(horizontal = 6.dp, vertical = 1.dp),
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 9.sp,
-                            color = AppColors.Coral,
-                        ),
-                    )
+                    Text(item.tag, modifier = Modifier.background(AppColors.Coral.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
+                        .padding(horizontal = 6.dp, vertical = 1.dp),
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Coral))
                 }
             }
-
-            // Bottom: subtitle — always bottom-aligned
             if (item.subtitle != null) {
-                Text(
-                    item.subtitle,
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 10.sp,
-                        color = AppColors.Ink3,
-                    ),
-                    maxLines = 1,
-                )
+                Text(item.subtitle, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold,
+                    fontSize = 10.sp, color = AppColors.Ink3), maxLines = 1)
             }
         }
     }

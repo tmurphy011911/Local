@@ -102,6 +102,24 @@ actual fun showNativeVenueDetail(
 ) {
     val v = venueWithMeta.venue
     VenueDetailBridge.onDismissed = onDismissed
+
+    // Serialize upcoming events as JSON for Swift
+    val eventsJson = kotlinx.serialization.json.buildJsonArray {
+        venueWithMeta.upcomingEvents.forEach { event ->
+            add(kotlinx.serialization.json.buildJsonObject {
+                put("id", kotlinx.serialization.json.JsonPrimitive(event.id))
+                put("title", kotlinx.serialization.json.JsonPrimitive(event.title))
+                put("startAt", kotlinx.serialization.json.JsonPrimitive(event.startAt))
+                put("category", kotlinx.serialization.json.JsonPrimitive(event.category))
+                put("subcategory", kotlinx.serialization.json.JsonPrimitive(event.subcategory))
+                put("imageUrl", kotlinx.serialization.json.JsonPrimitive(event.imageUrl))
+                put("isFree", kotlinx.serialization.json.JsonPrimitive(event.isFree))
+                put("priceDisplay", kotlinx.serialization.json.JsonPrimitive(event.priceDisplay))
+                put("dateDisplay", kotlinx.serialization.json.JsonPrimitive(event.dateDisplay))
+            })
+        }
+    }.toString()
+
     VenueDetailBridge.showVenueDetail?.invoke(
         v.name,
         v.address,
@@ -115,6 +133,8 @@ actual fun showNativeVenueDetail(
         v.website,
         venueWithMeta.distanceMiles,
         venueWithMeta.upcomingEventCount,
+        eventsJson,
+        v.reservationUrl,
         cardX, cardY, cardW, cardH,
     )
 }

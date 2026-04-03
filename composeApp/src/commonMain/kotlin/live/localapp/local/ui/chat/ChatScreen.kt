@@ -102,6 +102,8 @@ fun ChatScreen(
     onNavigateToPlans: (() -> Unit)? = null,
     onNavigateHome: (() -> Unit)? = null,
     onLoginRequired: (() -> Unit)? = null,
+    onNativeEventClick: ((String, String?) -> Unit)? = null,  // eventId, fallbackImageUrl
+    onNativeVenueClick: ((String) -> Unit)? = null,           // venueName
 ) {
     val state by viewModel.uiState.collectAsState()
     val listState = rememberLazyListState()
@@ -128,7 +130,12 @@ fun ChatScreen(
     // Load event when slot is tapped
     LaunchedEffect(selectedEventId) {
         val id = selectedEventId ?: return@LaunchedEffect
-        selectedEvent = viewModel.getEventById(id)
+        val event = viewModel.getEventById(id) ?: return@LaunchedEffect
+        // If the DB event has no image, fall back to the slot's image (often a venue photo)
+        selectedEvent = if (event.imageUrl == null) {
+            val slotImage = state.days.flatMap { it.slots }.firstOrNull { it.eventId == id }?.imageUrl
+            if (slotImage != null) event.copy(imageUrl = slotImage) else event
+        } else event
     }
 
     // Load venue when venue slot is tapped
@@ -197,9 +204,15 @@ fun ChatScreen(
                             onEventClick = { id ->
                                 viewModel.recordEventTap(id.removePrefix("venue:"))
                                 if (id.startsWith("venue:")) {
-                                    selectedVenueName = id.removePrefix("venue:")
+                                    if (onNativeVenueClick != null) onNativeVenueClick(id.removePrefix("venue:"))
+                                    else selectedVenueName = id.removePrefix("venue:")
                                 } else {
-                                    selectedEventId = id
+                                    if (onNativeEventClick != null) {
+                                        val slotImage = state.days.flatMap { it.slots }.firstOrNull { it.eventId == id }?.imageUrl
+                                        onNativeEventClick(id, slotImage)
+                                    } else {
+                                        selectedEventId = id
+                                    }
                                 }
                             },
                             weather = state.weather[dayIdx],
@@ -213,9 +226,15 @@ fun ChatScreen(
                             onEventClick = { id ->
                                 viewModel.recordEventTap(id.removePrefix("venue:"))
                                 if (id.startsWith("venue:")) {
-                                    selectedVenueName = id.removePrefix("venue:")
+                                    if (onNativeVenueClick != null) onNativeVenueClick(id.removePrefix("venue:"))
+                                    else selectedVenueName = id.removePrefix("venue:")
                                 } else {
-                                    selectedEventId = id
+                                    if (onNativeEventClick != null) {
+                                        val slotImage = state.days.flatMap { it.slots }.firstOrNull { it.eventId == id }?.imageUrl
+                                        onNativeEventClick(id, slotImage)
+                                    } else {
+                                        selectedEventId = id
+                                    }
                                 }
                             },
                             weather = state.weather,
@@ -642,6 +661,7 @@ private fun SearchingIndicator() {
 
 // ── Plan Cards (read-only, magazine style) ──
 
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 private fun MultiDayPlanCard(
     days: List<ItineraryDay>,
@@ -650,30 +670,135 @@ private fun MultiDayPlanCard(
     onSave: () -> Unit = {},
     showSaveButton: Boolean = true,
 ) {
-    Column {
-        val maxSlots = days.maxOfOrNull { it.slots.size } ?: 3
-        val hasWeather = weather.isNotEmpty()
-        val headerHeight = if (hasWeather) 90 else 70
-        val slotHeight = 135
-        val footerHeight = 50
-        val cardHeight = (headerHeight + maxSlots * slotHeight + footerHeight).coerceIn(280, 750)
+    val pagerState = androidx.compose.foundation.pager.rememberPagerState(pageCount = { days.size })
+    val cardShape = RoundedCornerShape(18.dp)
 
-        LazyRow(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            contentPadding = PaddingValues(horizontal = 4.dp),
-            modifier = Modifier.height(cardHeight.dp),
+    Column {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp),
         ) {
-            itemsIndexed(days) { index, day ->
-                Box(modifier = Modifier.width(300.dp).fillMaxHeight()) {
-                    DayCard(
-                        day = day,
-                        dayIndex = index,
-                        totalDays = days.size,
-                        onEventClick = onEventClick,
-                        weather = weather[index],
-                        showSaveButton = false,
-                    )
+            // Shadow
+            Box(
+                Modifier.fillMaxWidth().matchParentSize().offset(y = 5.dp)
+                    .background(AppColors.Pebble, cardShape),
+            )
+
+            Column(
+                modifier = Modifier.fillMaxWidth()
+                    .background(AppColors.White, cardShape)
+                    .border(2.dp, AppColors.Pebble, cardShape)
+                    .clip(cardShape),
+            ) {
+                // Paged day content
+                androidx.compose.foundation.pager.HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { page ->
+                    val day = days[page]
+                    val color = Color(dayColor(page))
+
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        // Header
+                        Column(
+                            modifier = Modifier.fillMaxWidth().background(color)
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                        ) {
+                            Text(
+                                "DAY ${page + 1} OF ${days.size}",
+                                style = TextStyle(
+                                    fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 10.sp,
+                                    color = AppColors.White.copy(alpha = 0.7f), letterSpacing = 0.8.sp,
+                                ),
+                            )
+                            Spacer(Modifier.height(2.dp))
+                            Text(
+                                day.label.replace("Today ", "").replace("Tomorrow ", "").ifBlank { "Your Plan" },
+                                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 16.sp, color = AppColors.White),
+                            )
+                            Text(
+                                "${day.slots.size} ${if (day.slots.size == 1) "stop" else "stops"}",
+                                style = TextStyle(
+                                    fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp,
+                                    color = AppColors.White.copy(alpha = 0.7f),
+                                ),
+                            )
+                        }
+
+                        // Weather bar
+                        weather[page]?.let { w ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth().background(AppColors.SkyLt)
+                                    .padding(horizontal = 14.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text(
+                                    "${w.tempHigh}\u00B0F  ${w.description}",
+                                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = AppColors.SkyDk),
+                                )
+                            }
+                        }
+
+                        // Slots
+                        Column(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            for (slot in day.slots) {
+                                SlotCard(
+                                    slot = slot,
+                                    onEventClick = {
+                                        if (slot.eventId != null) onEventClick(slot.eventId)
+                                        else if (!slot.isCustom && slot.name.length > 2) onEventClick("venue:${slot.name}")
+                                    },
+                                )
+                            }
+                        }
+
+                        // Cost estimate
+                        val pricedSlots = day.slots.filter { !it.isFree && (it.priceMin != null || it.price.isNotBlank()) }
+                        if (pricedSlots.isNotEmpty()) {
+                            val totalMin = pricedSlots.sumOf { it.priceMin ?: extractPriceValue(it.price) ?: 0.0 }
+                            val totalMax = pricedSlots.sumOf { it.priceMax ?: it.priceMin ?: extractPriceValue(it.price) ?: 0.0 }
+                            if (totalMin > 0 || totalMax > 0) {
+                                val attendees = 2
+                                val minEst = (totalMin * attendees).toInt()
+                                val maxEst = (totalMax * attendees).toInt()
+                                val estimate = if (minEst == maxEst) "~$$minEst" else "$$minEst-$maxEst"
+                                Text(
+                                    "$estimate estimated for $attendees",
+                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
+                                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = AppColors.Ink3),
+                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                )
+                            }
+                        }
+                    }
                 }
+
+                // Page indicator dots
+                if (days.size > 1) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
+                        days.forEachIndexed { index, _ ->
+                            val isSelected = pagerState.currentPage == index
+                            Box(
+                                modifier = Modifier
+                                    .padding(horizontal = 3.dp)
+                                    .size(if (isSelected) 8.dp else 6.dp)
+                                    .background(
+                                        if (isSelected) Color(dayColor(index)) else AppColors.Pebble,
+                                        CircleShape,
+                                    ),
+                            )
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(4.dp))
             }
         }
 
@@ -707,11 +832,12 @@ private fun DayCard(
     weather: live.localapp.local.data.remote.WeatherForecast? = null,
     onSave: () -> Unit = {},
     showSaveButton: Boolean = true,
+    modifier: Modifier = Modifier,
 ) {
     val color = Color(dayColor(dayIndex))
     val cardShape = RoundedCornerShape(18.dp)
 
-    Box(modifier = Modifier.fillMaxWidth()) {
+    Box(modifier = modifier.fillMaxWidth()) {
         Box(Modifier.fillMaxWidth().matchParentSize().offset(y = 5.dp).background(AppColors.Pebble, cardShape))
 
         Column(
@@ -905,28 +1031,20 @@ private fun SlotCard(
             } else { stripEmoji(slot.detail) }
             Text(displayDetail, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, color = subColor), maxLines = 1)
 
-            // Actions
-            val hasActions = slot.venueRating != null || (slot.venueLat != null && slot.venueLng != null) || slot.ticketUrl != null
+            // Inline actions — only rating + reserve (directions/tickets live on the detail page)
+            val hasActions = slot.venueRating != null || slot.reservationUrl != null
             if (hasActions) {
                 Spacer(Modifier.height(4.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (slot.venueRating != null) {
                         Text("★ ${slot.venueRating}", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = AppColors.Sun))
                     }
-                    if (slot.venueLat != null && slot.venueLng != null) {
+                    if (slot.reservationUrl != null) {
                         Text(
-                            "Directions",
+                            "Reserve",
                             modifier = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
-                                uriHandler.openUri("https://maps.apple.com/?daddr=${slot.venueLat},${slot.venueLng}")
-                            },
-                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = if (hasImage) AppColors.White else AppColors.Sky),
-                        )
-                    }
-                    if (slot.ticketUrl != null) {
-                        Text(
-                            "Get Tickets",
-                            modifier = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
-                                uriHandler.openUri(slot.ticketUrl)
+                                val deepUrl = buildReservationDeepLink(slot.reservationUrl, slot.time)
+                                uriHandler.openUri(deepUrl)
                             },
                             style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = if (hasImage) AppColors.White else AppColors.Coral),
                         )
@@ -1533,6 +1651,33 @@ private fun stripEmoji(text: String): String {
 }
 
 /** Extract a numeric price from strings like "$25", "From $15", "$$" */
+/** Build a deep link to Resy or OpenTable with date/time/seats prefilled. */
+private fun buildReservationDeepLink(baseUrl: String, slotTime: String, seats: Int = 2): String {
+    val today = kotlin.time.Clock.System.now().toString().take(10) // YYYY-MM-DD
+
+    return when {
+        baseUrl.contains("resy.com") -> {
+            "$baseUrl?date=$today&seats=$seats"
+        }
+        baseUrl.contains("opentable.com") -> {
+            // Parse slot time like "7 PM" or "7:30 PM" into HH:mm format
+            val timeParam = try {
+                val parts = slotTime.uppercase().replace(".", "").trim().split(" ")
+                val timePart = parts[0]
+                val isPm = parts.getOrNull(1)?.contains("PM") == true
+                val hm = timePart.split(":")
+                var hour = hm[0].toInt()
+                val min = hm.getOrNull(1)?.toInt() ?: 0
+                if (isPm && hour < 12) hour += 12
+                if (!isPm && hour == 12) hour = 0
+                "${hour.toString().padStart(2, '0')}:${min.toString().padStart(2, '0')}"
+            } catch (_: Exception) { "19:00" }
+            "$baseUrl?dateTime=${today}T${timeParam}&covers=$seats&partySize=$seats"
+        }
+        else -> baseUrl
+    }
+}
+
 private fun extractPriceValue(price: String): Double? {
     if (price.isBlank()) return null
     if (price.trim().all { it == '$' || it == ' ' }) {

@@ -95,17 +95,7 @@ fun LocationAskScreen(onAllow: () -> Unit, onManual: () -> Unit) {
 
                 Spacer(Modifier.height(16.dp))
 
-                // Eyebrow
-                Text(
-                    "STEP 1 \u00B7 LOCATION",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 11.sp,
-                        color = AppColors.Coral,
-                        letterSpacing = 0.8.sp,
-                    ),
-                )
+                // Eyebrow removed
 
                 Spacer(Modifier.height(6.dp))
 
@@ -135,7 +125,7 @@ fun LocationAskScreen(onAllow: () -> Unit, onManual: () -> Unit) {
                 Spacer(Modifier.height(10.dp))
 
                 Text(
-                    "We'll show you events, restaurants and experiences within your neighbourhood \u2014 updated in real time.",
+                    "We'll show you events, restaurants and experiences within your neighborhood \u2014 updated in real time.",
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.SemiBold,

@@ -17,4 +17,5 @@ data class Venue(
     val placeType: String? = null,
     val googleRating: Double? = null,
     val website: String? = null,
+    val reservationUrl: String? = null,
 )

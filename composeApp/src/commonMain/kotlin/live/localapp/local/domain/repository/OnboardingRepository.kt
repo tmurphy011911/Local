@@ -34,6 +34,7 @@ data class VenueSummary(
     val city: String,
     val distanceMiles: Double? = null,
     val publicInterestRank: Int? = null,
+    val photoUrl: String? = null,
 ) {
     val distanceDisplay: String
         get() = when {

@@ -81,12 +81,6 @@ class BadgeService(
         val userId = userPrefsRepo.getLocalUserId() ?: return
 
         scope.launch {
-            // Check for new state
-            if (state !in knownStates) {
-                knownStates.add(state)
-                _celebrations.emit(BadgeCelebration.NewState(state))
-            }
-
             val previousTotal = totalPointsCache
             val previousTier = statusTierForPoints(previousTotal)
 
