@@ -155,32 +155,45 @@ class OnboardingRepositoryImpl(
             }
             .sortedBy { it.distanceMiles ?: Double.MAX_VALUE }
 
-        // Use parent category, not subcategory — filter to meaningful user-facing categories
+        // Merge category + subcategory into user-facing categories
         val validCategories = setOf("music", "food", "arts", "sports", "comedy", "outdoors", "nightlife", "theatre", "museums", "tours", "libraries", "for-kids", "film")
-        val excludeCategories = setOf("always_on", "upcoming")
-        val remapCategory = mapOf("bar_events" to "nightlife")
+        val excludeRaw = setOf("always_on", "upcoming", "other", "no-public-interest", "null", "miscellaneous")
+        val normalizeMap = mapOf(
+            "bar_events" to "nightlife", "bar" to "nightlife",
+            "museum" to "museums", "library" to "libraries",
+            "rock" to "music", "pop" to "music", "jazz" to "music", "country" to "music",
+            "metal" to "music", "alternative" to "music", "r&b" to "music", "hip-hop/rap" to "music",
+            "baseball" to "sports", "football" to "sports", "basketball" to "sports",
+            "hockey" to "sports", "soccer" to "sports",
+            "park" to "outdoors", "fairs & festivals" to "outdoors",
+            "brewery" to "food", "restaurant" to "food", "cafe" to "food", "winery" to "food",
+            "community" to "outdoors",
+        )
 
-        val categoryList = mutableListOf<String>()
-        for (event in events) {
-            val raw = event.category.lowercase()
-            if (raw in excludeCategories) continue
-            val mapped = remapCategory[raw] ?: raw
-            if (mapped in validCategories) categoryList.add(mapped)
+        fun resolveCategory(event: EventSummaryDto): String? {
+            // Prefer subcategory if it maps to a valid category, otherwise use category
+            val sub = (event.subcategory ?: "").lowercase()
+            val cat = event.category.lowercase()
+            if (sub in excludeRaw && cat in excludeRaw) return null
+            val mappedSub = normalizeMap[sub] ?: sub
+            if (mappedSub in validCategories) return mappedSub
+            val mappedCat = normalizeMap[cat] ?: cat
+            if (mappedCat in validCategories) return mappedCat
+            return null
         }
+
+        val categoryList = events.mapNotNull { resolveCategory(it) }
         val categoryCounts = categoryList.groupBy { it }.mapValues { it.value.size }.filter { it.value >= 3 }
 
         // Build category → best venue photo (highest ranked venue that has events in this category)
         // venueRanks is keyed by lowercase venue name
         val venuesByCategory = mutableMapOf<String, MutableList<VenueRankDto>>()
         for (event in events) {
-            val raw = event.category.lowercase()
-            if (raw in excludeCategories) continue
-            val mapped = remapCategory[raw] ?: raw
-            if (mapped !in validCategories) continue
+            val resolved = resolveCategory(event) ?: continue
             val venueName = event.venueName ?: continue
             val venueData = venueRanks[venueName.lowercase()] ?: continue
             if (venueData.photoUrl == null) continue
-            venuesByCategory.getOrPut(mapped) { mutableListOf() }.add(venueData)
+            venuesByCategory.getOrPut(resolved) { mutableListOf() }.add(venueData)
         }
         val usedPhotos = mutableSetOf<String>()
         val categoryPhotos = mutableMapOf<String, String>()

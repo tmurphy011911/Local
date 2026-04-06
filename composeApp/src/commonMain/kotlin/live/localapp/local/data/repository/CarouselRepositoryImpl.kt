@@ -1211,7 +1211,14 @@ class CarouselRepositoryImpl(
                         when (filter) {
                             is EventFilter.None -> {}
                             is EventFilter.Empty -> {}
-                            is EventFilter.Category -> eq("subcategory", filter.value)
+                            is EventFilter.Category -> {
+                                val childSubs = subcategoriesForParent(filter.value)
+                                if (childSubs.size == 1) {
+                                    eq("subcategory", childSubs.first())
+                                } else {
+                                    isIn("subcategory", childSubs)
+                                }
+                            }
                             is EventFilter.VenueLike -> ilike("venue_name", filter.pattern)
                             is EventFilter.Subcategory -> eq("sub_subcategory", filter.value)
                             is EventFilter.Source -> eq("source", filter.value)
@@ -1647,6 +1654,21 @@ class CarouselRepositoryImpl(
         return overlap >= 2
     }
 
+    /** Given a parent category, return all subcategory values that should be included */
+    private fun subcategoriesForParent(parent: String): List<String> {
+        val reverseMap = mapOf(
+            "music" to listOf("music", "rock", "pop", "jazz", "country", "metal", "alternative", "r&b", "hip-hop/rap", "blues", "indie", "latin"),
+            "sports" to listOf("sports", "baseball", "football", "basketball", "hockey", "soccer", "college"),
+            "food" to listOf("food", "brewery", "restaurant", "cafe", "winery"),
+            "nightlife" to listOf("nightlife", "bar", "bar_events"),
+            "outdoors" to listOf("outdoors", "park", "fairs & festivals", "community"),
+            "museums" to listOf("museums", "museum"),
+            "libraries" to listOf("libraries", "library"),
+            "arts" to listOf("arts", "workshop", "lecture"),
+        )
+        return reverseMap[parent.lowercase()] ?: listOf(parent)
+    }
+
     private val proTeams = listOf("celtics", "bruins", "red sox", "patriots", "revolution")
 
     private val premiumVenues = listOf(
@@ -1756,6 +1778,23 @@ class CarouselRepositoryImpl(
         val now = nowIso()
         val userFavorites = userPreferences?.selectedCategories?.map { it.lowercase() } ?: emptyList()
 
+        // Normalize subcategories into user-facing parent categories
+        val validNavCategories = setOf("music", "food", "arts", "sports", "comedy", "outdoors", "nightlife", "theatre", "museums", "tours", "libraries", "for-kids", "film", "experiences")
+        val excludeNav = setOf("no-public-interest", "cafe", "other", "null", "miscellaneous")
+        val navNormalize = mapOf(
+            "rock" to "music", "pop" to "music", "jazz" to "music", "country" to "music",
+            "metal" to "music", "alternative" to "music", "r&b" to "music", "hip-hop/rap" to "music",
+            "blues" to "music", "indie" to "music", "latin" to "music",
+            "baseball" to "sports", "football" to "sports", "basketball" to "sports",
+            "hockey" to "sports", "soccer" to "sports", "college" to "sports",
+            "park" to "outdoors", "fairs & festivals" to "outdoors", "community" to "outdoors",
+            "museum" to "museums", "library" to "libraries",
+            "brewery" to "food", "restaurant" to "food", "winery" to "food",
+            "bar" to "nightlife", "bar_events" to "nightlife",
+            "administrative" to null,
+            "workshop" to "arts", "lecture" to "arts",
+        )
+
         // Fetch all active events (both upcoming and always_on) to compute counts
         if (categoryOrder == null) {
             // Fetch upcoming events (have start_at >= now)
@@ -1780,11 +1819,18 @@ class CarouselRepositoryImpl(
                 }
                 .decodeList<SubcategoryDto>()
 
-            val combinedCounts = (upcomingEvents + alwaysOnEvents)
-                .mapNotNull { it.subcategory?.lowercase() }
-                .filter { it != "no-public-interest" && it != "cafe" }
-                .groupingBy { it }
-                .eachCount()
+            val mappedList = mutableListOf<String>()
+            for (dto in upcomingEvents + alwaysOnEvents) {
+                val raw = dto.subcategory?.lowercase() ?: continue
+                if (raw in excludeNav) continue
+                if (navNormalize.containsKey(raw)) {
+                    val mapped = navNormalize[raw] ?: continue // null means exclude
+                    if (mapped in validNavCategories) mappedList.add(mapped)
+                } else if (raw in validNavCategories) {
+                    mappedList.add(raw)
+                }
+            }
+            val combinedCounts = mappedList.groupBy { it }.mapValues { it.value.size }
 
             categoryOrder = combinedCounts.entries
                 .sortedWith(
@@ -1818,11 +1864,18 @@ class CarouselRepositoryImpl(
             }
             .decodeList<SubcategoryDto>()
 
-        val counts = (upcomingCounts + alwaysOnCounts)
-            .mapNotNull { it.subcategory?.lowercase() }
-            .filter { it != "no-public-interest" && it != "cafe" }
-            .groupingBy { it }
-            .eachCount()
+        val countsMapped = mutableListOf<String>()
+        for (dto in upcomingCounts + alwaysOnCounts) {
+            val raw = dto.subcategory?.lowercase() ?: continue
+            if (raw in excludeNav) continue
+            if (navNormalize.containsKey(raw)) {
+                val mapped = navNormalize[raw] ?: continue
+                if (mapped in validNavCategories) countsMapped.add(mapped)
+            } else if (raw in validNavCategories) {
+                countsMapped.add(raw)
+            }
+        }
+        val counts = countsMapped.groupBy { it }.mapValues { it.value.size }
 
         if (counts.isEmpty()) return emptyList()
 

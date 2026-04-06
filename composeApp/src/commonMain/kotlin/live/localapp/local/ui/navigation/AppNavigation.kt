@@ -441,12 +441,14 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     showChat = false
                 },
                 sheetState = chatSheetState,
-                containerColor = AppColors.Snow,
+                containerColor = if (showPaywall) Color(0xFF1A1523) else if (showTutorial) AppColors.Snow else AppColors.Snow,
                 dragHandle = {
+                    val handleBg = if (showPaywall) Color(0xFF1A1523) else AppColors.Snow
+                    val handleColor = if (showPaywall) Color.White.copy(alpha = 0.2f) else AppColors.Pebble
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(AppColors.Snow)
+                            .background(handleBg)
                             .padding(top = 10.dp, bottom = 4.dp),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -454,7 +456,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             modifier = Modifier
                                 .width(36.dp)
                                 .height(4.dp)
-                                .background(AppColors.Pebble, RoundedCornerShape(2.dp)),
+                                .background(handleColor, RoundedCornerShape(2.dp)),
                         )
                     }
                 },

@@ -37,6 +37,7 @@ class PremiumGate {
 
     /** Whether the user can create a shareable plan without hitting the paywall */
     fun canCreatePlan(): Boolean {
+        println("PremiumGate: canCreatePlan? isPremium=$isPremium plansCreated=$plansCreated")
         if (isPremium) return true
         return plansCreated < 1 // first plan is free
     }
