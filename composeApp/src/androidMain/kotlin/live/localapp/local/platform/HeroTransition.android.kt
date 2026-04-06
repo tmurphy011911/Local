@@ -40,6 +40,18 @@ actual fun showNativeEventDetail(
     // No-op on Android — Compose handles the detail screen
 }
 
+actual fun showNativePlanDetail(
+    plan: live.localapp.local.domain.model.Plan,
+    cardX: Float,
+    cardY: Float,
+    cardW: Float,
+    cardH: Float,
+    onDismissed: () -> Unit,
+    onShare: () -> Unit,
+) {
+    // No-op on Android
+}
+
 actual fun showNativeVenueDetail(
     venueWithMeta: live.localapp.local.domain.repository.VenueWithMeta,
     cardX: Float,

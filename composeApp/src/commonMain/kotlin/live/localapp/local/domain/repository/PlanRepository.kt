@@ -7,4 +7,6 @@ interface PlanRepository {
     suspend fun savePlan(plan: Plan)
     suspend fun updatePlan(plan: Plan)
     suspend fun deletePlan(planId: String)
+    suspend fun getShareToken(planId: String): String?
+    suspend fun getSharedPlan(shareToken: String): Plan?
 }

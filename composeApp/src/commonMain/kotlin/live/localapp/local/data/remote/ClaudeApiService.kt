@@ -155,6 +155,7 @@ data class ParsedChatResponse(
     val type: ParsedResponseType,
     val text: String,
     val planTitle: String? = null,
+    val attendeeCount: Int? = null,
     val days: List<ParsedDay> = emptyList(),
     val chips: List<String> = emptyList(),
     val dayIndex: Int? = null,
@@ -347,6 +348,10 @@ val claudeTools: JsonArray = buildJsonArray {
                         }
                     }
                 }
+                putJsonObject("attendee_count") {
+                    put("type", "integer")
+                    put("description", "Number of people attending. Infer from context: 'date night'=2, 'double date'=4, 'just me'=1. If unknown, you MUST ask before presenting the plan.")
+                }
                 putJsonObject("chips") {
                     put("type", "array")
                     putJsonObject("items") { put("type", "string") }
@@ -356,6 +361,7 @@ val claudeTools: JsonArray = buildJsonArray {
             putJsonArray("required") {
                 add(JsonPrimitive("title"))
                 add(JsonPrimitive("days"))
+                add(JsonPrimitive("attendee_count"))
             }
         }
     }

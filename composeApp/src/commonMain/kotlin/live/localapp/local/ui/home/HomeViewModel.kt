@@ -161,6 +161,10 @@ class HomeViewModel(
         _uiState.update { it.copy(favoriteEventIds = it.favoriteEventIds + eventId) }
     }
 
+    fun setUserName(name: String) {
+        _uiState.update { it.copy(userName = name) }
+    }
+
     fun recordPlaceShare(placeId: String) {
         communityInterestRepository.recordShare(placeId, InteractionType.PLACE)
     }

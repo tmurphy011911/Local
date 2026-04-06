@@ -96,6 +96,9 @@ data class ItinerarySlot(
     val priceMin: Double? = null,
     val priceMax: Double? = null,
     val reservationUrl: String? = null,
+    val sourceUrl: String? = null,
+    val venueWebsite: String? = null,
+    val venueCategory: String? = null,
 )
 
 data class TravelInfo(
@@ -359,6 +362,8 @@ class ChatViewModel(
                         venueLat = venue?.latitude,
                         venueLng = venue?.longitude,
                         reservationUrl = venue?.reservationUrl,
+                        venueWebsite = venue?.website,
+                        venueCategory = venue?.category,
                     )
                 } else {
                     // Event ref — look up from DB (strip evt: prefix)
@@ -389,6 +394,13 @@ class ChatViewModel(
                         try { venueRepo.searchByName(name)?.photoUrl } catch (_: Exception) { null }
                     }
 
+                    // Look up venue website + category for events too
+                    val eventVenue = event.venueName?.let { name ->
+                        try { venueRepo.searchByName(name) } catch (_: Exception) { null }
+                    }
+                    val eventVenueWebsite = eventVenue?.website
+                    val eventVenueCategory = eventVenue?.category
+
                     ItinerarySlot(
                         id = generateId(),
                         time = time,
@@ -406,6 +418,9 @@ class ChatViewModel(
                         venueLng = event.venueLng,
                         priceMin = event.priceMin,
                         priceMax = event.priceMax,
+                        sourceUrl = event.sourceUrl,
+                        venueWebsite = eventVenueWebsite,
+                        venueCategory = eventVenueCategory,
                     )
                 }
             }
@@ -534,6 +549,7 @@ class ChatViewModel(
 
         // present_plan
         val title = input["title"]?.jsonPrimitive?.contentOrNull ?: "Your Plan"
+        val attendeeCount = input["attendee_count"]?.jsonPrimitive?.intOrNull
         val daysArray = input["days"]?.jsonArray ?: kotlinx.serialization.json.buildJsonArray {}
         val parsedDays = daysArray.map { dayEl ->
             val dayObj = dayEl.jsonObject
@@ -546,6 +562,7 @@ class ChatViewModel(
             type = ParsedResponseType.PLAN,
             text = text,
             planTitle = title,
+            attendeeCount = attendeeCount,
             days = parsedDays,
             chips = chips,
         )
@@ -960,7 +977,7 @@ class ChatViewModel(
                     it.copy(
                         days = validatedDays,
                         planTitle = title,
-                        planAttendeeCount = 1,
+                        planAttendeeCount = parsed.attendeeCount ?: 1,
                         currentDayIndex = 0,
                         approvedDayCount = 0,
                     )
@@ -1097,6 +1114,9 @@ class ChatViewModel(
                                     priceMin = slot.priceMin,
                                     priceMax = slot.priceMax,
                                     reservationUrl = slot.reservationUrl,
+                                    sourceUrl = slot.sourceUrl,
+                                    venueWebsite = slot.venueWebsite,
+                                    venueCategory = slot.venueCategory,
                                 )
                             },
                             travel = day.travel.map { PlanTravel(it.mode, it.mins) },
@@ -1499,6 +1519,7 @@ Location: ${state.currentLocationName.ifBlank { state.userPreferences?.city?.rep
 
 HOW TO HELP:
 - When the user wants to plan something, search the database FIRST, then present a plan using the present_plan tool. Search broadly — make multiple search_events calls across different categories and date ranges to find everything relevant. The more you search, the better your recommendations. When offering to build a plan, mention that it's an easily shareable plan (e.g. "Want me to build you a shareable plan?" or "I can put together a plan you can share with your group").
+- ALWAYS gather the number of people attending before presenting a plan. You can infer from context: "date night" = 2, "double date" = 4, "just me" / solo = 1, "family" = ask how many, "friends" = ask how many. If unclear, ask "How many people will be joining?" before calling present_plan. Include the attendee_count in the present_plan call — this is required. Tailor recommendations to group size (e.g. larger groups need venues with more seating, reservations become more important).
 - When chatting or answering questions, just respond naturally. No special formatting needed.
 - When the user wants to modify an existing plan (swap something, add something, change a slot, try something different), you MUST search for alternatives and then call update_plan. NEVER respond with just text when a plan exists and the user is asking to change it. Search for what they want, find the best match (or use recommend_and_save_venue), and call update_plan with the full slot list for that day — keeping unchanged slots (use their existing event_id/venue_name) and replacing the modified one. The CURRENT PLAN section below has event_ids and venue names you need to preserve unchanged slots.
 

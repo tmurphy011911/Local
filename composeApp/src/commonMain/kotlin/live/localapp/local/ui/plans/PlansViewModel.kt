@@ -19,7 +19,8 @@ import live.localapp.local.domain.repository.VenueRepository
 data class PlansUiState(
     val upcomingPlans: List<Plan> = emptyList(),
     val pastPlans: List<Plan> = emptyList(),
-    val expandedPlanId: String? = null,
+    val pendingInvites: List<Plan> = emptyList(),
+    val pendingAcceptAfterAuth: Plan? = null,
     val isLoading: Boolean = false,
     val savedEvents: List<Event> = emptyList(),
     val savedVenues: List<Venue> = emptyList(),
@@ -39,12 +40,6 @@ class PlansViewModel(
     init {
         loadPlans()
         loadSavedItems()
-    }
-
-    fun toggleExpand(planId: String) {
-        _uiState.update { state ->
-            state.copy(expandedPlanId = if (state.expandedPlanId == planId) null else planId)
-        }
     }
 
     fun refresh() {
@@ -75,6 +70,44 @@ class PlansViewModel(
             val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
             planRepository.updatePlan(updatedPlan)
         }
+    }
+
+    fun addPendingInvite(plan: Plan) {
+        _uiState.update { state ->
+            // Don't add duplicates
+            if (state.pendingInvites.any { it.id == plan.id }) return
+            state.copy(pendingInvites = state.pendingInvites + plan)
+        }
+    }
+
+    fun dismissInvite(planId: String) {
+        _uiState.update { state ->
+            state.copy(pendingInvites = state.pendingInvites.filter { it.id != planId })
+        }
+    }
+
+    fun acceptInvite(plan: Plan) {
+        viewModelScope.launch {
+            planRepository.savePlan(plan)
+            _uiState.update { state ->
+                state.copy(
+                    pendingInvites = state.pendingInvites.filter { it.id != plan.id },
+                    pendingAcceptAfterAuth = null,
+                )
+            }
+            refresh()
+        }
+    }
+
+    /** Mark a plan to be accepted after login/onboarding completes. */
+    fun setPendingAcceptAfterAuth(plan: Plan) {
+        _uiState.update { it.copy(pendingAcceptAfterAuth = plan) }
+    }
+
+    /** Call after auth completes — if there's a pending invite, accept it. */
+    fun processPendingAccept() {
+        val plan = _uiState.value.pendingAcceptAfterAuth ?: return
+        acceptInvite(plan)
     }
 
     fun deletePlan(planId: String) {

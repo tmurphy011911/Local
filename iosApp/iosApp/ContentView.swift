@@ -18,6 +18,12 @@ struct ComposeView: UIViewControllerRepresentable {
         // Wire chat sheet background animation
         setupChatSheetBridge(composeVC: vc)
 
+        // Wire share sheet bridge
+        setupShareBridge(composeVC: vc)
+
+        // Wire plan detail transition bridge
+        setupPlanDetailBridge(composeVC: vc)
+
         return vc
     }
 
@@ -263,6 +269,83 @@ struct ComposeView: UIViewControllerRepresentable {
                 chatTransition.close {
                     bridge.onCloseComplete?()
                 }
+            }
+        }
+    }
+
+    // MARK: - Plan Detail Transition Bridge
+
+    private func setupPlanDetailBridge(composeVC: UIViewController) {
+        let bridge = PlanDetailBridge.shared
+        let transition = PlanDetailTransitionController.shared
+
+        bridge.showPlanDetail = { planJson, cardX, cardY, cardW, cardH in
+            DispatchQueue.main.async {
+                guard let windowScene = UIApplication.shared.connectedScenes
+                    .compactMap({ $0 as? UIWindowScene }).first,
+                      let window = windowScene.windows.first(where: { $0.isKeyWindow })
+                else { return }
+
+                let frame = CGRect(
+                    x: CGFloat(truncating: cardX as NSNumber),
+                    y: CGFloat(truncating: cardY as NSNumber),
+                    width: CGFloat(truncating: cardW as NSNumber),
+                    height: CGFloat(truncating: cardH as NSNumber)
+                )
+
+                transition.present(
+                    planJson: planJson as String,
+                    cardFrame: frame,
+                    in: window,
+                    onDismissed: {
+                        bridge.onDismissed?()
+                    },
+                    onShare: {
+                        bridge.onShare?()
+                    }
+                )
+            }
+        }
+
+        bridge.dismissPlanDetail = {
+            DispatchQueue.main.async {
+                transition.dismiss()
+            }
+        }
+    }
+
+    // MARK: - Share Sheet Bridge
+
+    private func setupShareBridge(composeVC: UIViewController) {
+        let bridge = ShareBridge.shared
+
+        bridge.presentShareSheet = { text, url in
+            DispatchQueue.main.async {
+                guard let windowScene = UIApplication.shared.connectedScenes
+                    .compactMap({ $0 as? UIWindowScene }).first,
+                      let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController
+                else { return }
+
+                // Find the topmost presented controller
+                var topVC = rootVC
+                while let presented = topVC.presentedViewController {
+                    topVC = presented
+                }
+
+                var items: [Any] = [text as Any]
+                if let shareUrl = URL(string: url as String) {
+                    items.append(shareUrl)
+                }
+
+                let activityVC = UIActivityViewController(activityItems: items, applicationActivities: nil)
+
+                // iPad popover anchor
+                if let popover = activityVC.popoverPresentationController {
+                    popover.sourceView = topVC.view
+                    popover.sourceRect = CGRect(x: topVC.view.bounds.midX, y: topVC.view.bounds.midY, width: 0, height: 0)
+                }
+
+                topVC.present(activityVC, animated: true)
             }
         }
     }

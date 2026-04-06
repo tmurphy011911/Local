@@ -2,6 +2,8 @@ package live.localapp.local.ui.navigation
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.fadeIn
@@ -89,9 +91,12 @@ import live.localapp.local.ui.places.PlacesScreen
 import live.localapp.local.ui.places.PlacesViewModel
 import live.localapp.local.ui.places.VenueDetailPage
 import live.localapp.local.ui.places.VenueDetailSheet
+import live.localapp.local.ui.plans.PlanDetailScreen
 import live.localapp.local.ui.plans.PlansScreen
 import live.localapp.local.ui.plans.PlansViewModel
+import live.localapp.local.domain.model.Plan
 import live.localapp.local.domain.repository.EventRepository
+import live.localapp.local.domain.repository.PlanRepository
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.geometry.Rect
 import kotlinx.coroutines.launch
@@ -109,6 +114,11 @@ import live.localapp.local.platform.openChatSheet
 import live.localapp.local.platform.setupNativeTabBarCallbacks
 import live.localapp.local.platform.setTabBarUserInitial
 import live.localapp.local.platform.requestHeroCollapse
+import live.localapp.local.platform.checkClipboardForDeepLink
+import live.localapp.local.platform.clearClipboardDeepLink
+import live.localapp.local.platform.setDeepLinkCallback
+import live.localapp.local.platform.presentShareSheet
+import live.localapp.local.platform.showNativePlanDetail
 import live.localapp.local.platform.requestHeroExpand
 import live.localapp.local.platform.showNativeEventDetail
 import live.localapp.local.platform.showNativeVenueDetail
@@ -131,6 +141,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     val scope = rememberCoroutineScope()
     val eventRepo: EventRepository = remember { koin.get() }
     val venueRepo: live.localapp.local.domain.repository.VenueRepository = remember { koin.get() }
+    val planRepo: PlanRepository = remember { koin.get() }
     val density = LocalDensity.current.density
     var selectedTab by remember { mutableStateOf(Tab.HOME) }
     var detailEvent by remember { mutableStateOf<Event?>(null) }
@@ -140,7 +151,10 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     var pendingChatMessage by remember { mutableStateOf<String?>(null) }
     var chatOpenCount by remember { mutableStateOf(0) }
     var showTasteProfile by remember { mutableStateOf(false) }
+    var selectedPlan by remember { mutableStateOf<Plan?>(null) }
+    var sharedPlan by remember { mutableStateOf<Plan?>(null) }
     val userPrefsRepo: UserPreferencesRepository = remember { koin.get() }
+    val isLoggedIn = userPrefsRepo.getLocalUserId() != null
 
     // Gate chat behind auth + sync location (defined as a lambda referencing hoisted VMs below)
 
@@ -170,6 +184,45 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     val chatVm: ChatViewModel = viewModel { koin.get<ChatViewModel>() }
     val chatState by chatVm.uiState.collectAsState()
     val deferCelebrations = chatState.showPlanSuccess
+
+    // Check clipboard for deferred deep link on launch
+    LaunchedEffect(Unit) {
+        val deepLink = checkClipboardForDeepLink() ?: return@LaunchedEffect
+        println("DeepLink: found clipboard link: $deepLink")
+        if (deepLink.startsWith("/p/")) {
+            val token = deepLink.removePrefix("/p/")
+            val plan = planRepo.getSharedPlan(token)
+            if (plan != null) {
+                println("DeepLink: loaded shared plan '${plan.title}'")
+                sharedPlan = plan
+                clearClipboardDeepLink()
+            }
+        }
+    }
+
+    // Listen for Universal Link deep links while app is running (iOS bridge)
+    LaunchedEffect(Unit) {
+        setDeepLinkCallback { token ->
+            scope.launch {
+                val plan = planRepo.getSharedPlan(token)
+                if (plan != null) {
+                    println("DeepLink: Universal Link received plan '${plan.title}'")
+                    sharedPlan = plan
+                    clearClipboardDeepLink()
+                }
+            }
+        }
+    }
+
+    // After auth completes, check if there's a pending invite to accept
+    LaunchedEffect(isLoggedIn) {
+        if (!isLoggedIn) return@LaunchedEffect
+        val plansVm: PlansViewModel = koin.get()
+        val pending = plansVm.uiState.value.pendingAcceptAfterAuth ?: return@LaunchedEffect
+        println("DeepLink: processing pending invite after auth: '${pending.title}'")
+        plansVm.acceptInvite(pending)
+        selectedTab = Tab.PLANS
+    }
 
     val openChatOrLogin: () -> Unit = {
         val userId = userPrefsRepo.getLocalUserId()
@@ -258,23 +311,60 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         )
                     }
                     Tab.PROFILE -> {
-                        LaunchedEffect(selectedTab) { progressVm.refresh() }
+                        LaunchedEffect(selectedTab) { if (isLoggedIn) progressVm.refresh() }
                         ProgressScreen(
                             progressVm,
                             onLogout = onLogout,
                             onTasteProfile = { showTasteProfile = true },
+                            onSignIn = { showLoginPrompt = true },
+                            onNameChanged = { name -> homeVm.setUserName(name) },
+                            isLoggedIn = isLoggedIn,
                             locationName = homeState.locationName,
                             streakDays = homeState.streakDays,
                         )
                     }
                     Tab.PLANS -> {
                         val plansVm: PlansViewModel = viewModel { koin.get<PlansViewModel>() }
-                        LaunchedEffect(selectedTab) { plansVm.refresh() }
+                        LaunchedEffect(selectedTab) { if (isLoggedIn) plansVm.refresh() }
                         PlansScreen(
                             viewModel = plansVm,
                             onNewPlan = { openChatOrLogin() },
+                            onPlanClick = { plan, bounds ->
+                                if (hasNativeHeroTransition) {
+                                    showNativePlanDetail(
+                                        plan = plan,
+                                        cardX = bounds.left / density,
+                                        cardY = bounds.top / density,
+                                        cardW = bounds.width / density,
+                                        cardH = bounds.height / density,
+                                        onDismissed = {},
+                                        onShare = {
+                                            scope.launch {
+                                                val token = planRepo.getShareToken(plan.id) ?: plan.id
+                                                val totalStops = plan.days.sumOf { it.slots.size }
+                                                val venueNames = plan.days.flatMap { d -> d.slots.map { it.name } }.take(3).joinToString(", ")
+                                                val text = "${plan.title} — ${plan.city} · $totalStops stops · $venueNames"
+                                                presentShareSheet(text, "https://localapp.live/p/$token")
+                                            }
+                                        },
+                                    )
+                                } else {
+                                    selectedPlan = plan
+                                }
+                            },
+                            onSharePlan = { plan ->
+                                scope.launch {
+                                    val token = planRepo.getShareToken(plan.id) ?: plan.id
+                                    val totalStops = plan.days.sumOf { it.slots.size }
+                                    val venueNames = plan.days.flatMap { d -> d.slots.map { it.name } }.take(3).joinToString(", ")
+                                    val text = "${plan.title} — ${plan.city} · $totalStops stops · $venueNames"
+                                    presentShareSheet(text, "https://localapp.live/p/$token")
+                                }
+                            },
                             userInitial = homeState.userName.firstOrNull()?.uppercase() ?: "",
                             onProfileClick = { selectedTab = Tab.PROFILE },
+                            onSignIn = { showLoginPrompt = true },
+                            isLoggedIn = isLoggedIn,
                             locationName = homeState.locationName,
                             streakDays = homeState.streakDays,
                             onBuildPlanFromEvent = { eventTitle ->
@@ -337,22 +427,99 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 BottomTabBar(selectedTab, onSelect = { selectedTab = it }, onChatClick = { openChatOrLogin() }, userInitial = tabInitial)
             }
 
-        // Venue detail
-        if (placesState.selectedVenue != null) {
-            if (placesState.selectedVenueEvents.isNotEmpty()) {
+        // Venue detail — slide up / slide down transition
+        AnimatedVisibility(
+            visible = placesState.selectedVenue != null && placesState.selectedVenueEvents.isNotEmpty(),
+            enter = slideInVertically(animationSpec = tween(320)) { it } + fadeIn(animationSpec = tween(220)),
+            exit = slideOutVertically(animationSpec = tween(280)) { it } + fadeOut(animationSpec = tween(180)),
+        ) {
+            placesState.selectedVenue?.let { venue ->
                 Box(modifier = Modifier.fillMaxSize().background(AppColors.White)) {
                     VenueDetailPage(
-                        venueWithMeta = placesState.selectedVenue!!,
+                        venueWithMeta = venue,
                         events = placesState.selectedVenueEvents,
                         isLoading = placesState.isSheetLoading,
                         onBack = { placesVm.dismissSheet() },
+                        isFavorited = venue.venue.id in placesState.favoriteVenueIds,
+                        onFavoriteToggle = { placesVm.toggleVenueFavorite(venue.venue.id, venue.primaryCategory) },
+                        onShare = {
+                            presentShareSheet(venue.venue.name, "https://localapp.live/v/${venue.venue.id}")
+                        },
                     )
                 }
-            } else {
-                VenueDetailSheet(
-                    venueWithMeta = placesState.selectedVenue!!,
-                    onDismiss = { placesVm.dismissSheet() },
-                )
+            }
+        }
+        if (placesState.selectedVenue != null && placesState.selectedVenueEvents.isEmpty()) {
+            VenueDetailSheet(
+                venueWithMeta = placesState.selectedVenue!!,
+                onDismiss = { placesVm.dismissSheet() },
+            )
+        }
+
+        // Plan detail — spring slide up with scale (matches native event detail feel)
+        AnimatedVisibility(
+            visible = selectedPlan != null,
+            enter = slideInVertically(animationSpec = spring(dampingRatio = 0.85f, stiffness = 300f)) { it / 3 }
+                + scaleIn(initialScale = 0.92f, animationSpec = spring(dampingRatio = 0.85f, stiffness = 300f))
+                + fadeIn(animationSpec = tween(150)),
+            exit = slideOutVertically(animationSpec = tween(250)) { it / 3 }
+                + scaleOut(targetScale = 0.92f, animationSpec = tween(250))
+                + fadeOut(animationSpec = tween(150)),
+        ) {
+            selectedPlan?.let { plan ->
+                Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
+                    PlanDetailScreen(
+                        plan = plan,
+                        onBack = { selectedPlan = null },
+                        onShare = {
+                            scope.launch {
+                                val token = planRepo.getShareToken(plan.id) ?: plan.id
+                                val totalStops = plan.days.sumOf { it.slots.size }
+                                val venueNames = plan.days.flatMap { d -> d.slots.map { it.name } }.take(3).joinToString(", ")
+                                val text = "${plan.title} — ${plan.city} · $totalStops stops · $venueNames"
+                                presentShareSheet(text, "https://localapp.live/p/$token")
+                            }
+                        },
+                    )
+                }
+            }
+        }
+
+        // Shared plan invite (from deep link)
+        AnimatedVisibility(
+            visible = sharedPlan != null,
+            enter = slideInVertically(animationSpec = spring(dampingRatio = 0.85f, stiffness = 300f)) { it / 3 }
+                + fadeIn(animationSpec = tween(150)),
+            exit = slideOutVertically(animationSpec = tween(250)) { it / 3 }
+                + fadeOut(animationSpec = tween(150)),
+        ) {
+            sharedPlan?.let { plan ->
+                Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
+                    PlanDetailScreen(
+                        plan = plan,
+                        isShared = true,
+                        onBack = {
+                            // Didn't accept — add to pending invites so it shows in "Invited" section
+                            val plansVm: PlansViewModel = koin.get()
+                            plansVm.addPendingInvite(plan)
+                            sharedPlan = null
+                        },
+                        onShare = {},
+                        onSaveToPlan = {
+                            val plansVm: PlansViewModel = koin.get()
+                            if (isLoggedIn) {
+                                plansVm.acceptInvite(plan)
+                                sharedPlan = null
+                                selectedTab = Tab.PLANS
+                            } else {
+                                // Save plan to accept after auth, then trigger login
+                                plansVm.setPendingAcceptAfterAuth(plan)
+                                sharedPlan = null
+                                showLoginPrompt = true
+                            }
+                        },
+                    )
+                }
             }
         }
 

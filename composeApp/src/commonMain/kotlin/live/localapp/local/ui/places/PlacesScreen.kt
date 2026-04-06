@@ -35,8 +35,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Search
@@ -67,7 +69,6 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
-import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -197,41 +198,7 @@ fun PlacesScreen(
                             SearchBar(query = state.searchQuery, onQueryChange = { viewModel.setSearchQuery(it) })
                         }
 
-                        Spacer(Modifier.height(12.dp))
-
-                        // Filter chips row
-                        Row(
-                            modifier = Modifier.padding(horizontal = 20.dp).horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            PlacesViewModel.FILTERS.forEach { filter ->
-                                FilterChip(
-                                    label = filter,
-                                    isActive = filter == state.selectedFilter,
-                                    activeColor = AppColors.Coral,
-                                    onClick = { viewModel.setFilter(filter) },
-                                )
-                            }
-                        }
-
-                        // Sub-filter chips
-                        val subFilters = PlacesViewModel.SUB_FILTERS[state.selectedFilter]
-                        AnimatedVisibility(
-                            visible = subFilters != null,
-                            enter = expandVertically(animationSpec = tween(280)),
-                            exit = shrinkVertically(animationSpec = tween(220)),
-                        ) {
-                            Box(modifier = Modifier.padding(horizontal = 20.dp)) {
-                                SubFilterChipRow(
-                                    items = subFilters ?: emptyList(),
-                                    selected = state.selectedSubFilter ?: subFilters?.firstOrNull(),
-                                    onSelect = { viewModel.setSubFilter(it) },
-                                )
-                            }
-                        }
-
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(8.dp))
                     },
                 )
             }
@@ -249,13 +216,16 @@ fun PlacesScreen(
                 } else {
                     VenueGrid(
                         venues = state.filteredVenues,
-                        locationName = state.locationName,
+                        favoriteIds = state.favoriteVenueIds,
                         onVenueClick = { venue, bounds ->
                             if (onVenueClickWithBounds != null) {
                                 onVenueClickWithBounds(venue, bounds)
                             } else {
                                 viewModel.selectVenue(venue)
                             }
+                        },
+                        onFavoriteToggle = { venue ->
+                            viewModel.toggleVenueFavorite(venue.venue.id, venue.primaryCategory)
                         },
                     )
                 }
@@ -298,69 +268,6 @@ private fun SearchBar(query: String, onQueryChange: (String) -> Unit) {
     )
 }
 
-@Composable
-private fun SubFilterChipRow(items: List<String>, selected: String?, onSelect: (String?) -> Unit) {
-    Row(
-        modifier = Modifier.padding(top = 8.dp).horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        items.forEach { sub ->
-            val isActive = sub == selected
-            Box(
-                modifier = Modifier
-                    .shadow(if (isActive) 4.dp else 2.dp, RoundedCornerShape(20.dp))
-                    .background(
-                        if (isActive) AppColors.Ink else Color.White,
-                        RoundedCornerShape(20.dp),
-                    )
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) { onSelect(sub) }
-                    .padding(horizontal = 12.dp, vertical = 5.dp),
-            ) {
-                Text(
-                    sub,
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        color = if (isActive) Color.White else AppColors.Ink2,
-                    ),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun FilterChip(label: String, isActive: Boolean, activeColor: Color, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .shadow(if (isActive) 4.dp else 2.dp, RoundedCornerShape(20.dp))
-            .background(
-                if (isActive) activeColor else Color.White,
-                RoundedCornerShape(20.dp),
-            )
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onClick,
-            )
-            .padding(horizontal = 14.dp, vertical = 7.dp),
-    ) {
-        Text(
-            label,
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = FontWeight.Bold,
-                fontSize = 13.sp,
-                color = if (isActive) Color.White else AppColors.Ink2,
-            ),
-        )
-    }
-}
-
 // ═══════════════════════════════════════════════════════════════════
 // VENUE GRID
 // ═══════════════════════════════════════════════════════════════════
@@ -368,40 +275,22 @@ private fun FilterChip(label: String, isActive: Boolean, activeColor: Color, onC
 @Composable
 private fun VenueGrid(
     venues: List<VenueWithMeta>,
-    locationName: String,
+    favoriteIds: Set<String>,
     onVenueClick: (VenueWithMeta, Rect) -> Unit,
+    onFavoriteToggle: (VenueWithMeta) -> Unit,
 ) {
     LazyColumn(
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 80.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // Section header
-        item {
-            Row(
-                modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Row {
-                    Text(
-                        "Near you in ",
-                        style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = AppColors.Ink),
-                    )
-                    Text(
-                        locationName,
-                        style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = AppColors.Coral, fontStyle = FontStyle.Italic),
-                    )
-                }
-                Text(
-                    "${venues.size} places",
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = AppColors.Ink3),
-                )
-            }
-        }
-
         // All venue cards — slim full-width rows
         items(venues, key = { it.venue.id }) { venueWithMeta ->
-            VenueCard(venueWithMeta, onClick = { bounds -> onVenueClick(venueWithMeta, bounds) })
+            VenueCard(
+                vm = venueWithMeta,
+                isFavorited = venueWithMeta.venue.id in favoriteIds,
+                onClick = { bounds -> onVenueClick(venueWithMeta, bounds) },
+                onFavoriteToggle = { onFavoriteToggle(venueWithMeta) },
+            )
         }
 
         // Bottom spacer
@@ -416,7 +305,7 @@ private fun VenueGrid(
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
-private fun VenueCard(vm: VenueWithMeta, onClick: (Rect) -> Unit) {
+private fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -> Unit, onFavoriteToggle: () -> Unit) {
     val v = vm.venue
     var cardBounds by remember { mutableStateOf(Rect.Zero) }
     Box(modifier = Modifier.fillMaxWidth()
@@ -469,6 +358,27 @@ private fun VenueCard(vm: VenueWithMeta, onClick: (Rect) -> Unit) {
                 VenueMeta(vm)
                 Spacer(Modifier.height(3.dp))
                 RatingRow(v)
+            }
+
+            // Heart button
+            Box(
+                modifier = Modifier
+                    .fillMaxHeight()
+                    .padding(end = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    if (isFavorited) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                    contentDescription = if (isFavorited) "Remove favorite" else "Favorite",
+                    modifier = Modifier
+                        .size(22.dp)
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = onFavoriteToggle,
+                        ),
+                    tint = if (isFavorited) AppColors.Coral else AppColors.Ink3,
+                )
             }
         }
 
@@ -580,6 +490,9 @@ fun VenueDetailPage(
     events: List<Event>,
     isLoading: Boolean,
     onBack: () -> Unit,
+    isFavorited: Boolean = false,
+    onFavoriteToggle: () -> Unit = {},
+    onShare: () -> Unit = {},
 ) {
     var selectedEvent by remember { mutableStateOf<Event?>(null) }
     val communityInterestRepo = remember { KoinPlatform.getKoin().get<CommunityInterestRepository>() }
@@ -614,12 +527,30 @@ fun VenueDetailPage(
                     modifier = Modifier.weight(1f),
                 )
                 Spacer(Modifier.width(8.dp))
+                // Favorite
                 Box(
                     modifier = Modifier
                         .size(36.dp)
                         .background(AppColors.Snow, RoundedCornerShape(10.dp))
                         .clip(RoundedCornerShape(10.dp))
-                        .clickable { /* TODO: share venue */ },
+                        .clickable(onClick = onFavoriteToggle),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        if (isFavorited) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                        contentDescription = if (isFavorited) "Remove favorite" else "Favorite",
+                        modifier = Modifier.size(18.dp),
+                        tint = if (isFavorited) AppColors.Coral else AppColors.Ink,
+                    )
+                }
+                Spacer(Modifier.width(6.dp))
+                // Share
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .background(AppColors.Snow, RoundedCornerShape(10.dp))
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable(onClick = onShare),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(Icons.Outlined.IosShare, contentDescription = "Share", modifier = Modifier.size(18.dp), tint = AppColors.Ink)

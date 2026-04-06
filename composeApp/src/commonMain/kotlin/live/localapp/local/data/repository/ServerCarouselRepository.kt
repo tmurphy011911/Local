@@ -12,6 +12,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import live.localapp.local.Config
+import live.localapp.local.decodeHtmlEntities
 import live.localapp.local.domain.model.CarouselSection
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.repository.CarouselRepository
@@ -170,8 +171,8 @@ class ServerCarouselRepository : CarouselRepository {
 
     private fun EventDto.toDomain(): Event = Event(
         id = id,
-        title = title,
-        description = description,
+        title = title.decodeHtmlEntities(),
+        description = description?.decodeHtmlEntities(),
         category = category,
         subcategory = subcategory,
         subSubcategory = subSubcategory,

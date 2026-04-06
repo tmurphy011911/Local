@@ -1,6 +1,7 @@
 package live.localapp.local.platform
 
 import live.localapp.local.ChatSheetBridge
+import live.localapp.local.PlanDetailBridge
 import live.localapp.local.TabBarBridge
 import live.localapp.local.EventDetailBridge
 import live.localapp.local.HeroTransitionBridge
@@ -90,6 +91,57 @@ actual fun showNativeEventDetail(
         cardX, cardY, cardW, cardH,
         cardImageUrl,
     )
+}
+
+actual fun showNativePlanDetail(
+    plan: live.localapp.local.domain.model.Plan,
+    cardX: Float,
+    cardY: Float,
+    cardW: Float,
+    cardH: Float,
+    onDismissed: () -> Unit,
+    onShare: () -> Unit,
+) {
+    PlanDetailBridge.onDismissed = onDismissed
+    PlanDetailBridge.onShare = onShare
+
+    // Serialize plan to JSON for Swift
+    val planJson = kotlinx.serialization.json.buildJsonObject {
+        put("id", kotlinx.serialization.json.JsonPrimitive(plan.id))
+        put("title", kotlinx.serialization.json.JsonPrimitive(plan.title))
+        put("city", kotlinx.serialization.json.JsonPrimitive(plan.city))
+        put("dateDisplay", kotlinx.serialization.json.JsonPrimitive(plan.dateDisplay))
+        put("days", kotlinx.serialization.json.buildJsonArray {
+            plan.days.forEach { day ->
+                add(kotlinx.serialization.json.buildJsonObject {
+                    put("label", kotlinx.serialization.json.JsonPrimitive(day.label))
+                    put("shortName", kotlinx.serialization.json.JsonPrimitive(day.shortName))
+                    put("slots", kotlinx.serialization.json.buildJsonArray {
+                        day.slots.forEach { slot ->
+                            add(kotlinx.serialization.json.buildJsonObject {
+                                put("id", kotlinx.serialization.json.JsonPrimitive(slot.id))
+                                put("time", kotlinx.serialization.json.JsonPrimitive(slot.time))
+                                put("emoji", kotlinx.serialization.json.JsonPrimitive(slot.emoji))
+                                put("name", kotlinx.serialization.json.JsonPrimitive(slot.name))
+                                put("detail", kotlinx.serialization.json.JsonPrimitive(slot.detail))
+                                put("price", kotlinx.serialization.json.JsonPrimitive(slot.price))
+                                put("isFree", kotlinx.serialization.json.JsonPrimitive(slot.isFree))
+                                put("imageUrl", kotlinx.serialization.json.JsonPrimitive(slot.imageUrl))
+                                put("ticketUrl", kotlinx.serialization.json.JsonPrimitive(slot.ticketUrl))
+                                put("venueRating", kotlinx.serialization.json.JsonPrimitive(slot.venueRating))
+                                put("venueAddress", kotlinx.serialization.json.JsonPrimitive(slot.venueAddress))
+                                put("venueLat", kotlinx.serialization.json.JsonPrimitive(slot.venueLat))
+                                put("venueLng", kotlinx.serialization.json.JsonPrimitive(slot.venueLng))
+                                put("reservationUrl", kotlinx.serialization.json.JsonPrimitive(slot.reservationUrl))
+                            })
+                        }
+                    })
+                })
+            }
+        })
+    }.toString()
+
+    PlanDetailBridge.showPlanDetail?.invoke(planJson, cardX, cardY, cardW, cardH)
 }
 
 actual fun showNativeVenueDetail(

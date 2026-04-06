@@ -338,7 +338,7 @@ fun EventDetailScreen(
                 uriHandler.openUri(url)
             },
             onShare = {
-                clipboardManager.setText(AnnotatedString("https://local.live/e/${event.id}"))
+                clipboardManager.setText(AnnotatedString("https://localapp.live/e/${event.id}"))
                 shareCopied = true
                 onShareTracked?.invoke(event.id)
             },

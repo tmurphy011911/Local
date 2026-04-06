@@ -70,6 +70,16 @@ expect fun openChatSheet(onReady: () -> Unit)
 /** Animate the background scale-up and close the chat sheet. */
 expect fun closeChatSheet(onDone: () -> Unit)
 
+expect fun showNativePlanDetail(
+    plan: live.localapp.local.domain.model.Plan,
+    cardX: Float,
+    cardY: Float,
+    cardW: Float,
+    cardH: Float,
+    onDismissed: () -> Unit,
+    onShare: () -> Unit,
+)
+
 expect fun showNativeVenueDetail(
     venueWithMeta: live.localapp.local.domain.repository.VenueWithMeta,
     cardX: Float,

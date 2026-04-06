@@ -306,7 +306,7 @@ struct EventDetailView: View {
                     HStack(spacing: 8) {
                         Spacer()
                         heroIconButton(systemName: "square.and.arrow.up") {
-                            UIPasteboard.general.string = event.ctaUrl ?? "https://local.live/e/\(event.id)"
+                            UIPasteboard.general.string = event.ctaUrl ?? "https://localapp.live/e/\(event.id)"
                             shareCopied = true
                         }
                         heroIconButton(systemName: isFavorited ? "heart.fill" : "heart") {

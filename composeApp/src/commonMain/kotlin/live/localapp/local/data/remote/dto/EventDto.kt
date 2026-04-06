@@ -2,6 +2,7 @@ package live.localapp.local.data.remote.dto
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import live.localapp.local.decodeHtmlEntities
 import live.localapp.local.domain.model.Event
 
 @Serializable
@@ -35,8 +36,8 @@ data class EventDto(
 
 fun EventDto.toDomain(): Event = Event(
     id = id,
-    title = title,
-    description = description,
+    title = title.decodeHtmlEntities(),
+    description = description?.decodeHtmlEntities(),
     category = category,
     subcategory = subcategory,
     subSubcategory = subSubcategory,

@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -59,6 +60,7 @@ fun AppHeader(
     onLocationClick: () -> Unit,
     onLogoClick: () -> Unit = {},
     showLocationPill: Boolean = true,
+    isLoggedIn: Boolean = true,
     bottomPadding: Boolean = true,
     extraContent: @Composable (() -> Unit)? = null,
 ) {
@@ -102,8 +104,8 @@ fun AppHeader(
 
             Spacer(Modifier.width(10.dp))
 
-            // Location pill
-            if (showLocationPill) {
+            // Location pill — hidden when logged out
+            if (showLocationPill && isLoggedIn) {
                 val radiusLabel = radiusFilter?.let { " \u00B7 ${it.toInt()} mi" } ?: ""
                 Row(
                     modifier = Modifier
@@ -134,28 +136,29 @@ fun AppHeader(
 
             Spacer(Modifier.weight(1f))
 
-            // Streak badge — compact
-            Row(
-                modifier = Modifier
-                    .background(AppColors.SunLt, AppShapes.Pill)
-                    .border(1.5.dp, AppColors.Sun, AppShapes.Pill)
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(Icons.Outlined.Bolt, contentDescription = null, modifier = Modifier.size(12.dp), tint = AppColors.SunDk)
-                Spacer(Modifier.width(2.dp))
-                Text(
-                    "$streakDays days",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 10.sp,
-                        color = AppColors.SunDk,
-                    ),
-                )
+            // Streak badge — hidden when logged out
+            if (isLoggedIn) {
+                Row(
+                    modifier = Modifier
+                        .background(AppColors.SunLt, AppShapes.Pill)
+                        .border(1.5.dp, AppColors.Sun, AppShapes.Pill)
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Outlined.Bolt, contentDescription = null, modifier = Modifier.size(12.dp), tint = AppColors.SunDk)
+                    Spacer(Modifier.width(2.dp))
+                    Text(
+                        "$streakDays days",
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 10.sp,
+                            color = AppColors.SunDk,
+                        ),
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
             }
-
-            Spacer(Modifier.width(8.dp))
 
             // Avatar
             Box(
@@ -178,14 +181,11 @@ fun AppHeader(
                         ),
                     )
                 } else {
-                    Text(
-                        "?",
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 13.sp,
-                            color = AppColors.White,
-                        ),
+                    Icon(
+                        Icons.Outlined.Person,
+                        contentDescription = "Account",
+                        modifier = Modifier.size(18.dp),
+                        tint = AppColors.White,
                     )
                 }
             }

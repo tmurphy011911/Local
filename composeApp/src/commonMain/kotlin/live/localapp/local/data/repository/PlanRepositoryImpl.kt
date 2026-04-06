@@ -2,6 +2,7 @@ package live.localapp.local.data.repository
 
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.postgrest.postgrest
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -55,6 +56,9 @@ private data class PlanSlotDto(
     @SerialName("price_min") val priceMin: Double? = null,
     @SerialName("price_max") val priceMax: Double? = null,
     @SerialName("reservation_url") val reservationUrl: String? = null,
+    @SerialName("source_url") val sourceUrl: String? = null,
+    @SerialName("venue_website") val venueWebsite: String? = null,
+    @SerialName("venue_category") val venueCategory: String? = null,
 )
 
 @Serializable
@@ -81,7 +85,7 @@ private fun PlanSlot.toDto() = PlanSlotDto(
     isFree = isFree, eventId = eventId, isCustom = isCustom, imageUrl = imageUrl,
     ticketUrl = ticketUrl, venueRating = venueRating, venueAddress = venueAddress,
     venueLat = venueLat, venueLng = venueLng, priceMin = priceMin, priceMax = priceMax,
-    reservationUrl = reservationUrl,
+    reservationUrl = reservationUrl, sourceUrl = sourceUrl, venueWebsite = venueWebsite, venueCategory = venueCategory,
 )
 
 private fun PlanDayDto.toDomain() = PlanDay(
@@ -110,6 +114,9 @@ private fun PlanSlotDto.toDomain() = PlanSlot(
     priceMin = priceMin,
     priceMax = priceMax,
     reservationUrl = reservationUrl,
+    sourceUrl = sourceUrl,
+    venueWebsite = venueWebsite,
+    venueCategory = venueCategory,
 )
 
 private fun PlanDto.toDomain(): Plan {
@@ -256,6 +263,51 @@ class PlanRepositoryImpl(
             }
         } catch (e: Throwable) {
             println("PlanRepository.deletePlan error: ${e.message}")
+        }
+    }
+
+    override suspend fun getShareToken(planId: String): String? {
+        return try {
+            val params = kotlinx.serialization.json.buildJsonObject {
+                put("p_plan_id", kotlinx.serialization.json.JsonPrimitive(planId))
+            }
+            val result = supabaseClient.postgrest.rpc("generate_share_token", params)
+            val raw = result.data.trim('"')
+            println("PlanRepository.getShareToken: token=$raw for planId=$planId")
+            raw.ifBlank { null }
+        } catch (e: Throwable) {
+            println("PlanRepository.getShareToken error: ${e::class.simpleName}: ${e.message}")
+            null
+        }
+    }
+
+    override suspend fun getSharedPlan(shareToken: String): Plan? {
+        return try {
+            val result = supabaseClient.from("plans")
+                .select {
+                    filter { eq("share_token", shareToken) }
+                }
+            val dtos = result.decodeList<PlanDto>()
+            println("PlanRepository.getSharedPlan: token=$shareToken found=${dtos.size}")
+            val dto = dtos.firstOrNull() ?: return null
+            val plan = dto.toDomain()
+
+            // Look up creator name from user_profiles
+            val creatorName = try {
+                val profileResult = supabaseClient.from("user_profiles")
+                    .select(columns = io.github.jan.supabase.postgrest.query.Columns.list("first_name")) {
+                        filter { eq("id", dto.userId) }
+                    }
+                @Serializable
+                data class NameDto(@SerialName("first_name") val firstName: String? = null)
+                val names = profileResult.decodeList<NameDto>()
+                names.firstOrNull()?.firstName
+            } catch (_: Throwable) { null }
+
+            plan.copy(creatorName = creatorName, shareToken = shareToken)
+        } catch (e: Throwable) {
+            println("PlanRepository.getSharedPlan error: ${e::class.simpleName}: ${e.message}")
+            null
         }
     }
 }

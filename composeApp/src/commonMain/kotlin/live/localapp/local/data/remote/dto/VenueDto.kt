@@ -2,6 +2,7 @@ package live.localapp.local.data.remote.dto
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import live.localapp.local.decodeHtmlEntities
 import live.localapp.local.domain.model.Venue
 
 @Serializable
@@ -25,7 +26,7 @@ data class VenueDto(
 
 fun VenueDto.toDomain(): Venue = Venue(
     id = id,
-    name = name,
+    name = name.decodeHtmlEntities(),
     address = address,
     city = city,
     state = state,
@@ -34,7 +35,7 @@ fun VenueDto.toDomain(): Venue = Venue(
     longitude = lng,
     imageUrl = photoUrl,
     photoUrl = photoUrl,
-    description = description,
+    description = description?.decodeHtmlEntities(),
     publicInterestRank = publicInterestRank,
     category = category,
     placeType = placeType,

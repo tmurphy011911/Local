@@ -35,6 +35,8 @@ data class PlacesUiState(
     val isSheetLoading: Boolean = false,
     val userPreferences: UserPreferences? = null,
     val radiusFilter: Double? = null,
+    // Favorites
+    val favoriteVenueIds: Set<String> = emptySet(),
 )
 
 class PlacesViewModel(
@@ -50,6 +52,7 @@ class PlacesViewModel(
 
     init {
         loadUserPreferences()
+        loadFavoriteVenueIds()
     }
 
     /** Call when the Places tab becomes visible for the first time. */
@@ -134,6 +137,25 @@ class PlacesViewModel(
 
     fun dismissSheet() {
         _uiState.update { it.copy(selectedVenue = null, selectedVenueEvents = emptyList()) }
+    }
+
+    fun toggleVenueFavorite(venueId: String, category: String? = null) {
+        val current = _uiState.value.favoriteVenueIds
+        if (venueId in current) {
+            communityInterestRepository.removeFavorite(venueId, InteractionType.PLACE)
+            _uiState.update { it.copy(favoriteVenueIds = current - venueId) }
+        } else {
+            communityInterestRepository.recordFavorite(venueId, InteractionType.PLACE, category)
+            _uiState.update { it.copy(favoriteVenueIds = current + venueId) }
+        }
+    }
+
+    private fun loadFavoriteVenueIds() {
+        val userId = userPreferencesRepository.getLocalUserId() ?: return
+        viewModelScope.launch {
+            val ids = communityInterestRepository.getFavoriteVenueIds(userId)
+            _uiState.update { it.copy(favoriteVenueIds = ids.toSet()) }
+        }
     }
 
     private fun loadVenues() {

@@ -42,6 +42,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Celebration
@@ -95,6 +96,9 @@ fun ProgressScreen(
     viewModel: ProgressViewModel,
     onLogout: () -> Unit = {},
     onTasteProfile: () -> Unit = {},
+    onSignIn: () -> Unit = {},
+    onNameChanged: (String) -> Unit = {},
+    isLoggedIn: Boolean = true,
     locationName: String = "Waltham, MA",
     streakDays: Int = 2,
 ) {
@@ -127,7 +131,9 @@ fun ProgressScreen(
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = {
                     if (nameInput.isNotBlank()) {
-                        viewModel.saveUserName(nameInput.trim())
+                        val trimmed = nameInput.trim()
+                        viewModel.saveUserName(trimmed)
+                        onNameChanged(trimmed)
                         showNameDialog = false
                     }
                 }) { Text("Save", color = AppColors.Coral, fontWeight = FontWeight.Bold) }
@@ -220,10 +226,70 @@ fun ProgressScreen(
                 locationName = locationName,
                 radiusFilter = null,
                 streakDays = streakDays,
-                userInitial = state.userInitial.ifEmpty { "?" },
+                userInitial = state.userInitial,
                 onProfileClick = {},
                 onLocationClick = {},
+                isLoggedIn = isLoggedIn,
             )
+
+            if (!isLoggedIn) {
+                // ── Logged-out state ──
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(horizontal = 20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.Edit,
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp),
+                        tint = AppColors.Ink3,
+                    )
+                    Spacer(Modifier.height(16.dp))
+                    Text(
+                        "Track your progress",
+                        style = TextStyle(
+                            fontFamily = AppFonts.Heading,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 22.sp,
+                            color = AppColors.Ink,
+                        ),
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "Sign in to earn badges, track your streak, and unlock rewards as you explore.",
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.Medium,
+                            fontSize = 15.sp,
+                            color = AppColors.Ink3,
+                            textAlign = TextAlign.Center,
+                        ),
+                    )
+                    Spacer(Modifier.height(24.dp))
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(AppColors.Coral)
+                            .clickable(onClick = onSignIn)
+                            .padding(vertical = 14.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "Sign In",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 16.sp,
+                                color = Color.White,
+                            ),
+                        )
+                    }
+                }
+            } else {
 
             Column(
                 modifier = Modifier
@@ -232,7 +298,10 @@ fun ProgressScreen(
                     .padding(bottom = 80.dp),
             ) {
                 // ── Hero Card ──
-                HeroCard(state, animateToPoints, animateToProgress, displayTier, displayNextTier, showTierCelebration, onEditName = { showNameDialog = true })
+                HeroCard(state, animateToPoints, animateToProgress, displayTier, displayNextTier, showTierCelebration, onEditName = {
+                    nameInput = state.userName
+                    showNameDialog = true
+                })
 
                 Spacer(Modifier.height(16.dp))
 
@@ -292,6 +361,7 @@ fun ProgressScreen(
                     )
                 }
             }
+            } // end else (logged in)
         }
 
         // Celebrations are rendered globally in AppNavigation
@@ -342,31 +412,52 @@ private fun HeroCard(
                         .border(3.dp, AppColors.White.copy(alpha = 0.5f), CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(
-                        state.userInitial.ifEmpty { "?" },
-                        style = TextStyle(
-                            fontFamily = AppFonts.Heading,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 24.sp,
-                            color = AppColors.White,
-                        ),
-                    )
+                    if (state.userInitial.isNotEmpty()) {
+                        Text(
+                            state.userInitial,
+                            style = TextStyle(
+                                fontFamily = AppFonts.Heading,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 24.sp,
+                                color = AppColors.White,
+                            ),
+                        )
+                    } else {
+                        Icon(
+                            Icons.Outlined.Person,
+                            contentDescription = "Account",
+                            modifier = Modifier.size(28.dp),
+                            tint = AppColors.White,
+                        )
+                    }
                 }
 
                 Spacer(Modifier.width(14.dp))
 
                 Column {
                     if (state.userName.isNotEmpty()) {
-                        Text(
-                            state.userName,
-                            style = TextStyle(
-                                fontFamily = AppFonts.Heading,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 22.sp,
-                                color = AppColors.White,
-                                letterSpacing = (-0.5).sp,
-                            ),
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clickable { onEditName() },
+                        ) {
+                            Text(
+                                state.userName,
+                                style = TextStyle(
+                                    fontFamily = AppFonts.Heading,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 22.sp,
+                                    color = AppColors.White,
+                                    letterSpacing = (-0.5).sp,
+                                ),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Icon(
+                                Icons.Outlined.Edit,
+                                contentDescription = "Edit name",
+                                modifier = Modifier.size(14.dp),
+                                tint = AppColors.White.copy(alpha = 0.5f),
+                            )
+                        }
                     } else {
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
