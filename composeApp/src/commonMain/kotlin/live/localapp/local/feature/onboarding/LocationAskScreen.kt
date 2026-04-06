@@ -72,7 +72,7 @@ fun LocationAskScreen(onAllow: () -> Unit, onManual: () -> Unit) {
                         Box(
                             modifier = Modifier
                                 .size(size)
-                                .border(2.dp, AppColors.Coral.copy(alpha = 0.18f), CircleShape),
+                                .border(2.dp, AppColors.Sky.copy(alpha = 0.18f), CircleShape),
                         )
                     }
 
@@ -81,7 +81,7 @@ fun LocationAskScreen(onAllow: () -> Unit, onManual: () -> Unit) {
                         modifier = Modifier
                             .size(64.dp)
                             .rotate(-45f)
-                            .background(AppColors.Coral, RoundedCornerShape(50, 50, 50, 0)),
+                            .background(AppColors.Sky, RoundedCornerShape(50, 50, 50, 0)),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
@@ -117,7 +117,7 @@ fun LocationAskScreen(onAllow: () -> Unit, onManual: () -> Unit) {
                         fontWeight = FontWeight.Black,
                         fontSize = 28.sp,
                         fontStyle = FontStyle.Italic,
-                        color = AppColors.Coral,
+                        color = AppColors.Sky,
                         lineHeight = 34.sp,
                     ),
                 )

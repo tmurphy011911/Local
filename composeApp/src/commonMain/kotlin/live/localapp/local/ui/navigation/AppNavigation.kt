@@ -77,6 +77,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 import coil3.compose.AsyncImage
 import live.localapp.local.domain.model.Event
+import live.localapp.local.ui.common.pressable
 import live.localapp.local.ui.chat.ChatScreen
 import live.localapp.local.ui.chat.ChatViewModel
 import live.localapp.local.ui.detail.EventDetailScreen
@@ -234,6 +235,11 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     }
                     Tab.PLACES -> {
                         placesVm.ensureLoaded()
+                        // Sync location and streak from home state
+                        if (homeState.locationName.isNotBlank()) {
+                            placesVm.setLocationName(homeState.locationName)
+                        }
+                        placesVm.setStreakDays(homeState.streakDays)
                         val initial = homeState.userName.firstOrNull()?.uppercase() ?: ""
                         PlacesScreen(
                             placesVm,
@@ -402,6 +408,14 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         if (showChat) {
             val chatVm: ChatViewModel = viewModel { koin.get<ChatViewModel>() }
             val chatSheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
+            val premiumGate = remember { live.localapp.local.ui.chat.PremiumGate() }
+            var showTutorial by remember { mutableStateOf(premiumGate.shouldShowTutorial()) }
+            var showPaywall by remember { mutableStateOf(false) }
+
+            // Wire premium gate into chat ViewModel
+            chatVm.onPlanApprovalCheck = { premiumGate.canCreatePlan() }
+            chatVm.onPlanBlocked = { showPaywall = true }
+            chatVm.onPlanSaved = { premiumGate.recordPlanCreated() }
 
             // Auto-send pending message when chat opens from event/template
             LaunchedEffect(chatOpenCount) {
@@ -427,12 +441,12 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     showChat = false
                 },
                 sheetState = chatSheetState,
-                containerColor = AppColors.Coral,
+                containerColor = AppColors.Snow,
                 dragHandle = {
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(AppColors.Coral)
+                            .background(AppColors.Snow)
                             .padding(top = 10.dp, bottom = 4.dp),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -440,7 +454,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             modifier = Modifier
                                 .width(36.dp)
                                 .height(4.dp)
-                                .background(Color.White.copy(alpha = 0.4f), RoundedCornerShape(2.dp)),
+                                .background(AppColors.Pebble, RoundedCornerShape(2.dp)),
                         )
                     }
                 },
@@ -461,6 +475,23 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             scaleY = bounceScale.value
                         },
                 ) {
+                    if (showTutorial) {
+                        live.localapp.local.ui.chat.YocalTutorial(
+                            onComplete = {
+                                premiumGate.tutorialSeen = true
+                                showTutorial = false
+                            },
+                        )
+                    } else if (showPaywall) {
+                        live.localapp.local.ui.chat.PremiumPaywall(
+                            onSubscribe = { isAnnual ->
+                                // TODO: integrate StoreKit/RevenueCat
+                                premiumGate.isPremium = true
+                                showPaywall = false
+                            },
+                            onDismiss = { showPaywall = false },
+                        )
+                    } else {
                     ChatScreen(
                         viewModel = chatVm,
                         onBack = { dismissChat(null) },
@@ -480,40 +511,9 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 // For now, show an alert-style message
                             }
                         },
-                        onNativeEventClick = if (hasNativeHeroTransition) { eventId, fallbackImageUrl ->
-                            dismissChat {
-                                scope.launch {
-                                    val event = eventRepo.getEvent(eventId) ?: return@launch
-                                    showNativeEventDetail(
-                                        event = event,
-                                        cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
-                                        cardImageUrl = event.imageUrl ?: fallbackImageUrl,
-                                        onDismissed = {},
-                                        onFavorited = { id -> homeVm.toggleEventFavorite(id, event.subcategory ?: event.category) },
-                                        showDirections = true,
-                                    )
-                                }
-                            }
-                        } else null,
-                        onNativeVenueClick = if (hasNativeHeroTransition) { venueName ->
-                            dismissChat {
-                                scope.launch {
-                                    val venue = venueRepo.searchByName(venueName) ?: return@launch
-                                    val events = try { venueRepo.getUpcomingEventsForVenue(venueName, venue.city) } catch (_: Throwable) { emptyList() }
-                                    val venueWithMeta = VenueWithMeta(
-                                        venue = venue,
-                                        upcomingEventCount = events.size,
-                                        upcomingEvents = events,
-                                    )
-                                    showNativeVenueDetail(
-                                        venueWithMeta = venueWithMeta,
-                                        cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
-                                        onDismissed = {},
-                                    )
-                                }
-                            }
-                        } else null,
+                        // Events/venues in chat stay as Compose sheets inside the chat (don't dismiss chat)
                     )
+                    } // end else (chat content)
                 }
             }
         }
@@ -646,14 +646,7 @@ private fun BottomTabBar(selectedTab: Tab, onSelect: (Tab) -> Unit, onChatClick:
                             } else Modifier,
                         )
                         .clip(RoundedCornerShape(18.dp))
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = {
-                                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                                onSelect(tab)
-                            },
-                        ),
+                        .pressable(onClick = { onSelect(tab) }),
                     contentAlignment = Alignment.Center,
                 ) {
                     Column(
@@ -717,13 +710,13 @@ private fun BottomTabBar(selectedTab: Tab, onSelect: (Tab) -> Unit, onChatClick:
                     CircleShape,
                 )
                 .clip(CircleShape)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
+                .pressable(
                     onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        // Double haptic for Yocal open
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onChatClick()
                     },
+                    scale = 0.88f,
                 ),
             contentAlignment = Alignment.Center,
         ) {
@@ -756,7 +749,7 @@ private fun BootstrapSplash() {
         delay(800)
         while (true) {
             wordIndex = (wordIndex + 1) % SPLASH_WORDS.size
-            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
             delay(850)
         }
     }
@@ -875,9 +868,14 @@ private fun stateAbbrevToFull(abbrev: String): String = when (abbrev.uppercase()
 @Composable
 private fun GlobalMilestoneToast(event: CelebrationEvent.MilestoneEarned, onDismiss: () -> Unit, onTap: () -> Unit = {}) {
     var visible by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
 
     LaunchedEffect(Unit) {
         visible = true
+        // Aggressive haptic burst for points earned
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        delay(150)
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
         delay(3500)
         visible = false
         delay(300)
@@ -934,10 +932,20 @@ private fun GlobalMilestoneToast(event: CelebrationEvent.MilestoneEarned, onDism
 private fun GlobalLevelUpOverlay(event: CelebrationEvent.StatusLevelUp, onDismiss: () -> Unit) {
     val scale = remember { Animatable(0.6f) }
     val contentAlpha = remember { Animatable(0f) }
+    val haptic = LocalHapticFeedback.current
 
     LaunchedEffect(Unit) {
+        // Really aggressive haptic burst for level up
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        delay(100)
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        delay(100)
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
         contentAlpha.animateTo(1f, tween(300))
         scale.animateTo(1f, spring(dampingRatio = 0.5f, stiffness = androidx.compose.animation.core.Spring.StiffnessLow))
+        // One more haptic on the bounce
+        delay(200)
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
     }
 
     // Fully opaque background — no bleed-through

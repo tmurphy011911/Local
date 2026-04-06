@@ -78,6 +78,7 @@ import live.localapp.local.domain.model.Plan
 import live.localapp.local.domain.model.PlanDay
 import live.localapp.local.domain.model.Venue
 import live.localapp.local.ui.common.AppHeader
+import live.localapp.local.ui.common.pressable
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 import live.localapp.local.ui.theme.AppShapes
@@ -579,7 +580,7 @@ private fun PlanCard(
                             RoundedCornerShape(10.dp),
                         )
                         .clickable(interactionSource = interactionSource, indication = null, onClick = {
-                            hapticToggle.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                            hapticToggle.performHapticFeedback(HapticFeedbackType.LongPress)
                             onToggleExpand()
                         })
                         .padding(horizontal = 12.dp, vertical = 7.dp),
@@ -886,7 +887,7 @@ private fun SwipeToRevealDelete(
                             onDragEnd = { },
                             onHorizontalDrag = { change, dragAmount ->
                                 if (dragAmount < -10) {
-                                    if (!revealed) haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                    if (!revealed) haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                                     revealed = true
                                 } else if (dragAmount > 10) {
                                     revealed = false
@@ -927,7 +928,7 @@ private fun HeroPlanCard(
                     Brush.linearGradient(listOf(AppColors.Coral, Color(0xFFFF4F4F))),
                     cardShape,
                 )
-                .clickable { onToggleExpand() }
+                .pressable(onClick = { onToggleExpand() })
                 .padding(20.dp),
         ) {
             // Decorative circle
@@ -1057,7 +1058,7 @@ private fun CompactPlanCard(
                 .background(AppColors.White, cardShape)
                 .border(1.5.dp, AppColors.Pebble, cardShape)
                 .clip(cardShape)
-                .clickable { onToggleExpand() }
+                .pressable(onClick = { onToggleExpand() })
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {

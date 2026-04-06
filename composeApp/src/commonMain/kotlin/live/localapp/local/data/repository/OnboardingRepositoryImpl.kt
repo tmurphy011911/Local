@@ -30,6 +30,7 @@ private data class EventSummaryDto(
 @Serializable
 private data class VenueRankDto(
     val name: String,
+    val city: String? = null,
     @SerialName("public_interest_rank") val publicInterestRank: Int? = null,
     @SerialName("photo_url") val photoUrl: String? = null,
 )
@@ -51,12 +52,16 @@ class OnboardingRepositoryImpl(
     ): OnboardingData {
         // Paginate to get all events (Supabase caps at 1000 per request)
         val events = mutableListOf<EventSummaryDto>()
+        // Map user city to metro area (events.city is the metro, not the venue city)
+        val metro = cityToMetro(city)
+        println("OnboardingRepo: city='$city' metro='$metro' lat=$userLat lng=$userLng")
+
         var offset = 0
         val pageSize = 1000
         while (true) {
             val page = supabaseClient.from("events")
                 .select(columns = Columns.list("id", "venue_city", "venue_state", "venue_name", "venue_lat", "venue_lng", "category", "subcategory")) {
-                    filter { eq("city", city) }
+                    filter { eq("city", metro) }
                     range(offset.toLong(), (offset + pageSize - 1).toLong())
                 }
                 .decodeList<EventSummaryDto>()
@@ -64,6 +69,7 @@ class OnboardingRepositoryImpl(
             if (page.size < pageSize) break
             offset += pageSize
         }
+        println("OnboardingRepo: loaded ${events.size} events for metro='$metro'")
 
         // Get state codes from venues table (more reliable than events)
         val venueStates = try {
@@ -88,6 +94,27 @@ class OnboardingRepositoryImpl(
             .groupBy { it.venueCity }
             .mapValues { it.value.size }
 
+        // Get venue ranks + photos from venues table (needed for both neighborhoods and venues)
+        val venueRanks = try {
+            supabaseClient.from("venues")
+                .select(columns = Columns.list("name", "city", "public_interest_rank", "photo_url")) {
+                    filter { eq("is_active", true) }
+                }
+                .decodeList<VenueRankDto>()
+                .associateBy { it.name.lowercase() }
+        } catch (_: Exception) {
+            emptyMap()
+        }
+
+        // Build city → photo map from top venue photos (most reliable, actual places in the app)
+        val cityPhotoMap = mutableMapOf<String, String>()
+        venueRanks.values
+            .filter { it.city != null && it.photoUrl != null }
+            .sortedByDescending { it.publicInterestRank ?: 0 }
+            .forEach { v ->
+                if (v.city!! !in cityPhotoMap) cityPhotoMap[v.city] = v.photoUrl!!
+            }
+
         // Sort neighborhoods by proximity: compute centroid lat/lng per city
         val neighborhoods = events
             .groupBy { it.venueCity }
@@ -103,21 +130,10 @@ class OnboardingRepositoryImpl(
                     distanceMiles = dist,
                     stateCode = venueStates[cityName],
                     eventCount = upcomingByCity[cityName] ?: 0,
+                    photoUrl = cityPhotoMap[cityName],
                 )
             }
             .sortedBy { it.distanceMiles ?: Double.MAX_VALUE }
-
-        // Get venue ranks from venues table
-        val venueRanks = try {
-            supabaseClient.from("venues")
-                .select(columns = Columns.list("name", "public_interest_rank", "photo_url")) {
-                    filter { eq("is_active", true) }
-                }
-                .decodeList<VenueRankDto>()
-                .associateBy { it.name.lowercase() }
-        } catch (_: Exception) {
-            emptyMap()
-        }
 
         // Group by venue name, take first event with coordinates for location
         val venueNames = events
@@ -139,22 +155,46 @@ class OnboardingRepositoryImpl(
             }
             .sortedBy { it.distanceMiles ?: Double.MAX_VALUE }
 
-        val normalizeSubcategory = mapOf(
-            "museum" to "museums",
-            "library" to "libraries",
-            "tour" to "tours",
-            "brewery" to "food",
-            "restaurant" to "food",
-            "cafe" to "food",
-            "bakery" to "food",
-            "park" to "outdoors",
-            "stadium" to "sports",
-            "community" to "other",
-        )
+        // Use parent category, not subcategory — filter to meaningful user-facing categories
+        val validCategories = setOf("music", "food", "arts", "sports", "comedy", "outdoors", "nightlife", "theatre", "museums", "tours", "libraries", "for-kids", "film")
+        val excludeCategories = setOf("always_on", "upcoming")
+        val remapCategory = mapOf("bar_events" to "nightlife")
 
-        val categoryCounts = events
-            .groupBy { normalizeSubcategory[(it.subcategory ?: "other").lowercase()] ?: (it.subcategory ?: "other").lowercase() }
-            .mapValues { it.value.size }
+        val categoryList = mutableListOf<String>()
+        for (event in events) {
+            val raw = event.category.lowercase()
+            if (raw in excludeCategories) continue
+            val mapped = remapCategory[raw] ?: raw
+            if (mapped in validCategories) categoryList.add(mapped)
+        }
+        val categoryCounts = categoryList.groupBy { it }.mapValues { it.value.size }.filter { it.value >= 3 }
+
+        // Build category → best venue photo (highest ranked venue that has events in this category)
+        // venueRanks is keyed by lowercase venue name
+        val venuesByCategory = mutableMapOf<String, MutableList<VenueRankDto>>()
+        for (event in events) {
+            val raw = event.category.lowercase()
+            if (raw in excludeCategories) continue
+            val mapped = remapCategory[raw] ?: raw
+            if (mapped !in validCategories) continue
+            val venueName = event.venueName ?: continue
+            val venueData = venueRanks[venueName.lowercase()] ?: continue
+            if (venueData.photoUrl == null) continue
+            venuesByCategory.getOrPut(mapped) { mutableListOf() }.add(venueData)
+        }
+        val usedPhotos = mutableSetOf<String>()
+        val categoryPhotos = mutableMapOf<String, String>()
+        // Sort categories by count so popular ones get first pick of photos
+        for (cat in categoryCounts.keys.sortedByDescending { categoryCounts[it] ?: 0 }) {
+            val candidates = venuesByCategory[cat]
+                ?.sortedByDescending { it.publicInterestRank ?: 0 }
+                ?: continue
+            val photo = candidates.firstOrNull { it.photoUrl!! !in usedPhotos }?.photoUrl
+            if (photo != null) {
+                categoryPhotos[cat] = photo
+                usedPhotos.add(photo)
+            }
+        }
 
         return OnboardingData(
             eventCount = events.size,
@@ -162,6 +202,7 @@ class OnboardingRepositoryImpl(
             neighborhoods = neighborhoods,
             venueNames = venueNames,
             categoryCounts = categoryCounts,
+            categoryPhotos = categoryPhotos,
         )
     }
 
@@ -175,10 +216,11 @@ class OnboardingRepositoryImpl(
         limit: Int,
     ): List<Event> {
         val now = kotlin.time.Clock.System.now().toString()
+        val metro = cityToMetro(city)
         val events = supabaseClient.from("events")
             .select {
                 filter {
-                    eq("city", city)
+                    eq("city", metro)
                     eq("is_active", true)
                     gte("start_at", now)
                     neq("subcategory", "no-public-interest")
@@ -216,5 +258,38 @@ class OnboardingRepositoryImpl(
                 }.thenBy { it.distanceMiles ?: Double.MAX_VALUE }
             )
             .take(limit)
+    }
+}
+
+/** Map a specific city name to its metro area key used in the events.city column. */
+private fun cityToMetro(city: String): String {
+    val bostonMetro = setOf(
+        "boston", "cambridge", "somerville", "brookline", "waltham", "newton",
+        "quincy", "medford", "malden", "everett", "revere", "chelsea",
+        "arlington", "belmont", "watertown", "lexington", "concord",
+        "needham", "wellesley", "natick", "framingham", "dedham",
+        "milton", "braintree", "weymouth", "norwood", "canton",
+        "stoneham", "woburn", "burlington", "bedford", "lincoln",
+        "sudbury", "wayland", "weston", "dover", "westwood",
+        "hingham", "cohasset", "scituate", "marshfield", "duxbury",
+        "plymouth", "barnstable", "falmouth", "chatham", "provincetown",
+        "salem", "marblehead", "gloucester", "rockport", "ipswich",
+        "newburyport", "lowell", "lawrence", "haverhill", "andover",
+        "worcester", "auburn", "shrewsbury", "westborough", "grafton",
+        "sturbridge", "webster", "southbridge",
+        "springfield", "northampton", "amherst", "holyoke", "chicopee",
+        "west springfield", "westfield", "easthampton",
+        "providence", "warwick", "cranston", "pawtucket", "woonsocket",
+        "newport", "bristol",
+        "portland", "south portland", "scarborough",
+        "hartford", "new haven", "stamford", "bridgeport", "waterbury",
+        "new london", "mystic", "norwich",
+    )
+    val troyMetro = setOf("troy", "albany", "schenectady", "saratoga springs")
+
+    return when (city.lowercase().trim()) {
+        in bostonMetro -> "boston"
+        in troyMetro -> "troy"
+        else -> city.lowercase().trim()
     }
 }

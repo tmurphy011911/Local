@@ -233,10 +233,41 @@ class UserPreferencesRepositoryImpl(
         settings.remove(KEY_USER_LNG)
     }
 
+    /** Record an app open and return the updated streak count. Max +1 per calendar day. */
+    fun recordAppOpenAndGetStreak(): Int {
+        val today = kotlin.time.Clock.System.now().toString().take(10) // YYYY-MM-DD
+        val lastOpen = settings.getStringOrNull(KEY_LAST_OPEN_DATE)
+        val currentStreak = settings.getInt(KEY_STREAK_DAYS, 0)
+
+        if (lastOpen == today) {
+            // Already opened today — return current streak
+            return currentStreak
+        }
+
+        val yesterday = try {
+            val todayEpoch = kotlinx.datetime.LocalDate.parse(today).toEpochDays()
+            kotlinx.datetime.LocalDate.fromEpochDays(todayEpoch - 1).toString()
+        } catch (_: Exception) { "" }
+
+        val newStreak = if (lastOpen == yesterday) {
+            // Consecutive day — increment
+            currentStreak + 1
+        } else {
+            // Streak broken or first open — start at 1
+            1
+        }
+
+        settings.putString(KEY_LAST_OPEN_DATE, today)
+        settings.putInt(KEY_STREAK_DAYS, newStreak)
+        return newStreak
+    }
+
     companion object {
         private const val KEY_USER_ID = "user_id"
         private const val KEY_ONBOARDING_COMPLETE = "onboarding_complete"
         private const val KEY_USER_LAT = "user_lat"
         private const val KEY_USER_LNG = "user_lng"
+        private const val KEY_LAST_OPEN_DATE = "streak_last_open"
+        private const val KEY_STREAK_DAYS = "streak_days"
     }
 }

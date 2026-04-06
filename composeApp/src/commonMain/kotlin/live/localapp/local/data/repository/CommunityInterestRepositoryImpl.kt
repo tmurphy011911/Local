@@ -47,6 +47,20 @@ class CommunityInterestRepositoryImpl(
     // Track personal category interactions for affinity: category -> weighted count
     private val personalCategoryWeights = mutableMapOf<String, Double>()
 
+    override fun clearCaches() {
+        personalClicks.clear()
+        personalFavorites.clear()
+        personalShares.clear()
+        personalPlanAdds.clear()
+        communityClicks.clear()
+        communityFavorites.clear()
+        communityShares.clear()
+        communityPlanAdds.clear()
+        personalCategoryWeights.clear()
+        cachedAffinity = emptyMap()
+        affinityDirty = true
+    }
+
     private var historyLoaded = false
 
     // Scoring is now server-side; no need to load 10k rows on startup.

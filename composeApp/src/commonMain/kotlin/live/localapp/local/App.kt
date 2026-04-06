@@ -100,6 +100,7 @@ fun App() {
                             appState = AppState.HOME
                         }
                     },
+                    onSkip = { appState = AppState.HOME },
                 )
             }
 
@@ -138,6 +139,8 @@ fun App() {
                                 supabaseClient.auth.clearSession()
                             } catch (_: Exception) {}
                             userPrefsRepo.clearLocal()
+                            // Clear all in-memory caches so next user starts fresh
+                            try { KoinPlatform.getKoin().get<live.localapp.local.domain.repository.CommunityInterestRepository>().clearCaches() } catch (_: Exception) {}
                             appState = AppState.AUTH
                         }
                     },

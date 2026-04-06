@@ -165,7 +165,7 @@ private fun ImageSelectionCard(
     }
 }
 
-/** Icon-based card — original layout for items without images */
+/** Gradient-based card — for items without images, matches image card visual style */
 @Composable
 private fun IconSelectionCard(
     item: SelectionItem,
@@ -180,10 +180,9 @@ private fun IconSelectionCard(
         animationSpec = tween(80),
     )
 
-    val borderColor = if (isSelected) AppColors.Plum else AppColors.Pebble
+    val borderColor = if (isSelected) AppColors.Plum else Color.Transparent
     val shadowColor = if (isSelected) AppColors.PlumDk else AppColors.Pebble
-    val bgColor = if (isSelected) AppColors.PlumLt else AppColors.White
-    val heightMod = if (fixedHeight != Dp.Unspecified) Modifier.height(fixedHeight) else Modifier
+    val cardHeight = if (fixedHeight != Dp.Unspecified) fixedHeight else 120.dp
 
     Box(
         modifier = Modifier
@@ -193,49 +192,59 @@ private fun IconSelectionCard(
         Box(
             modifier = Modifier.matchParentSize()
                 .offset(y = if (!isPressed) 4.dp else 1.dp)
-                .background(shadowColor, RoundedCornerShape(16.dp)),
+                .background(shadowColor, RoundedCornerShape(14.dp)),
         )
 
-        Column(
-            modifier = Modifier.fillMaxWidth().then(heightMod)
-                .background(bgColor, RoundedCornerShape(16.dp))
-                .border(2.dp, borderColor, RoundedCornerShape(16.dp))
-                .padding(11.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
+        Box(
+            modifier = Modifier.fillMaxWidth().height(cardHeight)
+                .clip(RoundedCornerShape(14.dp))
+                .background(
+                    androidx.compose.ui.graphics.Brush.linearGradient(
+                        listOf(Color(0xFF4A3F5C), Color(0xFF2A2235)),
+                    ),
+                )
+                .border(if (isSelected) 2.5.dp else 0.dp, borderColor, RoundedCornerShape(14.dp)),
         ) {
-            Column {
-                Box(modifier = Modifier.fillMaxWidth()) {
-                    if (item.icon != null) {
-                        Icon(item.icon, contentDescription = null, modifier = Modifier.size(22.dp),
-                            tint = if (isSelected) AppColors.PlumDk else AppColors.Ink2)
-                    } else {
-                        Spacer(Modifier.size(22.dp))
-                    }
-                    Box(
-                        modifier = Modifier.size(18.dp).align(Alignment.TopEnd)
-                            .background(if (isSelected) AppColors.Plum else Color.Transparent, CircleShape)
-                            .border(2.dp, if (isSelected) AppColors.PlumDk else AppColors.Pebble, CircleShape),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        if (isSelected) {
-                            Text("\u2713", style = TextStyle(fontWeight = FontWeight.Black, fontSize = 9.sp, color = AppColors.White))
-                        }
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                Text(item.name, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold,
-                    fontSize = 12.sp, color = if (isSelected) AppColors.PlumDk else AppColors.Ink, lineHeight = 16.sp),
-                    maxLines = 2, overflow = TextOverflow.Ellipsis)
-                if (item.tag != null) {
-                    Spacer(Modifier.height(3.dp))
-                    Text(item.tag, modifier = Modifier.background(AppColors.Coral.copy(alpha = 0.15f), RoundedCornerShape(6.dp))
-                        .padding(horizontal = 6.dp, vertical = 1.dp),
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Coral))
+            // Check circle — top right
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(6.dp)
+                    .size(20.dp)
+                    .background(
+                        if (isSelected) AppColors.Plum else Color.White.copy(alpha = 0.15f),
+                        CircleShape,
+                    )
+                    .border(2.dp, if (isSelected) AppColors.PlumDk else Color.White.copy(alpha = 0.3f), CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (isSelected) {
+                    Text("\u2713", style = TextStyle(fontWeight = FontWeight.Black, fontSize = 10.sp, color = Color.White))
                 }
             }
-            if (item.subtitle != null) {
-                Text(item.subtitle, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold,
-                    fontSize = 10.sp, color = AppColors.Ink3), maxLines = 1)
+
+            // Text — bottom left
+            Column(
+                modifier = Modifier.align(Alignment.BottomStart).padding(10.dp),
+            ) {
+                Text(
+                    item.name,
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp,
+                        color = Color.White, lineHeight = 15.sp,
+                    ),
+                    maxLines = 2, overflow = TextOverflow.Ellipsis,
+                )
+                if (item.subtitle != null) {
+                    Text(
+                        item.subtitle,
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp,
+                            color = Color.White.copy(alpha = 0.7f),
+                        ),
+                        maxLines = 1,
+                    )
+                }
             }
         }
     }

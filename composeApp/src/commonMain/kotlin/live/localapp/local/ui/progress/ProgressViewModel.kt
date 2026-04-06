@@ -122,18 +122,22 @@ class ProgressViewModel(
         }
     }
 
-    // ── Last-seen snapshot for animations ──
-    var lastSeenPoints: Int = 0
+    // ── Last-seen snapshot for animations (persisted across app launches) ──
+    private val settings = com.russhwolf.settings.Settings()
+    var lastSeenPoints: Int = settings.getInt("progress_last_points", 0)
         private set
-    var lastSeenProgress: Float = 0f
+    var lastSeenProgress: Float = settings.getFloat("progress_last_progress", 0f)
         private set
-    var lastSeenTier: StatusTier = StatusTier.NEW_IN_TOWN
+    var lastSeenTier: StatusTier = StatusTier.entries.firstOrNull { it.name == settings.getStringOrNull("progress_last_tier") } ?: StatusTier.NEW_IN_TOWN
         private set
 
     fun saveLastSeen() {
         lastSeenPoints = _uiState.value.totalPoints
         lastSeenProgress = _uiState.value.tierProgress
         lastSeenTier = _uiState.value.currentTier
+        settings.putInt("progress_last_points", lastSeenPoints)
+        settings.putFloat("progress_last_progress", lastSeenProgress)
+        settings.putString("progress_last_tier", lastSeenTier.name)
         // Snapshot per-action progress for each state
         _uiState.value.stateProgresses.forEach { sp ->
             sp.actions.forEach { ap ->
@@ -170,6 +174,17 @@ class ProgressViewModel(
     fun refresh() {
         loadStats()
         loadBadgeData()
+    }
+
+    fun saveUserName(name: String) {
+        viewModelScope.launch {
+            val userId = userPrefsRepo.getLocalUserId() ?: return@launch
+            try {
+                val prefs = userPrefsRepo.loadPreferences(userId) ?: return@launch
+                userPrefsRepo.savePreferences(prefs.copy(firstName = name))
+                _uiState.update { it.copy(userName = name, userInitial = name.firstOrNull()?.uppercase() ?: "") }
+            } catch (_: Exception) {}
+        }
     }
 
     fun toggleStateExpanded(state: String) {

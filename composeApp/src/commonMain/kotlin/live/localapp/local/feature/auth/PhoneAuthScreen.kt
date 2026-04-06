@@ -38,6 +38,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -112,6 +113,7 @@ private fun formatPhoneDisplay(raw: String): String = "+1 ${formatPhone(raw)}"
 fun PhoneAuthScreen(
     viewModel: PhoneAuthViewModel,
     onAuthComplete: (isNewUser: Boolean, firstName: String, lastName: String, phone: String, authUserId: String) -> Unit,
+    onSkip: (() -> Unit)? = null,
 ) {
     val state by viewModel.state.collectAsState()
 
@@ -149,6 +151,7 @@ fun PhoneAuthScreen(
                     error = state.error,
                     onPhoneChange = viewModel::updatePhone,
                     onContinue = viewModel::sendOtp,
+                    onSkip = onSkip,
                 )
                 AuthStep.OTP -> OtpVerificationContent(
                     phone = state.phone,
@@ -180,6 +183,7 @@ private fun PhoneInputContent(
     error: String?,
     onPhoneChange: (String) -> Unit,
     onContinue: () -> Unit,
+    onSkip: (() -> Unit)? = null,
 ) {
     Column(
         modifier = Modifier
@@ -188,6 +192,21 @@ private fun PhoneInputContent(
             .imePadding()
             .padding(top = 20.dp),
     ) {
+        if (onSkip != null) {
+            Box(modifier = Modifier.fillMaxWidth().padding(end = 20.dp), contentAlignment = Alignment.CenterEnd) {
+                Icon(
+                    Icons.Outlined.Close,
+                    contentDescription = "Skip",
+                    modifier = Modifier.size(22.dp).clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onSkip,
+                    ),
+                    tint = AppColors.Ink3,
+                )
+            }
+        }
+
         Column(
             modifier = Modifier
                 .weight(1f)

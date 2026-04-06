@@ -28,7 +28,7 @@ data class HomeUiState(
     val locationName: String = "",
     val userLat: Double? = null,
     val userLng: Double? = null,
-    val streakDays: Int = 2,
+    val streakDays: Int = 0,
     val selectedCategory: String = "foryou",
     val availableCategories: List<CategoryInfo> = emptyList(),
     val carousels: List<CarouselSection> = emptyList(),
@@ -54,6 +54,11 @@ class HomeViewModel(
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
 
     init {
+        // Record app open and update streak
+        val streak = (userPreferencesRepository as? live.localapp.local.data.repository.UserPreferencesRepositoryImpl)
+            ?.recordAppOpenAndGetStreak() ?: 0
+        _uiState.update { it.copy(streakDays = streak) }
+
         loadUserPreferencesThenCarousels()
         loadSavedThisWeek()
     }
@@ -67,11 +72,25 @@ class HomeViewModel(
             if (userId != null) {
                 val prefs = userPreferencesRepository.loadPreferences(userId)
                 if (prefs != null) {
+                    val cityDisplay = prefs.city.replaceFirstChar { c -> c.uppercase() }.let { city ->
+                        // Append state abbreviation if known
+                        val state = when (city.lowercase()) {
+                            "boston", "cambridge", "somerville", "newton", "waltham",
+                            "brookline", "worcester", "springfield", "lowell" -> "MA"
+                            "providence" -> "RI"
+                            "portland" -> "ME"
+                            "new york" -> "NY"
+                            "philadelphia" -> "PA"
+                            else -> null
+                        }
+                        if (state != null) "$city, $state" else city
+                    }
                     _uiState.update {
                         it.copy(
                             userName = prefs.firstName ?: "",
                             userLat = prefs.userLat ?: it.userLat,
                             userLng = prefs.userLng ?: it.userLng,
+                            locationName = if (it.locationName.isBlank()) cityDisplay else it.locationName,
                             userPreferences = prefs,
                         )
                     }
@@ -85,7 +104,20 @@ class HomeViewModel(
     fun setUserLocation(lat: Double, lng: Double) {
         val current = _uiState.value
         if (current.userLat != lat || current.userLng != lng) {
-            _uiState.update { it.copy(userLat = lat, userLng = lng) }
+            // Derive location name from preferences city, or keep current
+            val prefs = current.userPreferences
+            val locName = if (current.locationName.isBlank() && prefs != null) {
+                val city = prefs.city.replaceFirstChar { c -> c.uppercase() }
+                val state = when (city.lowercase()) {
+                    "boston", "cambridge", "somerville", "newton", "waltham",
+                    "brookline", "worcester", "springfield", "lowell" -> "MA"
+                    "providence" -> "RI"; "portland" -> "ME"; "new york" -> "NY"
+                    "philadelphia" -> "PA"
+                    else -> null
+                }
+                if (state != null) "$city, $state" else city
+            } else current.locationName
+            _uiState.update { it.copy(userLat = lat, userLng = lng, locationName = locName) }
             carouselRepository.invalidateAll()
             loadCarousels()
         }

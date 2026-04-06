@@ -615,7 +615,7 @@ private fun SecondaryCtaButton(
             .background(bgColor, RoundedCornerShape(12.dp))
             .border(1.5.dp, borderColor, RoundedCornerShape(12.dp))
             .clickable(interactionSource = interactionSource, indication = null, onClick = {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onClick()
             })
             .padding(vertical = 10.dp),
@@ -648,7 +648,7 @@ private fun ExpandedOption(label: String, modifier: Modifier, onClick: () -> Uni
             .background(AppColors.Snow, RoundedCornerShape(10.dp))
             .border(1.5.dp, AppColors.Pebble, RoundedCornerShape(10.dp))
             .clickable(interactionSource = interactionSource, indication = null, onClick = {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onClick()
             })
             .padding(vertical = 10.dp),
@@ -749,7 +749,7 @@ private fun HeroIconButton(modifier: Modifier, onClick: () -> Unit, content: @Co
             .background(AppColors.White.copy(alpha = 0.9f), CircleShape)
             .border(1.5.dp, AppColors.Pebble, CircleShape)
             .clickable(interactionSource = interactionSource, indication = null, onClick = {
-                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                 onClick()
             }),
         contentAlignment = Alignment.Center,

@@ -54,17 +54,15 @@ private data class LoadingCard(
     val label: String,
 )
 
-/** Rounds down to nearest hundred and appends "+", e.g. 847 → "800+", 1234 → "1,200+" */
-private fun formatCount(count: Int): String {
-    val rounded = (count / 100) * 100
-    val formatted = if (rounded >= 1000) {
-        val thousands = rounded / 1000
-        val hundreds = (rounded % 1000) / 100
-        if (hundreds > 0) "$thousands,${hundreds}00" else "$thousands,000"
-    } else {
-        rounded.toString()
+/** Format a number with commas, e.g. 1475 → "1,475" */
+private fun formatNumber(n: Int): String {
+    val s = n.toString()
+    val result = StringBuilder()
+    for (i in s.indices) {
+        if (i > 0 && (s.length - i) % 3 == 0) result.append(',')
+        result.append(s[i])
     }
-    return "$formatted+"
+    return result.toString()
 }
 
 @Composable
@@ -73,38 +71,58 @@ fun SuccessScreen(
     venueCount: Int?,
     onComplete: () -> Unit,
 ) {
-    val cards = remember(eventCount, venueCount) {
-        listOf(
-            LoadingCard(Icons.Outlined.Place, "Location confirmed"),
-            LoadingCard(
-                Icons.Outlined.ConfirmationNumber,
-                if (eventCount != null) "${formatCount(eventCount)} events loaded" else "Loading events...",
-            ),
-            LoadingCard(
-                Icons.Outlined.Restaurant,
-                if (venueCount != null) "${formatCount(venueCount)} venues matched" else "Matching venues...",
-            ),
-            LoadingCard(Icons.Outlined.Map, "Your local map is ready"),
-        )
-    }
+    val eventsReady = eventCount != null && eventCount > 0
+    val venuesReady = venueCount != null && venueCount > 0
+
+    // Reactive labels — show actual numbers when ready
+    val eventsLabel = if (eventsReady) "${formatNumber(eventCount!!)} events loaded" else "Finding events..."
+    val venuesLabel = if (venuesReady) "${formatNumber(venueCount!!)} venues matched" else "Discovering venues..."
+
+    val cards = listOf(
+        LoadingCard(Icons.Outlined.Place, "Location confirmed"),
+        LoadingCard(Icons.Outlined.ConfirmationNumber, eventsLabel),
+        LoadingCard(Icons.Outlined.Restaurant, venuesLabel),
+        LoadingCard(Icons.Outlined.Map, "Your local map is ready"),
+    )
 
     // 0=inactive, 1=loading, 2=done  — for each card
     var cardStates by remember { mutableStateOf(listOf(0, 0, 0, 0)) }
 
+    // Animate cards starting one by one
     LaunchedEffect(Unit) {
-        val timing = listOf(200L, 1100L, 2000L, 2900L)
-        val doneTiming = listOf(1050L, 1950L, 2850L, 3750L)
+        delay(200); cardStates = listOf(1, 0, 0, 0)  // location starts loading
+        delay(800); cardStates = listOf(2, 1, 0, 0)  // location done, events start
+    }
 
-        timing.forEachIndexed { i, t ->
-            delay(if (i == 0) t else t - (timing.getOrElse(i - 1) { 0L }))
-            cardStates = cardStates.toMutableList().also { it[i] = 1 }
+    // Events card: mark done when data arrives
+    LaunchedEffect(eventsReady, cardStates) {
+        if (eventsReady && cardStates[1] == 1) {
+            delay(300) // brief pause so the fill animation is visible
+            cardStates = listOf(2, 2, 1, 0) // events done, venues start
         }
+    }
 
-        // Mark each done
-        delay(doneTiming[3] - timing[3])
-        cardStates = listOf(2, 2, 2, 2)
+    // Venues card: mark done when data arrives
+    LaunchedEffect(venuesReady, cardStates) {
+        if (venuesReady && cardStates[2] == 1) {
+            delay(300)
+            cardStates = listOf(2, 2, 2, 1) // venues done, map starts
+            delay(800)
+            cardStates = listOf(2, 2, 2, 2) // map done
+        }
+    }
 
-        delay(650)
+    // Auto-complete when all done
+    LaunchedEffect(cardStates) {
+        if (cardStates.all { it == 2 }) {
+            delay(650)
+            onComplete()
+        }
+    }
+
+    // Safety timeout
+    LaunchedEffect(Unit) {
+        delay(10000)
         onComplete()
     }
 
@@ -148,7 +166,7 @@ fun SuccessScreen(
             Spacer(Modifier.height(4.dp))
 
             Text(
-                "Building your personalised feed right now.",
+                "Building your personalized feed right now.",
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.SemiBold,
@@ -166,13 +184,17 @@ fun SuccessScreen(
                 val shadowColor = if (cardState > 0) AppColors.SageDk else AppColors.Pebble
 
                 val barTarget = when (cardState) {
-                    1 -> 1f
-                    2 -> 1f
+                    1 -> 0.9f   // fill to 90% while searching
+                    2 -> 1f     // snap to 100% when data arrives
                     else -> 0f
                 }
                 val barProgress by animateFloatAsState(
                     targetValue = barTarget,
-                    animationSpec = tween(if (cardState == 1) 850 else 0),
+                    animationSpec = when (cardState) {
+                        1 -> tween(2500)  // slow fill to 90%
+                        2 -> tween(200)   // quick snap to 100%
+                        else -> tween(0)
+                    },
                 )
 
                 Box(modifier = Modifier.padding(bottom = 10.dp)) {

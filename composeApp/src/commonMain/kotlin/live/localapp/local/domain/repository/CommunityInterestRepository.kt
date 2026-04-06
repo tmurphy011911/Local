@@ -53,4 +53,7 @@ interface CommunityInterestRepository {
 
     /** Return all venue/place IDs the user has favorited. */
     suspend fun getFavoriteVenueIds(userId: String): List<String>
+
+    /** Clear all in-memory caches (call on logout). */
+    fun clearCaches()
 }

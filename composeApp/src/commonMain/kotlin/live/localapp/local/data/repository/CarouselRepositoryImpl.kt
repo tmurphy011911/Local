@@ -540,7 +540,7 @@ class CarouselRepositoryImpl(
             val title = if (filter is EventFilter.Category) {
                 val catName = categoryDisplayName(filter.value)
                 carousel.title
-                    .replace("Top 10 This Week", "Top $catName Events This Week")
+                    .replace("Top 10 This Week", if (filter.value == "experiences") "Top Experiences Near You" else "Top 10 This Week")
                     .replace("This Weekend", "$catName This Weekend")
                     .replace("Trending Now", "Trending $catName")
             } else {

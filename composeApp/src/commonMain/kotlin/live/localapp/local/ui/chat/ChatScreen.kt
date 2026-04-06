@@ -298,53 +298,44 @@ fun ChatScreen(
 
 @Composable
 private fun ChatHeader(onBack: (() -> Unit)? = null, onReset: (() -> Unit)? = null) {
-    Column(
+    Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(AppColors.Coral)
-            .padding(horizontal = 18.dp)
-            .padding(top = 6.dp, bottom = 16.dp),
+            .background(AppColors.Snow)
+            .padding(horizontal = 18.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            if (onBack != null) {
-                Box(
-                    modifier = Modifier
-                        .size(34.dp)
-                        .background(AppColors.White.copy(alpha = 0.15f), RoundedCornerShape(11.dp))
-                        .border(1.5.dp, AppColors.White.copy(alpha = 0.25f), RoundedCornerShape(11.dp))
-                        .clip(RoundedCornerShape(11.dp))
-                        .clickable(onClick = onBack),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Outlined.ChevronLeft, "Back", Modifier.size(18.dp), tint = AppColors.White)
-                }
-                Spacer(Modifier.width(10.dp))
-            }
-
-            Text(
-                "Yocal the Local",
-                modifier = Modifier.weight(1f),
-                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = AppColors.White),
+        if (onBack != null) {
+            Icon(
+                Icons.Outlined.ChevronLeft, "Back",
+                modifier = Modifier.size(22.dp).clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null, onClick = onBack,
+                ),
+                tint = AppColors.Ink3,
             )
+            Spacer(Modifier.width(8.dp))
+        }
 
-            if (onReset != null) {
-                Box(
-                    modifier = Modifier
-                        .size(34.dp)
-                        .background(AppColors.White.copy(alpha = 0.15f), RoundedCornerShape(11.dp))
-                        .border(1.5.dp, AppColors.White.copy(alpha = 0.25f), RoundedCornerShape(11.dp))
-                        .clip(RoundedCornerShape(11.dp))
-                        .clickable(onClick = onReset),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Outlined.Close, "Reset", Modifier.size(16.dp), tint = AppColors.White)
-                }
-            }
+        Text(
+            "Yocal the Local",
+            modifier = Modifier.weight(1f),
+            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = AppColors.Ink),
+        )
+
+        if (onReset != null) {
+            Icon(
+                Icons.Outlined.Close, "Reset",
+                modifier = Modifier.size(20.dp).clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null, onClick = onReset,
+                ),
+                tint = AppColors.Ink3,
+            )
         }
     }
+    // Subtle divider
+    Box(Modifier.fillMaxWidth().height(1.dp).background(AppColors.Pebble.copy(alpha = 0.5f)))
 }
 
 // ── Message Bubbles ──
@@ -354,66 +345,37 @@ private fun MessageRow(role: MessageRole, text: String) {
     val isUser = role == MessageRole.USER
 
     Row(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
     ) {
-        if (!isUser) {
-            AiAvatar()
-            Spacer(Modifier.width(8.dp))
-        }
+        if (isUser) Spacer(Modifier.width(48.dp)) // indent user messages from left
 
-        val bubbleShape = if (isUser) RoundedCornerShape(16.dp, 4.dp, 16.dp, 16.dp) else RoundedCornerShape(4.dp, 16.dp, 16.dp, 16.dp)
+        val bubbleShape = if (isUser) RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp)
+            else RoundedCornerShape(18.dp, 18.dp, 18.dp, 4.dp)
 
-        Box(modifier = Modifier.weight(1f, fill = false)) {
-            Box(
-                Modifier.matchParentSize().offset(y = 4.dp)
-                    .background(if (isUser) Color(0xFFC73E3E) else Color(0xFFD8D2E8), bubbleShape),
-            )
-            Box(
-                Modifier
-                    .background(
-                        if (isUser) Brush.linearGradient(listOf(AppColors.Coral, AppColors.CoralDk))
-                        else Brush.linearGradient(listOf(AppColors.White, AppColors.White)),
-                        bubbleShape,
-                    )
-                    .border(2.dp, if (isUser) AppColors.CoralDk else Color(0xFFE2DCF0), bubbleShape)
-                    .padding(horizontal = 14.dp, vertical = 11.dp),
-            ) {
-                if (isUser) {
-                    Text(
-                        cleanMarkdown(text),
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
-                            color = AppColors.White, lineHeight = (13 * 1.55).sp,
-                        ),
-                    )
-                } else {
-                    RichChatText(text = text, textColor = AppColors.Ink2)
-                }
+        Box(
+            modifier = Modifier.weight(1f, fill = false)
+                .background(
+                    if (isUser) Color(0xFFF0EDF6) else AppColors.White,
+                    bubbleShape,
+                )
+                .then(if (!isUser) Modifier.border(1.dp, AppColors.Pebble.copy(alpha = 0.6f), bubbleShape) else Modifier)
+                .padding(horizontal = 14.dp, vertical = 11.dp),
+        ) {
+            if (isUser) {
+                Text(
+                    cleanMarkdown(text),
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
+                        color = AppColors.Ink, lineHeight = (13 * 1.55).sp,
+                    ),
+                )
+            } else {
+                RichChatText(text = text, textColor = AppColors.Ink2)
             }
         }
 
-        if (isUser) {
-            Spacer(Modifier.width(8.dp))
-            Box(
-                Modifier.size(30.dp).background(AppColors.Coral, RoundedCornerShape(10.dp))
-                    .border(1.5.dp, AppColors.CoralDk, RoundedCornerShape(10.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("Y", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 11.sp, color = AppColors.White))
-            }
-        }
-    }
-}
-
-@Composable
-private fun AiAvatar() {
-    Box(
-        Modifier.size(30.dp).background(AppColors.CoralLt, RoundedCornerShape(10.dp))
-            .border(1.5.dp, AppColors.Pebble, RoundedCornerShape(10.dp)),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(Icons.Outlined.AutoAwesome, null, Modifier.size(15.dp), tint = AppColors.Coral)
+        if (!isUser) Spacer(Modifier.width(48.dp)) // indent AI messages from right
     }
 }
 
@@ -422,25 +384,24 @@ private fun AiAvatar() {
 @Composable
 private fun TypingIndicator() {
     val infiniteTransition = rememberInfiniteTransition()
-    Row(horizontalArrangement = Arrangement.Start) {
-        AiAvatar()
-        Spacer(Modifier.width(8.dp))
-        val bubbleShape = RoundedCornerShape(4.dp, 16.dp, 16.dp, 16.dp)
-        Box {
-            Box(Modifier.matchParentSize().offset(y = 4.dp).background(Color(0xFFD8D2E8), bubbleShape))
-            Row(
-                Modifier.background(AppColors.White, bubbleShape).border(2.dp, Color(0xFFE2DCF0), bubbleShape)
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                repeat(3) { index ->
-                    val offset by infiniteTransition.animateFloat(
-                        initialValue = 0f, targetValue = -6f,
-                        animationSpec = infiniteRepeatable(tween(600, delayMillis = index * 180), RepeatMode.Reverse),
-                    )
-                    Box(Modifier.size(7.dp).graphicsLayer { translationY = offset }.background(AppColors.Pebble, CircleShape))
-                }
+    val bubbleShape = RoundedCornerShape(18.dp, 18.dp, 18.dp, 4.dp)
+    Row(
+        modifier = Modifier.padding(horizontal = 4.dp),
+        horizontalArrangement = Arrangement.Start,
+    ) {
+        Row(
+            Modifier.background(AppColors.White, bubbleShape)
+                .border(1.dp, AppColors.Pebble.copy(alpha = 0.6f), bubbleShape)
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            repeat(3) { index ->
+                val offset by infiniteTransition.animateFloat(
+                    initialValue = 0f, targetValue = -5f,
+                    animationSpec = infiniteRepeatable(tween(600, delayMillis = index * 180), RepeatMode.Reverse),
+                )
+                Box(Modifier.size(6.dp).graphicsLayer { translationY = offset }.background(AppColors.Ink3.copy(alpha = 0.4f), CircleShape))
             }
         }
     }
@@ -632,15 +593,16 @@ private fun SearchingIndicator() {
         alpha.animateTo(1f, animationSpec = tween(400))
     }
 
-    Row(horizontalArrangement = Arrangement.Start) {
-        AiAvatar()
-        Spacer(Modifier.width(8.dp))
-        val bubbleShape = RoundedCornerShape(4.dp, 16.dp, 16.dp, 16.dp)
+    Row(
+        modifier = Modifier.padding(horizontal = 4.dp),
+        horizontalArrangement = Arrangement.Start,
+    ) {
+        val bubbleShape = RoundedCornerShape(18.dp, 18.dp, 18.dp, 4.dp)
         Box {
-            Box(Modifier.matchParentSize().offset(y = 4.dp).background(Color(0xFFD8D2E8), bubbleShape))
             Box(
                 Modifier
                     .background(AppColors.White, bubbleShape)
+                    .border(1.dp, AppColors.Pebble.copy(alpha = 0.6f), bubbleShape)
                     .border(2.dp, Color(0xFFE2DCF0), bubbleShape)
                     .padding(horizontal = 14.dp, vertical = 12.dp),
             ) {
@@ -1258,36 +1220,26 @@ private fun QuickReplyBar(replies: List<QuickReply>, onReply: (QuickReply) -> Un
 
 @Composable
 private fun QuickReplyChip(reply: QuickReply, onClick: () -> Unit) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
     val haptic = LocalHapticFeedback.current
+    val bgColor = if (reply.isGreen) AppColors.Sage else AppColors.Snow
+    val borderColor = if (reply.isGreen) AppColors.Sage else AppColors.Pebble
+    val textColor = if (reply.isGreen) AppColors.White else AppColors.Ink
 
-    val bgColor = if (reply.isGreen) AppColors.SageLt else AppColors.White
-    val borderColor = if (reply.isGreen) AppColors.Sage else Color(0xFFE2DCF0)
-    val shadowColor = if (reply.isGreen) Color(0xFFB8EDD9) else Color(0xFFD8D2E8)
-    val textColor = if (reply.isGreen) AppColors.SageDk else AppColors.Ink2
-
-    val chipScale by animateFloatAsState(
-        targetValue = if (isPressed) 0.96f else 1f,
-        animationSpec = tween(80),
-    )
-
-    Box(modifier = Modifier.graphicsLayer { scaleX = chipScale; scaleY = chipScale }) {
-        Box(Modifier.matchParentSize().offset(y = if (isPressed) 0.dp else 3.dp).background(shadowColor, AppShapes.Pill))
-        Box(
-            Modifier.background(bgColor, AppShapes.Pill).border(2.dp, borderColor, AppShapes.Pill)
-                .clip(AppShapes.Pill)
-                .clickable(interactionSource = interactionSource, indication = null, onClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onClick()
-                })
-                .padding(horizontal = 13.dp, vertical = 7.dp),
-        ) {
-            Text(
-                reply.label, maxLines = 1,
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = textColor),
-            )
-        }
+    Box(
+        Modifier
+            .background(bgColor, RoundedCornerShape(20.dp))
+            .border(1.dp, borderColor, RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(20.dp))
+            .clickable {
+                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                onClick()
+            }
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+    ) {
+        Text(
+            reply.label, maxLines = 1,
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = textColor),
+        )
     }
 }
 
@@ -1297,26 +1249,29 @@ private fun QuickReplyChip(reply: QuickReply, onClick: () -> Unit) {
 private fun ChatInputBar(enabled: Boolean, placeholder: String, onSend: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
 
+    // Top divider
+    Box(Modifier.fillMaxWidth().height(1.dp).background(AppColors.Pebble.copy(alpha = 0.4f)))
+
     Row(
         modifier = Modifier.fillMaxWidth().background(AppColors.Snow)
-            .padding(horizontal = 14.dp, vertical = 8.dp).padding(bottom = 10.dp),
+            .padding(horizontal = 14.dp, vertical = 10.dp).padding(bottom = 8.dp),
         verticalAlignment = Alignment.Bottom,
     ) {
         Box(
-            modifier = Modifier.weight(1f).heightIn(min = 44.dp)
-                .background(if (enabled) AppColors.Mist else Color(0xFFEDEAF3), RoundedCornerShape(14.dp))
-                .border(2.dp, if (enabled) AppColors.Pebble else Color(0xFFD8D4E4), RoundedCornerShape(14.dp))
-                .padding(horizontal = 13.dp, vertical = 10.dp),
+            modifier = Modifier.weight(1f).heightIn(min = 42.dp)
+                .background(AppColors.White, RoundedCornerShape(22.dp))
+                .border(1.dp, AppColors.Pebble.copy(alpha = 0.6f), RoundedCornerShape(22.dp))
+                .padding(horizontal = 16.dp, vertical = 10.dp),
             contentAlignment = Alignment.CenterStart,
         ) {
             if (text.isEmpty()) {
-                Text(placeholder, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Ink3))
+                Text(placeholder, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink3))
             }
             if (enabled) {
                 BasicTextField(
                     value = text, onValueChange = { text = it },
                     modifier = Modifier.fillMaxWidth(),
-                    textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Ink),
+                    textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
                     keyboardActions = KeyboardActions(onSend = { if (text.isNotBlank()) { onSend(text); text = "" } }),
                     singleLine = false, maxLines = 3,
@@ -1328,9 +1283,9 @@ private fun ChatInputBar(enabled: Boolean, placeholder: String, onSend: (String)
 
         val canSend = enabled && text.isNotBlank()
         Box(
-            modifier = Modifier.size(44.dp).graphicsLayer { alpha = if (canSend) 1f else 0.4f }
-                .background(Brush.linearGradient(listOf(AppColors.Coral, AppColors.CoralDk)), RoundedCornerShape(14.dp))
-                .clip(RoundedCornerShape(14.dp))
+            modifier = Modifier.size(42.dp).graphicsLayer { alpha = if (canSend) 1f else 0.3f }
+                .background(AppColors.Ink, RoundedCornerShape(21.dp))
+                .clip(RoundedCornerShape(21.dp))
                 .then(if (canSend) Modifier.clickable { onSend(text); text = "" } else Modifier),
             contentAlignment = Alignment.Center,
         ) {
@@ -1829,7 +1784,8 @@ private fun PlanSuccessOverlay(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(bottom = 170.dp),
+                .padding(bottom = 180.dp)
+                .clip(RoundedCornerShape(0.dp)),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Spacer(Modifier.height(40.dp))

@@ -118,6 +118,7 @@ fun OnboardingScreen(
                     )
                     OnboardingStep.CATEGORIES -> CategoriesScreen(
                         categoryCounts = state.categoryCounts,
+                        categoryPhotos = state.categoryPhotos,
                         selected = state.selectedCategories,
                         onToggle = viewModel::toggleCategory,
                         onNext = { viewModel.onCategoriesNext() },

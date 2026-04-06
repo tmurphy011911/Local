@@ -7,6 +7,7 @@ data class NeighborhoodInfo(
     val distanceMiles: Double? = null,
     val stateCode: String? = null,
     val eventCount: Int = 0,
+    val photoUrl: String? = null,
 ) {
     val distanceDisplay: String
         get() = when {
@@ -27,6 +28,7 @@ data class OnboardingData(
     val neighborhoods: List<NeighborhoodInfo>,
     val venueNames: List<VenueSummary>,
     val categoryCounts: Map<String, Int>,
+    val categoryPhotos: Map<String, String> = emptyMap(),
 )
 
 data class VenueSummary(

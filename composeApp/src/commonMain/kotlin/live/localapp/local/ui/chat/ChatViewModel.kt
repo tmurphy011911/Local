@@ -160,6 +160,18 @@ class ChatViewModel(
     private val _uiState = MutableStateFlow(ChatUiState())
     val uiState: StateFlow<ChatUiState> = _uiState.asStateFlow()
 
+    /**
+     * External gate for plan approval. Set by the UI layer.
+     * Returns true if the plan can be approved, false if the paywall should show.
+     */
+    var onPlanApprovalCheck: (() -> Boolean)? = null
+
+    /** Called when plan approval is blocked by the gate (paywall needed). */
+    var onPlanBlocked: (() -> Unit)? = null
+
+    /** Called after a plan is successfully saved. */
+    var onPlanSaved: (() -> Unit)? = null
+
     /** Cache of all events returned by search_events calls in the current turn. */
     private val searchResultCache = mutableListOf<Event>()
 
@@ -308,8 +320,8 @@ class ChatViewModel(
                 println("  ref: id='${ref.id}' time='${ref.time}' isVenue=${ref.isVenue} note='${ref.note.take(50)}'")
             }
 
-            // Collect all event IDs (non-venue refs)
-            val eventIds = parsedDay.events.filter { !it.isVenue }.map { it.id }
+            // Collect all event IDs (non-venue refs), strip any "evt:" prefix Claude may add
+            val eventIds = parsedDay.events.filter { !it.isVenue }.map { it.id.removePrefix("evt:") }
             val eventsById = if (eventIds.isNotEmpty()) {
                 val fetched = eventRepo.getEventsByIds(eventIds)
                 println("buildPlanFromRefs: fetched ${fetched.size}/${eventIds.size} events from DB")
@@ -349,8 +361,9 @@ class ChatViewModel(
                         reservationUrl = venue?.reservationUrl,
                     )
                 } else {
-                    // Event ref — look up from DB
-                    val event = eventsById[ref.id] ?: cacheById[ref.id]
+                    // Event ref — look up from DB (strip evt: prefix)
+                    val cleanId = ref.id.removePrefix("evt:")
+                    val event = eventsById[cleanId] ?: cacheById[cleanId]
                     if (event == null) {
                         println("buildPlanFromRefs: event '${ref.id}' not found in DB or cache, dropping")
                         return@mapNotNull null
@@ -1036,6 +1049,15 @@ class ChatViewModel(
     }
 
     private fun approvePlan() {
+        // Check premium gate before approving
+        val gateCheck = onPlanApprovalCheck
+        if (gateCheck != null && !gateCheck()) {
+            println("approvePlan: BLOCKED by premium gate")
+            onPlanBlocked?.invoke()
+            return
+        }
+        println("approvePlan: gate passed, saving plan")
+
         viewModelScope.launch {
             val state = _uiState.value
 
@@ -1093,6 +1115,7 @@ class ChatViewModel(
                     dateDisplay = "",
                 )
                 planRepo.savePlan(plan)
+                onPlanSaved?.invoke()
                 // Badge: track plan created
                 val userState = cityToState(state.userPreferences?.city ?: "boston")
                 badgeService.recordAction(BadgeAction.PLAN_CREATED, userState)
@@ -1475,7 +1498,7 @@ Calendar: $calendarRef
 Location: ${state.currentLocationName.ifBlank { state.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "their area" }} (lat: ${state.currentLat ?: state.userPreferences?.userLat ?: "unknown"}, lng: ${state.currentLng ?: state.userPreferences?.userLng ?: "unknown"})
 
 HOW TO HELP:
-- When the user wants to plan something, search the database FIRST, then present a plan using the present_plan tool. Search broadly — make multiple search_events calls across different categories and date ranges to find everything relevant. The more you search, the better your recommendations.
+- When the user wants to plan something, search the database FIRST, then present a plan using the present_plan tool. Search broadly — make multiple search_events calls across different categories and date ranges to find everything relevant. The more you search, the better your recommendations. When offering to build a plan, mention that it's an easily shareable plan (e.g. "Want me to build you a shareable plan?" or "I can put together a plan you can share with your group").
 - When chatting or answering questions, just respond naturally. No special formatting needed.
 - When the user wants to modify an existing plan (swap something, add something, change a slot, try something different), you MUST search for alternatives and then call update_plan. NEVER respond with just text when a plan exists and the user is asking to change it. Search for what they want, find the best match (or use recommend_and_save_venue), and call update_plan with the full slot list for that day — keeping unchanged slots (use their existing event_id/venue_name) and replacing the modified one. The CURRENT PLAN section below has event_ids and venue names you need to preserve unchanged slots.
 
@@ -1498,7 +1521,8 @@ GUIDELINES:
 - GEOGRAPHY: Keep all stops in a plan within a reasonable area. Do NOT mix events 30+ miles apart in the same day. If events are in different cities (e.g. Boston and Tewksbury), pick one area and stick with it. Check the venue cities in search results — if two events are in very different locations, don't put them in the same plan.
 - If you know what and when, search and build immediately. Only ask about timing if it's truly ambiguous.
 - NEVER use emoji in your responses. No emoji at all — they don't render in this app.
-- Never mention the database, tools, or implementation details to the user.
+- Never mention the database, tools, search results, or implementation details to the user. Don't narrate your search process ("I notice the results show...", "Let me search for...", "The database has..."). Just act on the information and present results naturally.
+- Don't ask more than one clarifying question before building a plan. If the user gives you enough to work with, just build it.
 
 $prefsContext
 

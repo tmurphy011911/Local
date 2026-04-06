@@ -55,37 +55,40 @@ fun NeighbourhoodsScreen(
     onSkipAll: () -> Unit,
     userStateCode: String? = null,
 ) {
+    fun formatNumber(n: Int): String {
+        val s = n.toString()
+        val result = StringBuilder()
+        for (i in s.indices) {
+            if (i > 0 && (s.length - i) % 3 == 0) result.append(',')
+            result.append(s[i])
+        }
+        return result.toString()
+    }
+
     var searchQuery by remember { mutableStateOf("") }
     var showAll by remember { mutableStateOf(false) }
-
-    data class AreaItem(
-        val id: String,
-        val displayName: String,
-        val subtitle: String,
-        val stateCode: String?,
-    )
 
     val items = remember(neighborhoods, userStateCode) {
         neighborhoods.map { info ->
             val showState = info.stateCode != null && info.stateCode != userStateCode
             val displayName = if (showState) "${info.name}, ${info.stateCode}" else info.name
             val distText = info.distanceDisplay
-            val eventsText = if (info.eventCount > 0) "${info.eventCount} events" else ""
+            val eventsText = if (info.eventCount > 0) "${formatNumber(info.eventCount)} events" else ""
             val subtitle = listOfNotNull(
                 distText.ifEmpty { null },
                 eventsText.ifEmpty { null },
-            ).joinToString(" · ")
-            AreaItem(
+            ).joinToString(" \u00B7 ")
+            SelectionItem(
                 id = info.name.lowercase().replace(" ", "-"),
-                displayName = displayName,
+                name = displayName,
                 subtitle = subtitle,
-                stateCode = info.stateCode,
+                imageUrl = info.photoUrl,
             )
         }
     }
 
     val filtered = if (searchQuery.isBlank()) items
-    else items.filter { it.displayName.contains(searchQuery, ignoreCase = true) }
+    else items.filter { it.name.contains(searchQuery, ignoreCase = true) }
 
     val displayItems = if (showAll || searchQuery.isNotBlank()) filtered
     else filtered.take(PAGE_SIZE)
@@ -210,11 +213,11 @@ fun NeighbourhoodsScreen(
                     modifier = Modifier.weight(1f),
                 ) {
                     items(displayItems, key = { it.id }) { item ->
-                        SlimSelectionCard(
-                            name = item.displayName,
-                            subtitle = item.subtitle.ifEmpty { null },
+                        SelectionCard(
+                            item = item,
                             isSelected = item.id in selected,
                             onClick = { onToggle(item.id) },
+                            fixedHeight = 120.dp,
                         )
                     }
 

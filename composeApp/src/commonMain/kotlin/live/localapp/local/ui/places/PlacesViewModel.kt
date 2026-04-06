@@ -25,7 +25,7 @@ data class PlacesUiState(
     val userLat: Double? = null,
     val userLng: Double? = null,
     val locationName: String = "",
-    val streakDays: Int = 2,
+    val streakDays: Int = 0,
     val isLoading: Boolean = false,
     val isRefreshing: Boolean = false,
     val error: String? = null,
@@ -83,6 +83,14 @@ class PlacesViewModel(
         }
     }
 
+    fun setLocationName(name: String) {
+        _uiState.update { it.copy(locationName = name) }
+    }
+
+    fun setStreakDays(days: Int) {
+        _uiState.update { it.copy(streakDays = days) }
+    }
+
     fun debugSetLocation(lat: Double, lng: Double, name: String) {
         _uiState.update { it.copy(userLat = lat, userLng = lng, locationName = name) }
         loadVenues()
@@ -136,9 +144,23 @@ class PlacesViewModel(
                 val city = state.locationName.split(",").firstOrNull()?.trim()?.lowercase() ?: "boston"
                 val lat = state.userLat ?: 42.3601
                 val lng = state.userLng ?: -71.0589
-                val venues = venueRepository.getVenues(city, lat, lng)
+                val rawVenues = venueRepository.getVenues(city, lat, lng)
+                // De-dupe: if two venues in the same city have names where one starts with the other, keep the shorter name
+                val venues = rawVenues.toMutableList()
+                val toRemove = mutableSetOf<String>()
+                for (i in venues.indices) {
+                    for (j in venues.indices) {
+                        if (i == j) continue
+                        val a = venues[i].venue.name.lowercase()
+                        val b = venues[j].venue.name.lowercase()
+                        if (a != b && b.startsWith(a) && venues[i].venue.city == venues[j].venue.city) {
+                            toRemove.add(venues[j].venue.id) // remove the longer name
+                        }
+                    }
+                }
+                val deduped = venues.filter { it.venue.id !in toRemove }
                 _uiState.update {
-                    it.copy(venues = venues, isLoading = false, isRefreshing = false)
+                    it.copy(venues = deduped, isLoading = false, isRefreshing = false)
                 }
                 applyFilters()
             } catch (e: Exception) {

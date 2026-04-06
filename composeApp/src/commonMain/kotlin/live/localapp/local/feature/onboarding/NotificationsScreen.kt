@@ -160,8 +160,8 @@ fun NotificationsScreen(
 
                 // Toggle rows
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    NotifRow(Icons.Outlined.ConfirmationNumber, "Ticket alerts", "Events near selling out", tickets, onToggleTickets)
-                    NotifRow(Icons.Outlined.NearMe, "Nearby events", "Things happening around you", nearby, onToggleNearby)
+                    NotifRow(Icons.Outlined.ConfirmationNumber, "Weekly Snapshot", "A weekly snapshot of events coming up that you'll love", tickets, onToggleTickets)
+                    NotifRow(Icons.Outlined.NearMe, "Reminders", "Gentle nudges to make reservations or buy tickets for upcoming plans", nearby, onToggleNearby)
                     NotifRow(Icons.Outlined.Star, "Saved venue updates", "New events at your favorites", venues, onToggleVenues)
                 }
 

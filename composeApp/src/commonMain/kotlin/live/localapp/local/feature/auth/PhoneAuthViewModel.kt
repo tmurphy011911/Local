@@ -44,6 +44,7 @@ class PhoneAuthViewModel(
     fun updateOtpCode(value: String) {
         val digits = value.filter { it.isDigit() }.take(6)
         _state.update { it.copy(otpCode = digits, error = null) }
+        if (digits.length == 6) verifyOtp()
     }
 
     fun updateFirstName(value: String) {
@@ -99,15 +100,16 @@ class PhoneAuthViewModel(
             viewModelScope.launch {
                 _state.update { it.copy(isLoading = true, error = null) }
                 val testUserId = "test-${s.phone}"
-                // Check if this test user already has a profile
-                val existing = try { userPreferencesRepository.loadPreferences(testUserId) } catch (_: Throwable) { null }
-                if (existing?.onboardingComplete == true) {
+                // Check local storage — the DB won't have test IDs
+                val existingLocalId = userPreferencesRepository.getLocalUserId()
+                val isReturning = existingLocalId != null && userPreferencesRepository.isOnboardingComplete()
+                if (isReturning) {
                     _state.update {
-                        it.copy(isLoading = false, isExistingUser = true, authComplete = true, authUserId = testUserId)
+                        it.copy(isLoading = false, isExistingUser = true, authComplete = true, authUserId = existingLocalId!!)
                     }
                 } else {
                     _state.update {
-                        it.copy(isLoading = false, step = AuthStep.NAME, authUserId = testUserId)
+                        it.copy(isLoading = false, authComplete = true, authUserId = testUserId)
                     }
                 }
             }
@@ -145,11 +147,11 @@ class PhoneAuthViewModel(
                         )
                     }
                 } else {
-                    // New user: collect name then go to onboarding
+                    // New user: skip name collection, go straight to onboarding
                     _state.update {
                         it.copy(
                             isLoading = false,
-                            step = AuthStep.NAME,
+                            authComplete = true,
                             authUserId = userId,
                         )
                     }

@@ -41,6 +41,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.rounded.BookmarkBorder
 import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Celebration
@@ -98,6 +99,44 @@ fun ProgressScreen(
     streakDays: Int = 2,
 ) {
     val state by viewModel.uiState.collectAsState()
+    var showNameDialog by remember { mutableStateOf(false) }
+    var nameInput by remember { mutableStateOf("") }
+
+    if (showNameDialog) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { showNameDialog = false },
+            title = { Text("What's your name?", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp)) },
+            text = {
+                androidx.compose.foundation.text.BasicTextField(
+                    value = nameInput,
+                    onValueChange = { nameInput = it },
+                    textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = AppColors.Ink),
+                    singleLine = true,
+                    decorationBox = { inner ->
+                        Box(
+                            Modifier.fillMaxWidth()
+                                .background(AppColors.Mist, RoundedCornerShape(10.dp))
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                        ) {
+                            if (nameInput.isEmpty()) Text("First name", style = TextStyle(fontFamily = AppFonts.Body, fontSize = 16.sp, color = AppColors.Ink3))
+                            inner()
+                        }
+                    },
+                )
+            },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = {
+                    if (nameInput.isNotBlank()) {
+                        viewModel.saveUserName(nameInput.trim())
+                        showNameDialog = false
+                    }
+                }) { Text("Save", color = AppColors.Coral, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { showNameDialog = false }) { Text("Cancel", color = AppColors.Ink3) }
+            },
+        )
+    }
 
     // Use current state directly for display — tier change animation only when lastSeen differs
     var displayTier by remember { mutableStateOf(state.currentTier) }
@@ -193,7 +232,7 @@ fun ProgressScreen(
                     .padding(bottom = 80.dp),
             ) {
                 // ── Hero Card ──
-                HeroCard(state, animateToPoints, animateToProgress, displayTier, displayNextTier, showTierCelebration)
+                HeroCard(state, animateToPoints, animateToProgress, displayTier, displayNextTier, showTierCelebration, onEditName = { showNameDialog = true })
 
                 Spacer(Modifier.height(16.dp))
 
@@ -271,6 +310,7 @@ private fun HeroCard(
     displayTier: StatusTier = state.currentTier,
     displayNextTier: StatusTier? = state.nextTier,
     showTierCelebration: Boolean = false,
+    onEditName: () -> Unit = {},
 ) {
     val nextTier = displayNextTier
     val ptsToNext = if (nextTier != null) nextTier.threshold - state.totalPoints else 0
@@ -316,16 +356,41 @@ private fun HeroCard(
                 Spacer(Modifier.width(14.dp))
 
                 Column {
-                    Text(
-                        state.userName.ifEmpty { "User" },
-                        style = TextStyle(
-                            fontFamily = AppFonts.Heading,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 22.sp,
-                            color = AppColors.White,
-                            letterSpacing = (-0.5).sp,
-                        ),
-                    )
+                    if (state.userName.isNotEmpty()) {
+                        Text(
+                            state.userName,
+                            style = TextStyle(
+                                fontFamily = AppFonts.Heading,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 22.sp,
+                                color = AppColors.White,
+                                letterSpacing = (-0.5).sp,
+                            ),
+                        )
+                    } else {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clickable { onEditName() },
+                        ) {
+                            Text(
+                                "Enter Name",
+                                style = TextStyle(
+                                    fontFamily = AppFonts.Heading,
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 22.sp,
+                                    color = AppColors.White.copy(alpha = 0.7f),
+                                    letterSpacing = (-0.5).sp,
+                                ),
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Icon(
+                                Icons.Outlined.Edit,
+                                contentDescription = "Edit name",
+                                modifier = Modifier.size(16.dp),
+                                tint = AppColors.White.copy(alpha = 0.7f),
+                            )
+                        }
+                    }
                     Text(
                         "Member since Jan 2025",
                         style = TextStyle(

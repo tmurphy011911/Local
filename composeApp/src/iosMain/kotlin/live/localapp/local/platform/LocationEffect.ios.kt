@@ -81,27 +81,29 @@ actual fun RequestLocationEffect(
                     }
                 }
 
-                manager.delegate = delegate
-
+                // Check status BEFORE setting delegate to avoid double-resume
                 val status = CLLocationManager.authorizationStatus()
                 println("LocationEffect: initial status = $status")
-                when (status) {
-                    kCLAuthorizationStatusNotDetermined -> {
-                        println("LocationEffect: requesting authorization...")
-                        manager.requestWhenInUseAuthorization()
-                    }
-                    kCLAuthorizationStatusAuthorizedWhenInUse,
-                    kCLAuthorizationStatusAuthorizedAlways -> {
-                        println("LocationEffect: already authorized, requesting location...")
-                        manager.requestLocation()
-                    }
-                    kCLAuthorizationStatusDenied,
-                    kCLAuthorizationStatusRestricted -> {
-                        println("LocationEffect: already denied")
-                        continuation.resume(LocationResult.Denied)
-                    }
-                    else -> {
-                        manager.requestWhenInUseAuthorization()
+
+                if (status == kCLAuthorizationStatusNotDetermined) {
+                    // Setting delegate will trigger didChangeAuthorization, but status is still "not determined"
+                    // so the delegate won't resume yet — it'll wait for the user's response
+                    manager.delegate = delegate
+                    println("LocationEffect: requesting authorization...")
+                    manager.requestWhenInUseAuthorization()
+                } else {
+                    // Status is already determined — handle directly, don't set delegate (avoids double-fire)
+                    when (status) {
+                        kCLAuthorizationStatusAuthorizedWhenInUse,
+                        kCLAuthorizationStatusAuthorizedAlways -> {
+                            println("LocationEffect: already authorized, requesting location...")
+                            manager.delegate = delegate
+                            manager.requestLocation()
+                        }
+                        else -> {
+                            println("LocationEffect: already denied")
+                            continuation.resume(LocationResult.Denied)
+                        }
                     }
                 }
             }

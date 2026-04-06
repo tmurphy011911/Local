@@ -167,15 +167,27 @@ fun AppHeader(
                     .clickable { onProfileClick() },
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    userInitial,
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 13.sp,
-                        color = AppColors.White,
-                    ),
-                )
+                if (userInitial.isNotEmpty()) {
+                    Text(
+                        userInitial,
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 13.sp,
+                            color = AppColors.White,
+                        ),
+                    )
+                } else {
+                    Text(
+                        "?",
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 13.sp,
+                            color = AppColors.White,
+                        ),
+                    )
+                }
             }
         }
 

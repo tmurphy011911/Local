@@ -36,6 +36,7 @@ import live.localapp.local.ui.theme.AppFonts
 @Composable
 fun CategoriesScreen(
     categoryCounts: Map<String, Int>,
+    categoryPhotos: Map<String, String> = emptyMap(),
     selected: Set<String>,
     onToggle: (String) -> Unit,
     onNext: () -> Unit,
@@ -43,16 +44,17 @@ fun CategoriesScreen(
     isValid: Boolean,
     onBack: () -> Unit,
 ) {
-    val items = remember(categoryCounts) {
+    val items = remember(categoryCounts, categoryPhotos) {
         categoryCounts.entries
             .filter { it.key != "no-public-interest" && it.key != "cafe" && it.key != "other" }
             .sortedByDescending { it.value }
             .map { (key, count) ->
                 SelectionItem(
                     id = key,
-                    icon = OnboardingViewModel.categoryIcon(key),
+                    icon = if (categoryPhotos.containsKey(key)) null else OnboardingViewModel.categoryIcon(key),
                     name = OnboardingViewModel.categoryDisplayName(key),
-                    subtitle = "$count events",
+                    subtitle = "${formatNumber(count)} events",
+                    imageUrl = categoryPhotos[key],
                 )
             }
     }
@@ -130,7 +132,7 @@ fun CategoriesScreen(
                 )
 
                 Text(
-                    "Pick at least 2 \u2014 your feed updates instantly.",
+                    "Select your interests \u2014 your feed updates instantly.",
                     modifier = Modifier.padding(top = 8.dp, bottom = 10.dp),
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
@@ -172,7 +174,7 @@ fun CategoriesScreen(
                         )) {
                             append("$count selected")
                         }
-                        append(if (isValid) " \u2014 looking great!" else " \u2014 pick at least 2")
+                        append(if (count > 0) " \u2014 looking great!" else "")
                     },
                     modifier = Modifier
                         .fillMaxWidth()
@@ -187,13 +189,22 @@ fun CategoriesScreen(
                 )
 
                 OnboardingButton(
-                    text = "Build my starter pack \u2192",
+                    text = "Continue \u2192",
                     color = AppColors.Plum,
                     shadowColor = AppColors.PlumDk,
                     onClick = onNext,
-                    enabled = isValid,
                 )
             }
         }
     }
+}
+
+private fun formatNumber(n: Int): String {
+    val s = n.toString()
+    val result = StringBuilder()
+    for (i in s.indices) {
+        if (i > 0 && (s.length - i) % 3 == 0) result.append(',')
+        result.append(s[i])
+    }
+    return result.toString()
 }

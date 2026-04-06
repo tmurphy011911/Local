@@ -54,6 +54,7 @@ data class OnboardingState(
     val locationGranted: Boolean = false,
     val userLat: Double? = null,
     val userLng: Double? = null,
+    val userCity: String = "",
     val selectedNeighbourhoods: Set<String> = emptySet(),
     val selectedVenues: Set<String> = emptySet(),
     val selectedCategories: Set<String> = emptySet(),
@@ -72,21 +73,22 @@ data class OnboardingState(
     val neighborhoods: List<NeighborhoodInfo> = emptyList(),
     val venues: List<VenueSummary> = emptyList(),
     val categoryCounts: Map<String, Int> = emptyMap(),
+    val categoryPhotos: Map<String, String> = emptyMap(),
     val isLoadingData: Boolean = false,
 ) {
-    /** Tracker fills: 5 segments [Location, Discovery, Favourites, Notifications, Account] each 0f..1f */
+    /** Tracker fills: 3 segments [Location, Preferences, Notifications] each 0f..1f */
     val trackerFills: List<Float>?
         get() = when (currentStep) {
             OnboardingStep.SPLASH -> null
-            OnboardingStep.LOCATION -> listOf(0.5f, 0f, 0f, 0f, 0f)
-            OnboardingStep.MANUAL_ADDRESS -> listOf(0.75f, 0f, 0f, 0f, 0f)
-            OnboardingStep.SUCCESS -> listOf(1f, 0f, 0f, 0f, 0f)
-            OnboardingStep.NEIGHBOURHOODS -> listOf(1f, 0.33f, 0f, 0f, 0f)
-            OnboardingStep.VENUES -> listOf(1f, 0.66f, 0f, 0f, 0f)
-            OnboardingStep.CATEGORIES -> listOf(1f, 1f, 0f, 0f, 0f)
-            OnboardingStep.FAVOURITES -> listOf(1f, 1f, 1f, 0f, 0f)
-            OnboardingStep.NOTIFICATIONS -> listOf(1f, 1f, 1f, 1f, 0f)
-            OnboardingStep.PHONE -> listOf(1f, 1f, 1f, 1f, 1f)
+            OnboardingStep.LOCATION -> listOf(0.5f, 0f, 0f)
+            OnboardingStep.MANUAL_ADDRESS -> listOf(0.75f, 0f, 0f)
+            OnboardingStep.SUCCESS -> listOf(1f, 0f, 0f)
+            OnboardingStep.NEIGHBOURHOODS -> listOf(1f, 0.25f, 0f)
+            OnboardingStep.VENUES -> listOf(1f, 0.5f, 0f)
+            OnboardingStep.CATEGORIES -> listOf(1f, 0.75f, 0f)
+            OnboardingStep.FAVOURITES -> listOf(1f, 1f, 0f)
+            OnboardingStep.NOTIFICATIONS -> listOf(1f, 1f, 0.5f)
+            OnboardingStep.PHONE -> listOf(1f, 1f, 1f)
         }
 
     val categoriesValid: Boolean get() = selectedCategories.size >= 2
@@ -116,11 +118,14 @@ class OnboardingViewModel(
     }
 
     fun onAllowLocation(lat: Double, lng: Double) {
+        val city = nearestCity(lat, lng)
+        println("onAllowLocation: lat=$lat lng=$lng city=$city")
         _state.update {
             it.copy(
                 locationGranted = true,
                 userLat = lat,
                 userLng = lng,
+                userCity = city,
                 currentStep = OnboardingStep.SUCCESS,
             )
         }
@@ -136,6 +141,7 @@ class OnboardingViewModel(
             it.copy(
                 userLat = lat,
                 userLng = lng,
+                userCity = city.ifBlank { nearestCity(lat, lng) },
                 currentStep = OnboardingStep.SUCCESS,
             )
         }
@@ -143,52 +149,63 @@ class OnboardingViewModel(
     }
 
     fun onSuccessComplete() {
-        _state.update { it.copy(currentStep = OnboardingStep.NEIGHBOURHOODS) }
+        val s = _state.value
+        val nextStep = when {
+            s.neighborhoods.size >= 2 -> OnboardingStep.NEIGHBOURHOODS
+            s.venues.size >= 10 -> OnboardingStep.VENUES
+            s.categoryCounts.size >= 5 -> OnboardingStep.CATEGORIES
+            else -> OnboardingStep.NOTIFICATIONS
+        }
+        _state.update { it.copy(currentStep = nextStep) }
     }
 
     fun onNeighbourhoodsNext() {
-        _state.update { it.copy(currentStep = OnboardingStep.VENUES) }
+        val s = _state.value
+        val nextStep = when {
+            s.venues.size >= 10 -> OnboardingStep.VENUES
+            s.categoryCounts.size >= 5 -> OnboardingStep.CATEGORIES
+            else -> OnboardingStep.NOTIFICATIONS
+        }
+        _state.update { it.copy(currentStep = nextStep) }
     }
 
     fun onVenuesNext() {
-        _state.update { it.copy(currentStep = OnboardingStep.CATEGORIES) }
+        val s = _state.value
+        val nextStep = if (s.categoryCounts.size >= 5) OnboardingStep.CATEGORIES else OnboardingStep.NOTIFICATIONS
+        _state.update { it.copy(currentStep = nextStep) }
     }
 
     fun onCategoriesNext() {
         _state.update {
             it.copy(
                 isPersonalised = true,
-                currentStep = OnboardingStep.FAVOURITES,
-                isLoadingData = true,
+                currentStep = OnboardingStep.NOTIFICATIONS,
             )
         }
-        loadFavouriteEvents()
     }
 
     fun onSkipAll() {
         _state.update {
             it.copy(
                 isPersonalised = false,
-                currentStep = OnboardingStep.FAVOURITES,
-                isLoadingData = true,
+                currentStep = OnboardingStep.NOTIFICATIONS,
             )
         }
-        loadFavouriteEvents()
     }
 
     fun onSkipVenues() {
-        _state.update { it.copy(currentStep = OnboardingStep.CATEGORIES) }
+        val s = _state.value
+        val nextStep = if (s.categoryCounts.size >= 5) OnboardingStep.CATEGORIES else OnboardingStep.NOTIFICATIONS
+        _state.update { it.copy(currentStep = nextStep) }
     }
 
     fun onSkipCategories() {
         _state.update {
             it.copy(
                 isPersonalised = false,
-                currentStep = OnboardingStep.FAVOURITES,
-                isLoadingData = true,
+                currentStep = OnboardingStep.NOTIFICATIONS,
             )
         }
-        loadFavouriteEvents()
     }
 
     fun onFavouritesNext() {
@@ -222,7 +239,7 @@ class OnboardingViewModel(
     }
 
     fun onBackFromNotifications() {
-        _state.update { it.copy(currentStep = OnboardingStep.FAVOURITES) }
+        _state.update { it.copy(currentStep = OnboardingStep.CATEGORIES) }
     }
 
     fun onBackFromPhone() {
@@ -291,7 +308,7 @@ class OnboardingViewModel(
                     firstName = s.firstName.trim().ifEmpty { null },
                     lastName = s.lastName.trim().ifEmpty { null },
                     phone = s.phoneNumber.filter { it.isDigit() }.ifEmpty { null },
-                    city = "boston",
+                    city = s.userCity.lowercase().ifBlank { "boston" },
                     userLat = s.userLat,
                     userLng = s.userLng,
                     selectedNeighborhoods = neighborhoodNames,
@@ -310,8 +327,19 @@ class OnboardingViewModel(
                 } else {
                     userPreferencesRepository.savePreferences(prefs)
                 }
-            } catch (_: Exception) {
-                // Save failed — continue anyway, preferences will be lost
+            } catch (e: Exception) {
+                // DB save failed (e.g. test user with non-UUID ID) — cache locally so app still works
+                println("saveOnboardingPreferences: DB save failed (${e.message}), caching locally")
+                try {
+                    val s = _state.value
+                    userPreferencesRepository.savePreferences(UserPreferences(
+                        id = "", // let savePreferences generate a UUID
+                        firstName = s.firstName.trim().ifEmpty { null },
+                        city = s.userCity.lowercase().ifBlank { "boston" },
+                        userLat = s.userLat, userLng = s.userLng,
+                        onboardingComplete = true,
+                    ))
+                } catch (_: Exception) {}
             }
             onSaved()
         }
@@ -343,11 +371,13 @@ class OnboardingViewModel(
         viewModelScope.launch {
             _state.update { it.copy(isLoadingData = true) }
             try {
-                val city = "boston" // TODO: derive from location
                 val s = _state.value
+                val city = s.userCity.lowercase().ifBlank { "boston" }
                 val lat = s.userLat ?: 42.3897
                 val lng = s.userLng ?: -71.2358
+                println("loadOnboardingData: city=$city lat=$lat lng=$lng userCity='${s.userCity}'")
                 val data = onboardingRepository.loadOnboardingData(city, lat, lng)
+                println("loadOnboardingData: events=${data.eventCount} venues=${data.venueCount} neighborhoods=${data.neighborhoods.size} categories=${data.categoryCounts.size}")
                 _state.update {
                     it.copy(
                         eventCount = data.eventCount,
@@ -355,10 +385,13 @@ class OnboardingViewModel(
                         neighborhoods = data.neighborhoods,
                         venues = data.venueNames,
                         categoryCounts = data.categoryCounts,
+                        categoryPhotos = data.categoryPhotos,
                         isLoadingData = false,
                     )
                 }
             } catch (e: Exception) {
+                println("loadOnboardingData: FAILED ${e.message}")
+                e.printStackTrace()
                 _state.update { it.copy(isLoadingData = false) }
             }
         }
@@ -368,7 +401,7 @@ class OnboardingViewModel(
         viewModelScope.launch {
             try {
                 val s = _state.value
-                val city = "boston"
+                val city = s.userCity.lowercase().ifBlank { "boston" }
                 val lat = s.userLat ?: 42.3897
                 val lng = s.userLng ?: -71.2358
 
@@ -408,6 +441,30 @@ class OnboardingViewModel(
         }
     }
 
+    private fun nearestCity(lat: Double, lng: Double): String {
+        data class CityRef(val name: String, val lat: Double, val lng: Double)
+        val cities = listOf(
+            CityRef("Boston", 42.3601, -71.0589),
+            CityRef("Cambridge", 42.3736, -71.1097),
+            CityRef("Somerville", 42.3876, -71.0995),
+            CityRef("Waltham", 42.3765, -71.2356),
+            CityRef("Brookline", 42.3318, -71.1212),
+            CityRef("Newton", 42.3370, -71.2092),
+            CityRef("Worcester", 42.2626, -71.8023),
+            CityRef("Springfield", 42.1015, -72.5898),
+            CityRef("Lowell", 42.6334, -71.3162),
+            CityRef("Providence", 41.8240, -71.4128),
+            CityRef("New York", 40.7128, -74.0060),
+            CityRef("Portland", 43.6591, -70.2568),
+            CityRef("Philadelphia", 39.9526, -75.1652),
+        )
+        return cities.minByOrNull {
+            val dLat = it.lat - lat
+            val dLng = it.lng - lng
+            dLat * dLat + dLng * dLng
+        }?.name ?: "Boston"
+    }
+
     companion object {
         fun categoryIcon(key: String): ImageVector = when (key.lowercase()) {
             "music" -> Icons.Outlined.MusicNote
@@ -420,11 +477,11 @@ class OnboardingViewModel(
             "theatre" -> Icons.Outlined.TheaterComedy
             "museums" -> Icons.Outlined.Place
             "tours" -> Icons.Outlined.Place
-            "libraries" -> Icons.Outlined.Star
-            "for-kids" -> Icons.Outlined.Star
+            "libraries" -> Icons.Outlined.Place
+            "for-kids" -> Icons.Outlined.SportsScore
             "film" -> Icons.Outlined.Movie
-            "other" -> Icons.Outlined.Star
-            else -> Icons.Outlined.Star
+            "other" -> Icons.Outlined.Place
+            else -> Icons.Outlined.Place
         }
 
         fun categoryDisplayName(key: String): String = when (key.lowercase()) {

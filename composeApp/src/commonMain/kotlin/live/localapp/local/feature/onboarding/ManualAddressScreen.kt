@@ -24,6 +24,8 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.NearMe
+import androidx.compose.material.icons.outlined.Place
+import androidx.compose.ui.draw.rotate
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -106,9 +108,15 @@ fun ManualAddressScreen(
         }
     }
 
-    // Resolve selected place to lat/lng
+    // Pre-resolve selected place to lat/lng (ready for when user taps CTA)
+    var resolvedLat by remember { mutableStateOf<Double?>(null) }
+    var resolvedLng by remember { mutableStateOf<Double?>(null) }
+    var resolvedCity by remember { mutableStateOf("") }
+
     LaunchedEffect(selectedPlace) {
         val place = selectedPlace ?: return@LaunchedEffect
+        resolvedLat = null
+        resolvedLng = null
         isResolving = true
         try {
             val response = httpClient.post("${Config.SUPABASE_URL}/functions/v1/geocode") {
@@ -118,14 +126,10 @@ fun ManualAddressScreen(
             }
             val body = response.bodyAsText()
             val json = Json.parseToJsonElement(body).jsonObject
-            val lat = json["lat"]?.jsonPrimitive?.content?.toDoubleOrNull()
-            val lng = json["lng"]?.jsonPrimitive?.content?.toDoubleOrNull()
-            val city = json["city"]?.jsonPrimitive?.content ?: ""
-            if (lat != null && lng != null) {
-                onSubmit(lat, lng, city)
-            }
+            resolvedLat = json["lat"]?.jsonPrimitive?.content?.toDoubleOrNull()
+            resolvedLng = json["lng"]?.jsonPrimitive?.content?.toDoubleOrNull()
+            resolvedCity = json["city"]?.jsonPrimitive?.content ?: ""
         } catch (_: Exception) {
-            // Reset so they can try again
             selectedPlace = null
         }
         isResolving = false
@@ -173,26 +177,38 @@ fun ManualAddressScreen(
                     .weight(1f)
                     .padding(horizontal = 28.dp),
             ) {
-                // Location icon
+                // Pin icon with pulse rings (matches location allow screen)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(100.dp),
-                    contentAlignment = Alignment.BottomCenter,
+                        .height(140.dp),
+                    contentAlignment = Alignment.Center,
                 ) {
                     Box(
-                        modifier = Modifier
-                            .size(64.dp)
-                            .background(AppColors.SkyLt, CircleShape)
-                            .border(2.5.dp, AppColors.Sky, CircleShape),
+                        modifier = Modifier.size(130.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(
-                            Icons.Outlined.NearMe,
-                            contentDescription = null,
-                            modifier = Modifier.size(32.dp),
-                            tint = AppColors.Sky,
-                        )
+                        listOf(60.dp, 90.dp, 125.dp).forEach { size ->
+                            Box(
+                                modifier = Modifier
+                                    .size(size)
+                                    .border(2.dp, AppColors.Sky.copy(alpha = 0.18f), CircleShape),
+                            )
+                        }
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .rotate(-45f)
+                                .background(AppColors.Sky, RoundedCornerShape(50, 50, 50, 0)),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Outlined.Place,
+                                contentDescription = null,
+                                modifier = Modifier.size(22.dp).rotate(45f),
+                                tint = AppColors.White,
+                            )
+                        }
                     }
                 }
 
@@ -290,7 +306,7 @@ fun ManualAddressScreen(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable {
-                                        query = suggestion.mainText
+                                        query = if (suggestion.secondaryText.isNotBlank()) "${suggestion.mainText}, ${suggestion.secondaryText}" else suggestion.mainText
                                         selectedPlace = suggestion
                                         suggestions = emptyList()
                                     }
@@ -360,6 +376,24 @@ fun ManualAddressScreen(
                         ),
                     )
                 }
+            }
+
+            // Bottom CTAs
+            Column(
+                modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                // Main CTA — enabled when a place is selected OR user typed enough for manual entry
+                val canSubmit = selectedPlace != null && resolvedLat != null && resolvedLng != null && !isResolving
+                OnboardingButton(
+                    text = if (isResolving) "Locating..." else "Set my location \u2192",
+                    color = if (canSubmit) AppColors.Sky else AppColors.Pebble,
+                    shadowColor = if (canSubmit) AppColors.SkyDk else AppColors.Pebble,
+                    onClick = {
+                        if (canSubmit) onSubmit(resolvedLat!!, resolvedLng!!, resolvedCity)
+                    },
+                    enabled = canSubmit,
+                )
             }
         }
     }

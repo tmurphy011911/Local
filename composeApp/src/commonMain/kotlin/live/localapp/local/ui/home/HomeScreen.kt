@@ -1,11 +1,17 @@
 package live.localapp.local.ui.home
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.detectTapGestures
+import live.localapp.local.ui.common.pressable
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.launch
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
@@ -68,6 +74,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -137,7 +144,7 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
     // Haptic when data arrives
     LaunchedEffect(state.isLoading, state.carousels) {
         if (previouslyLoading && !state.isLoading && state.carousels.isNotEmpty()) {
-            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
         }
         previouslyLoading = state.isLoading
     }
@@ -531,20 +538,11 @@ private fun CategoryTileItem(
         targetValue = if (isActive) 1.08f else 1f,
         animationSpec = tween(150),
     )
-    val haptic = LocalHapticFeedback.current
-
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .width(64.dp)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                    onClick()
-                },
-            ),
+            .pressable(onClick = onClick),
     ) {
         Box(
             modifier = Modifier
@@ -943,18 +941,11 @@ private data class EventCardData(
 
 @Composable
 private fun EventCard(data: EventCardData, onClick: (Rect) -> Unit = {}, onFavorite: (() -> Unit)? = null, isFavorited: Boolean = false) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
-    val offsetY by animateFloatAsState(
-        targetValue = if (isPressed) 3f else 0f,
-        animationSpec = tween(80),
-    )
-    val scale by animateFloatAsState(
-        targetValue = if (isPressed) 0.97f else 1f,
-        animationSpec = tween(80),
-    )
+    val scaleAnim = remember { Animatable(1f) }
+    val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
     var cardBounds by remember { mutableStateOf(Rect.Zero) }
+    val isPressed = scaleAnim.value < 0.99f
 
     Box(
         modifier = Modifier
@@ -964,9 +955,21 @@ private fun EventCard(data: EventCardData, onClick: (Rect) -> Unit = {}, onFavor
                 cardBounds = coordinates.boundsInRoot()
             }
             .graphicsLayer {
-                translationY = offsetY * density
-                scaleX = scale
-                scaleY = scale
+                scaleX = scaleAnim.value
+                scaleY = scaleAnim.value
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = {
+                        scope.launch { scaleAnim.animateTo(0.94f, tween(80)) }
+                        val released = tryAwaitRelease()
+                        scope.launch { scaleAnim.animateTo(1f, spring(dampingRatio = 0.4f, stiffness = 500f)) }
+                        if (released) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onClick(cardBounds)
+                        }
+                    },
+                )
             },
     ) {
         // Shadow
@@ -984,15 +987,7 @@ private fun EventCard(data: EventCardData, onClick: (Rect) -> Unit = {}, onFavor
                 .height(212.dp)
                 .background(AppColors.White, AppShapes.CardMedium)
                 .border(2.dp, AppColors.Pebble, AppShapes.CardMedium)
-                .clip(AppShapes.CardMedium)
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = null,
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
-                        onClick(cardBounds)
-                    },
-                ),
+                .clip(AppShapes.CardMedium),
         ) {
             // Image area
             Box(
@@ -1038,7 +1033,17 @@ private fun EventCard(data: EventCardData, onClick: (Rect) -> Unit = {}, onFavor
                             .size(28.dp)
                             .background(Color.White.copy(alpha = 0.75f), CircleShape)
                             .clip(CircleShape)
-                            .clickable { onFavorite() },
+                            .pointerInput(Unit) {
+                                detectTapGestures {
+                                    // Double haptic for save
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    scope.launch {
+                                        kotlinx.coroutines.delay(80)
+                                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    }
+                                    onFavorite()
+                                }
+                            },
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
@@ -1311,7 +1316,7 @@ private fun PlanRow(icon: ImageVector, name: String, meta: String) {
                     interactionSource = interactionSource,
                     indication = null,
                     onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     },
                 )
                 .padding(horizontal = 14.dp, vertical = 12.dp),
@@ -1356,15 +1361,16 @@ private fun GreetingSection(state: HomeUiState) {
         }
     }
     val name = state.userName
-    val greeting = if (name.isNotEmpty()) "$timeGreeting, $name" else timeGreeting
 
-    Column(
-        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp),
-    ) {
-        Text(
-            greeting,
-            style = AppType.GreetingSmall,
-        )
+    if (name.isNotEmpty()) {
+        Column(
+            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp),
+        ) {
+            Text(
+                "$timeGreeting, $name",
+                style = AppType.GreetingSmall,
+            )
+        }
     }
 }
 
@@ -1383,7 +1389,7 @@ private fun AiConciergeCard(onClick: () -> Unit = {}) {
     Box(
         modifier = Modifier
             .padding(horizontal = 20.dp)
-            .padding(top = 14.dp, bottom = 2.dp)
+            .padding(top = 14.dp, bottom = 10.dp)
             .fillMaxWidth()
             .graphicsLayer { translationY = offsetY * density },
     ) {
@@ -1407,7 +1413,7 @@ private fun AiConciergeCard(onClick: () -> Unit = {}) {
                     interactionSource = interactionSource,
                     indication = null,
                     onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onClick()
                     },
                 )
@@ -1584,7 +1590,7 @@ private fun AlbumEventCard(event: Event, onClick: (Rect) -> Unit) {
                 interactionSource = interactionSource,
                 indication = null,
                 onClick = {
-                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     onClick(cardBounds)
                 },
             ),
