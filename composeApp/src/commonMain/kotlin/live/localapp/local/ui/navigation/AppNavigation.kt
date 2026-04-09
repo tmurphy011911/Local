@@ -115,6 +115,8 @@ import live.localapp.local.platform.setupNativeTabBarCallbacks
 import live.localapp.local.platform.setTabBarUserInitial
 import live.localapp.local.platform.requestHeroCollapse
 import live.localapp.local.platform.checkClipboardForDeepLink
+import live.localapp.local.platform.checkSubscriptionStatus
+import live.localapp.local.platform.purchaseSubscription
 import live.localapp.local.platform.clearClipboardDeepLink
 import live.localapp.local.platform.setDeepLinkCallback
 import live.localapp.local.platform.presentShareSheet
@@ -153,6 +155,8 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     var showTasteProfile by remember { mutableStateOf(false) }
     var selectedPlan by remember { mutableStateOf<Plan?>(null) }
     var sharedPlan by remember { mutableStateOf<Plan?>(null) }
+    var sharedEvent by remember { mutableStateOf<live.localapp.local.domain.model.Event?>(null) }
+    var sharedVenue by remember { mutableStateOf<live.localapp.local.domain.model.Venue?>(null) }
     val userPrefsRepo: UserPreferencesRepository = remember { koin.get() }
     val isLoggedIn = userPrefsRepo.getLocalUserId() != null
 
@@ -185,43 +189,119 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     val chatState by chatVm.uiState.collectAsState()
     val deferCelebrations = chatState.showPlanSuccess
 
+    // Helper: check if user already has this plan (match by title + city)
+    suspend fun userAlreadyHasPlan(plan: Plan): Boolean {
+        val existing = planRepo.getPlans()
+        return existing.any { it.title == plan.title && it.city == plan.city }
+    }
+
     // Check clipboard for deferred deep link on launch
     LaunchedEffect(Unit) {
         val deepLink = checkClipboardForDeepLink() ?: return@LaunchedEffect
         println("DeepLink: found clipboard link: $deepLink")
-        if (deepLink.startsWith("/p/")) {
-            val token = deepLink.removePrefix("/p/")
-            val plan = planRepo.getSharedPlan(token)
-            if (plan != null) {
-                println("DeepLink: loaded shared plan '${plan.title}'")
-                sharedPlan = plan
-                clearClipboardDeepLink()
+        clearClipboardDeepLink()
+        when {
+            deepLink.startsWith("/p/") -> {
+                val token = deepLink.removePrefix("/p/")
+                val plan = planRepo.getSharedPlan(token)
+                if (plan != null) {
+                    if (userAlreadyHasPlan(plan)) {
+                        selectedPlan = plan
+                    } else {
+                        sharedPlan = plan
+                    }
+                }
+            }
+            deepLink.startsWith("/e/") -> {
+                val eventId = deepLink.removePrefix("/e/")
+                val event = eventRepo.getEvent(eventId)
+                if (event != null) {
+                    sharedEvent = event
+                }
+            }
+            deepLink.startsWith("/v/") -> {
+                val venueId = deepLink.removePrefix("/v/")
+                val venues = venueRepo.getVenuesByIds(listOf(venueId))
+                val venue = venues.firstOrNull()
+                if (venue != null) {
+                    sharedVenue = venue
+                }
             }
         }
     }
 
     // Listen for Universal Link deep links while app is running (iOS bridge)
     LaunchedEffect(Unit) {
-        setDeepLinkCallback { token ->
+        setDeepLinkCallback { path ->
             scope.launch {
-                val plan = planRepo.getSharedPlan(token)
-                if (plan != null) {
-                    println("DeepLink: Universal Link received plan '${plan.title}'")
-                    sharedPlan = plan
-                    clearClipboardDeepLink()
+                when {
+                    path.length == 12 || !path.contains("-") -> {
+                        // Plan share token (12 chars, no dashes)
+                        val plan = planRepo.getSharedPlan(path)
+                        if (plan != null) {
+                            clearClipboardDeepLink()
+                            if (userAlreadyHasPlan(plan)) {
+                                selectedPlan = plan
+                            } else {
+                                sharedPlan = plan
+                            }
+                        }
+                    }
                 }
             }
         }
     }
 
-    // After auth completes, check if there's a pending invite to accept
+    // Sync subscription status from RevenueCat on launch
+    LaunchedEffect(Unit) {
+        checkSubscriptionStatus { isPro, expiryDate ->
+            val gate = live.localapp.local.ui.chat.PremiumGate()
+            gate.hasPaidSubscription = isPro
+            if (expiryDate != null) {
+                gate.paidSubscriptionExpiry = expiryDate.take(10) // ISO date
+            }
+            println("RevenueCat sync: isPro=$isPro expiry=$expiryDate")
+        }
+    }
+
+    // After auth completes, check if there's a pending invite/favorite to process
     LaunchedEffect(isLoggedIn) {
         if (!isLoggedIn) return@LaunchedEffect
+
+        // Pending plan invite
         val plansVm: PlansViewModel = koin.get()
-        val pending = plansVm.uiState.value.pendingAcceptAfterAuth ?: return@LaunchedEffect
-        println("DeepLink: processing pending invite after auth: '${pending.title}'")
-        plansVm.acceptInvite(pending)
-        selectedTab = Tab.PLANS
+        val pendingPlan = plansVm.uiState.value.pendingAcceptAfterAuth
+        if (pendingPlan != null) {
+            println("DeepLink: processing pending invite after auth: '${pendingPlan.title}'")
+            plansVm.acceptInvite(pendingPlan)
+            selectedTab = Tab.PLANS
+            return@LaunchedEffect
+        }
+
+        // Pending event favorite
+        val settings = com.russhwolf.settings.Settings()
+        val pendingEventId = settings.getStringOrNull("pending_favorite_event")
+        if (pendingEventId != null) {
+            println("DeepLink: processing pending event favorite after auth: $pendingEventId")
+            val communityRepo = koin.get<live.localapp.local.domain.repository.CommunityInterestRepository>()
+            communityRepo.recordFavorite(pendingEventId, live.localapp.local.domain.repository.InteractionType.EVENT)
+            settings.remove("pending_favorite_event")
+            selectedTab = Tab.HOME
+            return@LaunchedEffect
+        }
+
+        // Pending venue favorite
+        val pendingVenueId = settings.getStringOrNull("pending_favorite_venue")
+        if (pendingVenueId != null) {
+            println("DeepLink: processing pending venue favorite after auth: $pendingVenueId")
+            val communityRepo = koin.get<live.localapp.local.domain.repository.CommunityInterestRepository>()
+            val venueCategory = settings.getStringOrNull("pending_favorite_venue_category")
+            communityRepo.recordFavorite(pendingVenueId, live.localapp.local.domain.repository.InteractionType.PLACE, venueCategory)
+            settings.remove("pending_favorite_venue")
+            settings.remove("pending_favorite_venue_category")
+            selectedTab = Tab.PLACES
+            return@LaunchedEffect
+        }
     }
 
     val openChatOrLogin: () -> Unit = {
@@ -377,6 +457,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 chatOpenCount++
                                 openChatOrLogin()
                             },
+                            onInviteClick = { plan -> sharedPlan = plan },
                             onEventClick = { eventId, bounds ->
                                 scope.launch {
                                     val event = eventRepo.getEvent(eventId) ?: return@launch
@@ -480,6 +561,18 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 presentShareSheet(text, "https://localapp.live/p/$token")
                             }
                         },
+                        onEditPlan = {
+                            selectedPlan = null
+                            pendingChatMessage = "Edit my plan: ${plan.title}"
+                            chatOpenCount++
+                            openChatOrLogin()
+                        },
+                        onEditDay = { dayLabel ->
+                            selectedPlan = null
+                            pendingChatMessage = "Change $dayLabel of ${plan.title}"
+                            chatOpenCount++
+                            openChatOrLogin()
+                        },
                     )
                 }
             }
@@ -515,6 +608,80 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 // Save plan to accept after auth, then trigger login
                                 plansVm.setPendingAcceptAfterAuth(plan)
                                 sharedPlan = null
+                                showLoginPrompt = true
+                            }
+                        },
+                    )
+                }
+            }
+        }
+
+        // Shared event deep link overlay
+        AnimatedVisibility(
+            visible = sharedEvent != null,
+            enter = slideInVertically(animationSpec = spring(dampingRatio = 0.85f, stiffness = 300f)) { it / 3 }
+                + fadeIn(animationSpec = tween(150)),
+            exit = slideOutVertically(animationSpec = tween(250)) { it / 3 }
+                + fadeOut(animationSpec = tween(150)),
+        ) {
+            sharedEvent?.let { event ->
+                Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
+                    EventDetailScreen(
+                        event = event,
+                        onBack = { sharedEvent = null },
+                        sharedMode = true,
+                        onSaveEvent = {
+                            if (isLoggedIn) {
+                                val communityRepo = koin.get<live.localapp.local.domain.repository.CommunityInterestRepository>()
+                                communityRepo.recordFavorite(event.id, live.localapp.local.domain.repository.InteractionType.EVENT, event.subcategory ?: event.category)
+                                sharedEvent = null
+                                selectedTab = Tab.HOME
+                            } else {
+                                val settings = com.russhwolf.settings.Settings()
+                                settings.putString("pending_favorite_event", event.id)
+                                sharedEvent = null
+                                showLoginPrompt = true
+                            }
+                        },
+                    )
+                }
+            }
+        }
+
+        // Shared venue deep link overlay
+        AnimatedVisibility(
+            visible = sharedVenue != null,
+            enter = slideInVertically(animationSpec = spring(dampingRatio = 0.85f, stiffness = 300f)) { it / 3 }
+                + fadeIn(animationSpec = tween(150)),
+            exit = slideOutVertically(animationSpec = tween(250)) { it / 3 }
+                + fadeOut(animationSpec = tween(150)),
+        ) {
+            sharedVenue?.let { venue ->
+                Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
+                    VenueDetailPage(
+                        venueWithMeta = live.localapp.local.domain.repository.VenueWithMeta(
+                            venue = venue,
+                            primaryCategory = venue.category,
+                            tags = emptyList(),
+                            upcomingEventCount = 0,
+                            upcomingEvents = emptyList(),
+                            distanceMiles = null,
+                        ),
+                        events = emptyList(),
+                        isLoading = false,
+                        onBack = { sharedVenue = null },
+                        isShared = true,
+                        onSaveVenue = {
+                            if (isLoggedIn) {
+                                val communityRepo = koin.get<live.localapp.local.domain.repository.CommunityInterestRepository>()
+                                communityRepo.recordFavorite(venue.id, live.localapp.local.domain.repository.InteractionType.PLACE, venue.category)
+                                sharedVenue = null
+                                selectedTab = Tab.PLACES
+                            } else {
+                                val settings = com.russhwolf.settings.Settings()
+                                settings.putString("pending_favorite_venue", venue.id)
+                                settings.putString("pending_favorite_venue_category", venue.category ?: "")
+                                sharedVenue = null
                                 showLoginPrompt = true
                             }
                         },
@@ -654,9 +821,12 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     } else if (showPaywall) {
                         live.localapp.local.ui.chat.PremiumPaywall(
                             onSubscribe = { isAnnual ->
-                                // TODO: integrate StoreKit/RevenueCat
-                                premiumGate.isPremium = true
-                                showPaywall = false
+                                purchaseSubscription(isAnnual) { success ->
+                                    if (success) {
+                                        premiumGate.hasPaidSubscription = true
+                                        showPaywall = false
+                                    }
+                                }
                             },
                             onDismiss = { showPaywall = false },
                         )
@@ -1168,7 +1338,12 @@ private fun GlobalLevelUpOverlay(event: CelebrationEvent.StatusLevelUp, onDismis
                 modifier = Modifier
                     .clip(RoundedCornerShape(30.dp))
                     .background(AppColors.Coral)
-                    .clickable { onDismiss() }
+                    .clickable {
+                        presentShareSheet(
+                            "I just reached ${event.newTier.label} on Local with ${formatNumber(event.totalPoints)} points!",
+                            "https://apps.apple.com/app/id6740043653",
+                        )
+                    }
                     .padding(horizontal = 40.dp, vertical = 16.dp),
             ) {
                 Text(

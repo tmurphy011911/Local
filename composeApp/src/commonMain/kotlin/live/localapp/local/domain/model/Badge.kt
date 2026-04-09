@@ -6,13 +6,16 @@ enum class BadgeAction(
     val basePoints: Int,
     /** One-time actions only have milestone = 1, not the full ladder. */
     val isOneTime: Boolean = false,
+    /** Per-action rewards: earn points every time, not at milestones. */
+    val isPerAction: Boolean = false,
 ) {
     EVENT_SAVED("Events Saved", 25),
     EVENT_SHARED("Events Shared", 75),
     PLAN_CREATED("Plans Created", 250),
     PLAN_SHARED("Plans Shared", 500),
-    GROUP_5_CONFIRMED("5+ Group Plan", 5000, isOneTime = true),
-    GROUP_10_CONFIRMED("10+ Group Plan", 10000, isOneTime = true),
+    INVITE_ACCEPTED("Invites Accepted", 2500, isPerAction = true),
+    GROUP_5_CONFIRMED("5+ Group Plan", 5000, isOneTime = true, isPerAction = true),
+    GROUP_10_CONFIRMED("10+ Group Plan", 10000, isOneTime = true, isPerAction = true),
 }
 
 /** Milestone thresholds for repeating actions. */

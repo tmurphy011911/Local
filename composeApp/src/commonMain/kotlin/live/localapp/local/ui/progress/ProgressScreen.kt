@@ -86,6 +86,7 @@ import live.localapp.local.domain.model.BadgeAction
 import live.localapp.local.domain.model.StateProgress
 import live.localapp.local.domain.model.StatusTier
 import live.localapp.local.domain.model.nextStatusTier
+import live.localapp.local.ProfanityFilter
 import live.localapp.local.ui.common.AppHeader
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
@@ -105,35 +106,49 @@ fun ProgressScreen(
     val state by viewModel.uiState.collectAsState()
     var showNameDialog by remember { mutableStateOf(false) }
     var nameInput by remember { mutableStateOf("") }
+    var nameError by remember { mutableStateOf<String?>(null) }
 
     if (showNameDialog) {
         androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showNameDialog = false },
+            onDismissRequest = { showNameDialog = false; nameError = null },
             title = { Text("What's your name?", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp)) },
             text = {
-                androidx.compose.foundation.text.BasicTextField(
-                    value = nameInput,
-                    onValueChange = { nameInput = it },
-                    textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = AppColors.Ink),
-                    singleLine = true,
-                    decorationBox = { inner ->
-                        Box(
-                            Modifier.fillMaxWidth()
-                                .background(AppColors.Mist, RoundedCornerShape(10.dp))
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
-                        ) {
-                            if (nameInput.isEmpty()) Text("First name", style = TextStyle(fontFamily = AppFonts.Body, fontSize = 16.sp, color = AppColors.Ink3))
-                            inner()
-                        }
-                    },
-                )
+                Column {
+                    androidx.compose.foundation.text.BasicTextField(
+                        value = nameInput,
+                        onValueChange = { nameInput = it; nameError = null },
+                        textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = AppColors.Ink),
+                        singleLine = true,
+                        decorationBox = { inner ->
+                            Box(
+                                Modifier.fillMaxWidth()
+                                    .background(AppColors.Mist, RoundedCornerShape(10.dp))
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                            ) {
+                                if (nameInput.isEmpty()) Text("First name", style = TextStyle(fontFamily = AppFonts.Body, fontSize = 16.sp, color = AppColors.Ink3))
+                                inner()
+                            }
+                        },
+                    )
+                    if (nameError != null) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            nameError!!,
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Coral),
+                        )
+                    }
+                }
             },
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = {
-                    if (nameInput.isNotBlank()) {
-                        val trimmed = nameInput.trim()
+                    val trimmed = nameInput.trim()
+                    val error = ProfanityFilter.validate(trimmed)
+                    if (error != null) {
+                        nameError = error
+                    } else {
                         viewModel.saveUserName(trimmed)
                         onNameChanged(trimmed)
+                        nameError = null
                         showNameDialog = false
                     }
                 }) { Text("Save", color = AppColors.Coral, fontWeight = FontWeight.Bold) }
@@ -721,8 +736,8 @@ private fun ProgressTrackingCard(state: ProgressUiState, viewModel: ProgressView
 
 @Composable
 private fun GlobalTrackingCard(state: ProgressUiState, viewModel: ProgressViewModel) {
-    val repeatingActions = state.globalActions.filter { !it.action.isOneTime }
-    val oneTimeActions = state.globalActions.filter { it.action.isOneTime }
+    val milestoneActions = state.globalActions.filter { !it.action.isOneTime && !it.action.isPerAction }
+    val perActionRewards = state.globalActions.filter { it.action.isPerAction }
 
     Column(
         modifier = Modifier
@@ -732,13 +747,13 @@ private fun GlobalTrackingCard(state: ProgressUiState, viewModel: ProgressViewMo
             .background(AppColors.White)
             .padding(horizontal = 16.dp, vertical = 12.dp),
     ) {
-        // Repeating action rows with points info
-        repeatingActions.forEach { action ->
+        // Milestone action rows (Events Saved, Events Shared, Plans Created, Plans Shared)
+        milestoneActions.forEach { action ->
             val lastSeenCount = viewModel.getLastSeenActionCount("global", action.action)
             MilestoneRow(action, lastSeenCount)
         }
 
-        if (oneTimeActions.isNotEmpty()) {
+        if (perActionRewards.isNotEmpty()) {
             Spacer(Modifier.height(4.dp))
             Box(
                 modifier = Modifier
@@ -748,9 +763,8 @@ private fun GlobalTrackingCard(state: ProgressUiState, viewModel: ProgressViewMo
             )
             Spacer(Modifier.height(4.dp))
 
-            // One-time challenges header
             Text(
-                "CHALLENGES",
+                "REWARDS",
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.ExtraBold,
@@ -761,11 +775,70 @@ private fun GlobalTrackingCard(state: ProgressUiState, viewModel: ProgressViewMo
                 modifier = Modifier.padding(vertical = 6.dp),
             )
 
-            oneTimeActions.forEach { action ->
-                OneTimeChallengeRow(action)
+            perActionRewards.forEach { action ->
+                PerActionRewardRow(action)
             }
         }
     }
+}
+
+@Composable
+private fun PerActionRewardRow(progress: ActionProgress) {
+    val icon = when (progress.action) {
+        BadgeAction.INVITE_ACCEPTED -> Icons.Rounded.Check
+        BadgeAction.GROUP_5_CONFIRMED -> Icons.Rounded.Groups
+        BadgeAction.GROUP_10_CONFIRMED -> Icons.Rounded.Celebration
+        else -> Icons.Rounded.Star
+    }
+    val earned = progress.currentCount * progress.action.basePoints
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Icon
+        Box(
+            modifier = Modifier
+                .size(36.dp)
+                .background(AppColors.SageLt, RoundedCornerShape(10.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = AppColors.Sage)
+        }
+        Spacer(Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                progress.action.label,
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Ink),
+            )
+            Text(
+                "${progress.action.basePoints.formatPoints()} pts each time",
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
+            )
+        }
+
+        // Count + earned
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                "${progress.currentCount}",
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = AppColors.Ink),
+            )
+            if (earned > 0) {
+                Text(
+                    "${earned.formatPoints()} pts",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, color = AppColors.Sage),
+                )
+            }
+        }
+    }
+}
+
+private fun Int.formatPoints(): String = when {
+    this >= 1000 -> "${this / 1000},${(this % 1000).toString().padStart(3, '0')}"
+    else -> toString()
 }
 
 @Composable
@@ -886,6 +959,8 @@ private fun SectionHeader(title: String) {
 
 @Composable
 private fun JourneyCard(currentTier: StatusTier, totalPoints: Int) {
+    val premiumGate = remember { live.localapp.local.ui.chat.PremiumGate() }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -901,25 +976,22 @@ private fun JourneyCard(currentTier: StatusTier, totalPoints: Int) {
             val isReached = totalPoints >= tier.threshold
             val isCurrent = tier == currentTier
             val isLast = index == tiers.lastIndex
+            val reward = premiumGate.rewardForTier(tier)
 
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // Spine column (node + line)
+            Row(modifier = Modifier.fillMaxWidth()) {
+                // Spine column (node + line) — fixed width, vertically centered with content
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.width(32.dp),
                 ) {
                     // Node circle
                     Box(
                         modifier = Modifier
-                            .size(32.dp)
+                            .size(28.dp)
                             .clip(CircleShape)
                             .then(
                                 when {
-                                    isCurrent -> Modifier
-                                        .background(AppColors.Sky)
-                                        .shadow(8.dp, CircleShape, ambientColor = AppColors.Sky)
+                                    isCurrent -> Modifier.background(AppColors.Sky)
                                     isReached -> Modifier
                                         .background(AppColors.SageLt)
                                         .border(2.dp, AppColors.Sage, CircleShape)
@@ -931,28 +1003,18 @@ private fun JourneyCard(currentTier: StatusTier, totalPoints: Int) {
                         contentAlignment = Alignment.Center,
                     ) {
                         when {
-                            isCurrent -> Icon(
-                                Icons.Rounded.Star,
-                                contentDescription = null,
-                                tint = AppColors.White,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            isReached -> Icon(
-                                Icons.Rounded.Check,
-                                contentDescription = null,
-                                tint = AppColors.Sage,
-                                modifier = Modifier.size(16.dp),
-                            )
+                            isCurrent -> Icon(Icons.Rounded.Star, contentDescription = null, tint = AppColors.White, modifier = Modifier.size(14.dp))
+                            isReached -> Icon(Icons.Rounded.Check, contentDescription = null, tint = AppColors.Sage, modifier = Modifier.size(14.dp))
                         }
                     }
 
-                    // Line segment (except after last)
+                    // Line segment
                     if (!isLast) {
                         val nextReached = if (index + 1 < tiers.size) totalPoints >= tiers[index + 1].threshold else false
                         Box(
                             modifier = Modifier
                                 .width(2.dp)
-                                .height(20.dp)
+                                .height(if (reward != null) 32.dp else 18.dp)
                                 .background(
                                     if (isReached && nextReached) AppColors.Sage.copy(alpha = 0.4f)
                                     else AppColors.Pebble.copy(alpha = 0.3f)
@@ -961,69 +1023,57 @@ private fun JourneyCard(currentTier: StatusTier, totalPoints: Int) {
                     }
                 }
 
-                Spacer(Modifier.width(14.dp))
+                Spacer(Modifier.width(12.dp))
 
-                // Tier info
+                // Content column
                 Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        tier.label,
-                        style = TextStyle(
-                            fontFamily = AppFonts.Heading,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
-                            color = if (isReached || isCurrent) AppColors.Ink else AppColors.Pebble,
-                            letterSpacing = (-0.3).sp,
-                        ),
-                    )
-                    Text(
-                        if (tier == StatusTier.NEW_IN_TOWN) "STARTING POINT" else "${formatNumber(tier.threshold)} PTS",
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp,
-                            color = if (isReached || isCurrent) AppColors.Ink3 else AppColors.Pebble,
-                            letterSpacing = 0.5.sp,
-                        ),
-                    )
-                }
-
-                // Earned / Current badge
-                when {
-                    isCurrent -> {
-                        Box(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(20.dp))
-                                .background(AppColors.SkyLt)
-                                .padding(horizontal = 10.dp, vertical = 3.dp),
-                        ) {
-                            Text(
-                                "CURRENT",
-                                style = TextStyle(
-                                    fontFamily = AppFonts.Body,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 11.sp,
-                                    color = AppColors.SkyDk,
-                                    letterSpacing = 0.5.sp,
-                                ),
-                            )
-                        }
+                    // Tier name + points on same row
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            tier.label,
+                            style = TextStyle(
+                                fontFamily = AppFonts.Heading,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = if (isReached || isCurrent) AppColors.Ink else AppColors.Pebble,
+                                letterSpacing = (-0.3).sp,
+                            ),
+                            maxLines = 1,
+                        )
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            if (tier == StatusTier.NEW_IN_TOWN) "START" else "${formatNumber(tier.threshold)} pts",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
+                                color = if (isReached || isCurrent) AppColors.Ink3 else AppColors.Pebble,
+                            ),
+                            maxLines = 1,
+                        )
                     }
-                    isReached -> {
+
+                    // Reward pill below tier name
+                    if (reward != null) {
+                        Spacer(Modifier.height(4.dp))
                         Box(
                             modifier = Modifier
-                                .clip(RoundedCornerShape(20.dp))
-                                .background(AppColors.SageLt)
-                                .padding(horizontal = 10.dp, vertical = 3.dp),
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (isReached) AppColors.SageLt else AppColors.Mist)
+                                .padding(horizontal = 10.dp, vertical = 4.dp),
                         ) {
                             Text(
-                                "EARNED",
+                                reward,
                                 style = TextStyle(
                                     fontFamily = AppFonts.Body,
                                     fontWeight = FontWeight.ExtraBold,
                                     fontSize = 11.sp,
-                                    color = AppColors.Sage,
-                                    letterSpacing = 0.5.sp,
+                                    color = if (isReached) AppColors.Sage else AppColors.Ink2,
                                 ),
+                                maxLines = 1,
                             )
                         }
                     }
@@ -1214,6 +1264,7 @@ private fun MilestoneRow(progress: ActionProgress, lastSeenCount: Int = progress
         BadgeAction.EVENT_SHARED -> Icons.Rounded.Share
         BadgeAction.PLAN_CREATED -> Icons.Rounded.CalendarMonth
         BadgeAction.PLAN_SHARED -> Icons.Rounded.Send
+        BadgeAction.INVITE_ACCEPTED -> Icons.Rounded.Check
         BadgeAction.GROUP_5_CONFIRMED -> Icons.Rounded.Groups
         BadgeAction.GROUP_10_CONFIRMED -> Icons.Rounded.Celebration
     }

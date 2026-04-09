@@ -91,6 +91,7 @@ fun PlansScreen(
     viewModel: PlansViewModel,
     onNewPlan: () -> Unit,
     onPlanClick: (Plan, androidx.compose.ui.geometry.Rect) -> Unit = { _, _ -> },
+    onInviteClick: (Plan) -> Unit = {},
     onEventClick: (String, androidx.compose.ui.geometry.Rect) -> Unit = { _, _ -> },
     onBuildPlanFromEvent: ((String) -> Unit)? = null,
     onBuildPlanFromTemplate: ((String) -> Unit)? = null,
@@ -242,7 +243,7 @@ fun PlansScreen(
                 items(state.pendingInvites, key = { "invite_${it.id}" }) { plan ->
                     InvitePlanRow(
                         plan = plan,
-                        onClick = { bounds -> onPlanClick(plan, bounds) },
+                        onClick = { onInviteClick(plan) },
                         onDismiss = { viewModel.dismissInvite(plan.id) },
                         onAccept = { viewModel.acceptInvite(plan) },
                     )
@@ -1192,25 +1193,21 @@ private fun CompactPlanRow(
 @Composable
 private fun InvitePlanRow(
     plan: Plan,
-    onClick: (androidx.compose.ui.geometry.Rect) -> Unit = {},
+    onClick: () -> Unit = {},
     onDismiss: () -> Unit = {},
     onAccept: () -> Unit = {},
 ) {
     val totalStops = plan.days.sumOf { it.slots.size }
     val firstImageUrl = plan.days.flatMap { it.slots }.firstNotNullOfOrNull { it.imageUrl }
-    var cardBounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
 
-    Box(
-        modifier = Modifier.fillMaxWidth()
-            .onGloballyPositioned { cardBounds = it.boundsInRoot() },
-    ) {
+    Box(modifier = Modifier.fillMaxWidth()) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .shadow(2.dp, RoundedCornerShape(14.dp))
                 .background(Color.White, RoundedCornerShape(14.dp))
                 .clip(RoundedCornerShape(14.dp))
-                .pressable(onClick = { onClick(cardBounds) }),
+                .pressable(onClick = onClick),
         ) {
             // Thumbnail
             Box(

@@ -280,7 +280,7 @@ private fun VenueGrid(
     onFavoriteToggle: (VenueWithMeta) -> Unit,
 ) {
     LazyColumn(
-        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, bottom = 80.dp),
+        contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 80.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         // All venue cards — slim full-width rows
@@ -493,6 +493,8 @@ fun VenueDetailPage(
     isFavorited: Boolean = false,
     onFavoriteToggle: () -> Unit = {},
     onShare: () -> Unit = {},
+    isShared: Boolean = false,
+    onSaveVenue: (() -> Unit)? = null,
 ) {
     var selectedEvent by remember { mutableStateOf<Event?>(null) }
     val communityInterestRepo = remember { KoinPlatform.getKoin().get<CommunityInterestRepository>() }
@@ -641,6 +643,34 @@ fun VenueDetailPage(
                     }
 
                     Spacer(Modifier.height(32.dp))
+                }
+            }
+        }
+
+        // "Add to Favorites" CTA for shared deep link mode
+        if (isShared && onSaveVenue != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(
+                        Brush.verticalGradient(listOf(Color.Transparent, AppColors.Snow, AppColors.Snow)),
+                    )
+                    .padding(horizontal = 20.dp, vertical = 16.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(AppColors.Coral)
+                        .clickable(onClick = onSaveVenue)
+                        .padding(vertical = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Add to Favorites",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = Color.White),
+                    )
                 }
             }
         }

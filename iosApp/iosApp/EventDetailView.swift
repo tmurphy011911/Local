@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import ComposeApp
 
 // MARK: - Event Data Model (Swift side)
 
@@ -306,8 +307,9 @@ struct EventDetailView: View {
                     HStack(spacing: 8) {
                         Spacer()
                         heroIconButton(systemName: "square.and.arrow.up") {
-                            UIPasteboard.general.string = event.ctaUrl ?? "https://localapp.live/e/\(event.id)"
-                            shareCopied = true
+                            let shareUrl = "https://localapp.live/e/\(event.id)"
+                            let shareText = event.title
+                            ShareBridge.shared.presentShareSheet?(shareText, shareUrl)
                         }
                         heroIconButton(systemName: isFavorited ? "heart.fill" : "heart") {
                             let wasFavorited = isFavorited

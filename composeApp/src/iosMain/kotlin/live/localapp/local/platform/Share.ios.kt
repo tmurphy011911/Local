@@ -26,3 +26,15 @@ actual fun clearClipboardDeepLink() {
 actual fun setDeepLinkCallback(onPlanToken: (String) -> Unit) {
     live.localapp.local.DeepLinkBridge.onPlanShareTokenReceived = onPlanToken
 }
+
+actual fun purchaseSubscription(isAnnual: Boolean, onResult: (Boolean) -> Unit) {
+    live.localapp.local.RevenueCatBridge.purchase?.invoke(isAnnual, onResult) ?: onResult(false)
+}
+
+actual fun restorePurchases(onResult: (Boolean) -> Unit) {
+    live.localapp.local.RevenueCatBridge.restorePurchases?.invoke(onResult) ?: onResult(false)
+}
+
+actual fun checkSubscriptionStatus(onResult: (Boolean, String?) -> Unit) {
+    live.localapp.local.RevenueCatBridge.checkSubscriptionStatus?.invoke(onResult) ?: onResult(false, null)
+}

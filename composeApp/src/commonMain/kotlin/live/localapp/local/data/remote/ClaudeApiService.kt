@@ -320,11 +320,11 @@ val claudeTools: JsonArray = buildJsonArray {
                                     putJsonObject("properties") {
                                         putJsonObject("event_id") {
                                             put("type", "string")
-                                            put("description", "Event ID from search_events results. Use this for events.")
+                                            put("description", "Event ID from search_events results. ALWAYS use this when an event exists — even if it's at a venue you recommended. Never use venue_name for events that have an event_id in search results.")
                                         }
                                         putJsonObject("venue_name") {
                                             put("type", "string")
-                                            put("description", "Venue name from recommend_and_save_venue. Use this for restaurants/bars instead of event_id.")
+                                            put("description", "Venue name from recommend_and_save_venue. ONLY use this for restaurants, bars, and cafes where there is no specific event — just a dining/drinks recommendation. Never use this for music venues, theaters, or any place where a specific event is happening.")
                                         }
                                         putJsonObject("time") {
                                             put("type", "string")

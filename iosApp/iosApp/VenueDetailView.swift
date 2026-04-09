@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import ComposeApp
 
 // MARK: - Venue Data Model (Swift side)
 
@@ -165,10 +166,22 @@ struct VenueDetailView: View {
                     .padding(.leading, 20)
                 }
 
-                // Back button — top left
-                heroIconButton(systemName: "arrow.left") { onDismiss() }
-                    .padding(.leading, 16)
-                    .padding(.top, 52)
+                // Top buttons
+                HStack {
+                    // Back button — top left
+                    heroIconButton(systemName: "arrow.left") { onDismiss() }
+
+                    Spacer()
+
+                    // Share button — top right
+                    heroIconButton(systemName: "square.and.arrow.up") {
+                        let encodedName = venue.name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? venue.name
+                        let shareUrl = "https://localapp.live/v/\(encodedName)"
+                        ShareBridge.shared.presentShareSheet?(venue.name, shareUrl)
+                    }
+                }
+                .padding(.horizontal, 16)
+                .padding(.top, 52)
             }
         }
         .frame(height: 200)

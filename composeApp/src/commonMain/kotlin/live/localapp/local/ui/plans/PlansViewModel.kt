@@ -88,6 +88,23 @@ class PlansViewModel(
 
     fun acceptInvite(plan: Plan) {
         viewModelScope.launch {
+            // Record the accept via RPC (awards points to creator, prevents duplicates)
+            val shareToken = plan.shareToken
+            if (shareToken != null) {
+                val result = planRepository.acceptPlanInvite(shareToken)
+                if (result.error == "already_accepted") {
+                    println("PlansVM: invite already accepted, skipping save")
+                    _uiState.update { state ->
+                        state.copy(
+                            pendingInvites = state.pendingInvites.filter { it.id != plan.id },
+                            pendingAcceptAfterAuth = null,
+                        )
+                    }
+                    return@launch
+                }
+            }
+
+            // Save a copy to the user's plans
             planRepository.savePlan(plan)
             _uiState.update { state ->
                 state.copy(

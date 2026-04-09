@@ -79,26 +79,17 @@ class PlanDetailTransitionController {
             return
         }
 
+        // Simple slide-down + fade dismiss (avoids content stretching)
         UIView.animate(
-            withDuration: 0.38,
+            withDuration: 0.3,
             delay: 0,
-            usingSpringWithDamping: 0.82,
-            initialSpringVelocity: 0.2,
+            usingSpringWithDamping: 0.9,
+            initialSpringVelocity: 0.3,
             options: [.curveEaseInOut],
             animations: { [self] in
-                vc.view.transform = cardTransform(cardFrame: originalFrame, windowBounds: window.bounds)
-                vc.view.layer.cornerRadius = 20
-                dimView?.alpha = 0
-            },
-            completion: nil
-        )
-
-        UIView.animate(
-            withDuration: 0.1,
-            delay: 0.24,
-            options: [.curveEaseIn],
-            animations: {
+                vc.view.transform = CGAffineTransform(translationX: 0, y: window.bounds.height * 0.4)
                 vc.view.alpha = 0
+                dimView?.alpha = 0
             },
             completion: { [self] _ in
                 cleanup()

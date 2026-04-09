@@ -117,6 +117,8 @@ fun EventDetailScreen(
     onShareTracked: ((String) -> Unit)? = null,
     onFavoriteTracked: ((String) -> Unit)? = null,
     initialFavorited: Boolean = false,
+    sharedMode: Boolean = false,
+    onSaveEvent: (() -> Unit)? = null,
 ) {
     val uriHandler = LocalUriHandler.current
     val clipboardManager = LocalClipboardManager.current
@@ -146,7 +148,8 @@ fun EventDetailScreen(
     val ctaUrl = event.ticketUrl ?: event.sourceUrl
     val hasLocation = event.venueLat != null && event.venueLng != null
 
-    Column(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
+    Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
+    Column(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
                 .weight(1f)
@@ -338,12 +341,44 @@ fun EventDetailScreen(
                 uriHandler.openUri(url)
             },
             onShare = {
-                clipboardManager.setText(AnnotatedString("https://localapp.live/e/${event.id}"))
-                shareCopied = true
+                live.localapp.local.platform.presentShareSheet(
+                    event.title,
+                    "https://localapp.live/e/${event.id}",
+                )
                 onShareTracked?.invoke(event.id)
             },
         )
+
     }
+
+    // "Save Event" CTA for shared deep link mode — overlays at bottom
+    if (sharedMode && onSaveEvent != null) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .background(
+                    Brush.verticalGradient(listOf(Color.Transparent, AppColors.Snow, AppColors.Snow)),
+                )
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(AppColors.Coral)
+                    .clickable(onClick = onSaveEvent)
+                    .padding(vertical = 14.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "Save Event",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = Color.White),
+                )
+            }
+        }
+    }
+    } // end Box
 }
 
 // ── Countdown banner ─────────────────────────────────────────────────────────
@@ -507,8 +542,8 @@ private fun CtaBar(
             }
             SecondaryCtaButton(
                 icon = Icons.Outlined.IosShare,
-                label = if (shareCopied) "Copied!" else "Share",
-                isActive = shareCopied,
+                label = "Share",
+                isActive = false,
                 modifier = Modifier.weight(1f),
                 onClick = onShare,
             )

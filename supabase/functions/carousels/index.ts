@@ -324,6 +324,7 @@ const categoryTabDisplayNames: Record<string, string> = {
   tours: "Tours",
   libraries: "Libraries",
   outdoors: "Outdoors",
+  nightlife: "Nightlife",
   "for-kids": "For Kids",
   experiences: "Experiences",
   other: "Other",
@@ -951,7 +952,9 @@ function resolveFilter(category: string | null): EventFilterType {
   if (!category || category.toLowerCase() === "foryou") return { type: "none" };
   const lc = category.toLowerCase();
   if (lc === "experiences") return { type: "source", value: "curated" };
+  if (lc === "nightlife") return { type: "category", value: "nightlife" };
   if (knownSubcategories.includes(lc)) return { type: "category", value: lc };
+  if (parentCategories.has(lc)) return { type: "category", value: lc };
   if (lc === "locations") return { type: "none" };
   if (lc === "other") return { type: "exclude_known" };
   return { type: "category", value: lc };
@@ -961,8 +964,18 @@ function applyFilter(events: ProcessedEvent[], filter: EventFilterType): Process
   switch (filter.type) {
     case "none": return events;
     case "empty": return [];
-    case "category":
-      return events.filter(e => (e.subcategory ?? "").toLowerCase() === filter.value);
+    case "category": {
+      const filterValue = filter.value;
+      // If filtering by a parent category, include events whose subcategory maps to it
+      if (parentCategories.has(filterValue)) {
+        return events.filter(e => {
+          const subcat = (e.subcategory ?? "").toLowerCase();
+          if (subcat === filterValue) return true;
+          return (subcategoryToParent[subcat] ?? "") === filterValue;
+        });
+      }
+      return events.filter(e => (e.subcategory ?? "").toLowerCase() === filterValue);
+    }
     case "source":
       return events.filter(e => e.source === filter.value);
     case "exclude_known":
@@ -1637,6 +1650,36 @@ function buildCarousels(
 // Category discovery
 // ════════════════════════════════════════════════════════════════
 
+// Map granular subcategories to their parent category
+const subcategoryToParent: Record<string, string> = {
+  // Sports sub-subcategories
+  hockey: "sports", basketball: "sports", baseball: "sports", football: "sports",
+  soccer: "sports", "college-sports": "sports", "minor-league": "sports",
+  // Music sub-subcategories
+  jazz: "music", rock: "music", "hip-hop": "music", classical: "music",
+  folk: "music", country: "music", "open-mic": "music", electronic: "music",
+  indie: "music", punk: "music", blues: "music", "r&b": "music",
+  // Nightlife
+  bar: "nightlife", brewery: "nightlife", winery: "nightlife", pub: "nightlife",
+  nightclub: "nightlife", "wine-bar": "nightlife", "craft-beer": "nightlife",
+  // Comedy sub-subcategories
+  "stand-up": "comedy", improv: "comedy",
+  // Arts sub-subcategories
+  gallery: "arts", film: "arts", "street-art": "arts",
+  // Food sub-subcategories
+  restaurant: "food", cafe: "food", bakery: "food",
+  // Theatre sub-subcategories
+  opera: "theatre", dance: "theatre", musical: "theatre",
+  // Misc → other
+  miscellaneous: "other", miscellane: "other",
+};
+
+// The allowed parent categories for the tab row
+const parentCategories = new Set([
+  "music", "sports", "arts", "nightlife", "theatre", "comedy",
+  "food", "outdoors", "museums", "tours", "libraries", "for-kids",
+]);
+
 function buildCategories(
   allEvents: ProcessedEvent[],
   userPreferences: UserPreferences | null,
@@ -1645,11 +1688,16 @@ function buildCategories(
 
   const counts = new Map<string, number>();
   for (const e of allEvents) {
-    const subcat = (e.subcategory ?? "").toLowerCase();
-    if (!subcat || subcat === "no-public-interest" || subcat === "cafe") continue;
-    counts.set(subcat, (counts.get(subcat) ?? 0) + 1);
+    const rawSubcat = (e.subcategory ?? "").toLowerCase();
+    if (!rawSubcat || rawSubcat === "no-public-interest" || rawSubcat === "cafe") continue;
+    // Map to parent category if not already a parent
+    const parent = parentCategories.has(rawSubcat) ? rawSubcat : (subcategoryToParent[rawSubcat] ?? "other");
+    counts.set(parent, (counts.get(parent) ?? 0) + 1);
   }
   if (counts.size === 0) return [];
+
+  // Remove "other" if it has very few events
+  if ((counts.get("other") ?? 0) < 5) counts.delete("other");
 
   // Sort: user favorites first, then by count, "other" last
   const sorted = [...counts.entries()].sort((a, b) => {
@@ -1661,10 +1709,10 @@ function buildCategories(
     return b[1] - a[1];
   });
 
-  const categories: CategoryInfo[] = sorted.map(([subcat, count]) => ({
-    id: subcat,
-    label: categoryTabDisplayNames[subcat] ?? subcat.charAt(0).toUpperCase() + subcat.slice(1),
-    icon_url: iconUrlFor(subcat),
+  const categories: CategoryInfo[] = sorted.map(([cat, count]) => ({
+    id: cat,
+    label: categoryTabDisplayNames[cat] ?? cat.charAt(0).toUpperCase() + cat.slice(1),
+    icon_url: iconUrlFor(cat),
     event_count: count,
   }));
 

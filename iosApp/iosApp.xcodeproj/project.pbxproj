@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		5E1C2C142F88028A0057E9F9 /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = 5E1C2C132F88028A0057E9F9 /* RevenueCat */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		EEB79C38E91BB2244F08BFBD /* Local.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Local.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -41,6 +45,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5E1C2C142F88028A0057E9F9 /* RevenueCat in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -55,11 +60,19 @@
 			name = Products;
 			sourceTree = "<group>";
 		};
+		5E1C2C122F8802840057E9F9 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
 		74C2D6C1BDA151324F94C569 = {
 			isa = PBXGroup;
 			children = (
 				6B5AEECECB5C8DEA201FCE1A /* Configuration */,
 				969FAF7E1A57216518C991D6 /* iosApp */,
+				5E1C2C122F8802840057E9F9 /* Frameworks */,
 				46A8AB7EB05E776F34C7FBE8 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -85,6 +98,7 @@
 			);
 			name = iosApp;
 			packageProductDependencies = (
+				5E1C2C132F88028A0057E9F9 /* RevenueCat */,
 			);
 			productName = iosApp;
 			productReference = EEB79C38E91BB2244F08BFBD /* Local.app */;
@@ -114,6 +128,9 @@
 			);
 			mainGroup = 74C2D6C1BDA151324F94C569;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				5E1C2C112F87F5A20057E9F9 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 46A8AB7EB05E776F34C7FBE8 /* Products */;
 			projectDirPath = "";
@@ -372,6 +389,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		5E1C2C112F87F5A20057E9F9 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/RevenueCat/purchases-ios-spm";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.67.2;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		5E1C2C132F88028A0057E9F9 /* RevenueCat */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5E1C2C112F87F5A20057E9F9 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;
+			productName = RevenueCat;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 1D7062DB5BC763498CC03875 /* Project object */;
 }

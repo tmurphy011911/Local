@@ -188,7 +188,7 @@ fun ChatScreen(
         LazyColumn(
             state = listState,
             modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 14.dp),
+            contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 60.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             items(state.messages, key = { it.id }) { message ->
@@ -632,8 +632,10 @@ private fun MultiDayPlanCard(
     onSave: () -> Unit = {},
     showSaveButton: Boolean = true,
 ) {
-    val pagerState = androidx.compose.foundation.pager.rememberPagerState(pageCount = { days.size })
+    var currentDayIndex by remember { mutableStateOf(0) }
     val cardShape = RoundedCornerShape(18.dp)
+    val currentDay = days.getOrNull(currentDayIndex) ?: return
+    val color = Color(dayColor(currentDayIndex))
 
     Column {
         Box(
@@ -653,110 +655,173 @@ private fun MultiDayPlanCard(
                     .border(2.dp, AppColors.Pebble, cardShape)
                     .clip(cardShape),
             ) {
-                // Paged day content
-                androidx.compose.foundation.pager.HorizontalPager(
-                    state = pagerState,
-                    modifier = Modifier.fillMaxWidth(),
-                ) { page ->
-                    val day = days[page]
-                    val color = Color(dayColor(page))
-
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        // Header
-                        Column(
-                            modifier = Modifier.fillMaxWidth().background(color)
-                                .padding(horizontal = 16.dp, vertical = 12.dp),
-                        ) {
-                            Text(
-                                "DAY ${page + 1} OF ${days.size}",
-                                style = TextStyle(
-                                    fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 10.sp,
-                                    color = AppColors.White.copy(alpha = 0.7f), letterSpacing = 0.8.sp,
-                                ),
-                            )
-                            Spacer(Modifier.height(2.dp))
-                            Text(
-                                day.label.replace("Today ", "").replace("Tomorrow ", "").ifBlank { "Your Plan" },
-                                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 16.sp, color = AppColors.White),
-                            )
-                            Text(
-                                "${day.slots.size} ${if (day.slots.size == 1) "stop" else "stops"}",
-                                style = TextStyle(
-                                    fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp,
-                                    color = AppColors.White.copy(alpha = 0.7f),
-                                ),
-                            )
-                        }
-
-                        // Weather bar
-                        weather[page]?.let { w ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth().background(AppColors.SkyLt)
-                                    .padding(horizontal = 14.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
+                // Day header with arrows
+                Column(
+                    modifier = Modifier.fillMaxWidth().background(color)
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            "DAY ${currentDayIndex + 1} OF ${days.size}",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 10.sp,
+                                color = AppColors.White.copy(alpha = 0.7f), letterSpacing = 0.8.sp,
+                            ),
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                            if (currentDayIndex > 0) {
                                 Text(
-                                    "${w.tempHigh}\u00B0F  ${w.description}",
-                                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = AppColors.SkyDk),
+                                    "\u2190",
+                                    modifier = Modifier.clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                    ) { currentDayIndex-- },
+                                    style = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White),
                                 )
                             }
-                        }
-
-                        // Slots
-                        Column(
-                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
-                            verticalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            for (slot in day.slots) {
-                                SlotCard(
-                                    slot = slot,
-                                    onEventClick = {
-                                        if (slot.eventId != null) onEventClick(slot.eventId)
-                                        else if (!slot.isCustom && slot.name.length > 2) onEventClick("venue:${slot.name}")
-                                    },
-                                )
-                            }
-                        }
-
-                        // Cost estimate
-                        val pricedSlots = day.slots.filter { !it.isFree && (it.priceMin != null || it.price.isNotBlank()) }
-                        if (pricedSlots.isNotEmpty()) {
-                            val totalMin = pricedSlots.sumOf { it.priceMin ?: extractPriceValue(it.price) ?: 0.0 }
-                            val totalMax = pricedSlots.sumOf { it.priceMax ?: it.priceMin ?: extractPriceValue(it.price) ?: 0.0 }
-                            if (totalMin > 0 || totalMax > 0) {
-                                val attendees = 2
-                                val minEst = (totalMin * attendees).toInt()
-                                val maxEst = (totalMax * attendees).toInt()
-                                val estimate = if (minEst == maxEst) "~$$minEst" else "$$minEst-$maxEst"
+                            if (currentDayIndex < days.size - 1) {
                                 Text(
-                                    "$estimate estimated for $attendees",
-                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
-                                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = AppColors.Ink3),
-                                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                                    "\u2192",
+                                    modifier = Modifier.clickable(
+                                        interactionSource = remember { MutableInteractionSource() },
+                                        indication = null,
+                                    ) { currentDayIndex++ },
+                                    style = TextStyle(fontSize = 18.sp, fontWeight = FontWeight.Bold, color = Color.White),
                                 )
                             }
                         }
                     }
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        currentDay.label.replace("Today ", "").replace("Tomorrow ", "").ifBlank { "Your Plan" },
+                        style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 16.sp, color = AppColors.White),
+                    )
+                    Text(
+                        "${currentDay.slots.size} ${if (currentDay.slots.size == 1) "stop" else "stops"}",
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp,
+                            color = AppColors.White.copy(alpha = 0.7f),
+                        ),
+                    )
                 }
 
-                // Page indicator dots
-                if (days.size > 1) {
+                // Weather bar
+                weather[currentDayIndex]?.let { w ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().background(AppColors.SkyLt)
+                            .padding(horizontal = 14.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "${w.tempHigh}\u00B0F  ${w.description}",
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = AppColors.SkyDk),
+                        )
+                    }
+                }
+
+                Spacer(Modifier.height(8.dp))
+
+                // Horizontal timeline row
+                val slotPagerState = androidx.compose.foundation.pager.rememberPagerState(pageCount = { currentDay.slots.size })
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    currentDay.slots.forEachIndexed { index, slot ->
+                        val isActive = slotPagerState.currentPage == index
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // Dot
+                            Box(
+                                modifier = Modifier
+                                    .size(if (isActive) 8.dp else 6.dp)
+                                    .background(if (isActive) color else AppColors.Pebble, CircleShape),
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            // Time
+                            Text(
+                                slot.time,
+                                style = TextStyle(
+                                    fontFamily = AppFonts.Body,
+                                    fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                    fontSize = if (isActive) 12.sp else 10.sp,
+                                    color = if (isActive) AppColors.Ink else AppColors.Ink3,
+                                ),
+                            )
+                        }
+                        // Connecting line between dots
+                        if (index < currentDay.slots.lastIndex) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(1.dp)
+                                    .padding(horizontal = 4.dp)
+                                    .background(AppColors.Pebble.copy(alpha = 0.4f)),
+                            )
+                        }
+                    }
+                }
+
+                // Slot carousel
+                androidx.compose.foundation.pager.HorizontalPager(
+                    state = slotPagerState,
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(start = 12.dp, end = 36.dp),
+                    pageSpacing = 8.dp,
+                ) { slotIndex ->
+                    val slot = currentDay.slots[slotIndex]
+                    SlotCard(
+                        slot = slot,
+                        onEventClick = {
+                            if (slot.eventId != null) onEventClick(slot.eventId)
+                            else if (!slot.isCustom && slot.name.length > 2) onEventClick("venue:${slot.name}")
+                        },
+                    )
+                }
+
+                // Slot indicator dots
+                if (currentDay.slots.size > 1) {
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
                         horizontalArrangement = Arrangement.Center,
                     ) {
-                        days.forEachIndexed { index, _ ->
-                            val isSelected = pagerState.currentPage == index
+                        currentDay.slots.forEachIndexed { index, _ ->
+                            val isSelected = slotPagerState.currentPage == index
                             Box(
                                 modifier = Modifier
                                     .padding(horizontal = 3.dp)
                                     .size(if (isSelected) 8.dp else 6.dp)
                                     .background(
-                                        if (isSelected) Color(dayColor(index)) else AppColors.Pebble,
+                                        if (isSelected) color else AppColors.Pebble,
                                         CircleShape,
                                     ),
                             )
                         }
+                    }
+                }
+
+                // Cost estimate
+                val pricedSlots = currentDay.slots.filter { !it.isFree && (it.priceMin != null || it.price.isNotBlank()) }
+                if (pricedSlots.isNotEmpty()) {
+                    val totalMin = pricedSlots.sumOf { it.priceMin ?: extractPriceValue(it.price) ?: 0.0 }
+                    val totalMax = pricedSlots.sumOf { it.priceMax ?: it.priceMin ?: extractPriceValue(it.price) ?: 0.0 }
+                    if (totalMin > 0 || totalMax > 0) {
+                        val attendees = 2
+                        val minEst = (totalMin * attendees).toInt()
+                        val maxEst = (totalMax * attendees).toInt()
+                        val estimate = if (minEst == maxEst) "~$$minEst" else "$$minEst-$maxEst"
+                        Text(
+                            "$estimate estimated for $attendees",
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 4.dp),
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = AppColors.Ink3),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
                     }
                 }
 
@@ -794,6 +859,8 @@ private fun DayCard(
     weather: live.localapp.local.data.remote.WeatherForecast? = null,
     onSave: () -> Unit = {},
     showSaveButton: Boolean = true,
+    onPrevDay: (() -> Unit)? = null,
+    onNextDay: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val color = Color(dayColor(dayIndex))
@@ -842,19 +909,80 @@ private fun DayCard(
                 }
             }
 
-            // Slots — stacked photo cards
-            Column(
-                modifier = Modifier.padding(horizontal = 10.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
+            Spacer(Modifier.height(8.dp))
+
+            // Horizontal timeline row
+            val slotPagerState = androidx.compose.foundation.pager.rememberPagerState(pageCount = { day.slots.size })
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                for (slot in day.slots) {
-                    SlotCard(
-                        slot = slot,
-                        onEventClick = {
-                            if (slot.eventId != null) onEventClick(slot.eventId)
-                            else if (!slot.isCustom && slot.name.length > 2) onEventClick("venue:${slot.name}")
-                        },
-                    )
+                day.slots.forEachIndexed { index, slot ->
+                    val isActive = slotPagerState.currentPage == index
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(if (isActive) 8.dp else 6.dp)
+                                .background(if (isActive) color else AppColors.Pebble, CircleShape),
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text(
+                            slot.time,
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.SemiBold,
+                                fontSize = if (isActive) 12.sp else 10.sp,
+                                color = if (isActive) AppColors.Ink else AppColors.Ink3,
+                            ),
+                        )
+                    }
+                    if (index < day.slots.lastIndex) {
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(1.dp)
+                                .padding(horizontal = 4.dp)
+                                .background(AppColors.Pebble.copy(alpha = 0.4f)),
+                        )
+                    }
+                }
+            }
+
+            // Slots — horizontal swipe carousel
+            androidx.compose.foundation.pager.HorizontalPager(
+                state = slotPagerState,
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(start = 12.dp, end = 36.dp),
+                pageSpacing = 8.dp,
+            ) { slotIndex ->
+                val slot = day.slots[slotIndex]
+                SlotCard(
+                    slot = slot,
+                    onEventClick = {
+                        if (slot.eventId != null) onEventClick(slot.eventId)
+                        else if (!slot.isCustom && slot.name.length > 2) onEventClick("venue:${slot.name}")
+                    },
+                )
+            }
+
+            // Slot indicator dots
+            if (day.slots.size > 1) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    day.slots.forEachIndexed { index, _ ->
+                        val isSelected = slotPagerState.currentPage == index
+                        Box(
+                            modifier = Modifier
+                                .padding(horizontal = 3.dp)
+                                .size(if (isSelected) 8.dp else 6.dp)
+                                .background(if (isSelected) color else AppColors.Pebble, CircleShape),
+                        )
+                    }
                 }
             }
 
@@ -949,15 +1077,6 @@ private fun SlotCard(
                 .then(if (hasImage) Modifier else Modifier),
             verticalArrangement = if (hasImage) Arrangement.Bottom else Arrangement.Center,
         ) {
-            // Time
-            Text(
-                slot.time,
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 10.sp,
-                    color = if (hasImage) AppColors.White.copy(alpha = 0.7f) else AppColors.Ink3,
-                    letterSpacing = 0.5.sp),
-            )
-            Spacer(Modifier.height(2.dp))
-
             // Name + badges
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(

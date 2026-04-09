@@ -175,11 +175,23 @@ async function handleEventPreview(supabase: any, id: string) {
     ${event.image_url ? `<meta property="og:image" content="${esc(event.image_url)}" />` : ""}
   `;
 
-  return htmlResponse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(event.title)} — Local</title>${ogTags}</head><body><p>Redirecting...</p><script>window.location.href="https://apps.apple.com/app/id6740043653";</script></body></html>`);
+  const eventUrl = `https://localapp.live/e/${event.id}`;
+  const appStoreUrl = "https://apps.apple.com/app/id6740043653";
+
+  return htmlResponse(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(event.title)} — Local</title>${ogTags}
+  <script>
+    try { navigator.clipboard.writeText("${eventUrl}"); } catch(e) {}
+    setTimeout(function() { window.location.href = "${appStoreUrl}"; }, 100);
+  </script>
+  </head><body style="font-family:-apple-system,sans-serif;text-align:center;padding:60px 20px;background:#FAFAFA;">
+    <h1 style="font-size:22px;font-weight:800;color:#1A1A2E;">${esc(event.title)}</h1>
+    <p style="color:#8E8E9A;margin-top:8px;">${esc(desc)}</p>
+    <a href="${appStoreUrl}" style="display:inline-block;margin-top:24px;background:#FF6B6B;color:white;padding:12px 24px;border-radius:12px;text-decoration:none;font-weight:700;">Get Local</a>
+  </body></html>`);
 }
 
 // ════════════════════════════════════════════════════════════════
-// Venue Preview (stub — expand later)
+// Venue Preview
 // ════════════════════════════════════════════════════════════════
 
 async function handleVenuePreview(supabase: any, id: string) {
@@ -192,17 +204,28 @@ async function handleVenuePreview(supabase: any, id: string) {
   if (!venue) return htmlResponse(notFoundPage());
 
   const desc = [venue.category, venue.city, venue.google_rating ? `${venue.google_rating} stars` : null].filter(Boolean).join(" · ");
+  const venueUrl = `https://localapp.live/v/${venue.id}`;
+  const appStoreUrl = "https://apps.apple.com/app/id6740043653";
 
   const ogTags = `
     <meta property="og:type" content="website" />
     <meta property="og:title" content="${esc(venue.name)}" />
     <meta property="og:description" content="${esc(desc)}" />
-    <meta property="og:url" content="https://localapp.live/v/${venue.id}" />
+    <meta property="og:url" content="${venueUrl}" />
     <meta property="og:site_name" content="Local" />
     ${venue.photo_url ? `<meta property="og:image" content="${esc(venue.photo_url)}" />` : ""}
   `;
 
-  return htmlResponse(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(venue.name)} — Local</title>${ogTags}</head><body><p>Redirecting...</p><script>window.location.href="https://apps.apple.com/app/id6740043653";</script></body></html>`);
+  return htmlResponse(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(venue.name)} — Local</title>${ogTags}
+  <script>
+    try { navigator.clipboard.writeText("${venueUrl}"); } catch(e) {}
+    setTimeout(function() { window.location.href = "${appStoreUrl}"; }, 100);
+  </script>
+  </head><body style="font-family:-apple-system,sans-serif;text-align:center;padding:60px 20px;background:#FAFAFA;">
+    <h1 style="font-size:22px;font-weight:800;color:#1A1A2E;">${esc(venue.name)}</h1>
+    <p style="color:#8E8E9A;margin-top:8px;">${esc(desc)}</p>
+    <a href="${appStoreUrl}" style="display:inline-block;margin-top:24px;background:#FF6B6B;color:white;padding:12px 24px;border-radius:12px;text-decoration:none;font-weight:700;">Get Local</a>
+  </body></html>`);
 }
 
 // ════════════════════════════════════════════════════════════════

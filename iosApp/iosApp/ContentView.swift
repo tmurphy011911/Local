@@ -1,6 +1,7 @@
 import UIKit
 import SwiftUI
 import ComposeApp
+import RevenueCat
 
 struct ComposeView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIViewController {
@@ -23,6 +24,9 @@ struct ComposeView: UIViewControllerRepresentable {
 
         // Wire plan detail transition bridge
         setupPlanDetailBridge(composeVC: vc)
+
+        // Wire RevenueCat subscription bridge
+        setupRevenueCatBridge()
 
         return vc
     }
@@ -310,6 +314,81 @@ struct ComposeView: UIViewControllerRepresentable {
         bridge.dismissPlanDetail = {
             DispatchQueue.main.async {
                 transition.dismiss()
+            }
+        }
+    }
+
+    // MARK: - RevenueCat Subscription Bridge
+
+    private func setupRevenueCatBridge() {
+        let bridge = RevenueCatBridge.shared
+
+        // Product IDs — update these after creating in App Store Connect
+        let monthlyProductId = "local_pro_monthly"
+        let annualProductId = "local_pro_annual"
+
+        bridge.purchase = { isAnnual, onResult in
+            Task {
+                do {
+                    let offerings = try await Purchases.shared.offerings()
+                    guard let offering = offerings.current else {
+                        print("RevenueCat: No current offering")
+                        DispatchQueue.main.async { onResult(KotlinBoolean(value: false)) }
+                        return
+                    }
+
+                    // Find the right package
+                    let annual = isAnnual.boolValue
+                    let package: Package?
+                    if annual {
+                        package = offering.annual ?? offering.availablePackages.first(where: { $0.storeProduct.productIdentifier == annualProductId })
+                    } else {
+                        package = offering.monthly ?? offering.availablePackages.first(where: { $0.storeProduct.productIdentifier == monthlyProductId })
+                    }
+
+                    guard let pkg = package else {
+                        print("RevenueCat: Package not found (isAnnual=\(annual))")
+                        DispatchQueue.main.async { onResult(KotlinBoolean(value: false)) }
+                        return
+                    }
+
+                    let (_, customerInfo, _) = try await Purchases.shared.purchase(package: pkg)
+                    let isPro = customerInfo.entitlements["pro"]?.isActive == true
+                    print("RevenueCat: Purchase complete, pro=\(isPro)")
+                    DispatchQueue.main.async { onResult(KotlinBoolean(value: isPro)) }
+                } catch {
+                    print("RevenueCat: Purchase error: \(error.localizedDescription)")
+                    DispatchQueue.main.async { onResult(KotlinBoolean(value: false)) }
+                }
+            }
+        }
+
+        bridge.restorePurchases = { onResult in
+            Task {
+                do {
+                    let customerInfo = try await Purchases.shared.restorePurchases()
+                    let isPro = customerInfo.entitlements["pro"]?.isActive == true
+                    print("RevenueCat: Restore complete, pro=\(isPro)")
+                    DispatchQueue.main.async { onResult(KotlinBoolean(value: isPro)) }
+                } catch {
+                    print("RevenueCat: Restore error: \(error.localizedDescription)")
+                    DispatchQueue.main.async { onResult(KotlinBoolean(value: false)) }
+                }
+            }
+        }
+
+        bridge.checkSubscriptionStatus = { onResult in
+            Task {
+                do {
+                    let customerInfo = try await Purchases.shared.customerInfo()
+                    let isPro = customerInfo.entitlements["pro"]?.isActive == true
+                    let expiry = customerInfo.entitlements["pro"]?.expirationDate?.ISO8601Format()
+                    print("RevenueCat: Status check, pro=\(isPro), expiry=\(expiry ?? "none")")
+                    DispatchQueue.main.async { onResult(KotlinBoolean(value: isPro), expiry) }
+                } catch {
+                    print("RevenueCat: Status check error: \(error.localizedDescription)")
+                    DispatchQueue.main.async { onResult(KotlinBoolean(value: false), nil) }
+                }
             }
         }
     }

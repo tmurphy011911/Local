@@ -118,11 +118,8 @@ class VenueDetailTransitionController {
             return
         }
 
-        if hasValidCardFrame {
-            dismissWithCardMorph(hosting: hosting, window: window)
-        } else {
-            dismissWithSlideDown(hosting: hosting, window: window)
-        }
+        // Always use slide-down dismiss (card morph causes content stretching)
+        dismissWithSlideDown(hosting: hosting, window: window)
     }
 
     private func dismissWithCardMorph(hosting: UIHostingController<AnyView>, window: UIView) {

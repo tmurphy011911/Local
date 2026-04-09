@@ -9,4 +9,12 @@ interface PlanRepository {
     suspend fun deletePlan(planId: String)
     suspend fun getShareToken(planId: String): String?
     suspend fun getSharedPlan(shareToken: String): Plan?
+    suspend fun acceptPlanInvite(shareToken: String): AcceptInviteResult
 }
+
+data class AcceptInviteResult(
+    val success: Boolean,
+    val error: String? = null,
+    val acceptCount: Int = 0,
+    val pointsAwarded: Int = 0,
+)

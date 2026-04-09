@@ -292,6 +292,7 @@ class ProgressViewModel(
                             BadgeAction.EVENT_SHARED -> "event_shared"
                             BadgeAction.PLAN_CREATED -> "plan_created"
                             BadgeAction.PLAN_SHARED -> "plan_shared"
+                            BadgeAction.INVITE_ACCEPTED -> "invite_accepted"
                             BadgeAction.GROUP_5_CONFIRMED -> "group_5_confirmed"
                             BadgeAction.GROUP_10_CONFIRMED -> "group_10_confirmed"
                         }

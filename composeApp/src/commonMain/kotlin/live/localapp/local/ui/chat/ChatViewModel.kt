@@ -365,6 +365,7 @@ class ChatViewModel(
                         venueWebsite = venue?.website,
                         venueCategory = venue?.category,
                     )
+                    .also { println("  slot: name='${it.name}' reservationUrl=${venue?.reservationUrl} venueWebsite=${venue?.website} venueCategory=${venue?.category}") }
                 } else {
                     // Event ref — look up from DB (strip evt: prefix)
                     val cleanId = ref.id.removePrefix("evt:")
@@ -422,6 +423,7 @@ class ChatViewModel(
                         venueWebsite = eventVenueWebsite,
                         venueCategory = eventVenueCategory,
                     )
+                    .also { println("  slot: name='${it.name}' sourceUrl=${event.sourceUrl} venueWebsite=$eventVenueWebsite ticketUrl=${event.ticketUrl} venueCategory=$eventVenueCategory") }
                 }
             }
 
@@ -1519,6 +1521,7 @@ Location: ${state.currentLocationName.ifBlank { state.userPreferences?.city?.rep
 
 HOW TO HELP:
 - When the user wants to plan something, search the database FIRST, then present a plan using the present_plan tool. Search broadly — make multiple search_events calls across different categories and date ranges to find everything relevant. The more you search, the better your recommendations. When offering to build a plan, mention that it's an easily shareable plan (e.g. "Want me to build you a shareable plan?" or "I can put together a plan you can share with your group").
+- IMPORTANT: In present_plan slots, ALWAYS use event_id when a specific event exists (concerts, shows, workshops, tours, exhibitions, games). Only use venue_name for restaurants, bars, and cafes where there is no specific event — just a dining/drinks recommendation. If a concert is at The Sinclair, use the event_id from search_events, NOT venue_name "The Sinclair". The event_id ensures the event title, ticket URL, and source URL are preserved.
 - ALWAYS gather the number of people attending before presenting a plan. You can infer from context: "date night" = 2, "double date" = 4, "just me" / solo = 1, "family" = ask how many, "friends" = ask how many. If unclear, ask "How many people will be joining?" before calling present_plan. Include the attendee_count in the present_plan call — this is required. Tailor recommendations to group size (e.g. larger groups need venues with more seating, reservations become more important).
 - When chatting or answering questions, just respond naturally. No special formatting needed.
 - When the user wants to modify an existing plan (swap something, add something, change a slot, try something different), you MUST search for alternatives and then call update_plan. NEVER respond with just text when a plan exists and the user is asking to change it. Search for what they want, find the best match (or use recommend_and_save_venue), and call update_plan with the full slot list for that day — keeping unchanged slots (use their existing event_id/venue_name) and replacing the modified one. The CURRENT PLAN section below has event_ids and venue names you need to preserve unchanged slots.

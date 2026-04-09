@@ -6,6 +6,10 @@ import io.github.jan.supabase.postgrest.postgrest
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import live.localapp.local.domain.model.Plan
 import live.localapp.local.domain.model.PlanAttendee
 import live.localapp.local.domain.model.PlanDay
@@ -178,7 +182,12 @@ class PlanRepositoryImpl(
             println("PlanRepository.getPlans: raw=${raw.take(500)}")
             val dtos = result.decodeList<PlanDto>()
             println("PlanRepository.getPlans: decoded ${dtos.size} plans")
-            dtos.map { it.toDomain() }
+            val plans = dtos.map { it.toDomain() }
+            // Debug: log slot fields for first plan
+            plans.firstOrNull()?.days?.firstOrNull()?.slots?.forEach { slot ->
+                println("  loaded slot: name='${slot.name}' venueWebsite=${slot.venueWebsite} sourceUrl=${slot.sourceUrl} venueCategory=${slot.venueCategory} ticketUrl=${slot.ticketUrl}")
+            }
+            plans
         } catch (e: Throwable) {
             println("PlanRepository.getPlans error: ${e::class.simpleName}: ${e.message}")
             e.printStackTrace()
@@ -221,9 +230,11 @@ class PlanRepositoryImpl(
                 kotlinx.serialization.serializer<PlanInsertDto>(),
                 insertDto,
             )
-            println("PlanRepository.savePlan: payload=${jsonPayload.take(500)}")
+            println("PlanRepository.savePlan: payload=${jsonPayload.take(1500)}")
 
-            supabaseClient.from("plans").insert(insertDto)
+            // Use raw JSON insert to ensure null fields like source_url, venue_website are preserved
+            val jsonElement = json.parseToJsonElement(jsonPayload)
+            supabaseClient.from("plans").insert(jsonElement)
             println("PlanRepository.savePlan: SUCCESS '${plan.title}'")
         } catch (e: Throwable) {
             println("PlanRepository.savePlan error: ${e::class.simpleName}: ${e.message}")
@@ -278,6 +289,32 @@ class PlanRepositoryImpl(
         } catch (e: Throwable) {
             println("PlanRepository.getShareToken error: ${e::class.simpleName}: ${e.message}")
             null
+        }
+    }
+
+    override suspend fun acceptPlanInvite(shareToken: String): live.localapp.local.domain.repository.AcceptInviteResult {
+        val userId = userPrefsRepo.getLocalUserId()
+            ?: return live.localapp.local.domain.repository.AcceptInviteResult(false, "not_logged_in")
+        return try {
+            val params = kotlinx.serialization.json.buildJsonObject {
+                put("p_share_token", kotlinx.serialization.json.JsonPrimitive(shareToken))
+                put("p_user_id", kotlinx.serialization.json.JsonPrimitive(userId))
+            }
+            val result = supabaseClient.postgrest.rpc("accept_plan_invite", params)
+            val json = kotlinx.serialization.json.Json.parseToJsonElement(result.data).jsonObject
+            val error = json["error"]?.jsonPrimitive?.contentOrNull
+            if (error != null) {
+                println("PlanRepository.acceptPlanInvite: error=$error")
+                live.localapp.local.domain.repository.AcceptInviteResult(false, error)
+            } else {
+                val acceptCount = json["accept_count"]?.jsonPrimitive?.intOrNull ?: 0
+                val points = json["points_awarded"]?.jsonPrimitive?.intOrNull ?: 0
+                println("PlanRepository.acceptPlanInvite: success, acceptCount=$acceptCount, points=$points")
+                live.localapp.local.domain.repository.AcceptInviteResult(true, null, acceptCount, points)
+            }
+        } catch (e: Throwable) {
+            println("PlanRepository.acceptPlanInvite error: ${e::class.simpleName}: ${e.message}")
+            live.localapp.local.domain.repository.AcceptInviteResult(false, e.message)
         }
     }
 
