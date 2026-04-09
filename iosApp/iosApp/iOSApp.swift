@@ -9,7 +9,7 @@ struct iOSApp: App {
 
         // Configure RevenueCat
         Purchases.logLevel = .debug
-        Purchases.configure(withAPIKey: "test_iCUWRkTHkXlscJAkAdUwjEXZEij")
+        Purchases.configure(withAPIKey: "appl_EYwaWlbtrUMLciPvdLpNOymStJV")
     }
 
     var body: some Scene {

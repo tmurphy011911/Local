@@ -324,8 +324,8 @@ struct ComposeView: UIViewControllerRepresentable {
         let bridge = RevenueCatBridge.shared
 
         // Product IDs — update these after creating in App Store Connect
-        let monthlyProductId = "local_pro_monthly"
-        let annualProductId = "local_pro_annual"
+        let monthlyProductId = "monthly"
+        let annualProductId = "yearly"
 
         bridge.purchase = { isAnnual, onResult in
             Task {
@@ -353,7 +353,7 @@ struct ComposeView: UIViewControllerRepresentable {
                     }
 
                     let (_, customerInfo, _) = try await Purchases.shared.purchase(package: pkg)
-                    let isPro = customerInfo.entitlements["pro"]?.isActive == true
+                    let isPro = customerInfo.entitlements["Local Pro"]?.isActive == true
                     print("RevenueCat: Purchase complete, pro=\(isPro)")
                     DispatchQueue.main.async { onResult(KotlinBoolean(value: isPro)) }
                 } catch {
@@ -367,7 +367,7 @@ struct ComposeView: UIViewControllerRepresentable {
             Task {
                 do {
                     let customerInfo = try await Purchases.shared.restorePurchases()
-                    let isPro = customerInfo.entitlements["pro"]?.isActive == true
+                    let isPro = customerInfo.entitlements["Local Pro"]?.isActive == true
                     print("RevenueCat: Restore complete, pro=\(isPro)")
                     DispatchQueue.main.async { onResult(KotlinBoolean(value: isPro)) }
                 } catch {
@@ -381,8 +381,8 @@ struct ComposeView: UIViewControllerRepresentable {
             Task {
                 do {
                     let customerInfo = try await Purchases.shared.customerInfo()
-                    let isPro = customerInfo.entitlements["pro"]?.isActive == true
-                    let expiry = customerInfo.entitlements["pro"]?.expirationDate?.ISO8601Format()
+                    let isPro = customerInfo.entitlements["Local Pro"]?.isActive == true
+                    let expiry = customerInfo.entitlements["Local Pro"]?.expirationDate?.ISO8601Format()
                     print("RevenueCat: Status check, pro=\(isPro), expiry=\(expiry ?? "none")")
                     DispatchQueue.main.async { onResult(KotlinBoolean(value: isPro), expiry) }
                 } catch {
