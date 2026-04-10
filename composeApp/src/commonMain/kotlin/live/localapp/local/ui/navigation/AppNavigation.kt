@@ -821,10 +821,15 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     } else if (showPaywall) {
                         live.localapp.local.ui.chat.PremiumPaywall(
                             onSubscribe = { isAnnual ->
+                                println("Paywall: Subscribe tapped, isAnnual=$isAnnual")
                                 purchaseSubscription(isAnnual) { success ->
+                                    println("Paywall: Purchase result=$success")
                                     if (success) {
                                         premiumGate.hasPaidSubscription = true
                                         showPaywall = false
+                                    } else {
+                                        // Products may not be approved yet — show error or grant for testing
+                                        println("Paywall: Purchase failed — products may not be approved by Apple yet")
                                     }
                                 }
                             },

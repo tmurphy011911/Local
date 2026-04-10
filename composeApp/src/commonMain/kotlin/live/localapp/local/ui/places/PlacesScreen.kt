@@ -40,6 +40,8 @@ import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.IosShare
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.CircularProgressIndicator
@@ -279,10 +281,25 @@ private fun VenueGrid(
     onVenueClick: (VenueWithMeta, Rect) -> Unit,
     onFavoriteToggle: (VenueWithMeta) -> Unit,
 ) {
+    // Saved venues — filter from current venues list
+    val savedVenues = remember(venues, favoriteIds) {
+        venues.filter { it.venue.id in favoriteIds }
+    }
+
     LazyColumn(
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 80.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
+        // Saved Venues collapsible carousel
+        if (savedVenues.isNotEmpty()) {
+            item {
+                SavedVenuesCarousel(
+                    venues = savedVenues,
+                    onVenueClick = onVenueClick,
+                )
+            }
+        }
+
         // All venue cards — slim full-width rows
         items(venues, key = { it.venue.id }) { venueWithMeta ->
             VenueCard(
@@ -296,6 +313,138 @@ private fun VenueGrid(
         // Bottom spacer
         item {
             Spacer(Modifier.height(16.dp))
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SAVED VENUES CAROUSEL — collapsible, same design as home page saved events
+// ═══════════════════════════════════════════════════════════════════
+
+@Composable
+private fun SavedVenuesCarousel(
+    venues: List<VenueWithMeta>,
+    onVenueClick: (VenueWithMeta, Rect) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(true) }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        // Header — tappable to collapse/expand
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { expanded = !expanded },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Saved Places (${venues.size})",
+                modifier = Modifier.weight(1f),
+                style = TextStyle(
+                    fontFamily = AppFonts.Heading,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    color = AppColors.Coral,
+                    letterSpacing = (-0.3).sp,
+                ),
+            )
+            Icon(
+                if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+                contentDescription = if (expanded) "Collapse" else "Expand",
+                modifier = Modifier.size(20.dp),
+                tint = AppColors.Coral,
+            )
+        }
+
+        // Cards — collapsible
+        AnimatedVisibility(visible = expanded) {
+            Column {
+                Spacer(Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    venues.forEach { venueWithMeta ->
+                        SavedVenueAlbumCard(
+                            vm = venueWithMeta,
+                            onClick = { bounds -> onVenueClick(venueWithMeta, bounds) },
+                        )
+                    }
+                }
+                Spacer(Modifier.height(12.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun SavedVenueAlbumCard(vm: VenueWithMeta, onClick: (Rect) -> Unit) {
+    val v = vm.venue
+    var cardBounds by remember { mutableStateOf(Rect.Zero) }
+    val cardShape = RoundedCornerShape(16.dp)
+
+    Box(
+        modifier = Modifier
+            .width(140.dp)
+            .height(170.dp)
+            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .clip(cardShape)
+            .background(Color.White, cardShape)
+            .shadow(4.dp, cardShape)
+            .pressable(onClick = { onClick(cardBounds) }),
+    ) {
+        // Image
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(100.dp)
+                .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)),
+        ) {
+            if (v.photoUrl != null || v.imageUrl != null) {
+                AsyncImage(
+                    model = v.photoUrl ?: v.imageUrl,
+                    contentDescription = v.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Box(
+                    modifier = Modifier.fillMaxSize().background(gradientForCategory(vm.primaryCategory)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(24.dp), tint = Color.White.copy(alpha = 0.5f))
+                }
+            }
+        }
+
+        // Info
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .padding(horizontal = 10.dp, vertical = 8.dp),
+        ) {
+            Text(
+                v.name,
+                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = AppColors.Ink),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            val meta = buildString {
+                vm.primaryCategory?.let { append(it.replaceFirstChar { c -> c.uppercaseChar() }) }
+                if (v.googleRating != null) {
+                    if (isNotBlank()) append(" \u00B7 ")
+                    append("\u2605 ${v.googleRating}")
+                }
+            }
+            if (meta.isNotBlank()) {
+                Text(
+                    meta,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, color = AppColors.Ink3),
+                    maxLines = 1,
+                )
+            }
         }
     }
 }

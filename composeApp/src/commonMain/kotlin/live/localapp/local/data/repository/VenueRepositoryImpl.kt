@@ -32,18 +32,23 @@ class VenueRepositoryImpl(
             .decodeList<VenueDto>()
             .map { it.toDomain() }
 
-        // 2. Fetch upcoming events + always-on to compute per-venue counts & categories
+        // 2. Fetch upcoming events using geo-radius (not city name)
         val nowIso = kotlin.time.Clock.System.now().toString()
+        val radiusMiles = 30.0
+        val latDelta = radiusMiles / 69.0
+        val lngDelta = radiusMiles / 50.0
         val events = try {
-            // Fetch upcoming events (have start_at >= now)
             val upcoming = mutableListOf<EventDto>()
-            for (page in 0 until 7) {
+            for (page in 0 until 5) {
                 val batch = supabaseClient.from("events")
                     .select {
                         filter {
-                            eq("city", city)
                             eq("is_active", true)
                             gte("start_at", nowIso)
+                            gte("venue_lat", userLat - latDelta)
+                            lte("venue_lat", userLat + latDelta)
+                            gte("venue_lng", userLng - lngDelta)
+                            lte("venue_lng", userLng + lngDelta)
                         }
                         order("start_at", Order.ASCENDING)
                         limit(1000)
@@ -53,18 +58,7 @@ class VenueRepositoryImpl(
                 upcoming.addAll(batch)
                 if (batch.size < 1000) break
             }
-            // Fetch always-on events (category = "always_on")
-            val alwaysOn = supabaseClient.from("events")
-                .select {
-                    filter {
-                        eq("city", city)
-                        eq("is_active", true)
-                        eq("category", "always_on")
-                    }
-                    limit(1000)
-                }
-                .decodeList<EventDto>()
-            (upcoming + alwaysOn)
+            upcoming
                 .distinctBy { it.id }
                 .map { it.toDomain() }
         } catch (_: Exception) {
