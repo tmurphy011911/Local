@@ -1566,7 +1566,10 @@ function buildCarousels(
 
   // Sports-specific carousels (raw uncleaned events)
   if (filter.type === "category" && filter.value === "sports") {
-    result.push(...buildSportsCarousels(rawSportsEvents, seenEventIds));
+    console.log(`Sports filter: rawSportsEvents=${rawSportsEvents.length}, seenIds=${seenEventIds.size}`);
+    const sportsCarousels = buildSportsCarousels(rawSportsEvents, seenEventIds);
+    console.log(`Sports carousels built: ${sportsCarousels.length} carousels, ${sportsCarousels.map(c => `${c.title}(${c.events.length})`).join(", ")}`);
+    result.push(...sportsCarousels);
   }
 
   // Standard DB-driven carousels

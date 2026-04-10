@@ -296,6 +296,7 @@ private fun VenueGrid(
                 SavedVenuesCarousel(
                     venues = savedVenues,
                     onVenueClick = onVenueClick,
+                    onFavoriteToggle = onFavoriteToggle,
                 )
             }
         }
@@ -325,6 +326,7 @@ private fun VenueGrid(
 private fun SavedVenuesCarousel(
     venues: List<VenueWithMeta>,
     onVenueClick: (VenueWithMeta, Rect) -> Unit,
+    onFavoriteToggle: (VenueWithMeta) -> Unit = {},
 ) {
     var expanded by remember { mutableStateOf(true) }
 
@@ -369,6 +371,7 @@ private fun SavedVenuesCarousel(
                         SavedVenueAlbumCard(
                             vm = venueWithMeta,
                             onClick = { bounds -> onVenueClick(venueWithMeta, bounds) },
+                            onFavoriteToggle = { onFavoriteToggle(venueWithMeta) },
                         )
                     }
                 }
@@ -379,73 +382,85 @@ private fun SavedVenuesCarousel(
 }
 
 @Composable
-private fun SavedVenueAlbumCard(vm: VenueWithMeta, onClick: (Rect) -> Unit) {
+private fun SavedVenueAlbumCard(vm: VenueWithMeta, onClick: (Rect) -> Unit, onFavoriteToggle: () -> Unit = {}) {
     val v = vm.venue
     var cardBounds by remember { mutableStateOf(Rect.Zero) }
     val cardShape = RoundedCornerShape(16.dp)
 
     Box(
         modifier = Modifier
-            .width(140.dp)
-            .height(170.dp)
+            .width(156.dp)
+            .height(190.dp)
             .onGloballyPositioned { cardBounds = it.boundsInRoot() }
             .clip(cardShape)
-            .background(Color.White, cardShape)
-            .shadow(4.dp, cardShape)
             .pressable(onClick = { onClick(cardBounds) }),
     ) {
-        // Image
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(100.dp)
-                .clip(RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)),
-        ) {
-            if (v.photoUrl != null || v.imageUrl != null) {
-                AsyncImage(
-                    model = v.photoUrl ?: v.imageUrl,
-                    contentDescription = v.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            } else {
-                Box(
-                    modifier = Modifier.fillMaxSize().background(gradientForCategory(vm.primaryCategory)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(24.dp), tint = Color.White.copy(alpha = 0.5f))
-                }
+        // Full-card image or gradient background
+        if (v.photoUrl != null || v.imageUrl != null) {
+            AsyncImage(
+                model = v.photoUrl ?: v.imageUrl,
+                contentDescription = v.name,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else {
+            Box(
+                modifier = Modifier.fillMaxSize().background(gradientForCategory(vm.primaryCategory)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(32.dp), tint = Color.White.copy(alpha = 0.5f))
             }
         }
 
-        // Info
-        Column(
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .fillMaxWidth()
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-        ) {
-            Text(
-                v.name,
-                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = AppColors.Ink),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            val meta = buildString {
-                vm.primaryCategory?.let { append(it.replaceFirstChar { c -> c.uppercaseChar() }) }
-                if (v.googleRating != null) {
-                    if (isNotBlank()) append(" \u00B7 ")
-                    append("\u2605 ${v.googleRating}")
-                }
-            }
-            if (meta.isNotBlank()) {
+        // Dark gradient overlay
+        Box(
+            modifier = Modifier.fillMaxSize().background(
+                Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f)), startY = 60f),
+            ),
+        )
+
+        // Event count badge — top left
+        if (vm.upcomingEventCount > 0) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(8.dp)
+                    .background(AppColors.Coral, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
+            ) {
                 Text(
-                    meta,
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, color = AppColors.Ink3),
-                    maxLines = 1,
+                    "${vm.upcomingEventCount}",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = Color.White),
                 )
             }
         }
+
+        // Heart — top right
+        Icon(
+            Icons.Filled.Favorite,
+            contentDescription = "Remove",
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(8.dp)
+                .size(20.dp)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onFavoriteToggle,
+                ),
+            tint = AppColors.Coral,
+        )
+
+        // Name only — bottom
+        Text(
+            v.name,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(12.dp),
+            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White),
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
@@ -750,6 +765,21 @@ fun VenueDetailPage(
                         parts.joinToString(" \u00B7 "),
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Ink3),
                     )
+
+                    // Address
+                    if (!v.address.isNullOrBlank()) {
+                        Spacer(Modifier.height(4.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(14.dp), tint = AppColors.Ink3)
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                v.address,
+                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
 
                     Spacer(Modifier.height(14.dp))
 
