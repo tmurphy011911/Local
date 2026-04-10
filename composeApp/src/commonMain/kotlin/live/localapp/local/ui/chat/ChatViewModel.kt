@@ -223,40 +223,49 @@ class ChatViewModel(
     // ── Welcome ──
 
     private fun showWelcome() {
-        val userName = _uiState.value.userName
-        val greetings = listOf(
-            "Hey${if (userName.isNotBlank()) " $userName" else ""}! What are you looking to plan?",
-            "What's on your mind? I can plan anything from a single event to a multi-day trip.",
-            "${if (userName.isNotBlank()) "$userName — " else ""}Tell me what you're thinking and I'll find the best options.",
-            "Ready to discover something new? Tell me what you're in the mood for.",
-            "Hey! Date night, weekend plans, or something else entirely?",
-        )
-        addAiMessage(greetings.random())
+        viewModelScope.launch {
+            _uiState.update { it.copy(isTyping = true) }
 
-        val prefs = _uiState.value.userPreferences
-        val defaultChips = mutableListOf(
-            QuickReply("Weekend plans"),
-            QuickReply("Date night ideas"),
-        )
-        // Add preference-based chips
-        prefs?.selectedCategories?.take(2)?.forEach { cat ->
-            defaultChips.add(QuickReply("${categoryDisplayName(cat)} this week"))
-        }
-        prefs?.selectedNeighborhoods?.firstOrNull()?.let { hood ->
-            defaultChips.add(QuickReply("Things to do in $hood"))
-        }
-        // Fallback chips if no preference-based ones were added
-        if (defaultChips.size <= 2) {
-            defaultChips.add(QuickReply("Free things to do"))
-            defaultChips.add(QuickReply("Live music tonight"))
-        }
+            try {
+                val systemPrompt = buildSystemPrompt()
+                // Send a welcome prompt to Claude — it will greet the user naturally
+                conversationHistory.add(ClaudeMessage.text("user", "[System: The user just opened the chat. Greet them warmly in 1-2 short sentences. Ask what they'd like to do. Keep it casual and brief. Do NOT use tools. Do NOT use any special formatting.]"))
+                val response = sendStreaming(systemPrompt, claudeTools, isToolRound = false)
+                val text = claudeApi.extractText(response) ?: "Hey! What are you looking to plan?"
+                // Remove the synthetic user message from history — replace with clean start
+                conversationHistory.removeLastOrNull()
 
-        _uiState.update {
-            it.copy(
-                inputEnabled = true,
-                inputPlaceholder = "What are you looking for?",
-                quickReplies = defaultChips,
+                _uiState.update { it.copy(streamingText = "") }
+                addAiMessage(text)
+            } catch (_: Exception) {
+                _uiState.update { it.copy(streamingText = "") }
+                addAiMessage("Hey! What are you looking to plan?")
+            }
+
+            val prefs = _uiState.value.userPreferences
+            val defaultChips = mutableListOf(
+                QuickReply("Weekend plans"),
+                QuickReply("Date night ideas"),
             )
+            prefs?.selectedCategories?.take(2)?.forEach { cat ->
+                defaultChips.add(QuickReply("${categoryDisplayName(cat)} this week"))
+            }
+            prefs?.selectedNeighborhoods?.firstOrNull()?.let { hood ->
+                defaultChips.add(QuickReply("Things to do in $hood"))
+            }
+            if (defaultChips.size <= 2) {
+                defaultChips.add(QuickReply("Free things to do"))
+                defaultChips.add(QuickReply("Live music tonight"))
+            }
+
+            _uiState.update {
+                it.copy(
+                    isTyping = false,
+                    inputEnabled = true,
+                    inputPlaceholder = "What are you looking for?",
+                    quickReplies = defaultChips,
+                )
+            }
         }
     }
 
@@ -597,12 +606,9 @@ class ChatViewModel(
         var toolRounds = 0
 
         while (true) {
-            // Only stream text to UI after tools have been called at least once.
-            // On round 0 we don't know if Claude will call tools, so showing text
-            // that then vanishes feels jarring. After tools run, the next response
-            // is almost certainly the final one, so streaming is safe.
-            val hideStreamingText = toolRounds == 0
-            val response = sendStreaming(systemPrompt, claudeTools, isToolRound = hideStreamingText)
+            // Always stream text to UI for a conversational feel.
+            // If Claude calls tools on round 0, we'll clear the streaming text.
+            val response = sendStreaming(systemPrompt, claudeTools, isToolRound = false)
 
             val toolCalls = claudeApi.extractToolCalls(response)
             val text = claudeApi.extractText(response) ?: ""

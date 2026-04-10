@@ -923,7 +923,7 @@ data class CardTransitionInfo(
 
 // ── Event Card ──
 
-private data class EventCardData(
+data class EventCardData(
     val title: String,
     val venueName: String,
     val date: String,
@@ -940,7 +940,7 @@ private data class EventCardData(
 )
 
 @Composable
-private fun EventCard(data: EventCardData, onClick: (Rect) -> Unit = {}, onFavorite: (() -> Unit)? = null, isFavorited: Boolean = false) {
+fun EventCard(data: EventCardData, onClick: (Rect) -> Unit = {}, onFavorite: (() -> Unit)? = null, isFavorited: Boolean = false) {
     val scaleAnim = remember { Animatable(1f) }
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
@@ -1223,7 +1223,7 @@ private fun categoryIcon(category: String): ImageVector = when (category.lowerca
     else -> Icons.Outlined.AutoAwesome
 }
 
-private fun Event.toCardData(showTag: Boolean = true, tagOverride: String? = null): EventCardData {
+fun Event.toCardData(showTag: Boolean = true, tagOverride: String? = null): EventCardData {
     // Prefer subSubcategory for a more specific tag (e.g. "Hip Hop" vs "Music")
     val tagKey = subSubcategory ?: subcategory ?: category
     val displayTag = tagOverride ?: formatSubcategoryDisplay(tagKey)

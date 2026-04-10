@@ -348,21 +348,17 @@ private fun MessageRow(role: MessageRole, text: String) {
         modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp),
         horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
     ) {
-        if (isUser) Spacer(Modifier.width(48.dp)) // indent user messages from left
+        if (isUser) Spacer(Modifier.width(48.dp))
 
-        val bubbleShape = if (isUser) RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp)
-            else RoundedCornerShape(18.dp, 18.dp, 18.dp, 4.dp)
-
-        Box(
-            modifier = Modifier.weight(1f, fill = false)
-                .background(
-                    if (isUser) Color(0xFFF0EDF6) else AppColors.White,
-                    bubbleShape,
-                )
-                .then(if (!isUser) Modifier.border(1.dp, AppColors.Pebble.copy(alpha = 0.6f), bubbleShape) else Modifier)
-                .padding(horizontal = 14.dp, vertical = 11.dp),
-        ) {
-            if (isUser) {
+        if (isUser) {
+            // User messages: bubble
+            val bubbleShape = RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp)
+            Box(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .background(Color(0xFFF0EDF6), bubbleShape)
+                    .padding(horizontal = 14.dp, vertical = 11.dp),
+            ) {
                 Text(
                     cleanMarkdown(text),
                     style = TextStyle(
@@ -370,12 +366,26 @@ private fun MessageRow(role: MessageRole, text: String) {
                         color = AppColors.Ink, lineHeight = (13 * 1.55).sp,
                     ),
                 )
-            } else {
-                RichChatText(text = text, textColor = AppColors.Ink2)
+            }
+        } else {
+            // AI messages: small avatar + text, no bubble
+            Icon(
+                Icons.Outlined.AutoAwesome,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp).padding(top = 4.dp),
+                tint = AppColors.Coral,
+            )
+            Spacer(Modifier.width(8.dp))
+            Box(
+                modifier = Modifier
+                    .weight(1f, fill = false)
+                    .padding(vertical = 4.dp),
+            ) {
+                RichChatText(text = text, textColor = AppColors.Ink)
             }
         }
 
-        if (!isUser) Spacer(Modifier.width(48.dp)) // indent AI messages from right
+        if (!isUser) Spacer(Modifier.width(48.dp))
     }
 }
 

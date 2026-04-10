@@ -37,6 +37,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.IosShare
@@ -84,6 +85,7 @@ import live.localapp.local.domain.repository.VenueWithMeta
 import live.localapp.local.domain.repository.CommunityInterestRepository
 import live.localapp.local.domain.repository.InteractionType
 import live.localapp.local.ui.detail.EventDetailScreen
+import live.localapp.local.ui.home.toCardData
 import live.localapp.local.ui.common.AppHeader
 import live.localapp.local.ui.theme.AppColors
 import org.koin.mp.KoinPlatform
@@ -524,12 +526,12 @@ private fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -
                 RatingRow(v)
             }
 
-            // Heart button
+            // Heart button — top right
             Box(
                 modifier = Modifier
                     .fillMaxHeight()
-                    .padding(end = 8.dp),
-                contentAlignment = Alignment.Center,
+                    .padding(end = 10.dp, top = 10.dp),
+                contentAlignment = Alignment.TopCenter,
             ) {
                 Icon(
                     if (isFavorited) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
@@ -812,12 +814,30 @@ fun VenueDetailPage(
                     if (events.isNotEmpty()) {
                         Spacer(Modifier.height(18.dp))
                         Text(
-                            "Upcoming Events",
+                            "Upcoming Events (${events.size})",
                             style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AppColors.Ink),
                         )
                         Spacer(Modifier.height(10.dp))
-                        events.forEach { event ->
-                            EventRow(event = event, onClick = { selectedEvent = event })
+                        // 2-column grid using the same EventCard from home page
+                        val rows = events.chunked(2)
+                        rows.forEach { rowEvents ->
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                rowEvents.forEach { event ->
+                                    Box(modifier = Modifier.weight(1f)) {
+                                        live.localapp.local.ui.home.EventCard(
+                                            data = event.toCardData(),
+                                            onClick = { selectedEvent = event },
+                                        )
+                                    }
+                                }
+                                if (rowEvents.size == 1) {
+                                    Spacer(Modifier.weight(1f))
+                                }
+                            }
+                            Spacer(Modifier.height(10.dp))
                         }
                     }
 

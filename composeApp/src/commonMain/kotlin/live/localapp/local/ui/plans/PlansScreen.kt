@@ -35,8 +35,10 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.People
 import androidx.compose.material.icons.outlined.IosShare
@@ -271,7 +273,6 @@ fun PlansScreen(
             // Saved Events
             if (state.savedEvents.isNotEmpty()) {
                 item {
-                    Spacer(Modifier.height(4.dp))
                     Text(
                         "Saved Events",
                         style = TextStyle(
@@ -302,7 +303,6 @@ fun PlansScreen(
             // Saved Venues
             if (state.savedVenues.isNotEmpty()) {
                 item {
-                    Spacer(Modifier.height(4.dp))
                     Text(
                         "Saved Venues",
                         style = TextStyle(
@@ -315,7 +315,7 @@ fun PlansScreen(
                     Spacer(Modifier.height(10.dp))
                 }
                 items(state.savedVenues) { venue ->
-                    SavedVenueRow(venue = venue)
+                    SavedVenueRow(venue = venue, onPlanForVenue = { onBuildPlanFromTemplate?.invoke("Plan something at ${venue.name}") })
                 }
             }
 
@@ -408,63 +408,84 @@ private fun SavedEventCard(event: Event, onClick: (androidx.compose.ui.geometry.
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
-private fun SavedVenueRow(venue: Venue) {
-    val cardShape = RoundedCornerShape(12.dp)
+private fun SavedVenueRow(venue: Venue, onPlanForVenue: () -> Unit = {}) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(AppColors.White, cardShape)
-            .border(1.5.dp, AppColors.Pebble, cardShape)
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
+            .height(80.dp)
+            .shadow(2.dp, RoundedCornerShape(14.dp))
+            .background(Color.White, RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(14.dp)),
     ) {
-        // Small thumbnail
-        val photoUrl = venue.photoUrl ?: venue.imageUrl
-        if (!photoUrl.isNullOrBlank()) {
-            AsyncImage(
-                model = ImageRequest.Builder(LocalPlatformContext.current)
-                    .data(photoUrl)
-                    .build(),
-                contentDescription = venue.name,
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(RoundedCornerShape(8.dp)),
-                contentScale = ContentScale.Crop,
-            )
-        } else {
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .background(AppColors.Mist, RoundedCornerShape(8.dp)),
-            )
+        // Thumbnail
+        Box(
+            modifier = Modifier
+                .width(80.dp)
+                .fillMaxHeight()
+                .background(AppColors.Mist),
+            contentAlignment = Alignment.Center,
+        ) {
+            val photoUrl = venue.photoUrl ?: venue.imageUrl
+            if (!photoUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = photoUrl,
+                    contentDescription = venue.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(28.dp), tint = AppColors.Ink3.copy(alpha = 0.5f))
+            }
         }
-        Column(modifier = Modifier.weight(1f)) {
+
+        // Body
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight()
+                .padding(horizontal = 12.dp, vertical = 10.dp),
+            verticalArrangement = Arrangement.Center,
+        ) {
             Text(
                 venue.name,
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 13.sp,
-                    color = AppColors.Ink,
-                ),
+                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = AppColors.Ink, lineHeight = 18.sp),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            val subtitle = listOfNotNull(venue.category, venue.address).joinToString(" · ")
-            if (subtitle.isNotBlank()) {
+            Spacer(Modifier.height(3.dp))
+            val meta = buildString {
+                venue.category?.let { append(it.replaceFirstChar { c -> c.uppercaseChar() }) }
+                append(" \u00B7 ${venue.city}")
+            }
+            Text(meta, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3))
+            if (venue.googleRating != null) {
+                Spacer(Modifier.height(2.dp))
                 Text(
-                    subtitle,
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 11.sp,
-                        color = AppColors.Ink3,
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+                    "\u2605\u2605\u2605\u2605\u2606 ${venue.googleRating}",
+                    style = TextStyle(fontSize = 11.sp, color = AppColors.Sun),
                 )
             }
+        }
+
+        // Yocal button — top right
+        Box(
+            modifier = Modifier
+                .fillMaxHeight()
+                .padding(end = 10.dp, top = 10.dp),
+            contentAlignment = Alignment.TopCenter,
+        ) {
+            Icon(
+                Icons.Outlined.AutoAwesome,
+                contentDescription = "Plan with Yocal",
+                modifier = Modifier
+                    .size(22.dp)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onPlanForVenue,
+                    ),
+                tint = AppColors.Coral,
+            )
         }
     }
 }

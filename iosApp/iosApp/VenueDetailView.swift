@@ -260,8 +260,20 @@ struct VenueDetailView: View {
 
                 Spacer().frame(height: 10)
 
-                ForEach(venue.upcomingEvents) { event in
-                    upcomingEventRow(event)
+                // 2-column grid
+                let rows = stride(from: 0, to: venue.upcomingEvents.count, by: 2).map { i in
+                    Array(venue.upcomingEvents[i..<min(i + 2, venue.upcomingEvents.count)])
+                }
+                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                    HStack(spacing: 10) {
+                        ForEach(row) { event in
+                            eventAlbumCard(event)
+                                .frame(maxWidth: .infinity)
+                        }
+                        if row.count == 1 {
+                            Spacer().frame(maxWidth: .infinity)
+                        }
+                    }
                 }
             } else if venue.upcomingEventCount > 0 {
                 Spacer().frame(height: 8)
@@ -356,6 +368,92 @@ struct VenueDetailView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppColor.pebble, lineWidth: 1.5))
         .padding(.bottom, 4)
+    }
+
+    private func eventAlbumCard(_ event: VenueUpcomingEvent) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Image
+            ZStack(alignment: .topLeading) {
+                if let urlStr = event.imageUrl, let url = URL(string: urlStr) {
+                    AsyncImage(url: url) { phase in
+                        switch phase {
+                        case .success(let image):
+                            image.resizable().scaledToFill()
+                                .frame(height: 90)
+                                .clipped()
+                        default:
+                            AppColor.mist.frame(height: 90)
+                        }
+                    }
+                    .frame(height: 90)
+                    .clipped()
+                } else {
+                    AppColor.mist
+                        .frame(height: 90)
+                }
+
+                // Category tag — skip "always_on"
+                let rawCat = event.subcategory ?? event.category ?? ""
+                let displayCat = rawCat.lowercased() == "always_on" ? "Event" : (rawCat.prefix(1).uppercased() + rawCat.dropFirst())
+                if !displayCat.isEmpty {
+                    Text(displayCat)
+                        .font(.system(size: 9, weight: .heavy))
+                        .foregroundColor(AppColor.ink)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.white)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .padding(8)
+                }
+
+                // Free badge
+                if event.isFree {
+                    HStack {
+                        Spacer()
+                        Text("Free")
+                            .font(.system(size: 9, weight: .heavy))
+                            .foregroundColor(Color(hex: 0x2D9F73))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Color(hex: 0xE8F5E9))
+                            .clipShape(RoundedRectangle(cornerRadius: 6))
+                            .padding(8)
+                    }
+                }
+            }
+
+            // Info — fixed height so all cards match
+            VStack(alignment: .leading, spacing: 3) {
+                Text(event.title)
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundColor(AppColor.ink)
+                    .lineLimit(2)
+
+                if let dateDisplay = event.dateDisplay, !dateDisplay.isEmpty {
+                    Text(dateDisplay)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(AppColor.ink3)
+                }
+            }
+            .padding(10)
+            .frame(height: 70, alignment: .topLeading)
+        }
+        .background(.white)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppColor.pebble, lineWidth: 1))
+        .onTapGesture {
+            // Open event detail via bridge
+            EventDetailBridge.shared.showEventDetail?(
+                event.id, event.title, nil, nil,
+                event.imageUrl, event.startAt,
+                nil, nil, "", 0.0, 0.0,
+                KotlinBoolean(value: event.isFree), event.priceDisplay ?? "",
+                nil, nil,
+                event.category ?? "", event.subcategory,
+                nil,
+                0, 0, 0, 0, event.imageUrl
+            )
+        }
     }
 
     private func eventPlaceholder(_ event: VenueUpcomingEvent) -> some View {
