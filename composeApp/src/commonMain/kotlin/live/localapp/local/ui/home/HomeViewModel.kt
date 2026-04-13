@@ -80,7 +80,7 @@ class HomeViewModel(
                             "providence" -> "RI"
                             "portland" -> "ME"
                             "new york" -> "NY"
-                            "philadelphia" -> "PA"
+                            "philadelphia", "pittsburgh", "allentown", "harrisburg" -> "PA"
                             else -> null
                         }
                         if (state != null) "$city, $state" else city
@@ -112,7 +112,7 @@ class HomeViewModel(
                     "boston", "cambridge", "somerville", "newton", "waltham",
                     "brookline", "worcester", "springfield", "lowell" -> "MA"
                     "providence" -> "RI"; "portland" -> "ME"; "new york" -> "NY"
-                    "philadelphia" -> "PA"
+                    "philadelphia", "pittsburgh", "allentown", "harrisburg" -> "PA"
                     else -> null
                 }
                 if (state != null) "$city, $state" else city

@@ -457,6 +457,9 @@ class OnboardingViewModel(
             CityRef("New York", 40.7128, -74.0060),
             CityRef("Portland", 43.6591, -70.2568),
             CityRef("Philadelphia", 39.9526, -75.1652),
+            CityRef("Pittsburgh", 40.4406, -79.9959),
+            CityRef("Allentown", 40.6084, -75.4902),
+            CityRef("Harrisburg", 40.2732, -76.8839),
         )
         return cities.minByOrNull {
             val dLat = it.lat - lat
