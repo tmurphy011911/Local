@@ -38,3 +38,16 @@ actual fun restorePurchases(onResult: (Boolean) -> Unit) {
 actual fun checkSubscriptionStatus(onResult: (Boolean, String?) -> Unit) {
     live.localapp.local.RevenueCatBridge.checkSubscriptionStatus?.invoke(onResult) ?: onResult(false, null)
 }
+
+actual fun requestNotificationPermission(onResult: (Boolean) -> Unit) {
+    val center = platform.UserNotifications.UNUserNotificationCenter.currentNotificationCenter()
+    center.requestAuthorizationWithOptions(
+        platform.UserNotifications.UNAuthorizationOptionAlert or
+            platform.UserNotifications.UNAuthorizationOptionBadge or
+            platform.UserNotifications.UNAuthorizationOptionSound,
+    ) { granted, _ ->
+        platform.darwin.dispatch_async(platform.darwin.dispatch_get_main_queue()) {
+            onResult(granted)
+        }
+    }
+}

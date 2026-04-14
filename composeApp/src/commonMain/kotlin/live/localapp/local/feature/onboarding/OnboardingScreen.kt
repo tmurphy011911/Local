@@ -139,7 +139,15 @@ fun OnboardingScreen(
                         onToggleTickets = viewModel::toggleNotifTickets,
                         onToggleNearby = viewModel::toggleNotifNearby,
                         onToggleVenues = viewModel::toggleNotifVenues,
-                        onNext = { onComplete(state.userLat, state.userLng) },
+                        onNext = {
+                            if (state.notifTickets || state.notifNearby || state.notifVenues) {
+                                live.localapp.local.platform.requestNotificationPermission { _ ->
+                                    onComplete(state.userLat, state.userLng)
+                                }
+                            } else {
+                                onComplete(state.userLat, state.userLng)
+                            }
+                        },
                         onSkip = { onComplete(state.userLat, state.userLng) },
                         onBack = { viewModel.onBackFromNotifications() },
                     )

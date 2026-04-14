@@ -20,3 +20,6 @@ expect fun restorePurchases(onResult: (Boolean) -> Unit)
 
 /** Check current subscription status. Callback receives (isPro, expiryDate?). */
 expect fun checkSubscriptionStatus(onResult: (Boolean, String?) -> Unit)
+
+/** Request OS-level push notification permission. Callback receives whether granted. */
+expect fun requestNotificationPermission(onResult: (Boolean) -> Unit)
