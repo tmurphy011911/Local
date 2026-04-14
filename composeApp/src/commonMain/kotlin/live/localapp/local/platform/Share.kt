@@ -23,3 +23,6 @@ expect fun checkSubscriptionStatus(onResult: (Boolean, String?) -> Unit)
 
 /** Request OS-level push notification permission. Callback receives whether granted. */
 expect fun requestNotificationPermission(onResult: (Boolean) -> Unit)
+
+/** Open the OS settings page for this app (e.g. to enable location permission). */
+expect fun openAppSettings()

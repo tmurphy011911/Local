@@ -13,4 +13,5 @@ actual fun setDeepLinkCallback(onPlanToken: (String) -> Unit) {}
 actual fun purchaseSubscription(isAnnual: Boolean, onResult: (Boolean) -> Unit) { onResult(false) }
 actual fun restorePurchases(onResult: (Boolean) -> Unit) { onResult(false) }
 actual fun checkSubscriptionStatus(onResult: (Boolean, String?) -> Unit) { onResult(false, null) }
+actual fun openAppSettings() {}
 actual fun requestNotificationPermission(onResult: (Boolean) -> Unit) { onResult(false) }

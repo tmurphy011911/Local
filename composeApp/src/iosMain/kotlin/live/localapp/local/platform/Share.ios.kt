@@ -39,6 +39,12 @@ actual fun checkSubscriptionStatus(onResult: (Boolean, String?) -> Unit) {
     live.localapp.local.RevenueCatBridge.checkSubscriptionStatus?.invoke(onResult) ?: onResult(false, null)
 }
 
+actual fun openAppSettings() {
+    platform.UIKit.UIApplication.sharedApplication.openURL(
+        platform.Foundation.NSURL(string = platform.UIKit.UIApplicationOpenSettingsURLString)!!,
+    )
+}
+
 actual fun requestNotificationPermission(onResult: (Boolean) -> Unit) {
     val center = platform.UserNotifications.UNUserNotificationCenter.currentNotificationCenter()
     center.requestAuthorizationWithOptions(

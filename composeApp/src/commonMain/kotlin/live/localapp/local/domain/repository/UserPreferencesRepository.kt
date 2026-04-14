@@ -15,6 +15,10 @@ data class UserPreferences(
     val notifNearby: Boolean = true,
     val notifVenues: Boolean = true,
     val onboardingComplete: Boolean = false,
+    val locationMode: String = "current", // "current" or "manual"
+    val manualLocationName: String? = null,
+    val manualLat: Double? = null,
+    val manualLng: Double? = null,
 )
 
 interface UserPreferencesRepository {

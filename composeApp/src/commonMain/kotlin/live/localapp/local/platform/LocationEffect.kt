@@ -19,3 +19,6 @@ expect fun RequestLocationEffect(
     onDenied: () -> Unit,
     onDeniedPermanently: (() -> Unit)? = null,
 )
+
+/** Synchronous check: is location permission currently granted? */
+expect fun checkLocationPermissionGranted(): Boolean

@@ -115,3 +115,8 @@ actual fun RequestLocationEffect(
         }
     }
 }
+
+actual fun checkLocationPermissionGranted(): Boolean {
+    val status = CLLocationManager.authorizationStatus()
+    return status == kCLAuthorizationStatusAuthorizedWhenInUse || status == kCLAuthorizationStatusAuthorizedAlways
+}

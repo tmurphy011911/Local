@@ -94,11 +94,6 @@ class PlacesViewModel(
         _uiState.update { it.copy(streakDays = days) }
     }
 
-    fun debugSetLocation(lat: Double, lng: Double, name: String) {
-        _uiState.update { it.copy(userLat = lat, userLng = lng, locationName = name) }
-        loadVenues()
-    }
-
     fun refresh() {
         _uiState.update { it.copy(isRefreshing = true) }
         loadVenues()

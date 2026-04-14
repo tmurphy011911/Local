@@ -134,9 +134,9 @@ private fun String.toTitleCase(): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onProfileClick: () -> Unit = {}, onDebugLocationChange: ((Double, Double, String) -> Unit)? = null, onFavorite: ((Event) -> Unit)? = null) {
+fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onProfileClick: () -> Unit = {}, onFavorite: ((Event) -> Unit)? = null) {
     val state by viewModel.uiState.collectAsState()
-    var showDebugMenu by remember { mutableStateOf(false) }
+    var showLocationSheet by remember { mutableStateOf(false) }
     var seeAllSection by remember { mutableStateOf<CarouselSection?>(null) }
     var previouslyLoading by remember { mutableStateOf(true) }
     val haptic = LocalHapticFeedback.current
@@ -149,18 +149,17 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
         previouslyLoading = state.isLoading
     }
 
-    if (showDebugMenu) {
-        DebugMenuDialog(
-            onDismiss = { showDebugMenu = false },
-            onMockLocation = { lat, lng, name ->
-                viewModel.debugSetLocation(lat, lng, name)
-                onDebugLocationChange?.invoke(lat, lng, name)
-                showDebugMenu = false
-            },
-            onSetUserState = { userState ->
-                // TODO: wire to user state management
-                showDebugMenu = false
-            },
+    if (showLocationSheet) {
+        LocationSettingsSheet(
+            currentLocationName = state.locationName,
+            locationMode = state.locationMode,
+            manualLocationName = state.manualLocationName,
+            radiusFilter = state.radiusFilter,
+            hasLocationPermission = state.hasLocationPermission,
+            onSelectCurrentLocation = { viewModel.setLocationMode(LocationMode.CURRENT_LOCATION) },
+            onSelectManualLocation = { lat, lng, name -> viewModel.setManualLocation(lat, lng, name) },
+            onRadiusChanged = { viewModel.setRadiusFilter(it) },
+            onDismiss = { showLocationSheet = false },
         )
     }
 
@@ -183,78 +182,16 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
             .fillMaxSize()
             .background(AppColors.Snow),
     ) {
-        run {
-            var radiusPickerOpen by remember { mutableStateOf(false) }
-            AppHeader(
+        AppHeader(
                 title = "local",
                 locationName = state.locationName,
                 radiusFilter = state.radiusFilter,
                 streakDays = state.streakDays,
                 userInitial = state.userName.firstOrNull()?.uppercase() ?: "",
                 onProfileClick = onProfileClick,
-                onLocationClick = { radiusPickerOpen = !radiusPickerOpen },
-                onLogoClick = { showDebugMenu = true },
-                bottomPadding = !radiusPickerOpen,
-                extraContent = {
-                    // Radius picker — expands below the pill row when tapped
-                    AnimatedVisibility(
-                        visible = radiusPickerOpen,
-                        enter = expandVertically(),
-                        exit = shrinkVertically(),
-                    ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 20.dp)
-                                .padding(bottom = 10.dp)
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            listOf<Double?>(null, 1.0, 3.0, 5.0, 10.0, 25.0, 50.0, 100.0).forEach { option ->
-                                val isSelected = option == state.radiusFilter
-                                val label = when (option) {
-                                    null   -> "Any"
-                                    1.0    -> "1 mi"
-                                    3.0    -> "3 mi"
-                                    5.0    -> "5 mi"
-                                    10.0   -> "10 mi"
-                                    25.0   -> "25 mi"
-                                    50.0   -> "50 mi"
-                                    100.0  -> "100 mi"
-                                    else   -> "${option.toInt()} mi"
-                                }
-                                Box(
-                                    modifier = Modifier
-                                        .background(
-                                            if (isSelected) AppColors.Sky else AppColors.SkyLt,
-                                            AppShapes.Pill,
-                                        )
-                                        .border(1.5.dp, AppColors.Sky, AppShapes.Pill)
-                                        .clickable(
-                                            interactionSource = remember { MutableInteractionSource() },
-                                            indication = null,
-                                        ) {
-                                            viewModel.setRadiusFilter(option)
-                                            radiusPickerOpen = false
-                                        }
-                                        .padding(horizontal = 12.dp, vertical = 5.dp),
-                                ) {
-                                    Text(
-                                        label,
-                                        style = TextStyle(
-                                            fontFamily = AppFonts.Body,
-                                            fontWeight = FontWeight.ExtraBold,
-                                            fontSize = 12.sp,
-                                            color = if (isSelected) AppColors.White else AppColors.Sky,
-                                        ),
-                                    )
-                                }
-                            }
-                        }
-                    }
-                },
+                onLocationClick = { showLocationSheet = true },
+                onLogoClick = {},
             )
-        }
 
         PullToRefreshBox(
             isRefreshing = state.isRefreshing,
@@ -1675,148 +1612,3 @@ private fun AlbumEventCard(event: Event, onClick: (Rect) -> Unit) {
 
 // HomeHeader removed — now uses shared AppHeader
 
-// ── Debug Menu ──
-
-private data class MockLocation(val name: String, val lat: Double, val lng: Double)
-
-private val MOCK_LOCATIONS = listOf(
-    // Massachusetts
-    MockLocation("Boston, MA", 42.3601, -71.0589),
-    MockLocation("Cambridge, MA", 42.3736, -71.1097),
-    MockLocation("Worcester, MA", 42.2626, -71.8023),
-    MockLocation("Springfield, MA", 42.1015, -72.5898),
-    MockLocation("Lowell, MA", 42.6334, -71.3162),
-    MockLocation("New Bedford, MA", 41.6362, -70.9342),
-    MockLocation("Pittsfield, MA", 42.4501, -73.2454),
-    MockLocation("Cape Cod, MA", 41.6688, -70.2962),
-    MockLocation("Northampton, MA", 42.3251, -72.6412),
-    MockLocation("Salem, MA", 42.5195, -70.8967),
-    // Out of state
-    MockLocation("Providence, RI", 41.8240, -71.4128),
-    MockLocation("New York, NY", 40.7128, -74.0060),
-    MockLocation("Philadelphia, PA", 39.9526, -75.1652),
-)
-
-@Composable
-private fun DebugMenuDialog(
-    onDismiss: () -> Unit,
-    onMockLocation: (lat: Double, lng: Double, name: String) -> Unit,
-    onSetUserState: (String) -> Unit,
-) {
-    Dialog(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
-                .background(AppColors.White)
-                .padding(20.dp)
-                .verticalScroll(rememberScrollState()),
-        ) {
-            // Header
-            Text(
-                "Debug Menu",
-                style = TextStyle(
-                    fontFamily = AppFonts.Heading,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 20.sp,
-                    color = AppColors.Ink,
-                ),
-            )
-
-            Spacer(Modifier.height(16.dp))
-
-            // ── User State ──
-            Text(
-                "USER STATE",
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 10.sp,
-                    color = AppColors.Ink3,
-                    letterSpacing = 1.sp,
-                ),
-            )
-            Spacer(Modifier.height(8.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                listOf("New User", "Returning", "Existing").forEach { label ->
-                    Box(
-                        modifier = Modifier
-                            .background(AppColors.Mist, RoundedCornerShape(10.dp))
-                            .clickable { onSetUserState(label.lowercase()) }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                    ) {
-                        Text(
-                            label,
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                color = AppColors.Ink,
-                            ),
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(20.dp))
-
-            // ── Mock Location ──
-            Text(
-                "MOCK LOCATION",
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 10.sp,
-                    color = AppColors.Ink3,
-                    letterSpacing = 1.sp,
-                ),
-            )
-            Spacer(Modifier.height(8.dp))
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                MOCK_LOCATIONS.forEach { loc ->
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable { onMockLocation(loc.lat, loc.lng, loc.name) }
-                            .background(AppColors.Snow)
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                    ) {
-                        Text(
-                            loc.name,
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 14.sp,
-                                color = AppColors.Ink,
-                            ),
-                        )
-                    }
-                }
-            }
-
-            Spacer(Modifier.height(16.dp))
-
-            // Close button
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(AppColors.Coral)
-                    .clickable { onDismiss() }
-                    .padding(vertical = 12.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "Close",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 14.sp,
-                        color = AppColors.White,
-                    ),
-                )
-            }
-        }
-    }
-}

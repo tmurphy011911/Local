@@ -26,6 +26,10 @@ private data class UserProfileDto(
     @SerialName("notif_nearby") val notifNearby: Boolean = true,
     @SerialName("notif_venues") val notifVenues: Boolean = true,
     @SerialName("onboarding_complete") val onboardingComplete: Boolean = false,
+    @SerialName("location_mode") val locationMode: String = "current",
+    @SerialName("manual_location_name") val manualLocationName: String? = null,
+    @SerialName("manual_lat") val manualLat: Double? = null,
+    @SerialName("manual_lng") val manualLng: Double? = null,
 )
 
 @Serializable
@@ -61,6 +65,10 @@ class UserPreferencesRepositoryImpl(
             notifNearby = prefs.notifNearby,
             notifVenues = prefs.notifVenues,
             onboardingComplete = true,
+            locationMode = prefs.locationMode,
+            manualLocationName = prefs.manualLocationName,
+            manualLat = prefs.manualLat,
+            manualLng = prefs.manualLng,
         )
 
         val result = if (existingId != null) {
@@ -113,6 +121,10 @@ class UserPreferencesRepositoryImpl(
                 notifNearby = dto.notifNearby,
                 notifVenues = dto.notifVenues,
                 onboardingComplete = dto.onboardingComplete,
+                locationMode = dto.locationMode,
+                manualLocationName = dto.manualLocationName,
+                manualLat = dto.manualLat,
+                manualLng = dto.manualLng,
             )
         } catch (_: Exception) {
             null
@@ -199,6 +211,10 @@ class UserPreferencesRepositoryImpl(
             notifNearby = prefs.notifNearby,
             notifVenues = prefs.notifVenues,
             onboardingComplete = true,
+            locationMode = prefs.locationMode,
+            manualLocationName = prefs.manualLocationName,
+            manualLat = prefs.manualLat,
+            manualLng = prefs.manualLng,
         )
 
         // Check if row exists already

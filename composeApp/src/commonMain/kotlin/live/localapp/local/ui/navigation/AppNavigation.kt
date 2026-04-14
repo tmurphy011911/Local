@@ -172,6 +172,18 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     }
     val homeState by homeVm.uiState.collectAsState()
 
+    // Auto-fetch GPS location on launch if mode is "current" and permission granted
+    live.localapp.local.platform.RequestLocationEffect(
+        active = homeState.locationMode == live.localapp.local.ui.home.LocationMode.CURRENT_LOCATION,
+        onLocation = { lat, lng ->
+            homeVm.setUserLocation(lat, lng)
+            homeVm.setHasLocationPermission(true)
+        },
+        onDenied = {
+            homeVm.setHasLocationPermission(false)
+        },
+    )
+
     // Hoist ProgressViewModel so badge celebrations show on any screen
     val progressVm: ProgressViewModel = viewModel { koin.get<ProgressViewModel>() }
     val progressState by progressVm.uiState.collectAsState()
@@ -352,10 +364,6 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             },
                             onConciergeClick = { openChatOrLogin() },
                             onProfileClick = { selectedTab = Tab.PROFILE },
-                            onDebugLocationChange = { lat, lng, name ->
-                                placesVm.debugSetLocation(lat, lng, name)
-                                chatVm.setCurrentLocation(lat, lng, name)
-                            },
                             onFavorite = { event ->
                                 homeVm.toggleEventFavorite(event.id, event.subcategory ?: event.category)
                             },

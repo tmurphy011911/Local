@@ -39,7 +39,14 @@ data class HomeUiState(
     val radiusFilter: Double? = null,
     val savedThisWeek: List<Event> = emptyList(),
     val favoriteEventIds: Set<String> = emptySet(),
+    val locationMode: LocationMode = LocationMode.CURRENT_LOCATION,
+    val manualLocationName: String = "",
+    val manualLat: Double? = null,
+    val manualLng: Double? = null,
+    val hasLocationPermission: Boolean = true,
 )
+
+enum class LocationMode { CURRENT_LOCATION, MANUAL }
 
 class HomeViewModel(
     private val carouselRepository: CarouselRepository,
@@ -85,13 +92,21 @@ class HomeViewModel(
                         }
                         if (state != null) "$city, $state" else city
                     }
+                    val mode = if (prefs.locationMode == "manual") LocationMode.MANUAL else LocationMode.CURRENT_LOCATION
+                    val effectiveLat = if (mode == LocationMode.MANUAL) prefs.manualLat ?: prefs.userLat else prefs.userLat
+                    val effectiveLng = if (mode == LocationMode.MANUAL) prefs.manualLng ?: prefs.userLng else prefs.userLng
+                    val effectiveName = if (mode == LocationMode.MANUAL && !prefs.manualLocationName.isNullOrBlank()) prefs.manualLocationName else cityDisplay
                     _uiState.update {
                         it.copy(
                             userName = prefs.firstName ?: "",
-                            userLat = prefs.userLat ?: it.userLat,
-                            userLng = prefs.userLng ?: it.userLng,
-                            locationName = if (it.locationName.isBlank()) cityDisplay else it.locationName,
+                            userLat = effectiveLat ?: it.userLat,
+                            userLng = effectiveLng ?: it.userLng,
+                            locationName = if (it.locationName.isBlank()) effectiveName else it.locationName,
                             userPreferences = prefs,
+                            locationMode = mode,
+                            manualLocationName = prefs.manualLocationName ?: "",
+                            manualLat = prefs.manualLat,
+                            manualLng = prefs.manualLng,
                         )
                     }
                 }
@@ -123,10 +138,47 @@ class HomeViewModel(
         }
     }
 
-    fun debugSetLocation(lat: Double, lng: Double, name: String) {
-        _uiState.update { it.copy(userLat = lat, userLng = lng, locationName = name) }
+    fun setLocationMode(mode: LocationMode) {
+        val current = _uiState.value
+        _uiState.update { it.copy(locationMode = mode) }
+        if (mode == LocationMode.MANUAL && current.manualLat != null && current.manualLng != null) {
+            _uiState.update { it.copy(userLat = current.manualLat, userLng = current.manualLng, locationName = current.manualLocationName) }
+            carouselRepository.invalidateAll()
+            loadCarousels()
+        }
+        saveLocationPrefs()
+    }
+
+    fun setManualLocation(lat: Double, lng: Double, name: String) {
+        _uiState.update {
+            it.copy(
+                manualLat = lat, manualLng = lng, manualLocationName = name,
+                userLat = lat, userLng = lng, locationName = name,
+                locationMode = LocationMode.MANUAL,
+            )
+        }
         carouselRepository.invalidateAll()
         loadCarousels()
+        saveLocationPrefs()
+    }
+
+    fun setHasLocationPermission(granted: Boolean) {
+        _uiState.update { it.copy(hasLocationPermission = granted) }
+    }
+
+    private fun saveLocationPrefs() {
+        viewModelScope.launch {
+            val state = _uiState.value
+            val prefs = state.userPreferences ?: return@launch
+            val updated = prefs.copy(
+                locationMode = if (state.locationMode == LocationMode.MANUAL) "manual" else "current",
+                manualLocationName = state.manualLocationName,
+                manualLat = state.manualLat,
+                manualLng = state.manualLng,
+            )
+            val userId = userPreferencesRepository.getLocalUserId() ?: return@launch
+            try { userPreferencesRepository.savePreferencesWithId(userId, updated) } catch (_: Exception) {}
+        }
     }
 
     fun selectCategory(category: String) {

@@ -77,3 +77,5 @@ actual fun RequestLocationEffect(
         }
     }
 }
+
+actual fun checkLocationPermissionGranted(): Boolean = false // Android not primary platform yet
