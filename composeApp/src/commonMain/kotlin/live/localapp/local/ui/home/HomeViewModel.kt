@@ -92,7 +92,10 @@ class HomeViewModel(
                         }
                         if (state != null) "$city, $state" else city
                     }
-                    val mode = if (prefs.locationMode == "manual") LocationMode.MANUAL else LocationMode.CURRENT_LOCATION
+                    val hasPermission = live.localapp.local.platform.checkLocationPermissionGranted()
+                    val storedMode = if (prefs.locationMode == "manual") LocationMode.MANUAL else LocationMode.CURRENT_LOCATION
+                    // If stored as "current" but we don't have permission, treat as manual
+                    val mode = if (storedMode == LocationMode.CURRENT_LOCATION && !hasPermission) LocationMode.MANUAL else storedMode
                     val effectiveLat = if (mode == LocationMode.MANUAL) prefs.manualLat ?: prefs.userLat else prefs.userLat
                     val effectiveLng = if (mode == LocationMode.MANUAL) prefs.manualLng ?: prefs.userLng else prefs.userLng
                     val effectiveName = if (mode == LocationMode.MANUAL && !prefs.manualLocationName.isNullOrBlank()) prefs.manualLocationName else cityDisplay
@@ -104,7 +107,8 @@ class HomeViewModel(
                             locationName = if (it.locationName.isBlank()) effectiveName else it.locationName,
                             userPreferences = prefs,
                             locationMode = mode,
-                            manualLocationName = prefs.manualLocationName ?: "",
+                            hasLocationPermission = hasPermission,
+                            manualLocationName = prefs.manualLocationName ?: if (mode == LocationMode.MANUAL) cityDisplay else "",
                             manualLat = prefs.manualLat,
                             manualLng = prefs.manualLng,
                         )
