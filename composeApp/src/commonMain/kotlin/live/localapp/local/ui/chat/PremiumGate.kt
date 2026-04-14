@@ -117,8 +117,8 @@ class PremiumGate {
         return when (newTier) {
             StatusTier.REGULAR -> "1 month of Local Pro free!"
             StatusTier.INSIDER -> "2 months of Local Pro free!"
-            StatusTier.TOWNIE -> "3 months of Local Pro free!"
-            StatusTier.LOCAL -> "\$200 Ticketmaster Gift Card!"
+            StatusTier.TOWNIE -> "\$25 Ticketmaster Gift Card!"
+            StatusTier.LOCAL -> "\$250 Ticketmaster Gift Card!"
             StatusTier.LOCAL_LEGEND -> "\$500 Ticketmaster Gift Card!"
             else -> null
         }
@@ -128,16 +128,15 @@ class PremiumGate {
     private fun tierRewardMonths(tier: StatusTier): Int? = when (tier) {
         StatusTier.REGULAR -> 1
         StatusTier.INSIDER -> 2
-        StatusTier.TOWNIE -> 3
-        else -> null // Local and Local Legend are gift cards, handled separately
+        else -> null // Townie, Local, and Local Legend are gift cards, not free months
     }
 
     /** Get the reward description for a tier (for display). */
     fun rewardForTier(tier: StatusTier): String? = when (tier) {
         StatusTier.REGULAR -> "1 month Local Pro free"
         StatusTier.INSIDER -> "2 months Local Pro free"
-        StatusTier.TOWNIE -> "3 months Local Pro free"
-        StatusTier.LOCAL -> "$200 Ticketmaster Gift Card"
+        StatusTier.TOWNIE -> "$25 Ticketmaster Gift Card"
+        StatusTier.LOCAL -> "$250 Ticketmaster Gift Card"
         StatusTier.LOCAL_LEGEND -> "$500 Ticketmaster Gift Card"
         else -> null
     }
