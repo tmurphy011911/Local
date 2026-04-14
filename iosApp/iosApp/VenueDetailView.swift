@@ -372,9 +372,9 @@ struct VenueDetailView: View {
 
     private func eventAlbumCard(_ event: VenueUpcomingEvent) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Image
+            // Image — fall back to venue photo when event has no image
             ZStack(alignment: .topLeading) {
-                if let urlStr = event.imageUrl, let url = URL(string: urlStr) {
+                if let urlStr = event.imageUrl ?? venue.photoUrl, let url = URL(string: urlStr) {
                     AsyncImage(url: url) { phase in
                         switch phase {
                         case .success(let image):
