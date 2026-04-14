@@ -404,18 +404,24 @@ fun PhoneScreen(
                             onClick = onSubmit,
                         )
 
-                        Text(
-                            "By continuing you agree to our Terms and Privacy Policy",
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 11.sp,
-                                color = AppColors.Ink3,
-                                lineHeight = 16.sp,
-                            ),
-                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                        Row(
                             modifier = Modifier.fillMaxWidth(),
-                        )
+                            horizontalArrangement = Arrangement.Center,
+                        ) {
+                            Text("By continuing you agree to our ", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3))
+                            Text(
+                                "Terms",
+                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = AppColors.Sky),
+                                modifier = Modifier.clickable { uriHandler.openUri("https://localapp.live/terms") },
+                            )
+                            Text(" and ", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3))
+                            Text(
+                                "Privacy Policy",
+                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = AppColors.Sky),
+                                modifier = Modifier.clickable { uriHandler.openUri("https://localapp.live/privacy-policy") },
+                            )
+                        }
                     }
                 }
             }
