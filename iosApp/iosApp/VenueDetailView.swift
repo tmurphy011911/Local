@@ -7,6 +7,7 @@ import ComposeApp
 struct VenueUpcomingEvent: Identifiable {
     let id: String
     let title: String
+    let description: String?
     let startAt: String?
     let category: String?
     let subcategory: String?
@@ -14,6 +15,10 @@ struct VenueUpcomingEvent: Identifiable {
     let isFree: Bool
     let priceDisplay: String?
     let dateDisplay: String?
+    let venueName: String?
+    let venueCity: String?
+    let ticketUrl: String?
+    let sourceUrl: String?
 }
 
 struct VenueDetailData {
@@ -513,11 +518,11 @@ struct VenueDetailView: View {
         .padding(.bottom, 4)
         .onTapGesture {
             EventDetailBridge.shared.showEventDetail?(
-                event.id, event.title, nil, nil,
+                event.id, event.title, event.description, nil,
                 event.imageUrl, event.startAt,
-                nil, nil, "", 0.0, 0.0,
+                event.venueName, nil, event.venueCity ?? venue.city, venue.lat, venue.lng,
                 KotlinBoolean(value: event.isFree), event.priceDisplay ?? "",
-                nil, nil,
+                event.ticketUrl, event.sourceUrl,
                 event.category ?? "", event.subcategory,
                 nil,
                 0, 0, 0, 0, event.imageUrl
@@ -599,11 +604,11 @@ struct VenueDetailView: View {
         .onTapGesture {
             // Open event detail via bridge
             EventDetailBridge.shared.showEventDetail?(
-                event.id, event.title, nil, nil,
+                event.id, event.title, event.description, nil,
                 event.imageUrl, event.startAt,
-                nil, nil, "", 0.0, 0.0,
+                event.venueName, nil, event.venueCity ?? venue.city, venue.lat, venue.lng,
                 KotlinBoolean(value: event.isFree), event.priceDisplay ?? "",
-                nil, nil,
+                event.ticketUrl, event.sourceUrl,
                 event.category ?? "", event.subcategory,
                 nil,
                 0, 0, 0, 0, event.imageUrl

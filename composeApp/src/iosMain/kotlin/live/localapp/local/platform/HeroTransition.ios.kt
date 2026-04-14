@@ -161,6 +161,7 @@ actual fun showNativeVenueDetail(
             add(kotlinx.serialization.json.buildJsonObject {
                 put("id", kotlinx.serialization.json.JsonPrimitive(event.id))
                 put("title", kotlinx.serialization.json.JsonPrimitive(event.title))
+                put("description", kotlinx.serialization.json.JsonPrimitive(event.description))
                 put("startAt", kotlinx.serialization.json.JsonPrimitive(event.startAt))
                 put("category", kotlinx.serialization.json.JsonPrimitive(event.category))
                 put("subcategory", kotlinx.serialization.json.JsonPrimitive(event.subcategory))
@@ -168,6 +169,10 @@ actual fun showNativeVenueDetail(
                 put("isFree", kotlinx.serialization.json.JsonPrimitive(event.isFree))
                 put("priceDisplay", kotlinx.serialization.json.JsonPrimitive(event.priceDisplay))
                 put("dateDisplay", kotlinx.serialization.json.JsonPrimitive(event.dateDisplay))
+                put("venueName", kotlinx.serialization.json.JsonPrimitive(event.venueName))
+                put("venueCity", kotlinx.serialization.json.JsonPrimitive(event.venueCity))
+                put("ticketUrl", kotlinx.serialization.json.JsonPrimitive(event.ticketUrl))
+                put("sourceUrl", kotlinx.serialization.json.JsonPrimitive(event.sourceUrl))
             })
         }
     }.toString()

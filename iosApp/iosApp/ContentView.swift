@@ -172,13 +172,18 @@ struct ComposeView: UIViewControllerRepresentable {
                         return VenueUpcomingEvent(
                             id: id,
                             title: title,
+                            description: dict["description"] as? String,
                             startAt: dict["startAt"] as? String,
                             category: dict["category"] as? String,
                             subcategory: dict["subcategory"] as? String,
                             imageUrl: dict["imageUrl"] as? String,
                             isFree: dict["isFree"] as? Bool ?? false,
                             priceDisplay: dict["priceDisplay"] as? String,
-                            dateDisplay: dict["dateDisplay"] as? String
+                            dateDisplay: dict["dateDisplay"] as? String,
+                            venueName: dict["venueName"] as? String,
+                            venueCity: dict["venueCity"] as? String,
+                            ticketUrl: dict["ticketUrl"] as? String,
+                            sourceUrl: dict["sourceUrl"] as? String
                         )
                     }
                 }
