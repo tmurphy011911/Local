@@ -154,10 +154,11 @@ class HomeViewModel(
     }
 
     fun setManualLocation(lat: Double, lng: Double, name: String) {
+        val displayName = name.removeSuffix(", USA").removeSuffix(", United States")
         _uiState.update {
             it.copy(
-                manualLat = lat, manualLng = lng, manualLocationName = name,
-                userLat = lat, userLng = lng, locationName = name,
+                manualLat = lat, manualLng = lng, manualLocationName = displayName,
+                userLat = lat, userLng = lng, locationName = displayName,
                 locationMode = LocationMode.MANUAL,
             )
         }
