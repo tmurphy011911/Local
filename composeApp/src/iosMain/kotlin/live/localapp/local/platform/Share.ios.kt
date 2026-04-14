@@ -40,9 +40,8 @@ actual fun checkSubscriptionStatus(onResult: (Boolean, String?) -> Unit) {
 }
 
 actual fun openAppSettings() {
-    platform.UIKit.UIApplication.sharedApplication.openURL(
-        platform.Foundation.NSURL(string = platform.UIKit.UIApplicationOpenSettingsURLString)!!,
-    )
+    val url = platform.Foundation.NSURL(string = platform.UIKit.UIApplicationOpenSettingsURLString)!!
+    platform.UIKit.UIApplication.sharedApplication.openURL(url, emptyMap<Any?, Any>()) { _ -> }
 }
 
 actual fun requestNotificationPermission(onResult: (Boolean) -> Unit) {
