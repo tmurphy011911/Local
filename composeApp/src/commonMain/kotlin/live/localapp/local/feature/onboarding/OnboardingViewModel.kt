@@ -67,6 +67,7 @@ data class OnboardingState(
     val notifTickets: Boolean = true,
     val notifNearby: Boolean = true,
     val notifVenues: Boolean = true,
+    val locationMode: String = "current", // "current" or "manual"
     // Dynamic data from Supabase
     val eventCount: Int? = null,
     val venueCount: Int? = null,
@@ -126,6 +127,7 @@ class OnboardingViewModel(
                 userLat = lat,
                 userLng = lng,
                 userCity = city,
+                locationMode = "current",
                 currentStep = OnboardingStep.SUCCESS,
             )
         }
@@ -137,11 +139,13 @@ class OnboardingViewModel(
     }
 
     fun onManualAddressSubmit(lat: Double, lng: Double, city: String) {
+        val resolvedCity = city.ifBlank { nearestCity(lat, lng) }
         _state.update {
             it.copy(
                 userLat = lat,
                 userLng = lng,
-                userCity = city.ifBlank { nearestCity(lat, lng) },
+                userCity = resolvedCity,
+                locationMode = "manual",
                 currentStep = OnboardingStep.SUCCESS,
             )
         }
@@ -303,6 +307,7 @@ class OnboardingViewModel(
                     .filter { it.name.lowercase().replace(" ", "-") in s.selectedVenues }
                     .map { it.name }
 
+                val isManual = s.locationMode == "manual"
                 val prefs = UserPreferences(
                     id = authUserId ?: "",
                     firstName = s.firstName.trim().ifEmpty { null },
@@ -318,6 +323,10 @@ class OnboardingViewModel(
                     notifNearby = s.notifNearby,
                     notifVenues = s.notifVenues,
                     onboardingComplete = true,
+                    locationMode = s.locationMode,
+                    manualLocationName = if (isManual) s.userCity.replaceFirstChar { it.uppercase() } else null,
+                    manualLat = if (isManual) s.userLat else null,
+                    manualLng = if (isManual) s.userLng else null,
                 )
 
                 // If we have an auth user ID, save with that specific ID
