@@ -826,12 +826,11 @@ fun VenueDetailPage(
                                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                             ) {
                                 rowEvents.forEach { event ->
-                                    Box(modifier = Modifier.weight(1f)) {
-                                        live.localapp.local.ui.home.EventCard(
-                                            data = event.toCardData(),
-                                            onClick = { selectedEvent = event },
-                                        )
-                                    }
+                                    live.localapp.local.ui.home.EventCard(
+                                        data = event.toCardData(),
+                                        modifier = Modifier.weight(1f),
+                                        onClick = { selectedEvent = event },
+                                    )
                                 }
                                 if (rowEvents.size == 1) {
                                     Spacer(Modifier.weight(1f))

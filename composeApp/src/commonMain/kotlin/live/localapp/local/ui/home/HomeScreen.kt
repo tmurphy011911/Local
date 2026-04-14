@@ -940,7 +940,7 @@ data class EventCardData(
 )
 
 @Composable
-fun EventCard(data: EventCardData, onClick: (Rect) -> Unit = {}, onFavorite: (() -> Unit)? = null, isFavorited: Boolean = false) {
+fun EventCard(data: EventCardData, modifier: Modifier = Modifier.width(156.dp), onClick: (Rect) -> Unit = {}, onFavorite: (() -> Unit)? = null, isFavorited: Boolean = false) {
     val scaleAnim = remember { Animatable(1f) }
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
@@ -948,8 +948,7 @@ fun EventCard(data: EventCardData, onClick: (Rect) -> Unit = {}, onFavorite: (()
     val isPressed = scaleAnim.value < 0.99f
 
     Box(
-        modifier = Modifier
-            .width(156.dp)
+        modifier = modifier
             .height(212.dp)
             .onGloballyPositioned { coordinates ->
                 cardBounds = coordinates.boundsInRoot()
@@ -983,7 +982,7 @@ fun EventCard(data: EventCardData, onClick: (Rect) -> Unit = {}, onFavorite: (()
         // Card
         Column(
             modifier = Modifier
-                .width(156.dp)
+                .fillMaxWidth()
                 .height(212.dp)
                 .background(AppColors.White, AppShapes.CardMedium)
                 .border(2.dp, AppColors.Pebble, AppShapes.CardMedium)
