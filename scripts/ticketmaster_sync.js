@@ -114,7 +114,7 @@ function normalizeEvent(tm) {
 
   return {
     title: tm.name,
-    description: tm.info || tm.pleaseNote || null,
+    description: tm.info || tm.description || tm.pleaseNote || tm._embedded?.attractions?.[0]?.description || null,
     category: mapCategory(tm.classifications),
     subcategory: detectSubcategory(tm),
     start_at: startAt,
