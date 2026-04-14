@@ -1222,7 +1222,7 @@ private fun categoryIcon(category: String): ImageVector = when (category.lowerca
     else -> Icons.Outlined.AutoAwesome
 }
 
-fun Event.toCardData(showTag: Boolean = true, tagOverride: String? = null): EventCardData {
+fun Event.toCardData(showTag: Boolean = true, tagOverride: String? = null, fallbackImageUrl: String? = null): EventCardData {
     // Prefer subSubcategory for a more specific tag (e.g. "Hip Hop" vs "Music")
     val tagKey = subSubcategory ?: subcategory ?: category
     val displayTag = tagOverride ?: formatSubcategoryDisplay(tagKey)
@@ -1244,7 +1244,7 @@ fun Event.toCardData(showTag: Boolean = true, tagOverride: String? = null): Even
         showTag = showTag,
         isFree = isFree,
         price = priceDisplay,
-        imageUrl = imageUrl,
+        imageUrl = imageUrl ?: fallbackImageUrl,
         bgStart = bgS,
         bgEnd = bgE,
         icon = categoryIcon(colorKey),

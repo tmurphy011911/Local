@@ -827,7 +827,7 @@ fun VenueDetailPage(
                             ) {
                                 rowEvents.forEach { event ->
                                     live.localapp.local.ui.home.EventCard(
-                                        data = event.toCardData(),
+                                        data = event.toCardData(fallbackImageUrl = v.photoUrl),
                                         modifier = Modifier.weight(1f),
                                         onClick = { selectedEvent = event },
                                     )
