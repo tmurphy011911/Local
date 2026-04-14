@@ -14,6 +14,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.TextStyle
@@ -207,14 +208,16 @@ private fun ManualAddressOption(
     manualLocationName: String,
     onSelect: (lat: Double, lng: Double, name: String) -> Unit,
 ) {
-    var query by remember { mutableStateOf(if (isSelected) manualLocationName else "") }
+    var query by remember { mutableStateOf("") }
+    var displayAddress by remember { mutableStateOf(manualLocationName) }
     var suggestions by remember { mutableStateOf<List<PlaceSuggestion>>(emptyList()) }
-    var isSearching by remember { mutableStateOf(false) }
+    var isEditing by remember { mutableStateOf(false) }
     val httpClient = remember { HttpClient() }
+    val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
 
     // Debounced autocomplete
     LaunchedEffect(query) {
-        if (query.length < 3 || !isSearching) {
+        if (query.length < 3 || !isEditing) {
             if (query.length < 3) suggestions = emptyList()
             return@LaunchedEffect
         }
@@ -242,12 +245,28 @@ private fun ManualAddressOption(
         }
     }
 
+    // Auto-focus when editing starts
+    LaunchedEffect(isEditing) {
+        if (isEditing) {
+            try { focusRequester.requestFocus() } catch (_: Exception) {}
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(14.dp))
             .background(if (isSelected) AppColors.SkyLt else AppColors.Snow)
             .border(1.5.dp, if (isSelected) AppColors.Sky else AppColors.Pebble, RoundedCornerShape(14.dp))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) {
+                if (!isEditing) {
+                    isEditing = true
+                    query = ""
+                }
+            }
             .padding(16.dp),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -263,29 +282,27 @@ private fun ManualAddressOption(
                     "Manual Address",
                     style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = AppColors.Ink),
                 )
-                if (isSelected && manualLocationName.isNotBlank() && !isSearching) {
+                if (displayAddress.isNotBlank() && !isEditing) {
                     Text(
-                        manualLocationName,
+                        displayAddress,
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
                     )
                 }
             }
-            if (isSelected) {
+            if (isSelected && !isEditing) {
                 Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(20.dp), tint = AppColors.Sky)
             }
         }
 
-        // Search field — show when tapped or already in manual mode
-        if (isSelected || suggestions.isNotEmpty()) {
+        // Search field — only visible when actively editing
+        if (isEditing) {
             Spacer(Modifier.height(10.dp))
             BasicTextField(
                 value = query,
-                onValueChange = {
-                    query = it
-                    isSearching = true
-                },
+                onValueChange = { query = it },
                 singleLine = true,
                 textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink),
+                modifier = Modifier.focusRequester(focusRequester),
                 decorationBox = { inner ->
                     Box(
                         modifier = Modifier
@@ -307,19 +324,19 @@ private fun ManualAddressOption(
 
             // Suggestions
             suggestions.forEach { suggestion ->
+                val fullAddress = if (suggestion.secondaryText.isNotBlank()) "${suggestion.mainText}, ${suggestion.secondaryText}" else suggestion.mainText
                 Spacer(Modifier.height(4.dp))
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(8.dp))
                         .clickable {
-                            // Resolve place to lat/lng
-                            query = suggestion.mainText
+                            query = fullAddress
+                            displayAddress = fullAddress
                             suggestions = emptyList()
-                            isSearching = false
-                            // Resolve in a coroutine — use LaunchedEffect trick
+                            isEditing = false
                             resolvePlace(httpClient, suggestion.placeId) { lat, lng, city ->
-                                val name = if (city.isNotBlank()) city else suggestion.mainText
+                                val name = fullAddress
                                 onSelect(lat, lng, name)
                             }
                         }
@@ -336,17 +353,6 @@ private fun ManualAddressOption(
                     }
                 }
             }
-        } else if (!isSelected) {
-            // Tap to activate manual mode
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "Tap to enter a location",
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
-                modifier = Modifier.clickable {
-                    isSearching = true
-                    // This triggers showing the text field on next recomposition by making the parent call
-                },
-            )
         }
     }
 }
