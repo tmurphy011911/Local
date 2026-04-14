@@ -520,7 +520,7 @@ struct VenueDetailView: View {
             EventDetailBridge.shared.showEventDetail?(
                 event.id, event.title, event.description, nil,
                 event.imageUrl, event.startAt,
-                event.venueName, nil, event.venueCity ?? venue.city, venue.lat, venue.lng,
+                event.venueName, nil, event.venueCity ?? venue.city, KotlinDouble(value: venue.lat), KotlinDouble(value: venue.lng),
                 KotlinBoolean(value: event.isFree), event.priceDisplay ?? "",
                 event.ticketUrl, event.sourceUrl,
                 event.category ?? "", event.subcategory,
@@ -606,7 +606,7 @@ struct VenueDetailView: View {
             EventDetailBridge.shared.showEventDetail?(
                 event.id, event.title, event.description, nil,
                 event.imageUrl, event.startAt,
-                event.venueName, nil, event.venueCity ?? venue.city, venue.lat, venue.lng,
+                event.venueName, nil, event.venueCity ?? venue.city, KotlinDouble(value: venue.lat), KotlinDouble(value: venue.lng),
                 KotlinBoolean(value: event.isFree), event.priceDisplay ?? "",
                 event.ticketUrl, event.sourceUrl,
                 event.category ?? "", event.subcategory,
