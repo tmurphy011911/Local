@@ -96,6 +96,61 @@ struct VenueDetailView: View {
     let onDismiss: () -> Void
 
     @State private var mapsExpanded = false
+    @State private var selectedDateFilter: DateFilter = .all
+
+    enum DateFilter: String, CaseIterable {
+        case today = "Today"
+        case tomorrow = "Tomorrow"
+        case thisWeek = "This Week"
+        case thisWeekend = "Weekend"
+        case all = "All"
+    }
+
+    private func filteredEvents() -> [VenueUpcomingEvent] {
+        let cal = Calendar.current
+        let now = Date()
+        let todayStart = cal.startOfDay(for: now)
+
+        return venue.upcomingEvents.filter { event in
+            guard let startAt = event.startAt, let date = parseISO(startAt) else { return true }
+            switch selectedDateFilter {
+            case .all: return true
+            case .today:
+                return cal.isDateInToday(date)
+            case .tomorrow:
+                return cal.isDateInTomorrow(date)
+            case .thisWeek:
+                let weekEnd = cal.date(byAdding: .day, value: 7, to: todayStart)!
+                return date >= todayStart && date < weekEnd
+            case .thisWeekend:
+                let weekday = cal.component(.weekday, from: date)
+                let isWeekend = weekday == 1 || weekday == 7 // Sun or Sat
+                let weekEnd = cal.date(byAdding: .day, value: 7, to: todayStart)!
+                return isWeekend && date >= todayStart && date < weekEnd
+            }
+        }
+    }
+
+    private func parseISO(_ str: String) -> Date? {
+        let fmt = ISO8601DateFormatter()
+        fmt.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let d = fmt.date(from: str) { return d }
+        fmt.formatOptions = [.withInternetDateTime]
+        return fmt.date(from: str)
+    }
+
+    private func eventMonthDay(_ event: VenueUpcomingEvent) -> (month: String, day: String, weekday: String) {
+        guard let startAt = event.startAt, let date = parseISO(startAt) else {
+            return ("", "", "")
+        }
+        let mf = DateFormatter()
+        mf.dateFormat = "MMM"
+        let df = DateFormatter()
+        df.dateFormat = "d"
+        let wf = DateFormatter()
+        wf.dateFormat = "EEE"
+        return (mf.string(from: date).uppercased(), df.string(from: date), wf.string(from: date).uppercased())
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -250,7 +305,7 @@ struct VenueDetailView: View {
                 Spacer().frame(height: 16)
             }
 
-            // Upcoming Events
+            // Upcoming Events — compact list with date filter
             if !venue.upcomingEvents.isEmpty {
                 Spacer().frame(height: 8)
 
@@ -260,19 +315,35 @@ struct VenueDetailView: View {
 
                 Spacer().frame(height: 10)
 
-                // 2-column grid
-                let rows = stride(from: 0, to: venue.upcomingEvents.count, by: 2).map { i in
-                    Array(venue.upcomingEvents[i..<min(i + 2, venue.upcomingEvents.count)])
+                // Date filter chips
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(DateFilter.allCases, id: \.self) { filter in
+                            Text(filter.rawValue)
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(selectedDateFilter == filter ? .white : AppColor.ink2)
+                                .padding(.horizontal, 14)
+                                .padding(.vertical, 7)
+                                .background(selectedDateFilter == filter ? AppColor.ink : AppColor.mist)
+                                .clipShape(Capsule())
+                                .onTapGesture { selectedDateFilter = filter }
+                        }
+                    }
                 }
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
-                    HStack(spacing: 10) {
-                        ForEach(row) { event in
-                            eventAlbumCard(event)
-                                .frame(maxWidth: .infinity)
-                        }
-                        if row.count == 1 {
-                            Spacer().frame(maxWidth: .infinity)
-                        }
+
+                Spacer().frame(height: 12)
+
+                // Event list
+                let events = filteredEvents()
+                if events.isEmpty {
+                    Text("No events for this period")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(AppColor.ink3)
+                        .padding(.vertical, 16)
+                        .frame(maxWidth: .infinity)
+                } else {
+                    ForEach(events) { event in
+                        eventListRow(event)
                     }
                 }
             } else if venue.upcomingEventCount > 0 {
@@ -368,6 +439,90 @@ struct VenueDetailView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppColor.pebble, lineWidth: 1.5))
         .padding(.bottom, 4)
+    }
+
+    private func eventListRow(_ event: VenueUpcomingEvent) -> some View {
+        let md = eventMonthDay(event)
+        return HStack(spacing: 14) {
+            // Date block
+            VStack(spacing: 0) {
+                Text(md.month)
+                    .font(.system(size: 10, weight: .heavy))
+                    .foregroundColor(AppColor.coral)
+                Text(md.day)
+                    .font(.system(size: 20, weight: .black))
+                    .foregroundColor(AppColor.ink)
+                    .lineSpacing(0)
+                Text(md.weekday)
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundColor(AppColor.ink3)
+            }
+            .frame(width: 44)
+
+            // Event info
+            VStack(alignment: .leading, spacing: 3) {
+                Text(event.title)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(AppColor.ink)
+                    .lineLimit(2)
+
+                HStack(spacing: 6) {
+                    if let dateDisplay = event.dateDisplay, !dateDisplay.isEmpty {
+                        Text(dateDisplay)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(AppColor.ink3)
+                    }
+
+                    // Category pill
+                    let rawCat = event.subcategory ?? event.category ?? ""
+                    let displayCat = rawCat.lowercased() == "always_on" ? "Event" : (rawCat.prefix(1).uppercased() + rawCat.dropFirst())
+                    if !displayCat.isEmpty {
+                        Text(displayCat)
+                            .font(.system(size: 9, weight: .heavy))
+                            .foregroundColor(AppColor.ink2)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(AppColor.mist)
+                            .clipShape(Capsule())
+                    }
+                }
+            }
+
+            Spacer()
+
+            // Price / Free badge
+            if event.isFree {
+                Text("Free")
+                    .font(.system(size: 10, weight: .heavy))
+                    .foregroundColor(Color(hex: 0x2D9F73))
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(Color(hex: 0xE8F5E9))
+                    .clipShape(Capsule())
+            } else if let price = event.priceDisplay, !price.isEmpty {
+                Text(price)
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundColor(AppColor.ink3)
+            }
+        }
+        .padding(.vertical, 12)
+        .padding(.horizontal, 14)
+        .background(AppColor.white)
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppColor.pebble, lineWidth: 1))
+        .padding(.bottom, 4)
+        .onTapGesture {
+            EventDetailBridge.shared.showEventDetail?(
+                event.id, event.title, nil, nil,
+                event.imageUrl, event.startAt,
+                nil, nil, "", 0.0, 0.0,
+                KotlinBoolean(value: event.isFree), event.priceDisplay ?? "",
+                nil, nil,
+                event.category ?? "", event.subcategory,
+                nil,
+                0, 0, 0, 0, event.imageUrl
+            )
+        }
     }
 
     private func eventAlbumCard(_ event: VenueUpcomingEvent) -> some View {

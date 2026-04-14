@@ -663,6 +663,7 @@ fun VenueDetailPage(
     onSaveVenue: (() -> Unit)? = null,
 ) {
     var selectedEvent by remember { mutableStateOf<Event?>(null) }
+    var selectedDateFilter by remember { mutableStateOf("All") }
     val communityInterestRepo = remember { KoinPlatform.getKoin().get<CommunityInterestRepository>() }
     val v = venueWithMeta.venue
 
@@ -814,29 +815,77 @@ fun VenueDetailPage(
                     if (events.isNotEmpty()) {
                         Spacer(Modifier.height(18.dp))
                         Text(
-                            "Upcoming Events (${events.size})",
+                            "Upcoming Events",
                             style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AppColors.Ink),
                         )
                         Spacer(Modifier.height(10.dp))
-                        // 2-column grid using the same EventCard from home page
-                        val rows = events.chunked(2)
-                        rows.forEach { rowEvents ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp),
-                            ) {
-                                rowEvents.forEach { event ->
-                                    live.localapp.local.ui.home.EventCard(
-                                        data = event.toCardData(fallbackImageUrl = v.photoUrl),
-                                        modifier = Modifier.weight(1f),
-                                        onClick = { selectedEvent = event },
-                                    )
-                                }
-                                if (rowEvents.size == 1) {
-                                    Spacer(Modifier.weight(1f))
-                                }
+
+                        // Date filter chips
+                        val filters = listOf("All", "Today", "Tomorrow", "This Week", "Weekend")
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            filters.forEach { filter ->
+                                val isSelected = selectedDateFilter == filter
+                                Text(
+                                    filter,
+                                    style = TextStyle(
+                                        fontFamily = AppFonts.Body,
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        color = if (isSelected) Color.White else AppColors.Ink2,
+                                    ),
+                                    modifier = Modifier
+                                        .background(
+                                            if (isSelected) AppColors.Ink else AppColors.Mist,
+                                            RoundedCornerShape(50),
+                                        )
+                                        .clickable { selectedDateFilter = filter }
+                                        .padding(horizontal = 14.dp, vertical = 7.dp),
+                                )
                             }
-                            Spacer(Modifier.height(16.dp))
+                        }
+
+                        Spacer(Modifier.height(12.dp))
+
+                        // Filter events by selected date range
+                        val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
+                        val dayMs = 86_400_000L
+                        val todayStartMs = (nowMs / dayMs) * dayMs // midnight UTC today
+                        val filteredEvents = events.filter { event ->
+                            if (selectedDateFilter == "All") return@filter true
+                            val startStr = event.startAt ?: return@filter true
+                            val eventMs = try {
+                                kotlinx.datetime.Instant.parse(startStr).toEpochMilliseconds()
+                            } catch (_: Exception) { return@filter true }
+                            when (selectedDateFilter) {
+                                "Today" -> eventMs >= todayStartMs && eventMs < todayStartMs + dayMs
+                                "Tomorrow" -> eventMs >= todayStartMs + dayMs && eventMs < todayStartMs + 2 * dayMs
+                                "This Week" -> eventMs >= todayStartMs && eventMs < todayStartMs + 7 * dayMs
+                                "Weekend" -> {
+                                    // Find upcoming Sat/Sun within 7 days
+                                    val tz = kotlinx.datetime.TimeZone.currentSystemDefault()
+                                    val eventDate = kotlinx.datetime.Instant.parse(startStr).toLocalDateTime(tz)
+                                    val dow = eventDate.dayOfWeek
+                                    (dow == kotlinx.datetime.DayOfWeek.SATURDAY || dow == kotlinx.datetime.DayOfWeek.SUNDAY) &&
+                                        eventMs >= todayStartMs && eventMs < todayStartMs + 7 * dayMs
+                                }
+                                else -> true
+                            }
+                        }
+
+                        if (filteredEvents.isEmpty()) {
+                            Text(
+                                "No events for this period",
+                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Ink3),
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            )
+                        } else {
+                            filteredEvents.forEach { event ->
+                                VenueEventListRow(event = event, onClick = { selectedEvent = event })
+                                Spacer(Modifier.height(4.dp))
+                            }
                         }
                     }
 
@@ -1051,6 +1100,72 @@ private fun SheetButton(
 }
 
 @Composable
+private fun VenueEventListRow(event: Event, onClick: () -> Unit) {
+    val (month, day) = parseMonthDay(event.startAt)
+    val weekday = parseWeekday(event.startAt)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White, RoundedCornerShape(12.dp))
+            .border(1.dp, AppColors.Pebble, RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(12.dp))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
+    ) {
+        // Date block
+        Column(
+            modifier = Modifier.width(44.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(month, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = AppColors.Coral))
+            Text(day, style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 20.sp, color = AppColors.Ink, lineHeight = 22.sp))
+            Text(weekday, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = AppColors.Ink3))
+        }
+
+        // Event info
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(
+                event.title,
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Ink),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    event.dateDisplay,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
+                )
+                val rawCat = event.subcategory ?: event.category
+                val displayCat = if (rawCat.lowercase() == "always_on") "Event" else rawCat.replaceFirstChar { it.uppercaseChar() }
+                Text(
+                    displayCat,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Ink2),
+                    modifier = Modifier.background(AppColors.Mist, RoundedCornerShape(50)).padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+        }
+
+        // Price / Free badge
+        if (event.isFree) {
+            Text(
+                "Free",
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = Color(0xFF2D9F73)),
+                modifier = Modifier
+                    .background(Color(0xFFE8F5E9), RoundedCornerShape(50))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            )
+        } else if (event.priceDisplay.isNotEmpty()) {
+            Text(
+                event.priceDisplay,
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = AppColors.Ink3),
+            )
+        }
+    }
+}
+
+@Composable
 private fun EventRow(event: Event, onClick: () -> Unit) {
     Row(
         modifier = Modifier
@@ -1119,5 +1234,17 @@ private fun parseMonthDay(startAt: String?): Pair<String, String> {
         monthNames[local.monthNumber - 1] to local.dayOfMonth.toString()
     } catch (_: Exception) {
         "" to ""
+    }
+}
+
+private fun parseWeekday(startAt: String?): String {
+    if (startAt == null) return ""
+    return try {
+        val instant = kotlinx.datetime.Instant.parse(startAt)
+        val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+        val dayNames = arrayOf("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
+        dayNames[local.dayOfWeek.ordinal]
+    } catch (_: Exception) {
+        ""
     }
 }
