@@ -22,21 +22,25 @@ class VenueRepositoryImpl(
         userLat: Double,
         userLng: Double,
     ): List<VenueWithMeta> {
-        // 1. Fetch all active venues
+        // 1. Fetch active venues within geo-radius of user
+        val radiusMiles = 30.0
+        val latDelta = radiusMiles / 69.0
+        val lngDelta = radiusMiles / 50.0
         val venues = supabaseClient.from("venues")
             .select {
                 filter {
                     eq("is_active", true)
+                    gte("lat", userLat - latDelta)
+                    lte("lat", userLat + latDelta)
+                    gte("lng", userLng - lngDelta)
+                    lte("lng", userLng + lngDelta)
                 }
             }
             .decodeList<VenueDto>()
             .map { it.toDomain() }
 
-        // 2. Fetch upcoming events using geo-radius (not city name)
+        // 2. Fetch upcoming events using same geo-radius
         val nowIso = kotlin.time.Clock.System.now().toString()
-        val radiusMiles = 30.0
-        val latDelta = radiusMiles / 69.0
-        val lngDelta = radiusMiles / 50.0
         val events = try {
             val upcoming = mutableListOf<EventDto>()
             for (page in 0 until 5) {
