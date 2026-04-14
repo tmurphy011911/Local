@@ -820,28 +820,30 @@ fun VenueDetailPage(
                         )
                         Spacer(Modifier.height(10.dp))
 
-                        // Date filter chips
+                        // Date filter chips — matches plan detail day tabs style
                         val filters = listOf("All", "Today", "Tomorrow", "This Week", "Weekend")
                         Row(
+                            modifier = Modifier.horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
                             filters.forEach { filter ->
                                 val isSelected = selectedDateFilter == filter
                                 Text(
-                                    filter,
+                                    filter.uppercase(),
                                     style = TextStyle(
                                         fontFamily = AppFonts.Body,
-                                        fontWeight = FontWeight.Bold,
+                                        fontWeight = FontWeight.ExtraBold,
                                         fontSize = 12.sp,
-                                        color = if (isSelected) Color.White else AppColors.Ink2,
+                                        color = if (isSelected) Color.White else AppColors.Ink3,
                                     ),
                                     modifier = Modifier
-                                        .background(
-                                            if (isSelected) AppColors.Ink else AppColors.Mist,
-                                            RoundedCornerShape(50),
-                                        )
-                                        .clickable { selectedDateFilter = filter }
-                                        .padding(horizontal = 14.dp, vertical = 7.dp),
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(if (isSelected) AppColors.Coral else AppColors.Snow)
+                                        .clickable(
+                                            interactionSource = remember { MutableInteractionSource() },
+                                            indication = null,
+                                        ) { selectedDateFilter = filter }
+                                        .padding(horizontal = 16.dp, vertical = 8.dp),
                                 )
                             }
                         }

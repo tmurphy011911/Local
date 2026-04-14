@@ -99,11 +99,11 @@ struct VenueDetailView: View {
     @State private var selectedDateFilter: DateFilter = .all
 
     enum DateFilter: String, CaseIterable {
+        case all = "All"
         case today = "Today"
         case tomorrow = "Tomorrow"
         case thisWeek = "This Week"
         case thisWeekend = "Weekend"
-        case all = "All"
     }
 
     private func filteredEvents() -> [VenueUpcomingEvent] {
@@ -315,17 +315,17 @@ struct VenueDetailView: View {
 
                 Spacer().frame(height: 10)
 
-                // Date filter chips
+                // Date filter chips — matches plan detail day tabs style
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(DateFilter.allCases, id: \.self) { filter in
-                            Text(filter.rawValue)
-                                .font(.system(size: 12, weight: .bold))
-                                .foregroundColor(selectedDateFilter == filter ? .white : AppColor.ink2)
-                                .padding(.horizontal, 14)
-                                .padding(.vertical, 7)
-                                .background(selectedDateFilter == filter ? AppColor.ink : AppColor.mist)
-                                .clipShape(Capsule())
+                            Text(filter.rawValue.uppercased())
+                                .font(.system(size: 12, weight: .heavy))
+                                .foregroundColor(selectedDateFilter == filter ? .white : AppColor.ink3)
+                                .padding(.horizontal, 16)
+                                .padding(.vertical, 8)
+                                .background(selectedDateFilter == filter ? AppColor.coral : AppColor.snow)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
                                 .onTapGesture { selectedDateFilter = filter }
                         }
                     }
