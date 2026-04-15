@@ -405,7 +405,7 @@ private fun SavedVenueAlbumCard(vm: VenueWithMeta, onClick: (Rect) -> Unit, onFa
                     .padding(horizontal = 6.dp, vertical = 2.dp),
             ) {
                 Text(
-                    "${vm.upcomingEventCount}",
+                    "${vm.upcomingEventCount} events",
                     style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = Color.White),
                 )
             }
