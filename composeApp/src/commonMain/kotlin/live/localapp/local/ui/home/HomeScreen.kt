@@ -213,6 +213,7 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                         SavedEventsAlbumCarousel(
                             events = state.savedThisWeek,
                             onEventClick = { event, transitionInfo -> onEventClick(event, transitionInfo) },
+                            onUnfavorite = { event -> viewModel.toggleEventFavorite(event.id, event.subcategory ?: event.category) },
                         )
                     }
                 }
@@ -1441,6 +1442,7 @@ private fun AiConciergeCard(onClick: () -> Unit = {}) {
 private fun SavedEventsAlbumCarousel(
     events: List<Event>,
     onEventClick: (Event, CardTransitionInfo?) -> Unit,
+    onUnfavorite: (Event) -> Unit = {},
 ) {
     var expanded by remember { mutableStateOf(true) }
 
@@ -1490,7 +1492,7 @@ private fun SavedEventsAlbumCarousel(
                     events.forEach { event ->
                         AlbumEventCard(event = event, onClick = { bounds ->
                             onEventClick(event, CardTransitionInfo(bounds, event.imageUrl))
-                        })
+                        }, onUnfavorite = { onUnfavorite(event) })
                     }
                 }
             }
@@ -1499,7 +1501,7 @@ private fun SavedEventsAlbumCarousel(
 }
 
 @Composable
-private fun AlbumEventCard(event: Event, onClick: (Rect) -> Unit) {
+private fun AlbumEventCard(event: Event, onClick: (Rect) -> Unit, onUnfavorite: () -> Unit = {}) {
     val cardShape = RoundedCornerShape(16.dp)
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
@@ -1558,6 +1560,31 @@ private fun AlbumEventCard(event: Event, onClick: (Rect) -> Unit) {
                     tint = AppColors.Ink3.copy(alpha = 0.3f),
                 )
             }
+        }
+
+        // Heart — top right
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .padding(8.dp)
+                .size(28.dp)
+                .background(Color.Black.copy(alpha = 0.4f), CircleShape)
+                .clip(CircleShape)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onUnfavorite()
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.Favorite,
+                contentDescription = "Remove",
+                modifier = Modifier.size(14.dp),
+                tint = AppColors.Coral,
+            )
         }
 
         // Date pill in top-right corner
