@@ -22,6 +22,7 @@ data class PlansUiState(
     val pendingInvites: List<Plan> = emptyList(),
     val pendingAcceptAfterAuth: Plan? = null,
     val isLoading: Boolean = false,
+    val isRefreshing: Boolean = false,
     val savedEvents: List<Event> = emptyList(),
     val savedVenues: List<Venue> = emptyList(),
 )
@@ -43,6 +44,7 @@ class PlansViewModel(
     }
 
     fun refresh() {
+        _uiState.update { it.copy(isRefreshing = true) }
         loadPlans()
         loadSavedItems()
     }
@@ -149,6 +151,7 @@ class PlansViewModel(
                     upcomingPlans = plans.filter { p -> !p.isPast }.sortedBy { p -> p.createdAt },
                     pastPlans = plans.filter { p -> p.isPast }.sortedByDescending { p -> p.createdAt },
                     isLoading = false,
+                    isRefreshing = false,
                 )
             }
         }
