@@ -124,8 +124,12 @@ fun PlacesScreen(
     onVenueClickWithBounds: ((VenueWithMeta, Rect) -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
 
-    Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
+    Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow).clickable(
+        interactionSource = remember { MutableInteractionSource() },
+        indication = null,
+    ) { focusManager.clearFocus() }) {
         Column(modifier = Modifier.fillMaxSize()) {
             // ── Header ──
             run {
@@ -242,6 +246,7 @@ fun PlacesScreen(
 
 @Composable
 private fun SearchBar(query: String, onQueryChange: (String) -> Unit) {
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     TextField(
         value = query,
         onValueChange = onQueryChange,
@@ -253,9 +258,11 @@ private fun SearchBar(query: String, onQueryChange: (String) -> Unit) {
         },
         leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null, modifier = Modifier.size(18.dp), tint = AppColors.Ink3) },
         trailingIcon = if (query.isNotBlank()) {
-            { Icon(Icons.Outlined.Close, contentDescription = "Clear", modifier = Modifier.size(18.dp).clickable { onQueryChange("") }, tint = AppColors.Ink3) }
+            { Icon(Icons.Outlined.Close, contentDescription = "Clear", modifier = Modifier.size(18.dp).clickable { onQueryChange(""); focusManager.clearFocus() }, tint = AppColors.Ink3) }
         } else null,
         singleLine = true,
+        keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
+        keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { focusManager.clearFocus() }),
         shape = RoundedCornerShape(16.dp),
         colors = TextFieldDefaults.colors(
             focusedContainerColor = Color.White,

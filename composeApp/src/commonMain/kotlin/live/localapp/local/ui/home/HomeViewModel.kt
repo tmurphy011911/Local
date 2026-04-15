@@ -339,6 +339,19 @@ class HomeViewModel(
                     )
                 }
             } catch (e: Exception) {
+                // Auto-retry once after a short delay (handles race on first load after onboarding)
+                if (_uiState.value.carousels.isEmpty()) {
+                    kotlinx.coroutines.delay(1500)
+                    try {
+                        val s = _uiState.value
+                        val retryLat = s.userLat ?: s.userPreferences?.userLat ?: 42.3601
+                        val retryLng = s.userLng ?: s.userPreferences?.userLng ?: -71.0589
+                        val cats = carouselRepository.getAvailableCategories(s.userPreferences, retryLat, retryLng)
+                        val carousels = carouselRepository.getCarousels(retryLat, retryLng, if (s.selectedCategory == "foryou") null else s.selectedCategory, s.userPreferences, s.locationName)
+                        _uiState.update { it.copy(availableCategories = cats, carousels = carousels, isLoading = false, isRefreshing = false, error = null) }
+                        return@launch
+                    } catch (_: Exception) {}
+                }
                 _uiState.update { it.copy(error = e.message, isLoading = false, isRefreshing = false) }
             }
         }
