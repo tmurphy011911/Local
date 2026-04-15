@@ -390,7 +390,7 @@ private fun CategoryRow(state: HomeUiState, viewModel: HomeViewModel) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Color.White)
+                .background(AppColors.Snow)
                 .horizontalScroll(rememberScrollState())
                 .padding(horizontal = 20.dp, vertical = 10.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp),
@@ -436,7 +436,7 @@ private fun CategoryRow(state: HomeUiState, viewModel: HomeViewModel) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .background(Color.White),
+            .background(AppColors.Snow),
     ) {
         Row(
             modifier = Modifier
