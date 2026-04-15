@@ -1038,7 +1038,11 @@ class ChatViewModel(
                 markOldPlanCardsSuperseded()
 
                 val updateSnapshot = _uiState.value.days.toList()
-                addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(dayIndex, snapshot = updateSnapshot)))
+                if (updateSnapshot.size > 1) {
+                    addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.MultiDayPlanRef(updateSnapshot.size, snapshot = updateSnapshot)))
+                } else {
+                    addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(dayIndex, snapshot = updateSnapshot)))
+                }
 
                 fetchWeatherForPlan(_uiState.value.days)
                 finishTurn(withApproveChip(parsed.chips))
