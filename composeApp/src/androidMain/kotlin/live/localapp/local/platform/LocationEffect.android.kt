@@ -78,4 +78,9 @@ actual fun RequestLocationEffect(
     }
 }
 
-actual fun checkLocationPermissionGranted(): Boolean = false // Android not primary platform yet
+actual fun checkLocationPermissionGranted(): Boolean {
+    val activity = live.localapp.local.ActivityProvider.activity ?: return false
+    return ContextCompat.checkSelfPermission(
+        activity, Manifest.permission.ACCESS_FINE_LOCATION
+    ) == PackageManager.PERMISSION_GRANTED
+}
