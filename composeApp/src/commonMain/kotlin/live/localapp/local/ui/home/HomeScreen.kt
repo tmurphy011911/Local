@@ -154,7 +154,6 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
             section = section,
             onDismiss = { seeAllSection = null },
             onEventClick = { event ->
-                seeAllSection = null
                 onEventClick(event, null)
             },
             onFavorite = onFavorite,
@@ -657,142 +656,101 @@ private fun SeeAllEventRow(
     onFavorite: (() -> Unit)? = null,
     isFavorited: Boolean = false,
 ) {
-    val timeDisplay = event.startAt?.let { iso ->
-        try {
-            val instant = kotlinx.datetime.Instant.parse(iso)
-            val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
-            val hour = local.hour
-            val min = local.minute
-            val amPm = if (hour < 12) "am" else "pm"
-            val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
-            if (min == 0) "${displayHour}${amPm}" else "${displayHour}:${min.toString().padStart(2, '0')}${amPm}"
-        } catch (_: Exception) { "" }
-    } ?: ""
-
-    val dayDisplay = event.startAt?.let { iso ->
-        try {
-            val instant = kotlinx.datetime.Instant.parse(iso)
-            val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
-            val dayNames = arrayOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-            val monthNames = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-            "${dayNames[local.dayOfWeek.ordinal]} ${monthNames[local.monthNumber - 1]} ${local.dayOfMonth}"
-        } catch (_: Exception) { "" }
-    } ?: ""
+    val (month, day) = parseMonthDayHome(event.startAt)
+    val weekday = parseWeekdayHome(event.startAt)
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(AppColors.White)
-            .border(1.dp, AppColors.Mist, RoundedCornerShape(14.dp))
+            .background(Color.White, RoundedCornerShape(12.dp))
+            .border(1.dp, AppColors.Pebble, RoundedCornerShape(12.dp))
+            .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick)
-            .padding(12.dp),
+            .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        // Image or gradient fallback
-        Box(
-            modifier = Modifier
-                .size(52.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(
-                    Brush.linearGradient(
-                        colors = categoryGradient(event.subcategory ?: event.category),
-                    )
-                ),
-            contentAlignment = Alignment.Center,
+        // Date block
+        Column(
+            modifier = Modifier.width(44.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            if (!event.imageUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = coil3.request.ImageRequest.Builder(coil3.compose.LocalPlatformContext.current)
-                        .data(event.imageUrl)
-                        .build(),
-                    contentDescription = event.title,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                )
-            }
-            if (event.isFree) {
-                Text(
-                    "FREE",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 9.sp,
-                        color = Color.White,
-                    ),
-                )
-            }
+            Text(month, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = AppColors.Coral))
+            Text(day, style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 20.sp, color = AppColors.Ink, lineHeight = 22.sp))
+            Text(weekday, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = AppColors.Ink3))
         }
 
-        Spacer(Modifier.width(12.dp))
-
-        Column(modifier = Modifier.weight(1f)) {
+        // Event info
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
             Text(
                 event.title,
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Ink),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis,
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    color = AppColors.Ink,
-                    lineHeight = 17.sp,
-                ),
             )
-            Spacer(Modifier.height(3.dp))
-            Text(
-                buildString {
-                    if (event.venueName != null) append(event.venueName)
-                    if (timeDisplay.isNotBlank()) {
-                        if (isNotEmpty()) append(" · ")
-                        append(timeDisplay)
-                    }
-                    if (dayDisplay.isNotBlank()) {
-                        if (isNotEmpty()) append(" · ")
-                        append(dayDisplay)
-                    }
-                },
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 12.sp,
-                    color = AppColors.Ink3,
-                ),
-            )
-            if (event.priceDisplay.isNotBlank() && !event.isFree) {
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    event.priceDisplay,
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 11.sp,
-                        color = AppColors.Ink2,
-                    ),
+                    event.dateDisplay,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
+                )
+                val rawCat = event.subcategory ?: event.category
+                val displayCat = if (rawCat.lowercase() == "always_on") "Event" else rawCat.replaceFirstChar { it.uppercaseChar() }
+                Text(
+                    displayCat,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Ink2),
+                    modifier = Modifier.background(AppColors.Mist, RoundedCornerShape(50)).padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
+            if (event.venueName != null) {
+                Text(
+                    event.venueName,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
+                    maxLines = 1,
                 )
             }
         }
 
-        // Favorite button
-        if (onFavorite != null) {
-            Spacer(Modifier.width(8.dp))
-            Box(
-                modifier = Modifier
-                    .size(32.dp)
-                    .clip(CircleShape)
-                    .clickable(onClick = onFavorite),
-                contentAlignment = Alignment.Center,
-            ) {
+        // Price / Free badge + heart
+        Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            if (event.isFree) {
+                Text(
+                    "Free",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = Color(0xFF2D9F73)),
+                    modifier = Modifier.background(Color(0xFFE8F5E9), RoundedCornerShape(50)).padding(horizontal = 8.dp, vertical = 4.dp),
+                )
+            } else if (event.priceDisplay.isNotEmpty()) {
+                Text(event.priceDisplay, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = AppColors.Ink3))
+            }
+            if (onFavorite != null) {
                 Icon(
                     if (isFavorited) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
                     contentDescription = null,
                     tint = if (isFavorited) AppColors.Coral else AppColors.Ink3,
-                    modifier = Modifier.size(18.dp),
+                    modifier = Modifier.size(18.dp).clickable(onClick = onFavorite),
                 )
             }
         }
     }
+}
+
+private fun parseMonthDayHome(startAt: String?): Pair<String, String> {
+    if (startAt == null) return "" to ""
+    return try {
+        val instant = kotlinx.datetime.Instant.parse(startAt)
+        val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+        val monthNames = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+        monthNames[local.monthNumber - 1] to local.dayOfMonth.toString()
+    } catch (_: Exception) { "" to "" }
+}
+
+private fun parseWeekdayHome(startAt: String?): String {
+    if (startAt == null) return ""
+    return try {
+        val instant = kotlinx.datetime.Instant.parse(startAt)
+        val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+        val dayNames = arrayOf("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
+        dayNames[local.dayOfWeek.ordinal]
+    } catch (_: Exception) { "" }
 }
 
 private fun categoryGradient(category: String): List<Color> {
