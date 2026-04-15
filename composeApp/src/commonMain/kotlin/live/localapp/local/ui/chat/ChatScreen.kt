@@ -204,55 +204,76 @@ fun ChatScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             items(state.messages, key = { it.id }) { message ->
+                val isSuperseded = viewModel.isPlanSuperseded(message.id)
                 when (message.content) {
                     is MessageContent.Text -> MessageRow(message.role, (message.content as MessageContent.Text).text)
                     is MessageContent.DayCardRef -> {
-                        val dayIdx = (message.content as MessageContent.DayCardRef).dayIndex
-                        val day = state.days.getOrNull(dayIdx) ?: return@items
-                        DayCard(
-                            day = day,
-                            dayIndex = dayIdx,
-                            totalDays = state.days.size,
-                            onEventClick = { id ->
-                                viewModel.recordEventTap(id.removePrefix("venue:"))
-                                if (id.startsWith("venue:")) {
-                                    if (onNativeVenueClick != null) onNativeVenueClick(id.removePrefix("venue:"))
-                                    else selectedVenueName = id.removePrefix("venue:")
-                                } else {
-                                    if (onNativeEventClick != null) {
-                                        val slotImage = state.days.flatMap { it.slots }.firstOrNull { it.eventId == id }?.imageUrl
-                                        onNativeEventClick(id, slotImage)
-                                    } else {
-                                        selectedEventId = id
+                        val ref = message.content as MessageContent.DayCardRef
+                        val dayIdx = ref.dayIndex
+                        val cardDays = ref.snapshot ?: state.days
+                        val day = cardDays.getOrNull(dayIdx) ?: return@items
+
+                        Box {
+                            DayCard(
+                                day = day,
+                                dayIndex = dayIdx,
+                                totalDays = cardDays.size,
+                                onEventClick = { id ->
+                                    if (!isSuperseded) {
+                                        viewModel.recordEventTap(id.removePrefix("venue:"))
+                                        if (id.startsWith("venue:")) {
+                                            if (onNativeVenueClick != null) onNativeVenueClick(id.removePrefix("venue:"))
+                                            else selectedVenueName = id.removePrefix("venue:")
+                                        } else {
+                                            if (onNativeEventClick != null) {
+                                                val slotImage = cardDays.flatMap { it.slots }.firstOrNull { it.eventId == id }?.imageUrl
+                                                onNativeEventClick(id, slotImage)
+                                            } else {
+                                                selectedEventId = id
+                                            }
+                                        }
                                     }
-                                }
-                            },
-                            weather = state.weather[dayIdx],
-                            onSave = { viewModel.sendMessage("Looks good, add to My Plans") },
-                            showSaveButton = !day.isApproved,
-                        )
+                                },
+                                weather = state.weather.getOrElse(dayIdx) { null },
+                                onSave = { viewModel.sendMessage("Looks good, add to My Plans") },
+                                showSaveButton = !isSuperseded && !day.isApproved,
+                            )
+                            if (isSuperseded) {
+                                SupersededOverlay()
+                            }
+                        }
                     }
                     is MessageContent.MultiDayPlanRef -> {
-                        MultiDayPlanCard(
-                            days = state.days,
-                            onEventClick = { id ->
-                                viewModel.recordEventTap(id.removePrefix("venue:"))
-                                if (id.startsWith("venue:")) {
-                                    if (onNativeVenueClick != null) onNativeVenueClick(id.removePrefix("venue:"))
-                                    else selectedVenueName = id.removePrefix("venue:")
-                                } else {
-                                    if (onNativeEventClick != null) {
-                                        val slotImage = state.days.flatMap { it.slots }.firstOrNull { it.eventId == id }?.imageUrl
-                                        onNativeEventClick(id, slotImage)
-                                    } else {
-                                        selectedEventId = id
+                        val ref = message.content as MessageContent.MultiDayPlanRef
+                        val cardDays = ref.snapshot ?: state.days
+
+                        Box {
+                            MultiDayPlanCard(
+                                days = cardDays,
+                                onEventClick = { id ->
+                                    if (!isSuperseded) {
+                                        viewModel.recordEventTap(id.removePrefix("venue:"))
+                                        if (id.startsWith("venue:")) {
+                                            if (onNativeVenueClick != null) onNativeVenueClick(id.removePrefix("venue:"))
+                                            else selectedVenueName = id.removePrefix("venue:")
+                                        } else {
+                                            if (onNativeEventClick != null) {
+                                                val slotImage = cardDays.flatMap { it.slots }.firstOrNull { it.eventId == id }?.imageUrl
+                                                onNativeEventClick(id, slotImage)
+                                            } else {
+                                                selectedEventId = id
+                                            }
+                                        }
                                     }
-                                }
-                            },
-                            weather = state.weather,
-                            onSave = { viewModel.sendMessage("Looks good, add to My Plans") },
-                            showSaveButton = state.days.none { it.isApproved },
-                        )
+                                },
+                                weather = state.weather,
+                                onSave = { viewModel.sendMessage("Looks good, add to My Plans") },
+                                showSaveButton = !isSuperseded && cardDays.none { it.isApproved },
+                            )
+                            if (isSuperseded) {
+                                SupersededOverlay()
+                            }
+                        }
                     }
                 }
             }
@@ -351,6 +372,31 @@ private fun ChatHeader(onBack: (() -> Unit)? = null, onReset: (() -> Unit)? = nu
 }
 
 // ── Message Bubbles ──
+
+@Composable
+private fun SupersededOverlay() {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(AppColors.Snow.copy(alpha = 0.7f))
+            .clickable(enabled = false, onClick = {}),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            "Updated below",
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
+                color = AppColors.Ink3,
+            ),
+            modifier = Modifier
+                .background(AppColors.White, RoundedCornerShape(8.dp))
+                .border(1.dp, AppColors.Pebble, RoundedCornerShape(8.dp))
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+        )
+    }
+}
 
 @Composable
 private fun MessageRow(role: MessageRole, text: String) {

@@ -59,9 +59,12 @@ enum class MessageRole { AI, USER }
 
 sealed interface MessageContent {
     data class Text(val text: String) : MessageContent
-    data class DayCardRef(val dayIndex: Int) : MessageContent
-    data class MultiDayPlanRef(val dayCount: Int) : MessageContent
+    data class DayCardRef(val dayIndex: Int, val snapshot: List<ItineraryDay>? = null) : MessageContent
+    data class MultiDayPlanRef(val dayCount: Int, val snapshot: List<ItineraryDay>? = null) : MessageContent
 }
+
+/** Whether a plan message has been superseded by a later update. */
+var supersededPlanIds = mutableSetOf<String>()
 
 data class ChatMessage(
     val id: String = generateId(),
@@ -997,10 +1000,14 @@ class ChatViewModel(
 
                 delay(350)
 
+                // Mark any existing plan cards as superseded
+                markOldPlanCardsSuperseded()
+
+                val snapshot = _uiState.value.days.toList()
                 if (validatedDays.size > 1) {
-                    addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.MultiDayPlanRef(validatedDays.size)))
+                    addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.MultiDayPlanRef(validatedDays.size, snapshot = snapshot)))
                 } else {
-                    addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(0)))
+                    addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(0, snapshot = snapshot)))
                 }
 
                 fetchWeatherForPlan(validatedDays)
@@ -1027,7 +1034,11 @@ class ChatViewModel(
                     addAiMessage(responseText)
                 }
 
-                addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(dayIndex)))
+                // Mark old plan cards as superseded
+                markOldPlanCardsSuperseded()
+
+                val updateSnapshot = _uiState.value.days.toList()
+                addMessage(ChatMessage(role = MessageRole.AI, content = MessageContent.DayCardRef(dayIndex, snapshot = updateSnapshot)))
 
                 fetchWeatherForPlan(_uiState.value.days)
                 finishTurn(withApproveChip(parsed.chips))
@@ -1624,6 +1635,17 @@ $currentPlanContext
     private fun addMessage(msg: ChatMessage) {
         _uiState.update { it.copy(messages = it.messages + msg) }
     }
+
+    private fun markOldPlanCardsSuperseded() {
+        val msgs = _uiState.value.messages
+        msgs.forEach { msg ->
+            if (msg.content is MessageContent.DayCardRef || msg.content is MessageContent.MultiDayPlanRef) {
+                supersededPlanIds.add(msg.id)
+            }
+        }
+    }
+
+    fun isPlanSuperseded(messageId: String): Boolean = messageId in supersededPlanIds
 }
 
 fun dayColor(index: Int): Long {
