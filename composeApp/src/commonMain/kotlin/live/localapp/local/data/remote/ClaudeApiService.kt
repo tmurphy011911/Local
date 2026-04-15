@@ -452,7 +452,7 @@ class ClaudeApiService {
         /** Fast model for conversational turns (clarifying questions, greetings) */
         const val MODEL_CHAT = "claude-haiku-4-5-20251001"
         /** Full model for plan building, event search, and tool use */
-        const val MODEL_PLAN = "claude-opus-4-6-20250929"
+        const val MODEL_PLAN = "claude-sonnet-4-5-20250929"
     }
 
     private val apiUrl = "https://api.anthropic.com/v1/messages"
