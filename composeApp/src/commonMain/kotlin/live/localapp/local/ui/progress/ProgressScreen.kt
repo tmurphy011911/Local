@@ -326,7 +326,7 @@ fun ProgressScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .padding(bottom = 80.dp),
+                    .padding(bottom = 120.dp),
             ) {
                 // ── Hero Card ──
                 HeroCard(state, animateToPoints, animateToProgress, displayTier, displayNextTier, showTierCelebration, onEditName = {
