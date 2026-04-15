@@ -840,7 +840,7 @@ private fun MultiDayPlanCard(
                 androidx.compose.foundation.pager.HorizontalPager(
                     state = slotPagerState,
                     modifier = Modifier.fillMaxWidth(),
-                    contentPadding = PaddingValues(start = 12.dp, end = 36.dp),
+                    contentPadding = if (currentDay.slots.size > 1) PaddingValues(start = 12.dp, end = 36.dp) else PaddingValues(horizontal = 12.dp),
                     pageSpacing = 8.dp,
                 ) { slotIndex ->
                     val slot = currentDay.slots[slotIndex]
@@ -1023,7 +1023,7 @@ private fun DayCard(
             androidx.compose.foundation.pager.HorizontalPager(
                 state = slotPagerState,
                 modifier = Modifier.fillMaxWidth(),
-                contentPadding = PaddingValues(start = 12.dp, end = 36.dp),
+                contentPadding = if (day.slots.size > 1) PaddingValues(start = 12.dp, end = 36.dp) else PaddingValues(horizontal = 12.dp),
                 pageSpacing = 8.dp,
             ) { slotIndex ->
                 val slot = day.slots[slotIndex]
