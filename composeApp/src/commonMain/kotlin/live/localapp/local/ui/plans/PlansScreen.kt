@@ -5,7 +5,11 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -205,9 +209,10 @@ fun PlansScreen(
                 }
             }
 
-            if (state.upcomingPlans.isEmpty()) {
+            if (state.isLoading && state.upcomingPlans.isEmpty() && state.savedEvents.isEmpty()) {
+                item { PlansSkeletonLoader() }
+            } else if (state.upcomingPlans.isEmpty()) {
                 if (!state.isLoading) {
-                    // Empty state with template suggestions
                     item { PlanTemplates(onNewPlan = onNewPlan, onTemplateClick = onBuildPlanFromTemplate) }
                 }
             } else {
@@ -996,6 +1001,35 @@ private fun SwipeToRevealDelete(
 // ═══════════════════════════════════════════════════════════════════
 // HERO PLAN CARD
 // ═══════════════════════════════════════════════════════════════════
+
+@Composable
+private fun PlansSkeletonLoader() {
+    val shimmerAlpha by animateFloatAsState(
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(800, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+    )
+    val c = AppColors.Pebble.copy(alpha = 0.3f + shimmerAlpha * 0.2f)
+
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp)) {
+        // Hero card skeleton
+        Box(Modifier.fillMaxWidth().height(180.dp).background(c, RoundedCornerShape(20.dp)))
+        Spacer(Modifier.height(16.dp))
+        // Compact plan rows
+        repeat(3) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(Modifier.size(56.dp).background(c, RoundedCornerShape(12.dp)))
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Box(Modifier.width(180.dp).height(13.dp).background(c, RoundedCornerShape(6.dp)))
+                    Box(Modifier.width(120.dp).height(10.dp).background(c, RoundedCornerShape(5.dp)))
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun HeroPlanCard(

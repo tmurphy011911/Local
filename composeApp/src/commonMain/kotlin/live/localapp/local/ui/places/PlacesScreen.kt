@@ -1,7 +1,11 @@
 package live.localapp.local.ui.places
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -158,9 +162,7 @@ fun PlacesScreen(
                 modifier = Modifier.weight(1f),
             ) {
                 if (state.isLoading && state.venues.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator(color = AppColors.Coral, strokeWidth = 3.dp)
-                    }
+                    PlacesSkeletonLoader()
                 } else {
                     VenueGrid(
                         venues = state.filteredVenues,
@@ -183,6 +185,33 @@ fun PlacesScreen(
 }
 
 // PlacesHeader removed — now uses shared AppHeader
+
+@Composable
+private fun PlacesSkeletonLoader() {
+    val shimmerAlpha by animateFloatAsState(
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(800, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+    )
+    val c = AppColors.Pebble.copy(alpha = 0.3f + shimmerAlpha * 0.2f)
+
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp).verticalScroll(rememberScrollState())) {
+        Spacer(Modifier.height(12.dp))
+        repeat(6) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(Modifier.size(80.dp).background(c, RoundedCornerShape(12.dp)))
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Box(Modifier.width(160.dp).height(14.dp).background(c, RoundedCornerShape(7.dp)))
+                    Box(Modifier.width(120.dp).height(10.dp).background(c, RoundedCornerShape(5.dp)))
+                    Box(Modifier.width(80.dp).height(10.dp).background(c, RoundedCornerShape(5.dp)))
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun SearchBar(query: String, onQueryChange: (String) -> Unit) {

@@ -7,7 +7,10 @@ import androidx.compose.animation.core.animateIntAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
@@ -307,6 +310,10 @@ fun ProgressScreen(
                 }
             } else {
 
+            if (state.totalPoints == 0 && state.stateProgresses.isEmpty()) {
+                ProfileSkeletonLoader()
+            }
+
             Column(
                 modifier = Modifier
                     .fillMaxSize()
@@ -387,6 +394,38 @@ fun ProgressScreen(
 // ═══════════════════════════════════════════
 // ── Hero Card (gradient banner + avatar) ──
 // ═══════════════════════════════════════════
+
+@Composable
+private fun ProfileSkeletonLoader() {
+    val shimmerAlpha by animateFloatAsState(
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(800, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+    )
+    val c = AppColors.Pebble.copy(alpha = 0.3f + shimmerAlpha * 0.2f)
+
+    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp).padding(top = 8.dp)) {
+        // Hero card skeleton
+        Box(Modifier.fillMaxWidth().height(200.dp).background(c, RoundedCornerShape(20.dp)))
+        Spacer(Modifier.height(16.dp))
+        // Stats row
+        Box(Modifier.fillMaxWidth().height(80.dp).background(c, RoundedCornerShape(16.dp)))
+        Spacer(Modifier.height(16.dp))
+        // Progress rows
+        repeat(4) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Box(Modifier.size(40.dp).background(c, RoundedCornerShape(10.dp)))
+                Column(verticalArrangement = Arrangement.spacedBy(5.dp), modifier = Modifier.weight(1f)) {
+                    Box(Modifier.width(140.dp).height(12.dp).background(c, RoundedCornerShape(6.dp)))
+                    Box(Modifier.fillMaxWidth().height(8.dp).background(c, RoundedCornerShape(4.dp)))
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun HeroCard(
