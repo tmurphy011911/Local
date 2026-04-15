@@ -50,6 +50,24 @@ fun App() {
         var userLat by remember { mutableStateOf<Double?>(null) }
         var userLng by remember { mutableStateOf<Double?>(null) }
 
+        // Version check
+        var versionResult by remember { mutableStateOf<live.localapp.local.domain.service.VersionCheckResult?>(null) }
+        var updateBannerDismissed by remember { mutableStateOf(false) }
+        LaunchedEffect(Unit) {
+            val service = live.localapp.local.domain.service.VersionCheckService(supabaseClient)
+            versionResult = service.check()
+        }
+
+        // Force update — blocks everything
+        val forceUpdate = versionResult?.status == live.localapp.local.domain.service.VersionStatus.FORCE_UPDATE
+        if (forceUpdate) {
+            live.localapp.local.ui.common.ForceUpdateScreen(
+                message = versionResult?.message ?: "Please update Local to continue.",
+                onUpdate = { live.localapp.local.platform.openAppStoreListing() },
+            )
+            return@LocalAppTheme
+        }
+
         // Auth info passed from auth screen to onboarding
         var authFirstName by remember { mutableStateOf("") }
         var authLastName by remember { mutableStateOf("") }
@@ -257,6 +275,8 @@ fun App() {
                             appState = AppState.AUTH
                         }
                     },
+                    showUpdateBanner = !updateBannerDismissed && versionResult?.status == live.localapp.local.domain.service.VersionStatus.UPDATE_AVAILABLE,
+                    onDismissUpdateBanner = { updateBannerDismissed = true },
                 )
             }
         }

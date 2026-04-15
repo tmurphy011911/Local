@@ -117,6 +117,12 @@ actual fun requestAppReview() {
     }
 }
 
+actual fun openAppStoreListing() {
+    val activity = live.localapp.local.ActivityProvider.activity ?: return
+    val intent = android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse("https://play.google.com/store/apps/details?id=live.localapp.local"))
+    activity.startActivity(intent)
+}
+
 actual fun openAppSettings() {
     val activity = live.localapp.local.ActivityProvider.activity ?: return
     val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {

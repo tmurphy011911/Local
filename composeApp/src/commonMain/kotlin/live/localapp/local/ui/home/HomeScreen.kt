@@ -134,7 +134,7 @@ private fun String.toTitleCase(): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onProfileClick: () -> Unit = {}, onLocationClick: () -> Unit = {}, onFavorite: ((Event) -> Unit)? = null) {
+fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onProfileClick: () -> Unit = {}, onLocationClick: () -> Unit = {}, onFavorite: ((Event) -> Unit)? = null, showUpdateBanner: Boolean = false, onDismissUpdateBanner: () -> Unit = {}) {
     val state by viewModel.uiState.collectAsState()
     var seeAllSection by remember { mutableStateOf<CarouselSection?>(null) }
     var previouslyLoading by remember { mutableStateOf(true) }
@@ -177,6 +177,13 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                 onLogoClick = {},
                 isUnsupportedState = state.isUnsupportedState,
             )
+
+        if (showUpdateBanner) {
+            live.localapp.local.ui.common.UpdateAvailableBanner(
+                onUpdate = { live.localapp.local.platform.openAppStoreListing() },
+                onDismiss = onDismissUpdateBanner,
+            )
+        }
 
         PullToRefreshBox(
             isRefreshing = state.isRefreshing,

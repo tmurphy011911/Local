@@ -138,7 +138,7 @@ enum class Tab(val label: String, val icon: ImageVector) {
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: () -> Unit = {}) {
+fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: () -> Unit = {}, showUpdateBanner: Boolean = false, onDismissUpdateBanner: () -> Unit = {}) {
     val koin = KoinPlatform.getKoin()
     val scope = rememberCoroutineScope()
     val eventRepo: EventRepository = remember { koin.get() }
@@ -370,6 +370,8 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             onFavorite = { event ->
                                 homeVm.toggleEventFavorite(event.id, event.subcategory ?: event.category)
                             },
+                            showUpdateBanner = showUpdateBanner,
+                            onDismissUpdateBanner = onDismissUpdateBanner,
                         )
                     }
                     Tab.CHAT -> {
