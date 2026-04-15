@@ -222,11 +222,12 @@ struct EventDetailView: View {
 
     var body: some View {
         GeometryReader { geo in
-            VStack(spacing: 0) {
+            ZStack(alignment: .bottom) {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 0) {
                         heroImage
                         contentSection
+                        Spacer().frame(height: 80) // space for floating CTA
                     }
                     .frame(width: geo.size.width, alignment: .leading)
                 }
@@ -692,10 +693,6 @@ struct EventDetailView: View {
         .padding(.horizontal, 16)
         .padding(.top, 12)
         .padding(.bottom, 24)
-        .background(AppColor.white)
-        .overlay(alignment: .top) {
-            Rectangle().fill(AppColor.mist).frame(height: 1)
-        }
     }
 
     private func primaryButton(label: String, isPrimary: Bool, action: @escaping () -> Void) -> some View {

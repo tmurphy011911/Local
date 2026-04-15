@@ -478,6 +478,10 @@ struct ComposeView: UIViewControllerRepresentable {
                 if let shareUrl = URL(string: url as String) {
                     items.append(shareUrl)
                 }
+                // Attach app icon for richer share previews
+                if let appIcon = UIImage(named: "AppIcon") ?? UIImage(named: "app-icon-1024") {
+                    items.append(appIcon)
+                }
 
                 let activityVC = UIActivityViewController(activityItems: items, applicationActivities: nil)
 
