@@ -442,6 +442,16 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                                 presentShareSheet(text, "https://localapp.live/p/$token")
                                             }
                                         },
+                                        onEditPlan = {
+                                            pendingChatMessage = "Edit my plan: ${plan.title}"
+                                            chatOpenCount++
+                                            openChatOrLogin()
+                                        },
+                                        onEditDay = { dayLabel ->
+                                            pendingChatMessage = "Change $dayLabel of ${plan.title}"
+                                            chatOpenCount++
+                                            openChatOrLogin()
+                                        },
                                     )
                                 } else {
                                     selectedPlan = plan

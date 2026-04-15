@@ -78,6 +78,8 @@ expect fun showNativePlanDetail(
     cardH: Float,
     onDismissed: () -> Unit,
     onShare: () -> Unit,
+    onEditPlan: () -> Unit = {},
+    onEditDay: (String) -> Unit = {},
 )
 
 expect fun showNativeVenueDetail(

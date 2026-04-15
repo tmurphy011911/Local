@@ -101,9 +101,13 @@ actual fun showNativePlanDetail(
     cardH: Float,
     onDismissed: () -> Unit,
     onShare: () -> Unit,
+    onEditPlan: () -> Unit,
+    onEditDay: (String) -> Unit,
 ) {
     PlanDetailBridge.onDismissed = onDismissed
     PlanDetailBridge.onShare = onShare
+    PlanDetailBridge.onEditPlan = onEditPlan
+    PlanDetailBridge.onEditDay = onEditDay
 
     // Serialize plan to JSON for Swift
     val planJson = kotlinx.serialization.json.buildJsonObject {

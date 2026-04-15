@@ -19,6 +19,8 @@ fun PlanDetailViewController(
         plan = plan,
         onBack = onBack,
         onShare = onShare,
+        onEditPlan = { PlanDetailBridge.onEditPlan?.invoke() },
+        onEditDay = { dayLabel -> PlanDetailBridge.onEditDay?.invoke(dayLabel) },
     )
 }
 

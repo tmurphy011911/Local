@@ -15,4 +15,6 @@ object PlanDetailBridge {
     var dismissPlanDetail: (() -> Unit)? = null
     var onDismissed: (() -> Unit)? = null
     var onShare: (() -> Unit)? = null
+    var onEditPlan: (() -> Unit)? = null
+    var onEditDay: ((String) -> Unit)? = null
 }
