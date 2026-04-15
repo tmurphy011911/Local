@@ -79,19 +79,7 @@ class HomeViewModel(
             if (userId != null) {
                 val prefs = userPreferencesRepository.loadPreferences(userId)
                 if (prefs != null) {
-                    val cityDisplay = prefs.city.replaceFirstChar { c -> c.uppercase() }.let { city ->
-                        // Append state abbreviation if known
-                        val state = when (city.lowercase()) {
-                            "boston", "cambridge", "somerville", "newton", "waltham",
-                            "brookline", "worcester", "springfield", "lowell" -> "MA"
-                            "providence" -> "RI"
-                            "portland" -> "ME"
-                            "new york" -> "NY"
-                            "philadelphia", "pittsburgh", "allentown", "harrisburg" -> "PA"
-                            else -> null
-                        }
-                        if (state != null) "$city, $state" else city
-                    }
+                    val cityDisplay = prefs.city.replaceFirstChar { c -> c.uppercase() }
                     val hasPermission = live.localapp.local.platform.checkLocationPermissionGranted()
                     val storedMode = if (prefs.locationMode == "manual") LocationMode.MANUAL else LocationMode.CURRENT_LOCATION
                     // If stored as "current" but we don't have permission, treat as manual
@@ -126,15 +114,7 @@ class HomeViewModel(
             // Derive location name from preferences city, or keep current
             val prefs = current.userPreferences
             val locName = if (current.locationName.isBlank() && prefs != null) {
-                val city = prefs.city.replaceFirstChar { c -> c.uppercase() }
-                val state = when (city.lowercase()) {
-                    "boston", "cambridge", "somerville", "newton", "waltham",
-                    "brookline", "worcester", "springfield", "lowell" -> "MA"
-                    "providence" -> "RI"; "portland" -> "ME"; "new york" -> "NY"
-                    "philadelphia", "pittsburgh", "allentown", "harrisburg" -> "PA"
-                    else -> null
-                }
-                if (state != null) "$city, $state" else city
+                prefs.city.replaceFirstChar { c -> c.uppercase() }
             } else current.locationName
             _uiState.update { it.copy(userLat = lat, userLng = lng, locationName = locName) }
             carouselRepository.invalidateAll()
@@ -154,7 +134,7 @@ class HomeViewModel(
     }
 
     fun setManualLocation(lat: Double, lng: Double, name: String) {
-        val displayName = name.removeSuffix(", USA").removeSuffix(", United States")
+        val displayName = name.removeSuffix(", USA").removeSuffix(", United States").replace(Regex(",\\s*[A-Z]{2}$"), "")
         _uiState.update {
             it.copy(
                 manualLat = lat, manualLng = lng, manualLocationName = displayName,
