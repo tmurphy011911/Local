@@ -13,7 +13,7 @@ class ChatState: ObservableObject {
     @Published var inputEnabled: Bool = true
     @Published var showPlanSuccess: Bool = false
     @Published var days: [DaySnapshot] = []
-    @Published var weather: [Int32: WeatherSnapshot] = [:]
+    @Published var weather: [KotlinInt: WeatherSnapshot] = [:]
 
     func update(from snapshot: ChatStateSnapshot) {
         DispatchQueue.main.async { [weak self] in
@@ -334,7 +334,7 @@ struct ChatView: View {
 
     private func dayCardPage(day: DaySnapshot, dayIndex: Int, totalDays: Int, showSave: Bool) -> some View {
         let color = dayColors[dayIndex % dayColors.count]
-        let weatherData = state.weather[Int32(dayIndex)]
+        let weatherData = state.weather[KotlinInt(value: Int32(dayIndex))]
 
         return VStack(spacing: 0) {
             // Day header
