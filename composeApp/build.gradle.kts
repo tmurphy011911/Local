@@ -31,6 +31,7 @@ kotlin {
             implementation(libs.androidx.activity.compose)
             implementation(libs.ktor.client.okhttp)
             implementation("com.google.android.play:review-ktx:2.0.2")
+            implementation("com.google.android.gms:play-services-location:21.3.0")
         }
 
         commonMain.dependencies {

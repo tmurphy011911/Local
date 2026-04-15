@@ -27,7 +27,9 @@ actual fun clearClipboardDeepLink() {
     }
 }
 
-actual fun setDeepLinkCallback(onPlanToken: (String) -> Unit) {}
+actual fun setDeepLinkCallback(onPlanToken: (String) -> Unit) {
+    live.localapp.local.DeepLinkHandler.callback = onPlanToken
+}
 
 actual fun purchaseSubscription(isAnnual: Boolean, onResult: (Boolean) -> Unit) { onResult(false) }
 actual fun restorePurchases(onResult: (Boolean) -> Unit) { onResult(false) }
@@ -54,9 +56,15 @@ actual fun requestNotificationPermission(onResult: (Boolean) -> Unit) {
             activity, android.Manifest.permission.POST_NOTIFICATIONS
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         if (granted) { onResult(true); return }
-        // Can't request from here without ActivityResult — just report current state
+        // Request permission via ActivityResultLauncher stored on activity
+        androidx.core.app.ActivityCompat.requestPermissions(
+            activity,
+            arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+            1001,
+        )
+        // Can't get async result here — report false, will be true next check
         onResult(false)
     } else {
-        onResult(true) // Pre-Android 13 doesn't need runtime permission
+        onResult(true)
     }
 }

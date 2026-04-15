@@ -1,5 +1,6 @@
 package live.localapp.local
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -14,9 +15,23 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         initKoin()
         ActivityProvider.activity = this
+        handleDeepLink(intent)
 
         setContent {
             App()
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleDeepLink(intent)
+    }
+
+    private fun handleDeepLink(intent: Intent?) {
+        val uri = intent?.data ?: return
+        val path = uri.path ?: return
+        if (uri.host == "localapp.live" && path.matches(Regex("/[pev]/[A-Za-z0-9_-]+"))) {
+            DeepLinkHandler.pendingPath = path
         }
     }
 
@@ -29,6 +44,21 @@ class MainActivity : ComponentActivity() {
 /** Provides Activity reference for platform APIs that need it (e.g. Play In-App Review). */
 object ActivityProvider {
     var activity: ComponentActivity? = null
+}
+
+/** Stores pending deep link path for pickup by Compose. */
+object DeepLinkHandler {
+    var pendingPath: String? = null
+    var callback: ((String) -> Unit)? = null
+        set(value) {
+            field = value
+            // Deliver any pending path immediately
+            val path = pendingPath
+            if (value != null && path != null) {
+                pendingPath = null
+                value(path)
+            }
+        }
 }
 
 @Preview

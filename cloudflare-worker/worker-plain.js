@@ -2,6 +2,14 @@ var SUPABASE_FUNCTION_URL = "https://blifubxslaucshmlphdc.supabase.co/functions/
 var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJsaWZ1YnhzbGF1Y3NobWxwaGRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3MjgyNjEsImV4cCI6MjA4ODMwNDI2MX0.xx-iy7kKhHviAjtjfXdxNHp4pmKU-in3efr2SkvWTf0";
 var AASA_OBJ = { applinks: { apps: [], details: [{ appID: "2BGU22C396.live.localapp.local", paths: ["/p/*", "/e/*", "/v/*"] }] } };
 var AASA = JSON.stringify(AASA_OBJ);
+var ASSETLINKS = JSON.stringify([{
+  relation: ["delegate_permission/common.handle_all_urls"],
+  target: {
+    namespace: "android_app",
+    package_name: "live.localapp.local",
+    sha256_cert_fingerprints: ["TODO:REPLACE_WITH_SHA256_FINGERPRINT"]
+  }
+}]);
 
 async function supabaseFetch(url, request) {
   var resp = await fetch(url, {
@@ -28,6 +36,12 @@ export default {
 
     if (path === "/.well-known/apple-app-site-association" || path === "/apple-app-site-association") {
       return new Response(AASA, {
+        headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=86400" }
+      });
+    }
+
+    if (path === "/.well-known/assetlinks.json") {
+      return new Response(ASSETLINKS, {
         headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=86400" }
       });
     }

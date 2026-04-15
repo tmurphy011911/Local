@@ -33,9 +33,9 @@ actual fun RequestLocationEffect(
                 fusedClient.getCurrentLocation(
                     Priority.PRIORITY_BALANCED_POWER_ACCURACY,
                     CancellationTokenSource().token,
-                ).addOnSuccessListener { location ->
-                    if (location != null) {
-                        onLocation(location.latitude, location.longitude)
+                ).addOnSuccessListener { loc: android.location.Location? ->
+                    if (loc != null) {
+                        onLocation(loc.latitude, loc.longitude)
                     } else {
                         onDenied()
                     }
@@ -60,9 +60,9 @@ actual fun RequestLocationEffect(
                 fusedClient.getCurrentLocation(
                     Priority.PRIORITY_BALANCED_POWER_ACCURACY,
                     CancellationTokenSource().token,
-                ).addOnSuccessListener { location ->
-                    if (location != null) {
-                        onLocation(location.latitude, location.longitude)
+                ).addOnSuccessListener { loc: android.location.Location? ->
+                    if (loc != null) {
+                        onLocation(loc.latitude, loc.longitude)
                     } else {
                         onDenied()
                     }
