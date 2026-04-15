@@ -265,9 +265,32 @@ struct ComposeView: UIViewControllerRepresentable {
 
         bridge.onOpenSheet = {
             DispatchQueue.main.async {
-                // Make sure we have the view reference
-                chatTransition.setup(composeView: composeVC.view)
-                chatTransition.open {
+                // Present native SwiftUI ChatView as a sheet
+                guard let windowScene = UIApplication.shared.connectedScenes
+                    .compactMap({ $0 as? UIWindowScene }).first,
+                    let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController else {
+                    bridge.onOpenComplete?()
+                    return
+                }
+
+                let chatView = ChatView(
+                    onDismiss: {
+                        rootVC.presentedViewController?.dismiss(animated: true) {
+                            bridge.onCloseComplete?()
+                        }
+                    }
+                )
+                let hostingVC = UIHostingController(rootView: chatView)
+                hostingVC.modalPresentationStyle = .pageSheet
+                if let sheet = hostingVC.sheetPresentationController {
+                    sheet.detents = [.large()]
+                    sheet.prefersGrabberVisible = true
+                }
+
+                // Store reference for close
+                ChatSheetTransition.shared.presentedChatVC = hostingVC
+
+                rootVC.present(hostingVC, animated: true) {
                     bridge.onOpenComplete?()
                 }
             }
@@ -275,7 +298,12 @@ struct ComposeView: UIViewControllerRepresentable {
 
         bridge.onCloseSheet = {
             DispatchQueue.main.async {
-                chatTransition.close {
+                if let vc = ChatSheetTransition.shared.presentedChatVC {
+                    vc.dismiss(animated: true) {
+                        bridge.onCloseComplete?()
+                        ChatSheetTransition.shared.presentedChatVC = nil
+                    }
+                } else {
                     bridge.onCloseComplete?()
                 }
             }

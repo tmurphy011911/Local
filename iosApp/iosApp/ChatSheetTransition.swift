@@ -6,6 +6,7 @@ class ChatSheetTransition {
     static let shared = ChatSheetTransition()
 
     private weak var composeView: UIView?
+    var presentedChatVC: UIViewController?
 
     func setup(composeView: UIView) {
         self.composeView = composeView
