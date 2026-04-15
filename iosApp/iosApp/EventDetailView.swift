@@ -224,11 +224,11 @@ struct EventDetailView: View {
         GeometryReader { geo in
             VStack(spacing: 0) {
                 ScrollView(.vertical, showsIndicators: false) {
-                    VStack(spacing: 0) {
+                    VStack(alignment: .leading, spacing: 0) {
                         heroImage
                         contentSection
                     }
-                    .frame(width: geo.size.width)
+                    .frame(width: geo.size.width, alignment: .leading)
                 }
                 ctaBar
                     .frame(width: geo.size.width)
@@ -498,6 +498,7 @@ struct EventDetailView: View {
 
             Spacer().frame(height: 24)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
     }
