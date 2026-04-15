@@ -159,6 +159,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     var sharedVenue by remember { mutableStateOf<live.localapp.local.domain.model.Venue?>(null) }
     val userPrefsRepo: UserPreferencesRepository = remember { koin.get() }
     val isLoggedIn = userPrefsRepo.getLocalUserId() != null
+    var showLocationSheet by remember { mutableStateOf(false) }
 
     // Gate chat behind auth + sync location (defined as a lambda referencing hoisted VMs below)
 
@@ -364,6 +365,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             },
                             onConciergeClick = { openChatOrLogin() },
                             onProfileClick = { selectedTab = Tab.PROFILE },
+                            onLocationClick = { showLocationSheet = true },
                             onFavorite = { event ->
                                 homeVm.toggleEventFavorite(event.id, event.subcategory ?: event.category)
                             },
@@ -375,16 +377,20 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         selectedTab = Tab.HOME
                     }
                     Tab.PLACES -> {
-                        placesVm.ensureLoaded()
-                        // Sync location and streak from home state
+                        // Sync location from home state (includes lat/lng for geo queries)
+                        if (homeState.userLat != null && homeState.userLng != null) {
+                            placesVm.setUserLocation(homeState.userLat!!, homeState.userLng!!)
+                        }
                         if (homeState.locationName.isNotBlank()) {
                             placesVm.setLocationName(homeState.locationName)
                         }
                         placesVm.setStreakDays(homeState.streakDays)
+                        placesVm.ensureLoaded()
                         val initial = homeState.userName.firstOrNull()?.uppercase() ?: ""
                         PlacesScreen(
                             placesVm,
                             onProfileClick = { selectedTab = Tab.PROFILE },
+                            onLocationClick = { showLocationSheet = true },
                             userInitial = initial,
                             onVenueClickWithBounds = if (hasNativeHeroTransition) { venue, bounds ->
                                 showNativeVenueDetail(
@@ -406,6 +412,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             onTasteProfile = { showTasteProfile = true },
                             onSignIn = { showLoginPrompt = true },
                             onNameChanged = { name -> homeVm.setUserName(name) },
+                            onLocationClick = { showLocationSheet = true },
                             isLoggedIn = isLoggedIn,
                             locationName = homeState.locationName,
                             streakDays = homeState.streakDays,
@@ -451,6 +458,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             },
                             userInitial = homeState.userName.firstOrNull()?.uppercase() ?: "",
                             onProfileClick = { selectedTab = Tab.PROFILE },
+                            onLocationClick = { showLocationSheet = true },
                             onSignIn = { showLoginPrompt = true },
                             isLoggedIn = isLoggedIn,
                             locationName = homeState.locationName,
@@ -744,6 +752,21 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 )
             }
             }
+        }
+
+        // Location settings sheet — shared across all tabs
+        if (showLocationSheet) {
+            live.localapp.local.ui.home.LocationSettingsSheet(
+                currentLocationName = homeState.locationName,
+                locationMode = homeState.locationMode,
+                manualLocationName = homeState.manualLocationName,
+                radiusFilter = homeState.radiusFilter,
+                hasLocationPermission = homeState.hasLocationPermission,
+                onSelectCurrentLocation = { homeVm.setLocationMode(live.localapp.local.ui.home.LocationMode.CURRENT_LOCATION) },
+                onSelectManualLocation = { lat, lng, name -> homeVm.setManualLocation(lat, lng, name) },
+                onRadiusChanged = { homeVm.setRadiusFilter(it) },
+                onDismiss = { showLocationSheet = false },
+            )
         }
 
         // Chat bottom sheet

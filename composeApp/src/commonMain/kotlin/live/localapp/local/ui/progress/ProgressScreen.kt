@@ -99,9 +99,10 @@ fun ProgressScreen(
     onTasteProfile: () -> Unit = {},
     onSignIn: () -> Unit = {},
     onNameChanged: (String) -> Unit = {},
+    onLocationClick: () -> Unit = {},
     isLoggedIn: Boolean = true,
-    locationName: String = "Waltham, MA",
-    streakDays: Int = 2,
+    locationName: String = "",
+    streakDays: Int = 0,
 ) {
     val state by viewModel.uiState.collectAsState()
     var showNameDialog by remember { mutableStateOf(false) }
@@ -243,7 +244,7 @@ fun ProgressScreen(
                 streakDays = streakDays,
                 userInitial = state.userInitial,
                 onProfileClick = {},
-                onLocationClick = {},
+                onLocationClick = onLocationClick,
                 isLoggedIn = isLoggedIn,
             )
 

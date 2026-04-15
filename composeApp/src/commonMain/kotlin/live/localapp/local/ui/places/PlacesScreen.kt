@@ -120,6 +120,7 @@ private fun gradientForCategory(cat: String?): Brush = when (cat?.lowercase()) {
 fun PlacesScreen(
     viewModel: PlacesViewModel,
     onProfileClick: () -> Unit = {},
+    onLocationClick: () -> Unit = {},
     userInitial: String = "",
     onVenueClickWithBounds: ((VenueWithMeta, Rect) -> Unit)? = null,
 ) {
@@ -132,75 +133,15 @@ fun PlacesScreen(
     ) { focusManager.clearFocus() }) {
         Column(modifier = Modifier.fillMaxSize()) {
             // ── Header ──
-            run {
-                var radiusPickerOpen by remember { mutableStateOf(false) }
-                AppHeader(
+            AppHeader(
                     title = "places",
                     locationName = state.locationName,
                     radiusFilter = state.radiusFilter,
                     streakDays = state.streakDays,
                     userInitial = userInitial,
                     onProfileClick = onProfileClick,
-                    onLocationClick = { radiusPickerOpen = !radiusPickerOpen },
-                    bottomPadding = !radiusPickerOpen,
+                    onLocationClick = onLocationClick,
                     extraContent = {
-                        // Radius picker
-                        AnimatedVisibility(
-                            visible = radiusPickerOpen,
-                            enter = expandVertically(),
-                            exit = shrinkVertically(),
-                        ) {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(horizontal = 20.dp)
-                                    .padding(bottom = 10.dp)
-                                    .horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                listOf<Double?>(null, 1.0, 3.0, 5.0, 10.0, 25.0, 50.0, 100.0).forEach { option ->
-                                    val isSelected = option == state.radiusFilter
-                                    val label = when (option) {
-                                        null   -> "Any"
-                                        1.0    -> "1 mi"
-                                        3.0    -> "3 mi"
-                                        5.0    -> "5 mi"
-                                        10.0   -> "10 mi"
-                                        25.0   -> "25 mi"
-                                        50.0   -> "50 mi"
-                                        100.0  -> "100 mi"
-                                        else   -> "${option.toInt()} mi"
-                                    }
-                                    Box(
-                                        modifier = Modifier
-                                            .background(
-                                                if (isSelected) AppColors.Sky else AppColors.SkyLt,
-                                                AppShapes.Pill,
-                                            )
-                                            .border(1.5.dp, AppColors.Sky, AppShapes.Pill)
-                                            .clickable(
-                                                interactionSource = remember { MutableInteractionSource() },
-                                                indication = null,
-                                            ) {
-                                                viewModel.setRadiusFilter(option)
-                                                radiusPickerOpen = false
-                                            }
-                                            .padding(horizontal = 12.dp, vertical = 5.dp),
-                                    ) {
-                                        Text(
-                                            label,
-                                            style = TextStyle(
-                                                fontFamily = AppFonts.Body,
-                                                fontWeight = FontWeight.ExtraBold,
-                                                fontSize = 12.sp,
-                                                color = if (isSelected) AppColors.White else AppColors.Sky,
-                                            ),
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
                         // Search bar
                         Box(modifier = Modifier.padding(horizontal = 20.dp)) {
                             SearchBar(query = state.searchQuery, onQueryChange = { viewModel.setSearchQuery(it) })
@@ -209,7 +150,6 @@ fun PlacesScreen(
                         Spacer(Modifier.height(8.dp))
                     },
                 )
-            }
 
             // ── Content ──
             PullToRefreshBox(

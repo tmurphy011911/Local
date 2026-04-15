@@ -100,10 +100,11 @@ fun PlansScreen(
     onSharePlan: ((Plan) -> Unit)? = null,
     userInitial: String = "",
     onProfileClick: () -> Unit = {},
+    onLocationClick: () -> Unit = {},
     onSignIn: () -> Unit = {},
     isLoggedIn: Boolean = true,
-    locationName: String = "Waltham, MA",
-    streakDays: Int = 2,
+    locationName: String = "",
+    streakDays: Int = 0,
 ) {
     val state by viewModel.uiState.collectAsState()
 
@@ -115,7 +116,7 @@ fun PlansScreen(
             streakDays = streakDays,
             userInitial = userInitial,
             onProfileClick = onProfileClick,
-            onLocationClick = {},
+            onLocationClick = onLocationClick,
             isLoggedIn = isLoggedIn,
         )
 

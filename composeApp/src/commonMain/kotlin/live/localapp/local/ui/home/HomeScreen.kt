@@ -134,9 +134,8 @@ private fun String.toTitleCase(): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onProfileClick: () -> Unit = {}, onFavorite: ((Event) -> Unit)? = null) {
+fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onProfileClick: () -> Unit = {}, onLocationClick: () -> Unit = {}, onFavorite: ((Event) -> Unit)? = null) {
     val state by viewModel.uiState.collectAsState()
-    var showLocationSheet by remember { mutableStateOf(false) }
     var seeAllSection by remember { mutableStateOf<CarouselSection?>(null) }
     var previouslyLoading by remember { mutableStateOf(true) }
     val haptic = LocalHapticFeedback.current
@@ -147,20 +146,6 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
         }
         previouslyLoading = state.isLoading
-    }
-
-    if (showLocationSheet) {
-        LocationSettingsSheet(
-            currentLocationName = state.locationName,
-            locationMode = state.locationMode,
-            manualLocationName = state.manualLocationName,
-            radiusFilter = state.radiusFilter,
-            hasLocationPermission = state.hasLocationPermission,
-            onSelectCurrentLocation = { viewModel.setLocationMode(LocationMode.CURRENT_LOCATION) },
-            onSelectManualLocation = { lat, lng, name -> viewModel.setManualLocation(lat, lng, name) },
-            onRadiusChanged = { viewModel.setRadiusFilter(it) },
-            onDismiss = { showLocationSheet = false },
-        )
     }
 
     // See All sheet
@@ -189,7 +174,7 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                 streakDays = state.streakDays,
                 userInitial = state.userName.firstOrNull()?.uppercase() ?: "",
                 onProfileClick = onProfileClick,
-                onLocationClick = { showLocationSheet = true },
+                onLocationClick = onLocationClick,
                 onLogoClick = {},
             )
 
