@@ -145,15 +145,12 @@ fun PlacesScreen(
                     userInitial = userInitial,
                     onProfileClick = onProfileClick,
                     onLocationClick = onLocationClick,
-                    extraContent = {
-                        // Search bar
-                        Box(modifier = Modifier.padding(horizontal = 20.dp)) {
-                            SearchBar(query = state.searchQuery, onQueryChange = { viewModel.setSearchQuery(it) })
-                        }
-
-                        Spacer(Modifier.height(8.dp))
-                    },
                 )
+
+            // Search bar — below header divider
+            Box(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+                SearchBar(query = state.searchQuery, onQueryChange = { viewModel.setSearchQuery(it) }, locationName = state.locationName)
+            }
 
             // ── Content ──
             PullToRefreshBox(
@@ -214,14 +211,15 @@ private fun PlacesSkeletonLoader() {
 }
 
 @Composable
-private fun SearchBar(query: String, onQueryChange: (String) -> Unit) {
+private fun SearchBar(query: String, onQueryChange: (String) -> Unit, locationName: String = "") {
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    val placeholder = if (locationName.isNotBlank()) "Search for places near $locationName" else "Search for places\u2026"
     TextField(
         value = query,
         onValueChange = onQueryChange,
         placeholder = {
             Text(
-                "Bars, venues, neighborhoods\u2026",
+                placeholder,
                 style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Medium, fontSize = 15.sp, color = AppColors.Ink3),
             )
         },
