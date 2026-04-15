@@ -430,12 +430,12 @@ struct EventDetailView: View {
                 Spacer().frame(height: 10)
             }
 
-            // Date — skip for recurring events
-            if let startAt = event.startAt, !isRecurring {
+            // Date — show for all events including recurring (next occurrence)
+            if let startAt = event.startAt {
                 infoRow(
                     systemName: "calendar",
                     iconColor: AppColor.coral,
-                    text: formatDate(startAt)
+                    text: isRecurring ? "Next: \(formatDate(startAt))" : formatDate(startAt)
                 )
                 Spacer().frame(height: 10)
             }

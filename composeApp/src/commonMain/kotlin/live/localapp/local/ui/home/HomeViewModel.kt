@@ -59,6 +59,7 @@ class HomeViewModel(
 
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
+    private var carouselJob: kotlinx.coroutines.Job? = null
 
     init {
         // Record app open and update streak
@@ -284,7 +285,8 @@ class HomeViewModel(
     }
 
     private fun loadCarousels(loadCategories: Boolean = true) {
-        viewModelScope.launch {
+        carouselJob?.cancel()
+        carouselJob = viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, error = null) }
             try {
                 val state = _uiState.value
