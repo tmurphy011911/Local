@@ -1,5 +1,16 @@
 package live.localapp.local.platform
 
+import com.revenuecat.purchases.CustomerInfo
+import com.revenuecat.purchases.Offerings
+import com.revenuecat.purchases.PurchaseParams
+import com.revenuecat.purchases.Purchases
+import com.revenuecat.purchases.PurchasesError
+import com.revenuecat.purchases.interfaces.ReceiveCustomerInfoCallback
+import com.revenuecat.purchases.interfaces.ReceiveOfferingsCallback
+import com.revenuecat.purchases.getOfferingsWith
+import com.revenuecat.purchases.purchaseWith
+import com.revenuecat.purchases.restorePurchasesWith
+
 actual fun presentShareSheet(text: String, url: String) {
     val activity = live.localapp.local.ActivityProvider.activity ?: return
     val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
@@ -31,9 +42,56 @@ actual fun setDeepLinkCallback(onPlanToken: (String) -> Unit) {
     live.localapp.local.DeepLinkHandler.callback = onPlanToken
 }
 
-actual fun purchaseSubscription(isAnnual: Boolean, onResult: (Boolean) -> Unit) { onResult(false) }
-actual fun restorePurchases(onResult: (Boolean) -> Unit) { onResult(false) }
-actual fun checkSubscriptionStatus(onResult: (Boolean, String?) -> Unit) { onResult(false, null) }
+actual fun purchaseSubscription(isAnnual: Boolean, onResult: (Boolean) -> Unit) {
+    val activity = live.localapp.local.ActivityProvider.activity ?: run { onResult(false); return }
+    Purchases.sharedInstance.getOfferingsWith(
+        onError = { error -> println("RevenueCat: Offerings error: $error"); onResult(false) },
+    ) { offerings ->
+        val offering = offerings.current ?: run { onResult(false); return@getOfferingsWith }
+        val pkg = if (isAnnual) {
+            offering.annual ?: offering.availablePackages.firstOrNull { it.product.id == "yearly" }
+        } else {
+            offering.monthly ?: offering.availablePackages.firstOrNull { it.product.id == "monthly" }
+        }
+        if (pkg == null) { onResult(false); return@getOfferingsWith }
+        Purchases.sharedInstance.purchaseWith(
+            PurchaseParams.Builder(activity, pkg).build(),
+            onError = { error, _ -> println("RevenueCat: Purchase error: $error"); onResult(false) },
+            onSuccess = { _, customerInfo ->
+                val isPro = customerInfo.entitlements.active.containsKey("Local Pro")
+                println("RevenueCat: Purchase complete, pro=$isPro")
+                onResult(isPro)
+            },
+        )
+    }
+}
+
+actual fun restorePurchases(onResult: (Boolean) -> Unit) {
+    Purchases.sharedInstance.restorePurchasesWith(
+        onError = { error -> println("RevenueCat: Restore error: $error"); onResult(false) },
+        onSuccess = { customerInfo ->
+            val isPro = customerInfo.entitlements.active.containsKey("Local Pro")
+            println("RevenueCat: Restore complete, pro=$isPro")
+            onResult(isPro)
+        },
+    )
+}
+
+actual fun checkSubscriptionStatus(onResult: (Boolean, String?) -> Unit) {
+    Purchases.sharedInstance.getCustomerInfo(object : ReceiveCustomerInfoCallback {
+        override fun onReceived(customerInfo: CustomerInfo) {
+            val isPro = customerInfo.entitlements.active.containsKey("Local Pro")
+            val expiry = customerInfo.entitlements.active["Local Pro"]?.expirationDate?.toString()
+            println("RevenueCat: Status check, pro=$isPro, expiry=$expiry")
+            onResult(isPro, expiry)
+        }
+        override fun onError(error: PurchasesError) {
+            println("RevenueCat: Status error: $error")
+            onResult(false, null)
+        }
+    })
+}
+
 actual fun requestAppReview() {
     val activity = live.localapp.local.ActivityProvider.activity ?: return
     val manager = com.google.android.play.core.review.ReviewManagerFactory.create(activity)
@@ -41,6 +99,7 @@ actual fun requestAppReview() {
         manager.launchReviewFlow(activity, reviewInfo)
     }
 }
+
 actual fun openAppSettings() {
     val activity = live.localapp.local.ActivityProvider.activity ?: return
     val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
@@ -48,6 +107,7 @@ actual fun openAppSettings() {
     }
     activity.startActivity(intent)
 }
+
 actual fun requestNotificationPermission(onResult: (Boolean) -> Unit) {
     val activity = live.localapp.local.ActivityProvider.activity
     if (activity == null) { onResult(false); return }
@@ -56,13 +116,9 @@ actual fun requestNotificationPermission(onResult: (Boolean) -> Unit) {
             activity, android.Manifest.permission.POST_NOTIFICATIONS
         ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         if (granted) { onResult(true); return }
-        // Request permission via ActivityResultLauncher stored on activity
         androidx.core.app.ActivityCompat.requestPermissions(
-            activity,
-            arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
-            1001,
+            activity, arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001,
         )
-        // Can't get async result here — report false, will be true next check
         onResult(false)
     } else {
         onResult(true)
