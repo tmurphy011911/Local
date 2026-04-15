@@ -52,7 +52,22 @@ fun PremiumPaywall(
     onSubscribe: (isAnnual: Boolean) -> Unit,
     onDismiss: () -> Unit,
     onRestore: () -> Unit = {},
+    monthlyPrice: String? = null,
+    annualPrice: String? = null,
+    introPrice: String? = null,
 ) {
+    val hasIntro = introPrice != null
+    val displayMonthly = if (hasIntro) introPrice!! else (monthlyPrice ?: "$6.99")
+    val displayMonthlySubtext = if (hasIntro) "then ${monthlyPrice ?: "$6.99"}/mo" else "/month"
+    val displayMonthlyBadge = if (hasIntro) "First month" else null
+    val displayAnnual = annualPrice ?: "$49.99"
+    val annualPerMonth = try {
+        val raw = displayAnnual.replace(Regex("[^0-9.]"), "").toDouble()
+        val perMonth = raw / 12
+        val whole = perMonth.toInt()
+        val frac = ((perMonth - whole) * 100).toInt()
+        "$$whole.${frac.toString().padStart(2, '0')}/mo"
+    } catch (_: Exception) { "$4.17/mo" }
     var isAnnual by remember { mutableStateOf(true) }
 
     Box(
@@ -148,8 +163,8 @@ fun PremiumPaywall(
                     modifier = Modifier.weight(1f),
                     isSelected = isAnnual,
                     label = "Annual",
-                    price = "$49.99",
-                    subtext = "$4.17/mo",
+                    price = displayAnnual,
+                    subtext = annualPerMonth,
                     badge = "Best value",
                     onClick = { isAnnual = true },
                 )
@@ -158,9 +173,9 @@ fun PremiumPaywall(
                     modifier = Modifier.weight(1f),
                     isSelected = !isAnnual,
                     label = "Monthly",
-                    price = "$0.99",
-                    subtext = "then $6.99/mo",
-                    badge = "First month",
+                    price = displayMonthly,
+                    subtext = displayMonthlySubtext,
+                    badge = displayMonthlyBadge,
                     onClick = { isAnnual = false },
                 )
             }
@@ -180,7 +195,7 @@ fun PremiumPaywall(
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    if (isAnnual) "Start Premium" else "Try for $0.99",
+                    if (isAnnual) "Start Premium" else if (hasIntro) "Try for $displayMonthly" else "Start Premium",
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.Black,

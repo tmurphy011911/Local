@@ -39,6 +39,10 @@ actual fun checkSubscriptionStatus(onResult: (Boolean, String?) -> Unit) {
     live.localapp.local.RevenueCatBridge.checkSubscriptionStatus?.invoke(onResult) ?: onResult(false, null)
 }
 
+actual fun fetchSubscriptionPricing(onResult: (String?, String?, String?) -> Unit) {
+    live.localapp.local.RevenueCatBridge.fetchPricing?.invoke(onResult) ?: onResult(null, null, null)
+}
+
 actual fun requestAppReview() {
     platform.StoreKit.SKStoreReviewController.requestReview()
 }

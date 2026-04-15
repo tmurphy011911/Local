@@ -204,7 +204,7 @@ fun ChatScreen(
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color.White),
                     )
                     Text(
-                        "Start for just \$0.99",
+                        "Plans start at just \$0.99/month",
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = Color.White.copy(alpha = 0.85f)),
                     )
                 }

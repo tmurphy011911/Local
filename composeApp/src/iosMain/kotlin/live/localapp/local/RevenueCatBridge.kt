@@ -13,4 +13,7 @@ object RevenueCatBridge {
 
     /** Check current subscription status. Returns whether "pro" entitlement is active. */
     var checkSubscriptionStatus: ((onResult: (Boolean, String?) -> Unit) -> Unit)? = null
+
+    /** Fetch pricing info. Returns (monthlyPrice, annualPrice, introPrice?). */
+    var fetchPricing: ((onResult: (String?, String?, String?) -> Unit) -> Unit)? = null
 }

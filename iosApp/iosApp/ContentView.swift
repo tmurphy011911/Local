@@ -396,6 +396,36 @@ struct ComposeView: UIViewControllerRepresentable {
                 }
             }
         }
+        bridge.fetchPricing = { onResult in
+            Task {
+                do {
+                    let offerings = try await Purchases.shared.offerings()
+                    guard let offering = offerings.current else {
+                        DispatchQueue.main.async { onResult(nil, nil, nil) }
+                        return
+                    }
+                    let monthlyPkg = offering.monthly ?? offering.availablePackages.first(where: { $0.storeProduct.productIdentifier == "local_pro_monthly" })
+                    let annualPkg = offering.annual ?? offering.availablePackages.first(where: { $0.storeProduct.productIdentifier == "local_pro_annual" })
+
+                    let monthlyPrice = monthlyPkg?.storeProduct.localizedPriceString
+                    let annualPrice = annualPkg?.storeProduct.localizedPriceString
+
+                    // Check intro eligibility
+                    var introPrice: String? = nil
+                    if let monthly = monthlyPkg {
+                        let eligible = await Purchases.shared.checkTrialOrIntroDiscountEligibility(product: monthly.storeProduct)
+                        if eligible == .eligible, let intro = monthly.storeProduct.introductoryDiscount {
+                            introPrice = intro.localizedPriceString
+                        }
+                    }
+
+                    DispatchQueue.main.async { onResult(monthlyPrice, annualPrice, introPrice) }
+                } catch {
+                    print("RevenueCat: fetchPricing error: \(error.localizedDescription)")
+                    DispatchQueue.main.async { onResult(nil, nil, nil) }
+                }
+            }
+        }
     }
 
     // MARK: - Share Sheet Bridge

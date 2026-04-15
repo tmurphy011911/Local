@@ -29,3 +29,6 @@ expect fun openAppSettings()
 
 /** Request the native App Store / Play Store review prompt. */
 expect fun requestAppReview()
+
+/** Fetch subscription pricing from RevenueCat. Returns monthly price, annual price, and intro price (if eligible). */
+expect fun fetchSubscriptionPricing(onResult: (monthlyPrice: String?, annualPrice: String?, introPrice: String?) -> Unit)

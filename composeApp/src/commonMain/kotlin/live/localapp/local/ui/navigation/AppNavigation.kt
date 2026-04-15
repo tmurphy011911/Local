@@ -882,7 +882,19 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             },
                         )
                     } else if (showPaywall) {
+                        // Fetch dynamic pricing from RevenueCat
+                        var rcMonthly by remember { mutableStateOf<String?>(null) }
+                        var rcAnnual by remember { mutableStateOf<String?>(null) }
+                        var rcIntro by remember { mutableStateOf<String?>(null) }
+                        LaunchedEffect(Unit) {
+                            live.localapp.local.platform.fetchSubscriptionPricing { m, a, i ->
+                                rcMonthly = m; rcAnnual = a; rcIntro = i
+                            }
+                        }
                         live.localapp.local.ui.chat.PremiumPaywall(
+                            monthlyPrice = rcMonthly,
+                            annualPrice = rcAnnual,
+                            introPrice = rcIntro,
                             onSubscribe = { isAnnual ->
                                 println("Paywall: Subscribe tapped, isAnnual=$isAnnual")
                                 purchaseSubscription(isAnnual) { success ->

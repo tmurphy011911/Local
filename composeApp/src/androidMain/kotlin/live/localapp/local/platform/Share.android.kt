@@ -92,6 +92,23 @@ actual fun checkSubscriptionStatus(onResult: (Boolean, String?) -> Unit) {
     })
 }
 
+actual fun fetchSubscriptionPricing(onResult: (String?, String?, String?) -> Unit) {
+    Purchases.sharedInstance.getOfferingsWith(
+        onError = { _ -> onResult(null, null, null) },
+    ) { offerings ->
+        val offering = offerings.current ?: run { onResult(null, null, null); return@getOfferingsWith }
+        val monthlyPkg = offering.monthly ?: offering.availablePackages.firstOrNull { it.product.id == "local_pro_monthly" }
+        val annualPkg = offering.annual ?: offering.availablePackages.firstOrNull { it.product.id == "local_pro_annual" }
+        val monthlyPrice = monthlyPkg?.product?.price?.formatted
+        val annualPrice = annualPkg?.product?.price?.formatted
+        // Android intro pricing
+        val introPrice = monthlyPkg?.product?.subscriptionOptions
+            ?.firstOrNull { it.freePhase != null || it.introPhase != null }
+            ?.introPhase?.price?.formatted
+        onResult(monthlyPrice, annualPrice, introPrice)
+    }
+}
+
 actual fun requestAppReview() {
     val activity = live.localapp.local.ActivityProvider.activity ?: return
     val manager = com.google.android.play.core.review.ReviewManagerFactory.create(activity)
