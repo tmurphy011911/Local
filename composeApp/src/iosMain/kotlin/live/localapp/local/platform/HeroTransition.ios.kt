@@ -1,5 +1,7 @@
 package live.localapp.local.platform
 
+import kotlinx.coroutines.launch
+import live.localapp.local.ChatBridge
 import live.localapp.local.ChatSheetBridge
 import live.localapp.local.PlanDetailBridge
 import live.localapp.local.TabBarBridge
@@ -45,12 +47,31 @@ actual fun requestHeroCollapse(onComplete: () -> Unit) {
     HeroTransitionBridge.requestCollapse()
 }
 
+private var chatObserverJob: kotlinx.coroutines.Job? = null
+
 actual fun openChatSheet(onReady: () -> Unit) {
     ChatSheetBridge.onOpenComplete = onReady
+
+    // Start observing ChatViewModel state and pushing to bridge
+    val chatVm = org.koin.mp.KoinPlatform.getKoin().get<live.localapp.local.ui.chat.ChatViewModel>()
+    ChatBridge.sendMessage = { msg -> chatVm.sendMessage(msg) }
+    ChatBridge.resetChat = { chatVm.resetChat() }
+
+    chatObserverJob?.cancel()
+    val scope = kotlinx.coroutines.MainScope()
+    chatObserverJob = scope.launch {
+        chatVm.uiState.collect { state ->
+            ChatBridge.supersededIds = live.localapp.local.ui.chat.supersededPlanIds
+            ChatBridge.pushState(state)
+        }
+    }
+
     ChatSheetBridge.onOpenSheet?.invoke()
 }
 
 actual fun closeChatSheet(onDone: () -> Unit) {
+    chatObserverJob?.cancel()
+    chatObserverJob = null
     ChatSheetBridge.onCloseComplete = onDone
     ChatSheetBridge.onCloseSheet?.invoke()
 }
