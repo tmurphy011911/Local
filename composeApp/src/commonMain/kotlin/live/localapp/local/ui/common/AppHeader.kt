@@ -136,8 +136,9 @@ fun AppHeader(
 
             Spacer(Modifier.weight(1f))
 
-            // Streak badge — hidden when logged out
-            if (isLoggedIn) {
+            // Streak badge — hidden until feature is finalized
+            val showStreakBadge = false
+            if (showStreakBadge && isLoggedIn) {
                 Row(
                     modifier = Modifier
                         .background(AppColors.SunLt, AppShapes.Pill)
