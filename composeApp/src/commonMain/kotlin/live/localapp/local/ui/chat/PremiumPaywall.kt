@@ -148,8 +148,8 @@ fun PremiumPaywall(
                     modifier = Modifier.weight(1f),
                     isSelected = isAnnual,
                     label = "Annual",
-                    price = "$79.99",
-                    subtext = "$6.67/mo",
+                    price = "$49.99",
+                    subtext = "$4.17/mo",
                     badge = "Best value",
                     onClick = { isAnnual = true },
                 )
@@ -158,9 +158,9 @@ fun PremiumPaywall(
                     modifier = Modifier.weight(1f),
                     isSelected = !isAnnual,
                     label = "Monthly",
-                    price = "$9.99",
-                    subtext = "/month",
-                    badge = null,
+                    price = "$0.99",
+                    subtext = "then $6.99/mo",
+                    badge = "First month",
                     onClick = { isAnnual = false },
                 )
             }
@@ -180,7 +180,7 @@ fun PremiumPaywall(
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    "Start Premium",
+                    if (isAnnual) "Start Premium" else "Try for $0.99",
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.Black,
