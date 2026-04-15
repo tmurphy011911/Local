@@ -44,9 +44,25 @@ data class HomeUiState(
     val manualLat: Double? = null,
     val manualLng: Double? = null,
     val hasLocationPermission: Boolean = true,
+    val isUnsupportedState: Boolean = false,
 )
 
 enum class LocationMode { CURRENT_LOCATION, MANUAL }
+
+// Bounding boxes for supported states (approximate)
+private data class StateBounds(val code: String, val latMin: Double, val latMax: Double, val lngMin: Double, val lngMax: Double)
+private val SUPPORTED_STATE_BOUNDS = listOf(
+    StateBounds("MA", 41.2, 42.9, -73.5, -69.9),
+    StateBounds("RI", 41.1, 42.1, -72.0, -71.1),
+    StateBounds("PA", 39.7, 42.3, -80.6, -74.6),
+)
+
+fun isLocationInSupportedState(lat: Double?, lng: Double?): Boolean {
+    if (lat == null || lng == null) return true // assume supported if no location
+    return SUPPORTED_STATE_BOUNDS.any { s ->
+        lat >= s.latMin && lat <= s.latMax && lng >= s.lngMin && lng <= s.lngMax
+    }
+}
 
 class HomeViewModel(
     private val carouselRepository: CarouselRepository,
@@ -120,7 +136,7 @@ class HomeViewModel(
             val locName = if (current.locationName.isBlank() && prefs != null) {
                 prefs.city.replaceFirstChar { c -> c.uppercase() }
             } else current.locationName
-            _uiState.update { it.copy(userLat = lat, userLng = lng, locationName = locName) }
+            _uiState.update { it.copy(userLat = lat, userLng = lng, locationName = locName, isUnsupportedState = !isLocationInSupportedState(lat, lng)) }
             carouselRepository.invalidateAll()
             loadCarousels()
         }
@@ -144,6 +160,7 @@ class HomeViewModel(
                 manualLat = lat, manualLng = lng, manualLocationName = displayName,
                 userLat = lat, userLng = lng, locationName = displayName,
                 locationMode = LocationMode.MANUAL,
+                isUnsupportedState = !isLocationInSupportedState(lat, lng),
             )
         }
         carouselRepository.invalidateAll()

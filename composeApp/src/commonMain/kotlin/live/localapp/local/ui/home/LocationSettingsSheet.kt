@@ -10,6 +10,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.LocationOn
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Check
+import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -49,6 +50,7 @@ fun LocationSettingsSheet(
     onSelectManualLocation: (lat: Double, lng: Double, name: String) -> Unit,
     onRadiusChanged: (Double?) -> Unit,
     onDismiss: () -> Unit,
+    isUnsupportedState: Boolean = false,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var requestingGps by remember { mutableStateOf(false) }
@@ -91,6 +93,30 @@ fun LocationSettingsSheet(
                 "Location Settings",
                 style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = AppColors.Ink),
             )
+
+            if (isUnsupportedState) {
+                Spacer(Modifier.height(12.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(AppColors.SunLt, RoundedCornerShape(12.dp))
+                        .border(1.dp, AppColors.Sun, RoundedCornerShape(12.dp))
+                        .padding(12.dp),
+                    verticalAlignment = Alignment.Top,
+                ) {
+                    Icon(
+                        Icons.Outlined.Warning,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                        tint = AppColors.SunDk,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "You're in a state that is not yet supported by Local. You will likely not see very many events.",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.SunDk, lineHeight = 18.sp),
+                    )
+                }
+            }
 
             Spacer(Modifier.height(20.dp))
 

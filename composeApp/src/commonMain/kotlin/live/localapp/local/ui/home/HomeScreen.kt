@@ -175,6 +175,7 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                 onProfileClick = onProfileClick,
                 onLocationClick = onLocationClick,
                 onLogoClick = {},
+                isUnsupportedState = state.isUnsupportedState,
             )
 
         PullToRefreshBox(
@@ -213,7 +214,8 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                     item {
                         EmptyState(
                             title = "Something went wrong",
-                            subtitle = "Pull down to try again",
+                            subtitle = "Tap to retry",
+                            onClick = { viewModel.refresh() },
                         )
                     }
                 } else if (state.carousels.isEmpty() && !state.isLoading) {
@@ -316,10 +318,11 @@ private fun SkeletonCarousels() {
 }
 
 @Composable
-private fun EmptyState(title: String, subtitle: String) {
+private fun EmptyState(title: String, subtitle: String, onClick: (() -> Unit)? = null) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            .let { if (onClick != null) it.clickable(onClick = onClick) else it }
             .padding(vertical = 60.dp, horizontal = 40.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {

@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -58,6 +59,7 @@ fun AppHeader(
     radiusFilter: Double?,
     streakDays: Int,
     userInitial: String,
+    isUnsupportedState: Boolean = false,
     onProfileClick: () -> Unit,
     onLocationClick: () -> Unit,
     onLogoClick: () -> Unit = {},
@@ -111,11 +113,14 @@ fun AppHeader(
             // Location pill — hidden when logged out
             if (showLocationPill && isLoggedIn) {
                 val radiusLabel = radiusFilter?.let { " \u00B7 ${it.toInt()} mi" } ?: ""
+                val pillBg = if (isUnsupportedState) AppColors.SunLt else AppColors.SkyLt
+                val pillBorder = if (isUnsupportedState) AppColors.Sun else AppColors.Sky
+                val pillText = if (isUnsupportedState) AppColors.SunDk else AppColors.Sky
                 Row(
                     modifier = Modifier
                         .heightIn(min = 28.dp)
-                        .background(AppColors.SkyLt, AppShapes.Pill)
-                        .border(1.5.dp, AppColors.Sky, AppShapes.Pill)
+                        .background(pillBg, AppShapes.Pill)
+                        .border(1.5.dp, pillBorder, AppShapes.Pill)
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
@@ -124,7 +129,11 @@ fun AppHeader(
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Box(modifier = Modifier.size(5.dp).background(AppColors.Sky, CircleShape))
+                    if (isUnsupportedState) {
+                        Icon(Icons.Outlined.Warning, contentDescription = null, modifier = Modifier.size(12.dp), tint = pillText)
+                    } else {
+                        Box(modifier = Modifier.size(5.dp).background(pillBorder, CircleShape))
+                    }
                     Spacer(Modifier.width(4.dp))
                     Text(
                         "$locationName$radiusLabel",
@@ -132,7 +141,7 @@ fun AppHeader(
                             fontFamily = AppFonts.Body,
                             fontWeight = FontWeight.ExtraBold,
                             fontSize = 10.sp,
-                            color = AppColors.Sky,
+                            color = pillText,
                         ),
                         maxLines = 1,
                     )
@@ -154,7 +163,7 @@ fun AppHeader(
                     Icon(Icons.Outlined.Bolt, contentDescription = null, modifier = Modifier.size(12.dp), tint = AppColors.SunDk)
                     Spacer(Modifier.width(2.dp))
                     Text(
-                        "$streakDays days",
+                        "$streakDays ${if (streakDays == 1) "day" else "days"}",
                         style = TextStyle(
                             fontFamily = AppFonts.Body,
                             fontWeight = FontWeight.ExtraBold,

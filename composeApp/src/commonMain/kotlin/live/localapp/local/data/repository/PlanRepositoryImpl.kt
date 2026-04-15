@@ -185,10 +185,10 @@ class PlanRepositoryImpl(
             println("PlanRepository.getPlans: raw=${raw.take(500)}")
             val dtos = result.decodeList<PlanDto>()
             println("PlanRepository.getPlans: decoded ${dtos.size} plans")
-            val plans = dtos.map { it.toDomain() }
-            // Debug: log slot fields for first plan
-            plans.firstOrNull()?.days?.firstOrNull()?.slots?.forEach { slot ->
-                println("  loaded slot: name='${slot.name}' venueWebsite=${slot.venueWebsite} sourceUrl=${slot.sourceUrl} venueCategory=${slot.venueCategory} ticketUrl=${slot.ticketUrl}")
+            val plans = dtos.map { dto ->
+                val plan = dto.toDomain()
+                val confirmed = try { getConfirmedCount(plan.id) } catch (_: Throwable) { 1 }
+                plan.copy(confirmedCount = confirmed)
             }
             plans
         } catch (e: Throwable) {
@@ -238,8 +238,14 @@ class PlanRepositoryImpl(
 
             // Use raw JSON insert to ensure null fields like source_url, venue_website are preserved
             val jsonElement = json.parseToJsonElement(jsonPayload)
-            supabaseClient.from("plans").insert(jsonElement)
-            println("PlanRepository.savePlan: SUCCESS '${plan.title}'")
+            val result = supabaseClient.from("plans").insert(jsonElement) { select() }
+                .decodeSingleOrNull<PlanDto>()
+            println("PlanRepository.savePlan: SUCCESS '${plan.title}' id=${result?.id}")
+
+            // Insert creator as confirmed attendee
+            if (result?.id != null) {
+                try { insertCreatorAttendee(result.id) } catch (_: Throwable) {}
+            }
         } catch (e: Throwable) {
             println("PlanRepository.savePlan error: ${e::class.simpleName}: ${e.message}")
             e.printStackTrace()
@@ -314,6 +320,15 @@ class PlanRepositoryImpl(
                 val acceptCount = json["accept_count"]?.jsonPrimitive?.intOrNull ?: 0
                 val points = json["points_awarded"]?.jsonPrimitive?.intOrNull ?: 0
                 println("PlanRepository.acceptPlanInvite: success, acceptCount=$acceptCount, points=$points")
+                // Also insert into plan_attendees table
+                val planId = json["plan_id"]?.jsonPrimitive?.contentOrNull
+                if (planId != null) {
+                    try {
+                        supabaseClient.from("plan_attendees").insert(
+                            mapOf("plan_id" to planId, "user_id" to userId, "confirmed" to true, "confirmed_at" to kotlin.time.Clock.System.now().toString()),
+                        )
+                    } catch (_: Throwable) { /* UNIQUE violation OK — already inserted */ }
+                }
                 live.localapp.local.domain.repository.AcceptInviteResult(true, null, acceptCount, points)
             }
         } catch (e: Throwable) {

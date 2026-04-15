@@ -797,6 +797,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 onSelectManualLocation = { lat, lng, name -> homeVm.setManualLocation(lat, lng, name) },
                 onRadiusChanged = { homeVm.setRadiusFilter(it) },
                 onDismiss = { showLocationSheet = false },
+                isUnsupportedState = homeState.isUnsupportedState,
             )
         }
 

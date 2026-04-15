@@ -55,10 +55,17 @@ class PlacesViewModel(
         loadFavoriteVenueIds()
     }
 
-    /** Call when the Places tab becomes visible for the first time. */
+    private var loadedLat: Double? = null
+    private var loadedLng: Double? = null
+
+    /** Call when the Places tab becomes visible. Reloads if location changed. */
     fun ensureLoaded() {
-        if (!venuesLoaded) {
+        val state = _uiState.value
+        val locationChanged = state.userLat != loadedLat || state.userLng != loadedLng
+        if (!venuesLoaded || locationChanged) {
             venuesLoaded = true
+            loadedLat = state.userLat
+            loadedLng = state.userLng
             loadVenues()
         }
     }
