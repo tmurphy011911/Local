@@ -337,8 +337,9 @@ private fun ManualAddressOption(
                             suggestions = emptyList()
                             isEditing = false
                             resolvePlace(httpClient, suggestion.placeId) { lat, lng, city ->
-                                val name = fullAddress
-                                onSelect(lat, lng, name)
+                                // Use city for the pill display, not full street address
+                                val pillName = city.ifBlank { suggestion.mainText }
+                                onSelect(lat, lng, pillName)
                             }
                         }
                         .padding(horizontal = 12.dp, vertical = 8.dp),
