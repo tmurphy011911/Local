@@ -808,7 +808,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
 
             // Wire premium gate into chat ViewModel
             chatVm.onPlanApprovalCheck = { premiumGate.canCreatePlan() }
-            chatVm.onPlanBlocked = { showPaywall = true }
+            chatVm.onPlanBlocked = { showPaywall = true; premiumGate.hasSeenPaywall = true }
             chatVm.onPlanSaved = { premiumGate.recordPlanCreated() }
 
             // Auto-send pending message when chat opens from event/template

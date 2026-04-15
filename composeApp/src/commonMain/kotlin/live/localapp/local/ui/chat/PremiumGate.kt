@@ -47,9 +47,14 @@ class PremiumGate {
         get() = settings.getString(KEY_LAST_REWARDED_TIER, "")
         set(value) = settings.putString(KEY_LAST_REWARDED_TIER, value)
 
-    /** Whether the user has seen and declined the paywall */
+    /** Track that the user has been shown the paywall */
+    var hasSeenPaywall: Boolean
+        get() = settings.getBoolean(KEY_HAS_SEEN_PAYWALL, false)
+        set(value) = settings.putBoolean(KEY_HAS_SEEN_PAYWALL, value)
+
+    /** Whether the user has seen the paywall and is still not premium */
     val hasDeclinedPaywall: Boolean
-        get() = plansCreated >= 1 && !isPremium
+        get() = hasSeenPaywall && !isPremium
 
     /** Whether the user currently has premium access (paid OR reward) */
     val isPremium: Boolean
@@ -153,6 +158,7 @@ class PremiumGate {
         settings.remove(KEY_PAID_SUB_EXPIRY)
         settings.remove(KEY_REWARD_EXPIRY)
         settings.remove(KEY_LAST_REWARDED_TIER)
+        settings.remove(KEY_HAS_SEEN_PAYWALL)
     }
 
     companion object {
@@ -162,5 +168,6 @@ class PremiumGate {
         private const val KEY_PAID_SUB_EXPIRY = "yocal_paid_sub_expiry"
         private const val KEY_REWARD_EXPIRY = "yocal_reward_expiry"
         private const val KEY_LAST_REWARDED_TIER = "yocal_last_rewarded_tier"
+        private const val KEY_HAS_SEEN_PAYWALL = "yocal_has_seen_paywall"
     }
 }
