@@ -11,6 +11,8 @@ data class Plan(
     val isPast: Boolean = false,
     val creatorName: String? = null,
     val shareToken: String? = null,
+    val groupSize: Int? = null,
+    val confirmedCount: Int = 1,
 )
 
 data class PlanDay(

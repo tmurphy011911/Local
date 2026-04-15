@@ -30,6 +30,7 @@ private data class PlanDto(
     val days: List<PlanDayDto> = emptyList(),
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("is_past") val isPast: Boolean = false,
+    @SerialName("group_size") val groupSize: Int? = null,
 )
 
 @Serializable
@@ -80,6 +81,7 @@ private data class PlanInsertDto(
     val date: String? = null,
     val city: String,
     val days: List<PlanDayDto>,
+    @SerialName("group_size") val groupSize: Int? = null,
 )
 
 // ── Mappers ──
@@ -142,6 +144,7 @@ private fun PlanDto.toDomain(): Plan {
         createdAt = createdAt,
         dateDisplay = dateDisplay,
         isPast = isPast,
+        groupSize = groupSize,
     )
 }
 
@@ -221,6 +224,7 @@ class PlanRepositoryImpl(
                 date = planDate,
                 city = plan.city,
                 days = dayDtos,
+                groupSize = plan.groupSize,
             )
 
             println("PlanRepository.savePlan: inserting with ${dayDtos.size} days, ${dayDtos.sumOf { it.slots.size }} slots")
@@ -345,6 +349,50 @@ class PlanRepositoryImpl(
         } catch (e: Throwable) {
             println("PlanRepository.getSharedPlan error: ${e::class.simpleName}: ${e.message}")
             null
+        }
+    }
+
+    override suspend fun updateGroupSize(planId: String, groupSize: Int) {
+        try {
+            supabaseClient.from("plans").update(
+                mapOf("group_size" to groupSize),
+            ) { filter { eq("id", planId) } }
+        } catch (e: Throwable) {
+            println("PlanRepository.updateGroupSize error: ${e.message}")
+        }
+    }
+
+    @Serializable
+    private data class AttendeeCountRow(val count: Int = 0)
+
+    override suspend fun getConfirmedCount(planId: String): Int {
+        return try {
+            supabaseClient.from("plan_attendees")
+                .select {
+                    filter {
+                        eq("plan_id", planId)
+                        eq("confirmed", true)
+                    }
+                }
+                .decodeList<Map<String, kotlinx.serialization.json.JsonElement>>()
+                .size
+        } catch (_: Throwable) { 1 } // Default to 1 (creator)
+    }
+
+    override suspend fun insertCreatorAttendee(planId: String) {
+        val userId = userPrefsRepo.getLocalUserId() ?: return
+        try {
+            supabaseClient.from("plan_attendees").insert(
+                mapOf(
+                    "plan_id" to planId,
+                    "user_id" to userId,
+                    "name" to "You",
+                    "is_creator" to true,
+                    "confirmed" to true,
+                ),
+            )
+        } catch (_: Throwable) {
+            // Likely UNIQUE violation if already exists — that's fine
         }
     }
 }

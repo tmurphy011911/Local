@@ -17,4 +17,5 @@ object PlanDetailBridge {
     var onShare: (() -> Unit)? = null
     var onEditPlan: (() -> Unit)? = null
     var onEditDay: ((String) -> Unit)? = null
+    var onSetGroupSize: ((Int) -> Unit)? = null
 }

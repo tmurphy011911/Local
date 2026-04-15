@@ -1,5 +1,6 @@
 package live.localapp.local
 
+import androidx.compose.runtime.*
 import androidx.compose.ui.window.ComposeUIViewController
 import kotlinx.serialization.json.*
 import live.localapp.local.domain.model.Plan
@@ -15,12 +16,17 @@ fun PlanDetailViewController(
     onShare: () -> Unit,
 ) = ComposeUIViewController {
     val plan = parsePlanJson(planJson)
+    var currentPlan by remember { mutableStateOf(plan) }
     PlanDetailScreen(
-        plan = plan,
+        plan = currentPlan,
         onBack = onBack,
         onShare = onShare,
         onEditPlan = { PlanDetailBridge.onEditPlan?.invoke() },
         onEditDay = { dayLabel -> PlanDetailBridge.onEditDay?.invoke(dayLabel) },
+        onSetGroupSize = { size ->
+            PlanDetailBridge.onSetGroupSize?.invoke(size)
+            currentPlan = currentPlan.copy(groupSize = size)
+        },
     )
 }
 

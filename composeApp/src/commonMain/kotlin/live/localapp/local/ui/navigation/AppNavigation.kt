@@ -452,6 +452,9 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                             chatOpenCount++
                                             openChatOrLogin()
                                         },
+                                        onSetGroupSize = { size ->
+                                            scope.launch { planRepo.updateGroupSize(plan.id, size) }
+                                        },
                                     )
                                 } else {
                                     selectedPlan = plan
@@ -599,6 +602,12 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             pendingChatMessage = "Change $dayLabel of ${plan.title}"
                             chatOpenCount++
                             openChatOrLogin()
+                        },
+                        onSetGroupSize = { size ->
+                            scope.launch {
+                                planRepo.updateGroupSize(plan.id, size)
+                                selectedPlan = plan.copy(groupSize = size)
+                            }
                         },
                     )
                 }

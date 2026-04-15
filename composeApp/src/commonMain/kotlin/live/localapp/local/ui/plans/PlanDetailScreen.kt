@@ -71,6 +71,7 @@ fun PlanDetailScreen(
     onSaveToPlan: () -> Unit = {},
     onEditPlan: () -> Unit = {},
     onEditDay: (dayLabel: String) -> Unit = {},
+    onSetGroupSize: (Int) -> Unit = {},
 ) {
     val firstImageUrl = plan.days.flatMap { it.slots }.firstNotNullOfOrNull { it.imageUrl }
 
@@ -139,6 +140,18 @@ fun PlanDetailScreen(
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = Color.White.copy(alpha = 0.85f)),
                     )
                 }
+            }
+
+            // ── Confirmation Banner ──
+            if (!isShared) {
+                val creatorInitial = plan.attendees.firstOrNull()?.initials ?: "Y"
+                ConfirmationBanner(
+                    groupSize = plan.groupSize,
+                    confirmedCount = plan.confirmedCount,
+                    creatorInitial = creatorInitial,
+                    onSetGroupSize = onSetGroupSize,
+                    onShare = onShare,
+                )
             }
 
             // ── Day tabs (multi-day only) ──

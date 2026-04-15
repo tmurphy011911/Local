@@ -50,6 +50,7 @@ actual fun showNativePlanDetail(
     onShare: () -> Unit,
     onEditPlan: () -> Unit,
     onEditDay: (String) -> Unit,
+    onSetGroupSize: (Int) -> Unit,
 ) {
     // No-op on Android
 }

@@ -1182,6 +1182,7 @@ class ChatViewModel(
                     },
                     createdAt = "",
                     dateDisplay = "",
+                    groupSize = if (state.planAttendeeCount > 1) state.planAttendeeCount else null,
                 )
                 planRepo.savePlan(plan)
                 onPlanSaved?.invoke()

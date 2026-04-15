@@ -104,6 +104,18 @@ class PlansViewModel(
                     }
                     return@launch
                 }
+                // Badge: INVITE_ACCEPTED for the accepting user
+                if (result.success) {
+                    val badgeService = org.koin.mp.KoinPlatform.getKoin().get<live.localapp.local.domain.service.BadgeService>()
+                    badgeService.recordAction(live.localapp.local.domain.model.BadgeAction.INVITE_ACCEPTED, "global")
+                    // Check group thresholds
+                    if (result.acceptCount >= 5) {
+                        badgeService.recordAction(live.localapp.local.domain.model.BadgeAction.GROUP_5_CONFIRMED, "global")
+                    }
+                    if (result.acceptCount >= 10) {
+                        badgeService.recordAction(live.localapp.local.domain.model.BadgeAction.GROUP_10_CONFIRMED, "global")
+                    }
+                }
             }
 
             // Save a copy to the user's plans

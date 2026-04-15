@@ -80,6 +80,7 @@ expect fun showNativePlanDetail(
     onShare: () -> Unit,
     onEditPlan: () -> Unit = {},
     onEditDay: (String) -> Unit = {},
+    onSetGroupSize: (Int) -> Unit = {},
 )
 
 expect fun showNativeVenueDetail(

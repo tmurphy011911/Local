@@ -103,11 +103,14 @@ actual fun showNativePlanDetail(
     onShare: () -> Unit,
     onEditPlan: () -> Unit,
     onEditDay: (String) -> Unit,
+    onSetGroupSize: (Int) -> Unit,
 ) {
     PlanDetailBridge.onDismissed = onDismissed
     PlanDetailBridge.onShare = onShare
     PlanDetailBridge.onEditPlan = onEditPlan
     PlanDetailBridge.onEditDay = onEditDay
+    PlanDetailBridge.onSetGroupSize = onSetGroupSize
+    PlanDetailBridge.onSetGroupSize = onSetGroupSize
 
     // Serialize plan to JSON for Swift
     val planJson = kotlinx.serialization.json.buildJsonObject {
