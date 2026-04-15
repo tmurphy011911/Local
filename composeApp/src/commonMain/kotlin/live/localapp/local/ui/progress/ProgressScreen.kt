@@ -106,6 +106,7 @@ fun ProgressScreen(
     onSignIn: () -> Unit = {},
     onNameChanged: (String) -> Unit = {},
     onLocationClick: () -> Unit = {},
+    onUpgrade: () -> Unit = {},
     isLoggedIn: Boolean = true,
     locationName: String = "",
     streakDays: Int = 0,
@@ -346,29 +347,22 @@ fun ProgressScreen(
 
                 Spacer(Modifier.height(24.dp))
 
-                // ── Taste Profile ──
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp)
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(AppColors.PlumLt)
-                        .clickable(onClick = onTasteProfile)
-                        .padding(vertical = 14.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        "Your Taste Profile",
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
-                            color = AppColors.Plum,
-                        ),
-                    )
-                }
+                Spacer(Modifier.height(20.dp))
 
-                Spacer(Modifier.height(10.dp))
+                // ── Subscription Status ──
+                SubscriptionSection(onUpgrade = onUpgrade)
+
+                Spacer(Modifier.height(16.dp))
+
+                // ── Notification Preferences ──
+                NotificationPreferencesSection()
+
+                Spacer(Modifier.height(16.dp))
+
+                // ── Support & Info ──
+                SupportSection(onRateApp = { live.localapp.local.platform.requestAppReview() })
+
+                Spacer(Modifier.height(16.dp))
 
                 // ── Log Out ──
                 Box(
@@ -1954,4 +1948,170 @@ private fun stateAbbrevToFull(abbrev: String): String = when (abbrev.uppercase()
     "IN" -> "Indiana"
     "DC" -> "Washington D.C."
     else -> abbrev
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ACCOUNT SECTIONS
+// ═══════════════════════════════════════════════════════════════════
+
+@Composable
+private fun SubscriptionSection(onUpgrade: () -> Unit) {
+    val gate = remember { live.localapp.local.ui.chat.PremiumGate() }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .background(Color.White, RoundedCornerShape(16.dp))
+            .border(1.dp, AppColors.Pebble, RoundedCornerShape(16.dp))
+            .padding(16.dp),
+    ) {
+        Text("Subscription", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = AppColors.Ink3, letterSpacing = 1.sp))
+        Spacer(Modifier.height(10.dp))
+
+        if (gate.isPremium) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Local Pro", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AppColors.Coral))
+                Spacer(Modifier.width(8.dp))
+                Text("Active", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = Color(0xFF2D9F73)),
+                    modifier = Modifier.background(Color(0xFFE8F5E9), RoundedCornerShape(50)).padding(horizontal = 8.dp, vertical = 3.dp))
+            }
+            val expiry = gate.paidSubscriptionExpiry
+            if (expiry.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text("Renews $expiry", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3))
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "Manage Subscription",
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = AppColors.Sky),
+                modifier = Modifier.clickable { live.localapp.local.platform.openAppSettings() },
+            )
+        } else {
+            Text("Free Plan", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AppColors.Ink))
+            Spacer(Modifier.height(4.dp))
+            Text("Upgrade to build unlimited shareable plans", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3))
+            Spacer(Modifier.height(10.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(AppColors.Coral)
+                    .clickable(onClick = onUpgrade)
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("Upgrade for \$0.99/mo", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = Color.White))
+            }
+        }
+    }
+}
+
+@Composable
+private fun NotificationPreferencesSection() {
+    val settings = remember { com.russhwolf.settings.Settings() }
+    var tickets by remember { mutableStateOf(settings.getBoolean("notif_tickets_local", true)) }
+    var reminders by remember { mutableStateOf(settings.getBoolean("notif_reminders_local", true)) }
+    var venues by remember { mutableStateOf(settings.getBoolean("notif_venues_local", true)) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .background(Color.White, RoundedCornerShape(16.dp))
+            .border(1.dp, AppColors.Pebble, RoundedCornerShape(16.dp))
+            .padding(16.dp),
+    ) {
+        Text("NOTIFICATIONS", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = AppColors.Ink3, letterSpacing = 1.sp))
+        Spacer(Modifier.height(10.dp))
+
+        NotifToggleRow("Weekly Snapshot", "Events you'll love this week", tickets) {
+            tickets = !tickets; settings.putBoolean("notif_tickets_local", tickets)
+        }
+        Spacer(Modifier.height(8.dp))
+        NotifToggleRow("Reminders", "Nudges for upcoming plans", reminders) {
+            reminders = !reminders; settings.putBoolean("notif_reminders_local", reminders)
+        }
+        Spacer(Modifier.height(8.dp))
+        NotifToggleRow("Saved Venue Updates", "New events at your favorites", venues) {
+            venues = !venues; settings.putBoolean("notif_venues_local", venues)
+        }
+    }
+}
+
+@Composable
+private fun NotifToggleRow(title: String, subtitle: String, isOn: Boolean, onToggle: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Ink))
+            Text(subtitle, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3))
+        }
+        Box(
+            modifier = Modifier
+                .size(width = 44.dp, height = 26.dp)
+                .background(if (isOn) AppColors.Coral else AppColors.Pebble, RoundedCornerShape(13.dp))
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onToggle),
+        ) {
+            Box(
+                modifier = Modifier
+                    .padding(3.dp)
+                    .size(20.dp)
+                    .align(if (isOn) Alignment.CenterEnd else Alignment.CenterStart)
+                    .background(Color.White, RoundedCornerShape(10.dp)),
+            )
+        }
+    }
+}
+
+@Composable
+private fun SupportSection(onRateApp: () -> Unit) {
+    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp)
+            .background(Color.White, RoundedCornerShape(16.dp))
+            .border(1.dp, AppColors.Pebble, RoundedCornerShape(16.dp))
+            .padding(16.dp),
+    ) {
+        Text("SUPPORT & INFO", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = AppColors.Ink3, letterSpacing = 1.sp))
+        Spacer(Modifier.height(10.dp))
+
+        SupportRow("Help & Support") { uriHandler.openUri("mailto:support@localapp.live") }
+        Spacer(Modifier.height(10.dp))
+        SupportRow("Rate Local") { onRateApp() }
+        Spacer(Modifier.height(10.dp))
+        SupportRow("Share the App") {
+            live.localapp.local.platform.presentShareSheet("Check out Local — discover events and plan nights out!", "https://localapp.live")
+        }
+        Spacer(Modifier.height(10.dp))
+        SupportRow("Terms of Service") { uriHandler.openUri("https://localapp.live/terms") }
+        Spacer(Modifier.height(10.dp))
+        SupportRow("Privacy Policy") { uriHandler.openUri("https://localapp.live/privacy-policy") }
+        Spacer(Modifier.height(10.dp))
+
+        Text(
+            "Local v1.0 (Build 3.4)",
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3.copy(alpha = 0.5f)),
+            modifier = Modifier.fillMaxWidth(),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        )
+    }
+}
+
+@Composable
+private fun SupportRow(title: String, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(title, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Ink), modifier = Modifier.weight(1f))
+        Text("\u203A", style = TextStyle(fontSize = 18.sp, color = AppColors.Ink3))
+    }
 }

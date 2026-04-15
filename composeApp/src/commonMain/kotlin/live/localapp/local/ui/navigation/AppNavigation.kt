@@ -153,6 +153,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     var pendingChatMessage by remember { mutableStateOf<String?>(null) }
     var chatOpenCount by remember { mutableStateOf(0) }
     var showTasteProfile by remember { mutableStateOf(false) }
+    var pendingShowPaywall by remember { mutableStateOf(false) }
     var selectedPlan by remember { mutableStateOf<Plan?>(null) }
     var sharedPlan by remember { mutableStateOf<Plan?>(null) }
     var sharedEvent by remember { mutableStateOf<live.localapp.local.domain.model.Event?>(null) }
@@ -413,6 +414,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             onSignIn = { showLoginPrompt = true },
                             onNameChanged = { name -> homeVm.setUserName(name) },
                             onLocationClick = { showLocationSheet = true },
+                            onUpgrade = { pendingShowPaywall = true; showChat = true; chatOpenCount++ },
                             isLoggedIn = isLoggedIn,
                             locationName = homeState.locationName,
                             streakDays = homeState.streakDays,
@@ -804,7 +806,8 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             val chatSheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
             val premiumGate = remember { live.localapp.local.ui.chat.PremiumGate() }
             var showTutorial by remember { mutableStateOf(premiumGate.shouldShowTutorial()) }
-            var showPaywall by remember { mutableStateOf(false) }
+            var showPaywall by remember { mutableStateOf(pendingShowPaywall) }
+            if (pendingShowPaywall) pendingShowPaywall = false
 
             // Wire premium gate into chat ViewModel
             chatVm.onPlanApprovalCheck = { premiumGate.canCreatePlan() }
