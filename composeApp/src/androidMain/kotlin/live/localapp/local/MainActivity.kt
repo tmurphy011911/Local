@@ -13,11 +13,22 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         initKoin()
+        ActivityProvider.activity = this
 
         setContent {
             App()
         }
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        if (ActivityProvider.activity === this) ActivityProvider.activity = null
+    }
+}
+
+/** Provides Activity reference for platform APIs that need it (e.g. Play In-App Review). */
+object ActivityProvider {
+    var activity: ComponentActivity? = null
 }
 
 @Preview

@@ -30,6 +30,7 @@ kotlin {
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.androidx.activity.compose)
             implementation(libs.ktor.client.okhttp)
+            implementation("com.google.android.play:review-ktx:2.0.2")
         }
 
         commonMain.dependencies {
