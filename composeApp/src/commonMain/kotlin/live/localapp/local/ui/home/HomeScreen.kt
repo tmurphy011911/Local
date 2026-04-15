@@ -1562,10 +1562,33 @@ private fun AlbumEventCard(event: Event, onClick: (Rect) -> Unit, onUnfavorite: 
             }
         }
 
+        // Date pill in top-left corner
+        val dateText = event.dateDisplay
+        if (dateText.isNotBlank()) {
+            Text(
+                dateText,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(10.dp)
+                    .background(
+                        Color.Black.copy(alpha = 0.6f),
+                        RoundedCornerShape(8.dp),
+                    )
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 10.sp,
+                    color = Color.White,
+                ),
+                maxLines = 1,
+            )
+        }
+
         // Heart — top right
         Box(
             modifier = Modifier
-                .align(Alignment.TopStart)
+                .align(Alignment.TopEnd)
                 .padding(8.dp)
                 .size(28.dp)
                 .background(Color.Black.copy(alpha = 0.4f), CircleShape)
@@ -1584,29 +1607,6 @@ private fun AlbumEventCard(event: Event, onClick: (Rect) -> Unit, onUnfavorite: 
                 contentDescription = "Remove",
                 modifier = Modifier.size(14.dp),
                 tint = AppColors.Coral,
-            )
-        }
-
-        // Date pill in top-right corner
-        val dateText = event.dateDisplay
-        if (dateText.isNotBlank()) {
-            Text(
-                dateText,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(10.dp)
-                    .background(
-                        Color.Black.copy(alpha = 0.6f),
-                        RoundedCornerShape(8.dp),
-                    )
-                    .padding(horizontal = 8.dp, vertical = 4.dp),
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 10.sp,
-                    color = Color.White,
-                ),
-                maxLines = 1,
             )
         }
 
