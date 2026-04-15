@@ -54,6 +54,7 @@ fun LocationSettingsSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         containerColor = AppColors.Snow,
+        contentWindowInsets = { androidx.compose.foundation.layout.WindowInsets.ime },
         dragHandle = {
             Box(
                 modifier = Modifier
