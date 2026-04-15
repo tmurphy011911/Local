@@ -59,6 +59,7 @@ object ChatBridge {
             inputEnabled = state.inputEnabled,
             showPlanSuccess = state.showPlanSuccess,
             days = state.days.map { it.toSnapshot() },
+            weather = state.weather.mapValues { (_, w) -> WeatherSnapshot(w.tempHigh, w.description) },
         )
 
         onStateUpdate?.invoke(snapshot)
@@ -79,6 +80,12 @@ data class ChatStateSnapshot(
     val inputEnabled: Boolean,
     val showPlanSuccess: Boolean,
     val days: List<DaySnapshot>,
+    val weather: Map<Int, WeatherSnapshot> = emptyMap(),
+)
+
+data class WeatherSnapshot(
+    val tempHigh: Int,
+    val description: String,
 )
 
 data class ChatMessageSnapshot(
