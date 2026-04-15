@@ -1579,9 +1579,27 @@ $currentPlanContext
 
     // ── Helpers ──
 
+    private var lastRetryAttempt = 0L
+
     private fun handleAiError(e: Exception) {
         println("ChatViewModel AI error: ${e::class.simpleName}: ${e.message}")
         val errorMsg = e.message.orEmpty()
+
+        // Auto-retry once for transient errors (timeout, 500, 502, network)
+        val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        val isTransient = errorMsg.contains("timeout", true) || errorMsg.contains("500") || errorMsg.contains("502") || errorMsg.contains("Unable to resolve") || errorMsg.contains("connect", true)
+        if (isTransient && now - lastRetryAttempt > 10_000) {
+            lastRetryAttempt = now
+            println("ChatVM: auto-retrying after transient error")
+            viewModelScope.launch {
+                kotlinx.coroutines.delay(2000)
+                val lastUserMsg = _uiState.value.messages.lastOrNull { it.role == MessageRole.USER }
+                if (lastUserMsg != null && lastUserMsg.content is MessageContent.Text) {
+                    sendMessage((lastUserMsg.content as MessageContent.Text).text)
+                }
+            }
+            return
+        }
         val msg = when {
             errorMsg.contains("ANTHROPIC_API_KEY not configured") ->
                 "The API key isn't set up in Supabase secrets yet. Add ANTHROPIC_API_KEY to your project secrets."
@@ -1594,6 +1612,7 @@ $currentPlanContext
             else ->
                 "Hmm, something went wrong. Let me try again in a moment."
         }
+        println("ChatVM error: $errorMsg")
         addAiMessage(msg)
         _uiState.update {
             it.copy(
