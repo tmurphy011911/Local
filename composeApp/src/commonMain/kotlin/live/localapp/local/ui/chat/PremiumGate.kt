@@ -47,6 +47,10 @@ class PremiumGate {
         get() = settings.getString(KEY_LAST_REWARDED_TIER, "")
         set(value) = settings.putString(KEY_LAST_REWARDED_TIER, value)
 
+    /** Whether the user has seen and declined the paywall */
+    val hasDeclinedPaywall: Boolean
+        get() = plansCreated >= 1 && !isPremium
+
     /** Whether the user currently has premium access (paid OR reward) */
     val isPremium: Boolean
         get() {

@@ -915,7 +915,8 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 // For now, show an alert-style message
                             }
                         },
-                        // Events/venues in chat stay as Compose sheets inside the chat (don't dismiss chat)
+                        showUpgradeBanner = premiumGate.hasDeclinedPaywall,
+                        onUpgrade = { showPaywall = true },
                     )
                     } // end else (chat content)
                 }

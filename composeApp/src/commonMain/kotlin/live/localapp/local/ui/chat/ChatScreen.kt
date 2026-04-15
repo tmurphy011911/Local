@@ -107,6 +107,8 @@ fun ChatScreen(
     onLoginRequired: (() -> Unit)? = null,
     onNativeEventClick: ((String, String?) -> Unit)? = null,  // eventId, fallbackImageUrl
     onNativeVenueClick: ((String) -> Unit)? = null,           // venueName
+    showUpgradeBanner: Boolean = false,
+    onUpgrade: () -> Unit = {},
 ) {
     val state by viewModel.uiState.collectAsState()
     val listState = rememberLazyListState()
@@ -185,6 +187,37 @@ fun ChatScreen(
     ) {
         // ── Header ──
         ChatHeader(onBack = onBack, onReset = { viewModel.resetChat() })
+
+        // ── Upgrade Banner (for users who declined paywall) ──
+        if (showUpgradeBanner) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Brush.linearGradient(listOf(AppColors.Coral, Color(0xFFE85D5D))))
+                    .clickable(onClick = onUpgrade)
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Build personalized and shareable plans with Yocal",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color.White),
+                    )
+                    Text(
+                        "Start for just \$0.99",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = Color.White.copy(alpha = 0.85f)),
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "Upgrade now",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 11.sp, color = AppColors.Coral),
+                    modifier = Modifier
+                        .background(Color.White, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+        }
 
         // ── Messages ──
         LazyColumn(
@@ -357,13 +390,13 @@ private fun ChatHeader(onBack: (() -> Unit)? = null, onReset: (() -> Unit)? = nu
         )
 
         if (onReset != null) {
-            Icon(
-                Icons.Outlined.Close, "Reset",
-                modifier = Modifier.size(20.dp).clickable(
+            Text(
+                "Clear chat",
+                modifier = Modifier.clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null, onClick = onReset,
                 ),
-                tint = AppColors.Ink3,
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = AppColors.Ink3),
             )
         }
     }
