@@ -470,23 +470,32 @@ class ChatViewModel(
             setBusy(true)
             appendTextToHistory("user", text)
 
-            try {
-                val systemPrompt = buildSystemPrompt()
-                val parsed = sendWithToolLoop(systemPrompt)
-                println("Claude response: type=${parsed.type} text=${parsed.text.take(100)} days=${parsed.days.size} chips=${parsed.chips.size}")
-                handleClaudeResponse(parsed)
-            } catch (e: Throwable) {
-                // Catch Throwable (not just Exception) to handle Kotlin/Native errors
-                // that bypass Exception hierarchy (IrLinkageError, etc.)
-                println("Claude error: ${e::class.simpleName}: ${e.message}")
-                e.printStackTrace()
-                _uiState.update { it.copy(streamingText = "") }
+            var attempts = 0
+            val maxAttempts = 2
+            while (attempts < maxAttempts) {
                 try {
-                    handleAiError(if (e is Exception) e else RuntimeException(e.message ?: "Unknown error"))
-                } catch (_: Throwable) {
-                    // Last resort — just show error and re-enable input
-                    addAiMessage("Something went wrong. Please try again.")
-                    setBusy(false)
+                    val systemPrompt = buildSystemPrompt()
+                    val parsed = sendWithToolLoop(systemPrompt)
+                    println("Claude response: type=${parsed.type} text=${parsed.text.take(100)} days=${parsed.days.size} chips=${parsed.chips.size}")
+                    handleClaudeResponse(parsed)
+                    break
+                } catch (e: Throwable) {
+                    attempts++
+                    println("Claude error (attempt $attempts/$maxAttempts): ${e::class.simpleName}: ${e.message}")
+                    e.printStackTrace()
+                    if (attempts < maxAttempts) {
+                        println("ChatVM: retrying in 2s...")
+                        _uiState.update { it.copy(streamingText = "") }
+                        kotlinx.coroutines.delay(2000)
+                        continue
+                    }
+                    _uiState.update { it.copy(streamingText = "") }
+                    try {
+                        handleAiError(if (e is Exception) e else RuntimeException(e.message ?: "Unknown error"))
+                    } catch (_: Throwable) {
+                        addAiMessage("Something went wrong. Please try again.")
+                        setBusy(false)
+                    }
                 }
             }
         }
@@ -767,18 +776,22 @@ class ChatViewModel(
     // ── Tool Execution ──
 
     private suspend fun executeToolCall(name: String, input: JsonObject): String {
-        return try {
-            when (name) {
-                "search_events" -> searchEvents(input)
-                "search_venues" -> searchVenues(input)
-                "get_event_details" -> getEventDetails(input)
-                "recommend_and_save_venue" -> recommendAndSaveVenue(input)
-                else -> """{"error": "Unknown tool: $name"}"""
+        repeat(2) { attempt ->
+            try {
+                val result = when (name) {
+                    "search_events" -> searchEvents(input)
+                    "search_venues" -> searchVenues(input)
+                    "get_event_details" -> getEventDetails(input)
+                    "recommend_and_save_venue" -> recommendAndSaveVenue(input)
+                    else -> return """{"error": "Unknown tool: $name"}"""
+                }
+                return result
+            } catch (e: Exception) {
+                println("Tool execution error ($name, attempt ${attempt + 1}): ${e.message}")
+                if (attempt == 0) kotlinx.coroutines.delay(1000)
             }
-        } catch (e: Exception) {
-            println("Tool execution error ($name): ${e.message}")
-            """{"error": "Failed to execute $name: ${e.message}"}"""
         }
+        return """{"error": "Failed to execute $name after retries"}"""
     }
 
     private suspend fun searchEvents(input: JsonObject): String {
