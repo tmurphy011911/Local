@@ -1,5 +1,8 @@
 package live.localapp.local.ui.chat
 
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.EaseOutCubic
 import androidx.compose.animation.core.RepeatMode
@@ -186,7 +189,17 @@ fun ChatScreen(
         // ── Messages ──
         LazyColumn(
             state = listState,
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).nestedScroll(remember {
+                object : NestedScrollConnection {
+                    override fun onPreScroll(available: androidx.compose.ui.geometry.Offset, source: NestedScrollSource): androidx.compose.ui.geometry.Offset {
+                        // Consume upward scroll when at top to prevent sheet drag
+                        if (available.y > 0 && !listState.canScrollBackward) {
+                            return available
+                        }
+                        return androidx.compose.ui.geometry.Offset.Zero
+                    }
+                }
+            }),
             contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 60.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
