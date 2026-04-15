@@ -515,6 +515,9 @@ class ChatViewModel(
         isToolRound: Boolean,
     ): ClaudeResponse {
         var response: ClaudeResponse? = null
+        val streamBuffer = StringBuilder()
+        var lastEmitTime = 0L
+        val emitIntervalMs = 40L // Smooth ~25fps updates
 
         claudeApi.sendRawStreaming(
             systemPrompt = systemPrompt,
@@ -524,18 +527,28 @@ class ChatViewModel(
             when (event) {
                 is StreamEvent.TextDelta -> {
                     if (!isToolRound) {
-                        _uiState.update { it.copy(
-                            streamingText = it.streamingText + event.text,
-                            isTyping = false,
-                        ) }
+                        streamBuffer.append(event.text)
+                        val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+                        if (now - lastEmitTime >= emitIntervalMs) {
+                            lastEmitTime = now
+                            val current = streamBuffer.toString()
+                            _uiState.update { it.copy(
+                                streamingText = current,
+                                isTyping = false,
+                            ) }
+                        }
                     }
                 }
                 is StreamEvent.ToolUseStart -> {
-                    // Claude is about to call a tool — show searching indicator
                     _uiState.update { it.copy(isSearching = true, streamingText = "") }
+                    streamBuffer.clear()
                 }
                 is StreamEvent.InputDelta -> { /* Accumulated internally by the Flow */ }
                 is StreamEvent.Done -> {
+                    // Flush any remaining buffered text
+                    if (!isToolRound && streamBuffer.isNotEmpty()) {
+                        _uiState.update { it.copy(streamingText = streamBuffer.toString()) }
+                    }
                     response = event.response
                 }
             }
