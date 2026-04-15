@@ -773,6 +773,15 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 radiusFilter = homeState.radiusFilter,
                 hasLocationPermission = homeState.hasLocationPermission,
                 onSelectCurrentLocation = { homeVm.setLocationMode(live.localapp.local.ui.home.LocationMode.CURRENT_LOCATION) },
+                onGpsLocation = { lat, lng ->
+                    homeVm.setUserLocation(lat, lng)
+                    homeVm.setHasLocationPermission(true)
+                    homeVm.setLocationMode(live.localapp.local.ui.home.LocationMode.CURRENT_LOCATION)
+                },
+                onGpsDenied = {
+                    homeVm.setHasLocationPermission(false)
+                    homeVm.setLocationMode(live.localapp.local.ui.home.LocationMode.MANUAL)
+                },
                 onSelectManualLocation = { lat, lng, name -> homeVm.setManualLocation(lat, lng, name) },
                 onRadiusChanged = { homeVm.setRadiusFilter(it) },
                 onDismiss = { showLocationSheet = false },

@@ -44,11 +44,27 @@ fun LocationSettingsSheet(
     radiusFilter: Double?,
     hasLocationPermission: Boolean,
     onSelectCurrentLocation: () -> Unit,
+    onGpsLocation: (lat: Double, lng: Double) -> Unit,
+    onGpsDenied: () -> Unit,
     onSelectManualLocation: (lat: Double, lng: Double, name: String) -> Unit,
     onRadiusChanged: (Double?) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    var requestingGps by remember { mutableStateOf(false) }
+
+    // GPS request triggered when user taps "Current Location"
+    live.localapp.local.platform.RequestLocationEffect(
+        active = requestingGps,
+        onLocation = { lat, lng ->
+            requestingGps = false
+            onGpsLocation(lat, lng)
+        },
+        onDenied = {
+            requestingGps = false
+            onGpsDenied()
+        },
+    )
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -90,8 +106,9 @@ fun LocationSettingsSheet(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
                     ) {
-                        if (hasLocationPermission) onSelectCurrentLocation()
-                        else openAppSettings()
+                        // Always request GPS — will prompt for permission if needed
+                        requestingGps = true
+                        onSelectCurrentLocation()
                     }
                     .padding(16.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -108,17 +125,15 @@ fun LocationSettingsSheet(
                         "Current Location",
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = AppColors.Ink),
                     )
-                    if (hasLocationPermission) {
-                        if (isCurrentSelected && currentLocationName.isNotBlank()) {
-                            Text(
-                                currentLocationName,
-                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
-                            )
-                        }
-                    } else {
+                    if (isCurrentSelected && currentLocationName.isNotBlank()) {
                         Text(
-                            "Not Enabled \u00B7 Enable in Settings \u2192",
-                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Coral),
+                            currentLocationName,
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
+                        )
+                    } else if (!hasLocationPermission && !isCurrentSelected) {
+                        Text(
+                            "Tap to enable location",
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
                         )
                     }
                 }
