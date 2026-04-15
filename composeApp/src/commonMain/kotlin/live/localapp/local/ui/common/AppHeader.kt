@@ -10,8 +10,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
@@ -95,11 +97,13 @@ fun AppHeader(
             Text(
                 annotated,
                 style = AppType.Logo.copy(fontSize = 24.sp),
-                modifier = Modifier.clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onLogoClick,
-                ),
+                modifier = Modifier
+                    .heightIn(min = 28.dp)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onLogoClick,
+                    ),
             )
 
             Spacer(Modifier.width(10.dp))
@@ -109,6 +113,7 @@ fun AppHeader(
                 val radiusLabel = radiusFilter?.let { " \u00B7 ${it.toInt()} mi" } ?: ""
                 Row(
                     modifier = Modifier
+                        .heightIn(min = 28.dp)
                         .background(AppColors.SkyLt, AppShapes.Pill)
                         .border(1.5.dp, AppColors.Sky, AppShapes.Pill)
                         .clickable(
@@ -161,9 +166,10 @@ fun AppHeader(
                 Spacer(Modifier.width(8.dp))
             }
 
-            // Avatar
+            // Avatar — enforced minimum size
             Box(
                 modifier = Modifier
+                    .sizeIn(minWidth = 32.dp, minHeight = 32.dp)
                     .size(32.dp)
                     .background(AppColors.Coral, AppShapes.Avatar)
                     .border(2.dp, AppColors.CoralDk, AppShapes.Avatar)
