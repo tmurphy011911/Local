@@ -83,34 +83,20 @@ class BadgeRepositoryImpl(
                     .associate { it.id to (it.venueState ?: "MA") }
             } else emptyMap()
 
-            // Count favorites by state
-            favorites.forEach { fav ->
-                val state = eventStates[fav.itemId] ?: "MA"
-                val stateMap = result.getOrPut(state) { mutableMapOf() }
-                stateMap["event_saved"] = (stateMap["event_saved"] ?: 0) + 1
-            }
+            // Count everything globally (no per-state breakdown)
+            val global = result.getOrPut("global") { mutableMapOf() }
+            global["event_saved"] = favorites.size
+            global["event_shared"] = shares.size
 
-            // Count shares by state
-            shares.forEach { share ->
-                val state = eventStates[share.itemId] ?: "MA"
-                val stateMap = result.getOrPut(state) { mutableMapOf() }
-                stateMap["event_shared"] = (stateMap["event_shared"] ?: 0) + 1
-            }
-
-            // Count plans created by state (derive state from city)
+            // Count plans created
             val plans = supabaseClient.from("plans")
                 .select {
                     filter { eq("user_id", userId) }
                 }
                 .decodeList<PlanStateRow>()
+            global["plan_created"] = plans.size
 
-            plans.forEach { plan ->
-                val state = cityToState(plan.city ?: "boston")
-                val stateMap = result.getOrPut(state) { mutableMapOf() }
-                stateMap["plan_created"] = (stateMap["plan_created"] ?: 0) + 1
-            }
-
-            // Plan shares — count from community_interactions
+            // Plan shares
             val planShares = supabaseClient.from("community_interactions")
                 .select {
                     filter {
@@ -120,13 +106,7 @@ class BadgeRepositoryImpl(
                     }
                 }
                 .decodeList<InteractionRow>()
-
-            planShares.forEach { share ->
-                // Default to user's primary state since plans don't have venue_state
-                val state = "MA" // TODO: derive from plan city
-                val stateMap = result.getOrPut(state) { mutableMapOf() }
-                stateMap["plan_shared"] = (stateMap["plan_shared"] ?: 0) + 1
-            }
+            global["plan_shared"] = planShares.size
         } catch (e: Throwable) {
             println("BadgeRepo.getActionCounts error: ${e.message}")
         }
