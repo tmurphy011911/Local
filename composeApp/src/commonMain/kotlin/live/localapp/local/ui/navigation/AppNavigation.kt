@@ -835,6 +835,9 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 }
             }
 
+            // On iOS, the native SwiftUI ChatView is presented via the bridge.
+            // Only render the Compose ModalBottomSheet on Android.
+            if (!hasNativeHeroTransition)
             androidx.compose.material3.ModalBottomSheet(
                 onDismissRequest = {
                     chatVm.clearSuccessState()
