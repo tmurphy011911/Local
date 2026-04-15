@@ -39,6 +39,10 @@ actual fun checkSubscriptionStatus(onResult: (Boolean, String?) -> Unit) {
     live.localapp.local.RevenueCatBridge.checkSubscriptionStatus?.invoke(onResult) ?: onResult(false, null)
 }
 
+actual fun requestAppReview() {
+    platform.StoreKit.SKStoreReviewController.requestReview()
+}
+
 actual fun openAppSettings() {
     val url = platform.Foundation.NSURL(string = platform.UIKit.UIApplicationOpenSettingsURLString)!!
     platform.UIKit.UIApplication.sharedApplication.openURL(url, emptyMap<Any?, Any>()) { _ -> }

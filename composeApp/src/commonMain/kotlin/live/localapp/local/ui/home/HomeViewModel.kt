@@ -61,11 +61,14 @@ class HomeViewModel(
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
     private var carouselJob: kotlinx.coroutines.Job? = null
 
+    val reviewPromptService = live.localapp.local.domain.service.ReviewPromptService()
+
     init {
         // Record app open and update streak
         val streak = (userPreferencesRepository as? live.localapp.local.data.repository.UserPreferencesRepositoryImpl)
             ?.recordAppOpenAndGetStreak() ?: 0
         _uiState.update { it.copy(streakDays = streak) }
+        reviewPromptService.recordAppOpen()
 
         loadUserPreferencesThenCarousels()
         loadSavedThisWeek()
@@ -179,6 +182,7 @@ class HomeViewModel(
     fun recordEventShare(eventId: String, category: String? = null) {
         communityInterestRepository.recordShare(eventId, InteractionType.EVENT, category)
         badgeService.recordAction(BadgeAction.EVENT_SHARED, deriveUserState())
+        reviewPromptService.onPositiveMoment(live.localapp.local.domain.service.ReviewTrigger.EVENT_SHARED)
     }
 
     fun toggleEventFavorite(eventId: String, category: String? = null) {
@@ -191,6 +195,10 @@ class HomeViewModel(
             _uiState.update { it.copy(favoriteEventIds = it.favoriteEventIds + eventId) }
             // Badge: track event saved
             badgeService.recordAction(BadgeAction.EVENT_SAVED, deriveUserState())
+            // Review prompt on 5th save
+            if (_uiState.value.favoriteEventIds.size == 5) {
+                reviewPromptService.onPositiveMoment(live.localapp.local.domain.service.ReviewTrigger.EVENT_SAVED_5TH)
+            }
         }
     }
 

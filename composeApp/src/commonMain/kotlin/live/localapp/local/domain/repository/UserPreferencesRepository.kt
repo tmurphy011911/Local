@@ -15,6 +15,8 @@ data class UserPreferences(
     val notifNearby: Boolean = true,
     val notifVenues: Boolean = true,
     val onboardingComplete: Boolean = false,
+    val reviewPromptCount: Int = 0,
+    val lastReviewPromptAt: String? = null,
     val locationMode: String = "current", // "current" or "manual"
     val manualLocationName: String? = null,
     val manualLat: Double? = null,

@@ -26,3 +26,6 @@ expect fun requestNotificationPermission(onResult: (Boolean) -> Unit)
 
 /** Open the OS settings page for this app (e.g. to enable location permission). */
 expect fun openAppSettings()
+
+/** Request the native App Store / Play Store review prompt. */
+expect fun requestAppReview()

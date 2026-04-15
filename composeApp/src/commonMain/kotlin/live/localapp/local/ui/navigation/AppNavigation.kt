@@ -464,6 +464,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                     val venueNames = plan.days.flatMap { d -> d.slots.map { it.name } }.take(3).joinToString(", ")
                                     val text = "${plan.title} — ${plan.city} · $totalStops stops · $venueNames"
                                     presentShareSheet(text, "https://localapp.live/p/$token")
+                                    homeVm.reviewPromptService.onPositiveMoment(live.localapp.local.domain.service.ReviewTrigger.PLAN_SHARED)
                                 }
                             },
                             userInitial = homeState.userName.firstOrNull()?.uppercase() ?: "",

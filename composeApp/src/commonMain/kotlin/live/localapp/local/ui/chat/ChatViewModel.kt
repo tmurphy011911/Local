@@ -1188,6 +1188,10 @@ class ChatViewModel(
                 // Badge: track plan created
                 val userState = cityToState(state.userPreferences?.city ?: "boston")
                 badgeService.recordAction(BadgeAction.PLAN_CREATED, userState)
+                // Review prompt: plan saved is a high-value moment
+                live.localapp.local.domain.service.ReviewPromptService().onPositiveMoment(
+                    live.localapp.local.domain.service.ReviewTrigger.PLAN_SAVED
+                )
 
                 // Taste: learn from approved plan
                 val userId = userPrefsRepo.getLocalUserId()
