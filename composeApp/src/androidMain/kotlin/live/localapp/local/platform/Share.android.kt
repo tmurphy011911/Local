@@ -49,9 +49,9 @@ actual fun purchaseSubscription(isAnnual: Boolean, onResult: (Boolean) -> Unit) 
     ) { offerings ->
         val offering = offerings.current ?: run { onResult(false); return@getOfferingsWith }
         val pkg = if (isAnnual) {
-            offering.annual ?: offering.availablePackages.firstOrNull { it.product.id == "yearly" }
+            offering.annual ?: offering.availablePackages.firstOrNull { it.product.id == "local_pro_annual" }
         } else {
-            offering.monthly ?: offering.availablePackages.firstOrNull { it.product.id == "monthly" }
+            offering.monthly ?: offering.availablePackages.firstOrNull { it.product.id == "local_pro_monthly" }
         }
         if (pkg == null) { onResult(false); return@getOfferingsWith }
         Purchases.sharedInstance.purchaseWith(

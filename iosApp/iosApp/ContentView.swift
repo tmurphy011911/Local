@@ -329,8 +329,8 @@ struct ComposeView: UIViewControllerRepresentable {
         let bridge = RevenueCatBridge.shared
 
         // Product IDs — update these after creating in App Store Connect
-        let monthlyProductId = "monthly"
-        let annualProductId = "yearly"
+        let monthlyProductId = "local_pro_monthly"
+        let annualProductId = "local_pro_annual"
 
         bridge.purchase = { isAnnual, onResult in
             Task {
