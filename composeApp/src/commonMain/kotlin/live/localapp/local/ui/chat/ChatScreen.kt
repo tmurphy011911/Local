@@ -178,8 +178,7 @@ fun ChatScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(AppColors.Snow)
-            .imePadding(),
+            .background(AppColors.Snow),
     ) {
         // ── Header ──
         ChatHeader(onBack = onBack, onReset = { viewModel.resetChat() })
