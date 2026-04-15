@@ -84,20 +84,20 @@ class BadgeService(
             val previousTotal = totalPointsCache
             val previousTier = statusTierForPoints(previousTotal)
 
-            // Get existing milestones for this action+state
+            // Get existing milestones for this action (across all states)
             val existing = try {
                 badgeRepository.getMilestones(userId)
-                    .filter { it.state == state && it.actionType == action.name.lowercase() }
+                    .filter { it.actionType == action.name.lowercase() }
                     .map { it.milestone }
                     .toSet()
             } catch (_: Throwable) { emptySet() }
 
-            // If caller didn't provide a count, fetch from DB
+            // If caller didn't provide a count, fetch from DB (sum across ALL states)
             val actualCount = if (newCount > 0) newCount else {
                 try {
                     val counts = badgeRepository.getActionCounts(userId)
                     val actionKey = action.name.lowercase()
-                    counts[state]?.get(actionKey) ?: 0
+                    counts.values.sumOf { it[actionKey] ?: 0 }
                 } catch (_: Throwable) { 0 }
             }
 
