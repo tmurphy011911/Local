@@ -448,6 +448,13 @@ private inline fun kotlinx.serialization.json.JsonObjectBuilder.putJsonArray(
 
 class ClaudeApiService {
 
+    companion object {
+        /** Fast model for conversational turns (clarifying questions, greetings) */
+        const val MODEL_CHAT = "claude-haiku-4-5-20251001"
+        /** Full model for plan building, event search, and tool use */
+        const val MODEL_PLAN = "claude-opus-4-6-20250929"
+    }
+
     private val apiUrl = "https://api.anthropic.com/v1/messages"
 
     val json = Json {
@@ -475,9 +482,10 @@ class ClaudeApiService {
         systemPrompt: String,
         messages: List<ClaudeMessage>,
         tools: JsonArray? = null,
+        model: String = MODEL_PLAN,
     ): ClaudeResponse {
         val body = buildJsonObject {
-            put("model", "claude-sonnet-4-5-20250929")
+            put("model", model)
             put("max_tokens", 16384)
             put("system", systemPrompt)
             put("messages", json.encodeToJsonElement(
@@ -517,9 +525,10 @@ class ClaudeApiService {
         systemPrompt: String,
         messages: List<ClaudeMessage>,
         tools: JsonArray? = null,
+        model: String = MODEL_PLAN,
     ): Flow<StreamEvent> = callbackFlow {
         val body = buildJsonObject {
-            put("model", "claude-sonnet-4-5-20250929")
+            put("model", model)
             put("max_tokens", 16384)
             put("stream", true)
             put("system", systemPrompt)

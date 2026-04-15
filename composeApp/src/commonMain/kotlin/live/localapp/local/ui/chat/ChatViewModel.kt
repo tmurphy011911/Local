@@ -233,7 +233,7 @@ class ChatViewModel(
                 val systemPrompt = buildSystemPrompt()
                 // Send a welcome prompt to Claude — it will greet the user naturally
                 conversationHistory.add(ClaudeMessage.text("user", "[System: The user just opened the chat. Greet them warmly in 1-2 short sentences. Ask what they'd like to do. Keep it casual and brief. Do NOT use tools. Do NOT use any special formatting.]"))
-                val response = sendStreaming(systemPrompt, claudeTools, isToolRound = false)
+                val response = sendStreaming(systemPrompt, null, isToolRound = false, model = live.localapp.local.data.remote.ClaudeApiService.MODEL_CHAT)
                 val text = claudeApi.extractText(response) ?: "Hey! What are you looking to plan?"
                 // Remove the synthetic user message from history — replace with clean start
                 conversationHistory.removeLastOrNull()
@@ -513,6 +513,7 @@ class ChatViewModel(
         systemPrompt: String,
         tools: JsonArray?,
         isToolRound: Boolean,
+        model: String = live.localapp.local.data.remote.ClaudeApiService.MODEL_PLAN,
     ): ClaudeResponse {
         var response: ClaudeResponse? = null
         val streamBuffer = StringBuilder()
@@ -523,6 +524,7 @@ class ChatViewModel(
             systemPrompt = systemPrompt,
             messages = conversationHistory,
             tools = tools,
+            model = model,
         ).collect { event ->
             when (event) {
                 is StreamEvent.TextDelta -> {
@@ -629,11 +631,13 @@ class ChatViewModel(
     private suspend fun sendWithToolLoop(systemPrompt: String): ParsedChatResponse {
         val maxToolRounds = 5
         var toolRounds = 0
+        // Start with Haiku for fast clarifying questions. Switch to Opus when tools are needed.
+        var currentModel = live.localapp.local.data.remote.ClaudeApiService.MODEL_CHAT
 
         while (true) {
             // Always stream text to UI for a conversational feel.
             // If Claude calls tools on round 0, we'll clear the streaming text.
-            val response = sendStreaming(systemPrompt, claudeTools, isToolRound = false)
+            val response = sendStreaming(systemPrompt, claudeTools, isToolRound = false, model = currentModel)
 
             val toolCalls = claudeApi.extractToolCalls(response)
             val text = claudeApi.extractText(response) ?: ""
@@ -698,9 +702,11 @@ class ChatViewModel(
                 )
             }
 
-            // Show searching indicator on first tool call round
+            // Show searching indicator on first tool call round and switch to Opus
             if (toolRounds == 0) {
                 _uiState.update { it.copy(isSearching = true, streamingText = "") }
+                currentModel = live.localapp.local.data.remote.ClaudeApiService.MODEL_PLAN
+                println("ChatVM: switching to Opus for tool use")
             }
 
             // Check tool round cap
@@ -723,7 +729,7 @@ class ChatViewModel(
                 conversationHistory.add(ClaudeMessage.text("user", "You have enough information now. Please present a plan using the present_plan tool, or just respond naturally."))
 
                 // Final response — stream with text visible
-                val finalResponse = sendStreaming(systemPrompt, claudeTools, isToolRound = false)
+                val finalResponse = sendStreaming(systemPrompt, claudeTools, isToolRound = false, model = currentModel)
                 val finalText = claudeApi.extractText(finalResponse) ?: ""
                 val finalTerminal = claudeApi.extractToolCalls(finalResponse).firstOrNull { it.name in terminalTools }
 
