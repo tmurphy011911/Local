@@ -4,6 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -11,6 +13,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -172,9 +175,12 @@ fun ManualAddressScreen(
                 )
             }
 
+            val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
             Column(
                 modifier = Modifier
                     .weight(1f)
+                    .verticalScroll(rememberScrollState())
+                    .imePadding()
                     .padding(horizontal = 28.dp),
             ) {
                 // Pin icon with pulse rings (matches location allow screen)
@@ -309,6 +315,7 @@ fun ManualAddressScreen(
                                         query = if (suggestion.secondaryText.isNotBlank()) "${suggestion.mainText}, ${suggestion.secondaryText}" else suggestion.mainText
                                         selectedPlace = suggestion
                                         suggestions = emptyList()
+                                        focusManager.clearFocus()
                                     }
                                     .padding(horizontal = 14.dp, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -376,14 +383,10 @@ fun ManualAddressScreen(
                         ),
                     )
                 }
-            }
 
-            // Bottom CTAs
-            Column(
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                // Main CTA — enabled when a place is selected OR user typed enough for manual entry
+                Spacer(Modifier.height(32.dp))
+
+                // CTA — inside scroll so it sits right below content
                 val canSubmit = selectedPlace != null && resolvedLat != null && resolvedLng != null && !isResolving
                 OnboardingButton(
                     text = if (isResolving) "Locating..." else "Set my location \u2192",
@@ -394,6 +397,8 @@ fun ManualAddressScreen(
                     },
                     enabled = canSubmit,
                 )
+
+                Spacer(Modifier.height(32.dp))
             }
         }
     }

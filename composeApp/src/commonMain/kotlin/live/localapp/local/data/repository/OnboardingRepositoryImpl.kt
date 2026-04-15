@@ -56,12 +56,22 @@ class OnboardingRepositoryImpl(
         val metro = cityToMetro(city)
         println("OnboardingRepo: city='$city' metro='$metro' lat=$userLat lng=$userLng")
 
+        // Use 75-mile geo-radius instead of metro city name
+        val radiusMiles = 75.0
+        val latDelta = radiusMiles / 69.0
+        val lngDelta = radiusMiles / 50.0
         var offset = 0
         val pageSize = 1000
         while (true) {
             val page = supabaseClient.from("events")
                 .select(columns = Columns.list("id", "venue_city", "venue_state", "venue_name", "venue_lat", "venue_lng", "category", "subcategory")) {
-                    filter { eq("city", metro) }
+                    filter {
+                        eq("is_active", true)
+                        gte("venue_lat", userLat - latDelta)
+                        lte("venue_lat", userLat + latDelta)
+                        gte("venue_lng", userLng - lngDelta)
+                        lte("venue_lng", userLng + lngDelta)
+                    }
                     range(offset.toLong(), (offset + pageSize - 1).toLong())
                 }
                 .decodeList<EventSummaryDto>()
