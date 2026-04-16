@@ -1420,6 +1420,22 @@ private fun GlobalLevelUpOverlay(event: CelebrationEvent.StatusLevelUp, onDismis
                     color = AppColors.White.copy(alpha = 0.6f),
                 ),
             )
+
+            // Show reward if this tier has one
+            val reward = live.localapp.local.ui.chat.PremiumGate().rewardForTier(event.newTier)
+            if (reward != null) {
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    reward,
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 18.sp,
+                        color = AppColors.Sun,
+                    ),
+                )
+            }
+
             Spacer(Modifier.height(40.dp))
             Box(
                 modifier = Modifier
