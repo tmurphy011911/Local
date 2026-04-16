@@ -269,7 +269,8 @@ class ProgressViewModel(
             try {
                 val milestones = badgeRepository.getMilestones(userId)
                 val actionCounts = badgeRepository.getActionCounts(userId)
-                val totalPoints = milestones.sumOf { it.points }
+                // Deduplicate milestones by action+milestone to avoid double-counting across states
+                val totalPoints = milestones.distinctBy { "${it.actionType}_${it.milestone}" }.sumOf { it.points }
                 val currentTier = statusTierForPoints(totalPoints)
                 val next = nextStatusTier(currentTier)
 

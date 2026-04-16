@@ -65,7 +65,9 @@ class BadgeService(
             try {
                 val milestones = badgeRepository.getMilestones(userId)
                 knownStates.addAll(milestones.map { it.state })
-                totalPointsCache = milestones.sumOf { it.points }
+                // Deduplicate milestones by action+milestone to avoid double-counting across states
+                val uniqueMilestones = milestones.distinctBy { "${it.actionType}_${it.milestone}" }
+                totalPointsCache = uniqueMilestones.sumOf { it.points }
                 initialized = true
             } catch (_: Throwable) {}
         }
