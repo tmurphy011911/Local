@@ -86,11 +86,10 @@ class PlacesViewModel(
     }
 
     fun setUserLocation(lat: Double, lng: Double) {
-        val current = _uiState.value
-        if (current.userLat != lat || current.userLng != lng) {
-            _uiState.update { it.copy(userLat = lat, userLng = lng) }
-            loadVenues()
-        }
+        _uiState.update { it.copy(userLat = lat, userLng = lng) }
+        // Mark as needing reload so ensureLoaded picks it up
+        loadedLat = null
+        loadedLng = null
     }
 
     fun setLocationName(name: String) {
