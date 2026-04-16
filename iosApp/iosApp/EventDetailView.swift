@@ -696,8 +696,8 @@ struct EventDetailView: View {
     }
 
     private func primaryButton(label: String, isPrimary: Bool, action: @escaping () -> Void) -> some View {
-        let bgColor = isPrimary ? AppColor.coral : AppColor.ink2
-        let shadowColor = isPrimary ? AppColor.coralDk : Color(hex: 0x0D0B12)
+        let bgColor = AppColor.coral
+        let shadowColor = AppColor.coralDk
 
         return Button(action: action) {
             Text(label)
