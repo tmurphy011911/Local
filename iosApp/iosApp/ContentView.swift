@@ -277,6 +277,8 @@ struct ComposeView: UIViewControllerRepresentable {
                     onDismiss: {
                         rootVC.presentedViewController?.dismiss(animated: true) {
                             bridge.onCloseComplete?()
+                            // Cancel the Kotlin state observer
+                            ChatSheetTransition.shared.presentedChatVC = nil
                         }
                     }
                 )
@@ -289,6 +291,14 @@ struct ComposeView: UIViewControllerRepresentable {
 
                 // Store reference for close
                 ChatSheetTransition.shared.presentedChatVC = hostingVC
+
+                // Detect swipe-to-dismiss so we can cancel the Kotlin observer
+                let dismissDelegate = ChatDismissDelegate {
+                    bridge.onCloseComplete?()
+                    ChatSheetTransition.shared.presentedChatVC = nil
+                }
+                hostingVC.presentationController?.delegate = dismissDelegate
+                ChatSheetTransition.shared.dismissDelegate = dismissDelegate
 
                 rootVC.present(hostingVC, animated: true) {
                     bridge.onOpenComplete?()

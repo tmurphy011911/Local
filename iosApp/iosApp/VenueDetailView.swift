@@ -159,11 +159,12 @@ struct VenueDetailView: View {
 
     var body: some View {
         GeometryReader { geo in
-            VStack(spacing: 0) {
+            ZStack(alignment: .bottom) {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 0) {
                         heroImage(width: geo.size.width)
                         contentSection
+                        Spacer().frame(height: 80)
                     }
                     .frame(width: geo.size.width)
                 }
@@ -306,6 +307,41 @@ struct VenueDetailView: View {
                     .font(.system(size: 14, weight: .semibold))
                     .foregroundColor(AppColor.ink2)
                     .lineSpacing(8)
+
+                Spacer().frame(height: 16)
+            }
+
+            // Directions link
+            if venue.hasLocation {
+                Button(action: {
+                    withAnimation(.easeInOut(duration: 0.2)) { mapsExpanded.toggle() }
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "mappin.and.ellipse")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text(mapsExpanded ? "Close Directions" : "Get Directions")
+                            .font(.system(size: 13, weight: .bold))
+                    }
+                    .foregroundColor(AppColor.sky)
+                }
+
+                if mapsExpanded {
+                    HStack(spacing: 8) {
+                        directionsOption(label: "Apple Maps") {
+                            let urlStr = "https://maps.apple.com/?q=\(venue.name)&ll=\(venue.lat),\(venue.lng)"
+                            if let url = URL(string: urlStr.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? urlStr) {
+                                UIApplication.shared.open(url)
+                            }
+                        }
+                        directionsOption(label: "Google Maps") {
+                            if let url = URL(string: "https://maps.google.com/?q=\(venue.lat),\(venue.lng)") {
+                                UIApplication.shared.open(url)
+                            }
+                        }
+                    }
+                    .padding(.top, 6)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
 
                 Spacer().frame(height: 16)
             }
@@ -638,7 +674,6 @@ struct VenueDetailView: View {
             // Reserve button — prominent, full-width
             if let resUrl = venue.reservationUrl, !resUrl.isEmpty {
                 Button(action: {
-                    // Build deep link with today's date and 2 seats
                     let today = ISO8601DateFormatter().string(from: Date()).prefix(10)
                     var deepLink = resUrl
                     if resUrl.contains("resy.com") {
@@ -650,78 +685,52 @@ struct VenueDetailView: View {
                         UIApplication.shared.open(url)
                     }
                 }) {
-                    HStack(spacing: 6) {
-                        Image(systemName: "calendar.badge.clock")
-                            .font(.system(size: 14, weight: .semibold))
-                        Text("Reserve a Table")
-                            .font(.system(size: 14, weight: .heavy))
-                    }
-                    .foregroundColor(.white)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 13)
-                    .background(
-                        LinearGradient(
-                            colors: [AppColor.coral, AppColor.coralDk],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    Text("Reserve a Table")
+                        .font(.system(size: 16, weight: .heavy))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(AppColor.coral)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .shadow(color: AppColor.coralDk.opacity(0.4), radius: 0, x: 0, y: 4)
                 }
                 .buttonStyle(.plain)
             }
 
-            // Secondary row
-            HStack(spacing: 8) {
-                if venue.hasLocation {
-                    secondaryButton(
-                        systemName: "mappin.and.ellipse",
-                        label: mapsExpanded ? "Close" : "Directions",
-                        isActive: mapsExpanded
-                    ) {
-                        withAnimation(.easeInOut(duration: 0.2)) {
-                            mapsExpanded.toggle()
-                        }
-                    }
+            // Website button — coral CTA
+            if let website = venue.website, !website.isEmpty {
+                Button(action: {
+                    if let url = URL(string: website) { UIApplication.shared.open(url) }
+                }) {
+                    Text("Visit Website")
+                        .font(.system(size: 16, weight: .heavy))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(AppColor.coral)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .shadow(color: AppColor.coralDk.opacity(0.4), radius: 0, x: 0, y: 4)
                 }
-
-                if let website = venue.website, !website.isEmpty {
-                    secondaryButton(
-                        systemName: "globe",
-                        label: "Website",
-                        isActive: false
-                    ) {
-                        if let url = URL(string: website) {
-                            UIApplication.shared.open(url)
-                        }
-                    }
-                }
-            }
-
-            // Expandable maps
-            if mapsExpanded {
-                HStack(spacing: 8) {
-                    expandedOption(label: "Apple Maps") {
-                        let urlStr = "https://maps.apple.com/?q=\(venue.name)&ll=\(venue.lat),\(venue.lng)"
-                        if let url = URL(string: urlStr.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? urlStr) {
-                            UIApplication.shared.open(url)
-                        }
-                    }
-                    expandedOption(label: "Google Maps") {
-                        if let url = URL(string: "https://maps.google.com/?q=\(venue.lat),\(venue.lng)") {
-                            UIApplication.shared.open(url)
-                        }
-                    }
-                }
-                .transition(.move(edge: .top).combined(with: .opacity))
+                .buttonStyle(.plain)
             }
         }
         .padding(.horizontal, 16)
-        .padding(.vertical, 12)
-        .background(AppColor.white)
-        .overlay(alignment: .top) {
-            Rectangle().fill(AppColor.mist).frame(height: 1)
+        .padding(.top, 12)
+        .padding(.bottom, 24)
+    }
+
+    private func directionsOption(label: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 12, weight: .bold))
+                .foregroundColor(AppColor.sky)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 6)
+                .background(AppColor.skyLt)
+                .clipShape(Capsule())
+                .overlay(Capsule().stroke(AppColor.sky, lineWidth: 1))
         }
+        .buttonStyle(.plain)
     }
 
     private func secondaryButton(systemName: String, label: String, isActive: Bool, action: @escaping () -> Void) -> some View {

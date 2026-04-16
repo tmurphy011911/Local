@@ -7,6 +7,7 @@ class ChatSheetTransition {
 
     private weak var composeView: UIView?
     var presentedChatVC: UIViewController?
+    var dismissDelegate: ChatDismissDelegate?
 
     func setup(composeView: UIView) {
         self.composeView = composeView
@@ -55,5 +56,18 @@ class ChatSheetTransition {
                 completion()
             }
         )
+    }
+}
+
+/// Detects when the chat sheet is dismissed by swipe-down gesture.
+class ChatDismissDelegate: NSObject, UIAdaptivePresentationControllerDelegate {
+    let onDismiss: () -> Void
+
+    init(onDismiss: @escaping () -> Void) {
+        self.onDismiss = onDismiss
+    }
+
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        onDismiss()
     }
 }
