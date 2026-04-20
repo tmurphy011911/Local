@@ -25,6 +25,9 @@ const CATEGORY_FILTER = process.env.CATEGORY
 const VENUE_NAME = process.env.VENUE_NAME || null;
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || "3", 10);
 const MAX_VENUES = parseInt(process.env.MAX_VENUES || "0", 10);
+// NPS Developer API — falls back to api.data.gov DEMO_KEY (30 req/hr, 50/day)
+// when NPS_API_KEY isn't set. DEMO_KEY is fine for our 6 NPS venues weekly.
+const NPS_API_KEY = process.env.NPS_API_KEY || "DEMO_KEY";
 
 // ── Category mapping from venue category to event category ──
 
@@ -542,6 +545,108 @@ async function crawlJsonLd(venue, html) {
   return { venue: venue.name, events: rows.length, status: "ok (json-ld)" };
 }
 
+// ── NPS Developer API crawler ──
+// Handles any venue with events_url on nps.gov. Extracts the park code from
+// the URL path (nps.gov/{code}/...) and queries developer.nps.gov/api/v1/events
+// which returns one row per occurrence with date + times. Free with DEMO_KEY,
+// real key via NPS_API_KEY env var for higher rate limits.
+
+function extractNpsParkCode(url) {
+  const m = url.match(/nps\.gov\/([a-z]{2,5})(?:\/|$)/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
+function parseNpsDateTime(dateStr, timeStr) {
+  // dateStr = "2026-04-20", timeStr = "11:00 AM" → ISO string
+  if (!dateStr) return null;
+  if (!timeStr) return `${dateStr}T00:00:00`;
+  const m = timeStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
+  if (!m) return `${dateStr}T00:00:00`;
+  let hour = parseInt(m[1], 10);
+  const min = m[2];
+  const ampm = m[3].toUpperCase();
+  if (ampm === "PM" && hour !== 12) hour += 12;
+  if (ampm === "AM" && hour === 12) hour = 0;
+  return `${dateStr}T${String(hour).padStart(2, "0")}:${min}:00`;
+}
+
+async function crawlNPS(venue, baseUrl) {
+  const parkCode = extractNpsParkCode(baseUrl);
+  if (!parkCode) {
+    return { venue: venue.name, events: 0, status: "skipped", reason: "no park code" };
+  }
+
+  const allEvents = [];
+  const nowMs = Date.now();
+  try {
+    // Pagination: API accepts pageSize up to 50, start (0-indexed offset).
+    let start = 0;
+    const pageSize = 50;
+    const maxPages = 10;
+    for (let p = 0; p < maxPages; p++) {
+      const url = `https://developer.nps.gov/api/v1/events?parkCode=${parkCode}&pageSize=${pageSize}&start=${start}&api_key=${NPS_API_KEY}`;
+      const res = await fetch(url, { headers: { Accept: "application/json" } });
+      if (!res.ok) {
+        console.log(`    NPS API error: ${res.status} for ${parkCode}`);
+        break;
+      }
+      const data = await res.json();
+      const events = data.data || [];
+      if (events.length === 0) break;
+
+      for (const evt of events) {
+        if (!evt.title) continue;
+        // Each item is one occurrence — use `date`, NOT `datestart` (which is
+        // the overall range start for recurring events).
+        const date = evt.date || evt.datestart || null;
+        if (!date) continue;
+        const times = Array.isArray(evt.times) && evt.times.length > 0 ? evt.times : [{}];
+        for (const t of times) {
+          const startIso = parseNpsDateTime(date, t.timestart);
+          const endIso = parseNpsDateTime(date, t.timeend);
+          if (!startIso) continue;
+          const startMs = Date.parse(startIso);
+          if (isNaN(startMs) || startMs < nowMs - 86_400_000) continue;
+          allEvents.push({
+            title: evt.title,
+            start_date: startIso,
+            end_date: endIso || null,
+            description: (evt.description || "")
+              .replace(/<[^>]+>/g, " ")
+              .replace(/\s+/g, " ")
+              .trim()
+              .slice(0, 300) || null,
+            source_url: evt.infourl || null,
+            is_free: evt.isfree === "true",
+            ticket_url: evt.regresurl || null,
+            venue_override: evt.location || null,
+            confidence: 0.95,
+          });
+        }
+      }
+
+      if (events.length < pageSize) break;
+      start += pageSize;
+      await new Promise((r) => setTimeout(r, 300));
+    }
+
+    const rows = allEvents.map((e) => {
+      const v = e.venue_override ? { ...venue, name: venue.name } : venue;
+      // For NPS, keep the parent venue name (e.g. "Independence National
+      // Historical Park") rather than per-event location strings which are
+      // often just meeting points like "East side of Liberty Bell Center".
+      return normalizeEvent({ ...e, venue_override: null }, v);
+    });
+    if (rows.length > 0) await upsertEvents(rows);
+    await updateVenueCrawlStatus(venue.id, true, venue.crawl_success_rate);
+    return { venue: venue.name, events: rows.length, status: "ok (nps)" };
+  } catch (err) {
+    console.log(`    NPS crawl error for ${venue.name}: ${err.message}`);
+    await updateVenueCrawlStatus(venue.id, false, venue.crawl_success_rate);
+    return { venue: venue.name, events: 0, status: "error", reason: err.message };
+  }
+}
+
 // ── Localist API crawler (MIT, Northeastern, BC, etc.) ──
 
 async function crawlLocalist(venue, baseUrl) {
@@ -983,6 +1088,11 @@ async function detectAndCrawlPlatform(venue) {
   // 1. BiblioCommons
   const biblioMatch = url.match(/(\w+)\.bibliocommons\.com/);
   if (biblioMatch) return await crawlBiblioCommons(venue, biblioMatch[1]);
+
+  // 1b. National Park Service — any nps.gov URL routes through the NPS API.
+  if (/(^|\.)nps\.gov\//i.test(url)) {
+    return await crawlNPS(venue, url);
+  }
 
   // 2. Localist (university calendars)
   const localistDomains = ["calendar.mit.edu", "calendar.northeastern.edu", "events.bc.edu",

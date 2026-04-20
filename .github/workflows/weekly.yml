@@ -24,6 +24,9 @@ jobs:
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           VENUE_NAME: ${{ github.event.inputs.venue_filter }}
+          # Optional — falls back to DEMO_KEY if secret not set. For production
+          # weekly crawls, set an NPS_API_KEY secret (free, from api.data.gov).
+          NPS_API_KEY: ${{ secrets.NPS_API_KEY }}
         run: node run_crawls.js
 
   classify-events:
@@ -55,6 +58,21 @@ jobs:
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node extract_venues_from_events.js
+
+  sync-municipal-feeds:
+    runs-on: ubuntu-latest
+    needs: crawl-venues
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Sync Municipal Feeds
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node sync_municipal_feeds.js
 
   backfill-city-photos:
     runs-on: ubuntu-latest
