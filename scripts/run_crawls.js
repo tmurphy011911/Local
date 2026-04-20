@@ -547,15 +547,20 @@ async function crawlJsonLd(venue, html) {
 async function crawlLocalist(venue, baseUrl) {
   const allEvents = [];
   let page = 1;
-  const maxPages = 5;
+  // MIT alone publishes ~5000 events/60d (~83/day). At 50/page that's 100
+  // pages. Most callers don't need more than a month window, so cap at
+  // days=60 + 40 pages = 2000 events. days=N tells the API to return only
+  // events whose next instance falls inside that window, which dramatically
+  // improves signal-to-noise compared to the default "all events sorted by
+  // first_date" behavior that surfaces ancient recurring rows first.
+  const maxPages = 40;
 
   try {
-    // Extract the base domain for the API
     const urlObj = new URL(baseUrl);
     const apiBase = `${urlObj.origin}/api/2/events`;
 
     while (page <= maxPages) {
-      const url = `${apiBase}?pp=50&page=${page}`;
+      const url = `${apiBase}?pp=50&page=${page}&days=60`;
       const res = await fetch(url, { headers: { Accept: "application/json" } });
       if (!res.ok) {
         console.log(`    Localist API error: ${res.status}`);
