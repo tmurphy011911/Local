@@ -529,10 +529,12 @@ function collectJsonLdEvents(item, out) {
 }
 
 async function crawlJsonLd(venue, html) {
-  const nowIso = new Date().toISOString();
-  const events = parseJsonLdEvents(html).filter(
-    (e) => e.title && e.start_date && e.start_date.slice(0, 10) >= nowIso.slice(0, 10),
-  );
+  const nowMs = Date.now();
+  const events = parseJsonLdEvents(html).filter((e) => {
+    if (!e.title || !e.start_date) return false;
+    const ms = Date.parse(e.start_date);
+    return !isNaN(ms) && ms >= nowMs - 86_400_000;  // allow today's earlier-today events
+  });
   if (events.length === 0) return null;
   const rows = events.map((e) => normalizeEvent(e, venue));
   if (rows.length > 0) await upsertEvents(rows);
@@ -573,12 +575,17 @@ async function crawlLocalist(venue, baseUrl) {
         // getting upserted as a stale row and filtered out of upcoming queries.
         // `event_instances[].event_instance.start` has the real per-occurrence date.
         const instances = evt.event_instances || [];
-        const nowIso = new Date().toISOString();
+        const nowMs = Date.now();
         let added = 0;
         for (const instWrapper of instances) {
           const inst = instWrapper.event_instance || instWrapper;
           const startIso = inst.start || null;
-          if (!startIso || startIso < nowIso) continue;
+          if (!startIso) continue;
+          // Compare as Date objects, NOT strings — ISO timestamps with different
+          // timezone suffixes (e.g. "2026-04-20T10:00:00-04:00" vs "…Z") sort
+          // lexicographically in ways that don't reflect wall time.
+          const startMs = Date.parse(startIso);
+          if (isNaN(startMs) || startMs < nowMs) continue;
           allEvents.push({
             title: evt.title,
             start_date: startIso,
@@ -596,7 +603,8 @@ async function crawlLocalist(venue, baseUrl) {
         // during the upcoming-event query, so this won't pollute the feed.
         if (added === 0) {
           const startIso = evt.first_date || evt.date || null;
-          if (startIso && startIso >= nowIso.slice(0, 10)) {
+          const startMsFallback = startIso ? Date.parse(startIso) : NaN;
+          if (startIso && !isNaN(startMsFallback) && startMsFallback >= nowMs - 86_400_000) {
             allEvents.push({
               title: evt.title,
               start_date: startIso,
