@@ -470,6 +470,72 @@ async function crawlBiblioCommons(venue, libraryCode) {
   }
 }
 
+// ── JSON-LD schema.org Event extractor ──
+// Many sites (Harvard Gazette, boston.gov, museums, etc.) publish structured
+// event data via <script type="application/ld+json">. This parser handles
+// both flat `@type: Event` objects and nested structures (@graph, ItemList,
+// hasPart). A hit here avoids the Claude HTML fallback entirely — faster,
+// cheaper, and more reliable than LLM extraction.
+function parseJsonLdEvents(html) {
+  const events = [];
+  const re = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+  let m;
+  while ((m = re.exec(html)) !== null) {
+    let parsed;
+    try { parsed = JSON.parse(m[1].trim()); } catch { continue; }
+    const items = Array.isArray(parsed) ? parsed : [parsed];
+    for (const item of items) collectJsonLdEvents(item, events);
+  }
+  return events;
+}
+
+function collectJsonLdEvents(item, out) {
+  if (!item || typeof item !== "object") return;
+  const rawType = item["@type"];
+  const types = Array.isArray(rawType) ? rawType : (rawType ? [rawType] : []);
+  const isEvent = types.some((t) => typeof t === "string" && /Event$/.test(t));
+  if (isEvent && item.name && item.startDate) {
+    const offers = Array.isArray(item.offers) ? item.offers[0] : item.offers;
+    out.push({
+      title: typeof item.name === "string" ? item.name : String(item.name),
+      start_date: item.startDate,
+      end_date: item.endDate || null,
+      description: typeof item.description === "string" ? item.description.slice(0, 300) : null,
+      source_url: item.url || null,
+      is_free: item.isAccessibleForFree === true || false,
+      ticket_url: offers?.url || null,
+      confidence: 0.9,
+    });
+  }
+  // Recurse into common containers
+  if (Array.isArray(item["@graph"])) for (const x of item["@graph"]) collectJsonLdEvents(x, out);
+  if (item.itemListElement) {
+    const list = Array.isArray(item.itemListElement) ? item.itemListElement : [item.itemListElement];
+    for (const x of list) collectJsonLdEvents(x?.item || x, out);
+  }
+  if (item.hasPart) {
+    const parts = Array.isArray(item.hasPart) ? item.hasPart : [item.hasPart];
+    for (const x of parts) collectJsonLdEvents(x, out);
+  }
+  if (item.subEvent) {
+    const subs = Array.isArray(item.subEvent) ? item.subEvent : [item.subEvent];
+    for (const x of subs) collectJsonLdEvents(x, out);
+  }
+  if (item.mainEntity) collectJsonLdEvents(item.mainEntity, out);
+}
+
+async function crawlJsonLd(venue, html) {
+  const nowIso = new Date().toISOString();
+  const events = parseJsonLdEvents(html).filter(
+    (e) => e.title && e.start_date && e.start_date.slice(0, 10) >= nowIso.slice(0, 10),
+  );
+  if (events.length === 0) return null;
+  const rows = events.map((e) => normalizeEvent(e, venue));
+  if (rows.length > 0) await upsertEvents(rows);
+  await updateVenueCrawlStatus(venue.id, true, venue.crawl_success_rate);
+  return { venue: venue.name, events: rows.length, status: "ok (json-ld)" };
+}
+
 // ── Localist API crawler (MIT, Northeastern, BC, etc.) ──
 
 async function crawlLocalist(venue, baseUrl) {
@@ -497,19 +563,48 @@ async function crawlLocalist(venue, baseUrl) {
         const evt = wrapper.event || wrapper;
         if (!evt.title) continue;
 
-        const startIso = evt.first_date || evt.date || null;
-        if (!startIso) continue;
-
-        allEvents.push({
-          title: evt.title,
-          start_date: startIso,
-          end_date: evt.last_date || null,
-          description: (evt.description_text || "").slice(0, 300) || null,
-          source_url: evt.localist_url || evt.url || null,
-          is_free: evt.free || false,
-          ticket_url: evt.ticket_url || null,
-          venue_override: evt.location_name || null,
-        });
+        // Emit one row per upcoming instance. Localist's `first_date` is the
+        // event's FIRST-EVER date (often years in the past for recurring/ongoing
+        // events like "Patriots' Day" or long-running exhibitions), which was
+        // getting upserted as a stale row and filtered out of upcoming queries.
+        // `event_instances[].event_instance.start` has the real per-occurrence date.
+        const instances = evt.event_instances || [];
+        const nowIso = new Date().toISOString();
+        let added = 0;
+        for (const instWrapper of instances) {
+          const inst = instWrapper.event_instance || instWrapper;
+          const startIso = inst.start || null;
+          if (!startIso || startIso < nowIso) continue;
+          allEvents.push({
+            title: evt.title,
+            start_date: startIso,
+            end_date: inst.end || null,
+            description: (evt.description_text || "").slice(0, 300) || null,
+            source_url: evt.localist_url || evt.url || null,
+            is_free: evt.free || false,
+            ticket_url: evt.ticket_url || null,
+            venue_override: evt.location_name || null,
+          });
+          added++;
+        }
+        // Fallback for events with no instances array (rare but possible for
+        // unpublished/draft rows). Uses first_date only — past dates get dropped
+        // during the upcoming-event query, so this won't pollute the feed.
+        if (added === 0) {
+          const startIso = evt.first_date || evt.date || null;
+          if (startIso && startIso >= nowIso.slice(0, 10)) {
+            allEvents.push({
+              title: evt.title,
+              start_date: startIso,
+              end_date: evt.last_date || null,
+              description: (evt.description_text || "").slice(0, 300) || null,
+              source_url: evt.localist_url || evt.url || null,
+              is_free: evt.free || false,
+              ticket_url: evt.ticket_url || null,
+              venue_override: evt.location_name || null,
+            });
+          }
+        }
       }
 
       const totalPages = data.page?.total || 1;
@@ -966,6 +1061,17 @@ async function crawlVenue(venue) {
     // Tessitura detection
     if (htmlLc.includes("tessitura") || htmlLc.includes("tnew") || htmlLc.includes("tessituraservice")) {
       console.log(`    Tessitura detected for ${venue.name} — using HTML crawl`);
+    }
+
+    // JSON-LD schema.org Event extraction — try before Claude HTML fallback.
+    // Many well-maintained sites (museums, universities, city gov) publish
+    // structured event data we can parse deterministically.
+    if (htmlLc.includes("application/ld+json")) {
+      const jsonLdResult = await crawlJsonLd(venue, rawHtml);
+      if (jsonLdResult) {
+        console.log(`    ✓ JSON-LD extracted ${jsonLdResult.events} events for ${venue.name}`);
+        return jsonLdResult;
+      }
     }
 
     // Extract events via Claude
