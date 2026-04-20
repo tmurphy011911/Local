@@ -408,6 +408,8 @@ const PLACE_TYPE_MAP = {
   historic_site: "ticketed", tour: "ticketed", observation: "ticketed",
   escape_room: "ticketed", arts_center: "ticketed", library: "ticketed",
   theater: "ticketed",
+  // classes
+  classes: "ticketed",
   // entertainment
   bowling: "entertainment", arcade: "entertainment", mini_golf: "entertainment",
   movie_theater: "entertainment", spa: "entertainment", shopping: "entertainment",
@@ -601,6 +603,17 @@ function buildCategories(stateName) {
     { category: "bookstore", includedTypes: ["book_store"], textQuery: `independent bookstores in ${stateName}` },
     { category: "market", includedTypes: ["market"], textQuery: `farmers markets flea markets in ${stateName}` },
 
+    // ── Classes & Workshops ──
+    { category: "classes", includedTypes: ["yoga_studio"], textQuery: [
+      `dance studios in ${stateName}`,
+      `pottery studios in ${stateName}`,
+      `cooking classes in ${stateName}`,
+      `art studios in ${stateName}`,
+      `art centers in ${stateName}`,
+      `yoga pilates studios in ${stateName}`,
+      `climbing gyms in ${stateName}`,
+    ] },
+
     // ── Event Venues (for crawl pipeline) ──
     { category: "music_venue", includedTypes: ["live_music_venue", "night_club"], textQuery: `music venues concert halls in ${stateName}` },
     { category: "sports_venue", includedTypes: ["sports_complex", "arena", "gym"], textQuery: `sports venues arenas in ${stateName}` },
@@ -638,9 +651,12 @@ async function discoverForGrid(gridCenters, categoriesToRun, currentStateCode) {
           await sleep(300);
         }
 
-        // Text Search for broader coverage
-        if (cat.textQuery) {
-          const textPlaces = await searchText(cat.textQuery, center.lat, center.lng);
+        // Text Search for broader coverage — textQuery can be string or array
+        const textQueries = Array.isArray(cat.textQuery)
+          ? cat.textQuery
+          : cat.textQuery ? [cat.textQuery] : [];
+        for (const q of textQueries) {
+          const textPlaces = await searchText(q, center.lat, center.lng);
           for (const p of textPlaces) {
             if (p.businessStatus === "CLOSED_PERMANENTLY") continue;
             if (p.id && !placesMap.has(p.id)) placesMap.set(p.id, p);
