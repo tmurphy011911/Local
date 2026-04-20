@@ -81,7 +81,11 @@ async function fetchVenues() {
     if (names.length === 1) {
       baseUrl += `&name=ilike.*${encodeURIComponent(names[0])}*`;
     } else {
-      const orFilter = names.map((n) => `name.ilike.*${n}*`).join(",");
+      // Wrap each ilike value in double quotes. PostgREST's or=() parser treats
+      // unquoted parens/commas inside values as structural separators, which
+      // silently dropped venues whose names contain them (e.g. "Massachusetts
+      // Institute of Technology (MIT)"). Quoted values are treated as literals.
+      const orFilter = names.map((n) => `name.ilike."*${n}*"`).join(",");
       baseUrl += `&or=(${encodeURIComponent(orFilter)})`;
     }
   }
