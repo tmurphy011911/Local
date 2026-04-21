@@ -1,11 +1,12 @@
 package live.localapp.local
 
 /**
- * Converts a snake_case string to Title Case.
- * e.g. "arts_center" → "Arts Center", "music_venue" → "Music Venue"
+ * Converts a snake_case or kebab-case string to Title Case.
+ * e.g. "arts_center" → "Arts Center", "for-kids" → "For Kids",
+ *      "no-public-interest" → "No Public Interest".
  */
 fun String.snakeToTitleCase(): String =
-    split("_").joinToString(" ") { word ->
+    split("_", "-").joinToString(" ") { word ->
         word.replaceFirstChar { it.uppercaseChar() }
     }
 
