@@ -49,10 +49,16 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
-// In-memory cache keyed on geo + filters. Per-user prefs applied on top.
+// In-memory cache of the FULLY-SCORED sorted list. Per-request only slices
+// for pagination — no re-scoring → refresh returns identical order inside TTL.
+interface ScoredVenue {
+  v: VenueRow;
+  dist: number;
+  eventCount: number;
+  score: number;
+}
 interface CacheEntry {
-  venues: VenueRow[];
-  eventCountsByVenue: Record<string, number>;
+  scored: ScoredVenue[];
   timestamp: number;
 }
 const CACHE_TTL_MS = 10 * 60 * 1000;
@@ -139,25 +145,37 @@ async function fetchEventCountsByVenue(
   const lngDelta = radiusMiles / 45;
   const nowIso = new Date().toISOString();
 
-  // Fetch event (venue_name, start_at) tuples in the bbox; aggregate in memory.
-  // Supabase doesn't easily expose `COUNT() GROUP BY` without an RPC, and these
-  // are just name strings — light to transfer and aggregate.
-  const { data } = await supabase
-    .from("events")
-    .select("venue_name")
-    .eq("is_active", true)
-    .gte("start_at", nowIso)
-    .gte("venue_lat", lat - latDelta)
-    .lte("venue_lat", lat + latDelta)
-    .gte("venue_lng", lng - lngDelta)
-    .lte("venue_lng", lng + lngDelta)
-    .limit(2000);
-
+  // Page through ALL future active events in the bbox (not just a limit-2000
+  // unordered slice — that was producing jittery counts because Postgres
+  // returned a different 2000-row subset per call). Deterministic id-sorted
+  // pagination keeps counts stable across refreshes.
+  const pageSize = 1000;
+  let offset = 0;
   const counts: Record<string, number> = {};
-  for (const row of data ?? []) {
-    const key = (row.venue_name ?? "").toLowerCase().trim();
-    if (!key) continue;
-    counts[key] = (counts[key] ?? 0) + 1;
+  for (let page = 0; page < 20; page++) {
+    const { data } = await supabase
+      .from("events")
+      .select("venue_name")
+      .eq("is_active", true)
+      .neq("subcategory", "no-public-interest") // skip auto-excluded events from counts
+      .gte("start_at", nowIso)
+      .gte("venue_lat", lat - latDelta)
+      .lte("venue_lat", lat + latDelta)
+      .gte("venue_lng", lng - lngDelta)
+      .lte("venue_lng", lng + lngDelta)
+      .order("id", { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    const rows = data ?? [];
+    for (const row of rows) {
+      // Match normalized key — "The Brattle Theatre" and "Brattle Theatre"
+      // collapse to the same bucket so venue.name and event.venue_name
+      // reliably join.
+      const key = normalizeVenueName(row.venue_name ?? "");
+      if (!key) continue;
+      counts[key] = (counts[key] ?? 0) + 1;
+    }
+    if (rows.length < pageSize) break;
+    offset += pageSize;
   }
   return counts;
 }
@@ -220,8 +238,8 @@ function dedupVenues(venues: VenueRow[], eventCounts: Record<string, number>): V
     dupes.sort((a, b) => {
       const rankDiff = (b.public_interest_rank ?? 0) - (a.public_interest_rank ?? 0);
       if (rankDiff !== 0) return rankDiff;
-      const aEvents = eventCounts[a.name.toLowerCase().trim()] ?? 0;
-      const bEvents = eventCounts[b.name.toLowerCase().trim()] ?? 0;
+      const aEvents = eventCounts[normalizeVenueName(a.name)] ?? 0;
+      const bEvents = eventCounts[normalizeVenueName(b.name)] ?? 0;
       if (aEvents !== bEvents) return bEvents - aEvents;
       return (b.photo_url ? 1 : 0) - (a.photo_url ? 1 : 0);
     });
@@ -271,46 +289,49 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+    // Cache key includes user_id so taste-influenced ordering is stable per
+    // user. hasEventsOnly is applied AFTER the cache read so it doesn't split
+    // the cache (the scored list holds eventCount; toggling just filters).
     const cacheKey = [
       Math.round(lat * 10) / 10,
       Math.round(lng * 10) / 10,
       (query ?? "").trim().toLowerCase(),
       category ?? "",
       radiusMiles,
+      userId ?? "anon",
     ].join("|");
 
-    let venues: VenueRow[];
-    let eventCountsByVenue: Record<string, number>;
+    let scored: ScoredVenue[];
     const cached = getCached(cacheKey);
     if (cached) {
-      venues = cached.venues;
-      eventCountsByVenue = cached.eventCountsByVenue;
+      scored = cached.scored;
     } else {
       const [rawVenues, counts] = await Promise.all([
         fetchVenues(supabase, lat, lng, query, category, radiusMiles),
         fetchEventCountsByVenue(supabase, lat, lng, radiusMiles),
       ]);
-      venues = dedupVenues(rawVenues, counts);
-      eventCountsByVenue = counts;
-      cache.set(cacheKey, { venues, eventCountsByVenue, timestamp: Date.now() });
+      const venues = dedupVenues(rawVenues, counts);
+      const prefs = userId ? await fetchUserPrefs(supabase, userId) : null;
+      const maxRank = venues.reduce((m, v) => Math.max(m, v.public_interest_rank ?? 0), 0);
+
+      scored = venues
+        .filter((v) => v.lat != null && v.lng != null)
+        .map((v) => {
+          const dist = distanceMiles(lat, lng, v.lat!, v.lng!);
+          const eventCount = counts[normalizeVenueName(v.name)] ?? 0;
+          return { v, dist, eventCount, score: scoreVenue(v, dist, eventCount, prefs, maxRank) };
+        })
+        .filter((x) => x.dist <= radiusMiles)
+        // Stable tiebreak on venue id — guarantees identical order across
+        // calls even when two venues score identically.
+        .sort((a, b) => b.score - a.score || a.v.id.localeCompare(b.v.id));
+
+      cache.set(cacheKey, { scored, timestamp: Date.now() });
     }
 
-    const prefs = userId ? await fetchUserPrefs(supabase, userId) : null;
-    const maxRank = venues.reduce((m, v) => Math.max(m, v.public_interest_rank ?? 0), 0);
-
-    const scored = venues
-      .filter((v) => v.lat != null && v.lng != null)
-      .map((v) => {
-        const dist = distanceMiles(lat, lng, v.lat!, v.lng!);
-        const eventCount = eventCountsByVenue[v.name.toLowerCase().trim()] ?? 0;
-        return { v, dist, eventCount, score: scoreVenue(v, dist, eventCount, prefs, maxRank) };
-      })
-      .filter((x) => x.dist <= radiusMiles)
-      .filter((x) => !hasEventsOnly || x.eventCount > 0)
-      .sort((a, b) => b.score - a.score);
-
-    const page = scored.slice(offset, offset + limit);
-    const hasMore = scored.length > offset + limit;
+    const filtered = hasEventsOnly ? scored.filter((x) => x.eventCount > 0) : scored;
+    const page = filtered.slice(offset, offset + limit);
+    const hasMore = filtered.length > offset + limit;
 
     const items = page.map(({ v, dist, eventCount }) => ({
       id: v.id,
@@ -338,7 +359,7 @@ Deno.serve(async (req) => {
         items,
         cursor: hasMore ? encodeCursor(offset + limit) : null,
         hasMore,
-        total: scored.length,
+        total: filtered.length,
       }),
       {
         headers: {

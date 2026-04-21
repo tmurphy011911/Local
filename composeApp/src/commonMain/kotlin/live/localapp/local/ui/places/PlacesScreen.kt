@@ -11,6 +11,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -40,9 +41,11 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
@@ -61,6 +64,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -71,6 +75,8 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.graphics.graphicsLayer
@@ -81,6 +87,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
+import kotlinx.coroutines.launch
 import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.domain.model.Event
 import live.localapp.local.snakeToTitleCase
@@ -89,6 +96,7 @@ import live.localapp.local.domain.repository.VenueWithMeta
 import live.localapp.local.domain.repository.CommunityInterestRepository
 import live.localapp.local.domain.repository.InteractionType
 import live.localapp.local.ui.detail.EventDetailScreen
+import live.localapp.local.ui.home.isLocationInSupportedState
 import live.localapp.local.ui.home.toCardData
 import live.localapp.local.ui.common.AppHeader
 import live.localapp.local.ui.theme.AppColors
@@ -127,9 +135,11 @@ fun PlacesScreen(
     onLocationClick: () -> Unit = {},
     userInitial: String = "",
     onVenueClickWithBounds: ((VenueWithMeta, Rect) -> Unit)? = null,
+    onEventClick: ((live.localapp.local.domain.model.Event) -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    val cityLabel = state.locationName.split(",").firstOrNull()?.trim().orEmpty()
 
     Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow).clickable(
         interactionSource = remember { MutableInteractionSource() },
@@ -138,18 +148,41 @@ fun PlacesScreen(
         Column(modifier = Modifier.fillMaxSize()) {
             // ── Header ──
             AppHeader(
-                    title = "places",
+                    title = "explore",
                     locationName = state.locationName,
                     radiusFilter = state.radiusFilter,
                     streakDays = state.streakDays,
                     userInitial = userInitial,
+                    isUnsupportedState = !isLocationInSupportedState(state.userLat, state.userLng),
                     onProfileClick = onProfileClick,
                     onLocationClick = onLocationClick,
                 )
 
-            // Search bar — below header divider
+            // ── Events | Places sub-tab row ──
+            SearchSubTabRow(
+                active = state.activeTab,
+                onSelect = { viewModel.setActiveTab(it) },
+            )
+
+            // ── Search bar — placeholder flips with active tab ──
             Box(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-                SearchBar(query = state.searchQuery, onQueryChange = { viewModel.setSearchQuery(it) }, locationName = state.locationName)
+                SearchBar(
+                    query = state.searchQuery,
+                    onQueryChange = { viewModel.setSearchQuery(it) },
+                    placeholder = searchPlaceholder(state.activeTab, cityLabel),
+                )
+            }
+
+            // ── Per-tab filter chips ──
+            when (state.activeTab) {
+                SearchTab.EVENTS -> EventDateFilterRow(
+                    selected = state.dateFilter,
+                    onSelect = { viewModel.setDateFilter(it) },
+                )
+                SearchTab.PLACES -> PlaceFilterRow(
+                    hasEventsOnly = state.hasEventsOnly,
+                    onToggleHasEvents = { viewModel.setHasEventsOnly(it) },
+                )
             }
 
             // ── Content ──
@@ -158,28 +191,160 @@ fun PlacesScreen(
                 onRefresh = { viewModel.refresh() },
                 modifier = Modifier.weight(1f),
             ) {
-                if (state.isLoading && state.venues.isEmpty()) {
-                    PlacesSkeletonLoader()
-                } else {
-                    VenueGrid(
-                        venues = state.filteredVenues,
-                        favoriteIds = state.favoriteVenueIds,
-                        onVenueClick = { venue, bounds ->
-                            if (onVenueClickWithBounds != null) {
-                                onVenueClickWithBounds(venue, bounds)
-                            } else {
-                                viewModel.selectVenue(venue)
-                            }
-                        },
-                        onFavoriteToggle = { venue ->
-                            viewModel.toggleVenueFavorite(venue.venue.id, venue.primaryCategory)
-                        },
-                    )
+                when (state.activeTab) {
+                    SearchTab.PLACES -> {
+                        if (state.isLoading && state.venues.isEmpty()) {
+                            PlacesSkeletonLoader()
+                        } else {
+                            VenueGrid(
+                                venues = state.filteredVenues,
+                                favoriteIds = state.favoriteVenueIds,
+                                hasMore = state.hasMore,
+                                onLoadMore = { viewModel.loadMore() },
+                                onVenueClick = { venue, bounds ->
+                                    if (onVenueClickWithBounds != null) {
+                                        onVenueClickWithBounds(venue, bounds)
+                                    } else {
+                                        viewModel.selectVenue(venue)
+                                    }
+                                },
+                                onFavoriteToggle = { venue ->
+                                    viewModel.toggleVenueFavorite(venue.venue.id, venue.primaryCategory)
+                                },
+                            )
+                        }
+                    }
+                    SearchTab.EVENTS -> {
+                        if (state.isEventsLoading && state.filteredEvents.isEmpty()) {
+                            EventsSkeletonLoader()
+                        } else {
+                            EventGrid(
+                                events = state.filteredEvents,
+                                savedEvents = state.savedEvents,
+                                favoriteIds = state.favoriteEventIds,
+                                userLat = state.userLat,
+                                userLng = state.userLng,
+                                hasMore = state.eventsHasMore,
+                                onLoadMore = { viewModel.loadMoreEvents() },
+                                onEventClick = { event -> onEventClick?.invoke(event) },
+                                onFavoriteToggle = { event ->
+                                    viewModel.toggleEventFavorite(event.id, event.subcategory ?: event.category)
+                                },
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
+
+// ─── Sub-tab row (Events | Places) ───────────────────────────────────
+
+private fun searchPlaceholder(tab: SearchTab, cityLabel: String): String {
+    val cityPart = if (cityLabel.isNotBlank()) " near $cityLabel" else ""
+    return when (tab) {
+        SearchTab.EVENTS -> "Search for events$cityPart"
+        SearchTab.PLACES -> "Search for places$cityPart"
+    }
+}
+
+@Composable
+private fun SearchSubTabRow(active: SearchTab, onSelect: (SearchTab) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(AppColors.White)
+            .padding(top = 4.dp),
+    ) {
+        SubTabTile(
+            label = "Events",
+            iconName = "events",
+            isActive = active == SearchTab.EVENTS,
+            onClick = { onSelect(SearchTab.EVENTS) },
+            modifier = Modifier.weight(1f),
+        )
+        SubTabTile(
+            label = "Places",
+            iconName = "places",
+            isActive = active == SearchTab.PLACES,
+            onClick = { onSelect(SearchTab.PLACES) },
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+@Composable
+private fun SubTabTile(
+    label: String,
+    iconName: String,
+    isActive: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = modifier.clickable(
+            interactionSource = remember { MutableInteractionSource() },
+            indication = null,
+            onClick = onClick,
+        ),
+    ) {
+        Spacer(Modifier.height(4.dp))
+        CategoryIconWithFallback(
+            name = iconName,
+            fallbackName = "foryou",
+            modifier = Modifier.size(50.dp),
+        )
+        Spacer(Modifier.height(5.dp))
+        Text(
+            label,
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Bold,
+                fontSize = 12.sp,
+                color = if (isActive) AppColors.Ink else AppColors.Ink3,
+            ),
+            maxLines = 1,
+        )
+        Spacer(Modifier.height(6.dp))
+        Box(
+            modifier = Modifier
+                .width(64.dp)
+                .height(2.5.dp)
+                .background(
+                    if (isActive) AppColors.Ink else Color.Transparent,
+                    RoundedCornerShape(topStart = 2.dp, topEnd = 2.dp),
+                ),
+        )
+    }
+}
+
+@Composable
+private fun CategoryIconWithFallback(
+    name: String,
+    fallbackName: String,
+    modifier: Modifier = Modifier,
+) {
+    val primaryUrl = buildSearchIconUrl(name)
+    val fallbackUrl = buildSearchIconUrl(fallbackName)
+    var url by remember(name) { mutableStateOf(primaryUrl) }
+    coil3.compose.AsyncImage(
+        model = url,
+        contentDescription = null,
+        modifier = modifier,
+        contentScale = ContentScale.Fit,
+        onError = {
+            // If the named icon doesn't exist in Storage yet, fall back to foryou.png
+            // so we never render a broken image placeholder.
+            if (url != fallbackUrl) url = fallbackUrl
+        },
+    )
+}
+
+private fun buildSearchIconUrl(name: String): String =
+    "${live.localapp.local.Config.SUPABASE_URL}/storage/v1/object/public/category-icons/$name.png" +
+        "?v=${live.localapp.local.domain.repository.CATEGORY_ICONS_VERSION}"
 
 // PlacesHeader removed — now uses shared AppHeader
 
@@ -210,10 +375,54 @@ private fun PlacesSkeletonLoader() {
     }
 }
 
+/**
+ * Events-tab skeleton — mirrors the row layout of EventRowCard (72dp thumbnail
+ * + 3 text rows) so the swap from skeleton → real list doesn't reflow the page.
+ */
 @Composable
-private fun SearchBar(query: String, onQueryChange: (String) -> Unit, locationName: String = "") {
+private fun EventsSkeletonLoader() {
+    val shimmerAlpha by animateFloatAsState(
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(800, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+    )
+    val c = AppColors.Pebble.copy(alpha = 0.3f + shimmerAlpha * 0.2f)
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 20.dp, vertical = 8.dp)
+            .verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        repeat(8) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(Color.White)
+                    .padding(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(Modifier.size(72.dp).clip(RoundedCornerShape(10.dp)).background(c))
+                Spacer(Modifier.width(12.dp))
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Box(Modifier.width(180.dp).height(14.dp).background(c, RoundedCornerShape(7.dp)))
+                    Box(Modifier.width(140.dp).height(10.dp).background(c, RoundedCornerShape(5.dp)))
+                    Box(Modifier.width(90.dp).height(10.dp).background(c, RoundedCornerShape(5.dp)))
+                }
+                Spacer(Modifier.width(8.dp))
+                Box(Modifier.size(28.dp).clip(CircleShape).background(c))
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchBar(query: String, onQueryChange: (String) -> Unit, placeholder: String) {
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
-    val placeholder = if (locationName.isNotBlank()) "Search for places near $locationName" else "Search for places\u2026"
     TextField(
         value = query,
         onValueChange = onQueryChange,
@@ -241,9 +450,74 @@ private fun SearchBar(query: String, onQueryChange: (String) -> Unit, locationNa
         textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = AppColors.Ink),
         modifier = Modifier
             .fillMaxWidth()
-            .height(46.dp)
+            .height(56.dp)
             .shadow(4.dp, RoundedCornerShape(16.dp)),
     )
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// FILTER CHIP ROWS
+// ═══════════════════════════════════════════════════════════════════
+
+@Composable
+private fun EventDateFilterRow(selected: EventDateFilter?, onSelect: (EventDateFilter?) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        FilterChip(label = "All", selected = selected == null, onClick = { onSelect(null) })
+        EventDateFilter.entries.forEach { f ->
+            FilterChip(label = f.label, selected = selected == f, onClick = { onSelect(f) })
+        }
+    }
+}
+
+@Composable
+private fun PlaceFilterRow(hasEventsOnly: Boolean, onToggleHasEvents: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        FilterChip(
+            label = "Has events",
+            selected = hasEventsOnly,
+            onClick = { onToggleHasEvents(!hasEventsOnly) },
+        )
+    }
+}
+
+@Composable
+private fun FilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
+    val bg = if (selected) AppColors.Coral else AppColors.White
+    val fg = if (selected) AppColors.White else AppColors.Ink2
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(bg)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 12.sp,
+                color = fg,
+            ),
+        )
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -254,6 +528,8 @@ private fun SearchBar(query: String, onQueryChange: (String) -> Unit, locationNa
 private fun VenueGrid(
     venues: List<VenueWithMeta>,
     favoriteIds: Set<String>,
+    hasMore: Boolean = false,
+    onLoadMore: () -> Unit = {},
     onVenueClick: (VenueWithMeta, Rect) -> Unit,
     onFavoriteToggle: (VenueWithMeta) -> Unit,
 ) {
@@ -262,7 +538,10 @@ private fun VenueGrid(
         venues.filter { it.venue.id in favoriteIds }
     }
 
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+
     LazyColumn(
+        state = listState,
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 80.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -285,6 +564,11 @@ private fun VenueGrid(
                 onClick = { bounds -> onVenueClick(venueWithMeta, bounds) },
                 onFavoriteToggle = { onFavoriteToggle(venueWithMeta) },
             )
+        }
+
+        // Explicit Load more button — no infinite scroll per user UX preference.
+        if (hasMore) {
+            item { LoadMoreButton(onClick = onLoadMore) }
         }
 
         // Bottom spacer
@@ -448,94 +732,121 @@ private fun SavedVenueAlbumCard(vm: VenueWithMeta, onClick: (Rect) -> Unit, onFa
 private fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -> Unit, onFavoriteToggle: () -> Unit) {
     val v = vm.venue
     var cardBounds by remember { mutableStateOf(Rect.Zero) }
-    Box(modifier = Modifier.fillMaxWidth()
-        .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.White)
+            .clickable { onClick(cardBounds) }
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
-        Row(
+        // Thumbnail — 72dp square to match event card
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .height(80.dp)
-                .shadow(2.dp, RoundedCornerShape(14.dp))
-                .background(Color.White, RoundedCornerShape(14.dp))
-                .clip(RoundedCornerShape(14.dp))
-                .pressable(onClick = { onClick(cardBounds) }),
+                .size(72.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(gradientForCategory(vm.primaryCategory)),
+            contentAlignment = Alignment.Center,
         ) {
-            // Thumbnail
-            Box(
-                modifier = Modifier
-                    .width(80.dp)
-                    .fillMaxHeight()
-                    .background(gradientForCategory(vm.primaryCategory)),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (v.photoUrl != null || v.imageUrl != null) {
-                    AsyncImage(
-                        model = v.photoUrl ?: v.imageUrl,
-                        contentDescription = v.name,
-                        contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize(),
-                    )
-                } else {
-                    Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(28.dp), tint = Color.White.copy(alpha = 0.5f))
-                }
-            }
-
-            // Body
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Text(
-                    v.name,
-                    style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = AppColors.Ink, lineHeight = 18.sp),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
+            if (v.photoUrl != null || v.imageUrl != null) {
+                AsyncImage(
+                    model = v.photoUrl ?: v.imageUrl,
+                    contentDescription = v.name,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)),
                 )
-                Spacer(Modifier.height(3.dp))
-                VenueMeta(vm)
-                Spacer(Modifier.height(3.dp))
-                RatingRow(v)
-            }
-
-            // Heart button — top right
-            Box(
-                modifier = Modifier
-                    .fillMaxHeight()
-                    .padding(end = 10.dp, top = 10.dp),
-                contentAlignment = Alignment.TopCenter,
-            ) {
+            } else {
                 Icon(
-                    if (isFavorited) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
-                    contentDescription = if (isFavorited) "Remove favorite" else "Favorite",
-                    modifier = Modifier
-                        .size(22.dp)
-                        .clickable(
-                            interactionSource = remember { MutableInteractionSource() },
-                            indication = null,
-                            onClick = onFavoriteToggle,
-                        ),
-                    tint = if (isFavorited) AppColors.Coral else AppColors.Ink3,
+                    Icons.Outlined.Place,
+                    contentDescription = null,
+                    modifier = Modifier.size(28.dp),
+                    tint = AppColors.White.copy(alpha = 0.85f),
                 )
             }
         }
 
-        // Events badge — bottom right of card
-        if (vm.upcomingEventCount > 0) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(bottom = 4.dp, end = 6.dp)
-                    .background(AppColors.Coral, RoundedCornerShape(6.dp))
-                    .padding(horizontal = 6.dp, vertical = 2.dp),
-            ) {
-                Text(
-                    "${vm.upcomingEventCount} events",
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = Color.White),
-                )
+        Spacer(Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                v.name,
+                style = TextStyle(
+                    fontFamily = AppFonts.Heading,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    color = AppColors.Ink,
+                    lineHeight = 18.sp,
+                ),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(3.dp))
+            VenueMeta(vm)
+            // Third line mirrors event-card price/date row: rating + event count.
+            val ratingShown = (v.googleRating ?: 0.0) > 0
+            val eventsShown = vm.upcomingEventCount > 0
+            if (ratingShown || eventsShown) {
+                Spacer(Modifier.height(3.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (ratingShown) {
+                        Icon(
+                            Icons.Filled.Star,
+                            contentDescription = null,
+                            modifier = Modifier.size(11.dp),
+                            tint = AppColors.Sun,
+                        )
+                        Spacer(Modifier.width(3.dp))
+                        val r = v.googleRating!!
+                        val ratingText = "${r.toInt()}.${((r - r.toInt()) * 10).toInt()}"
+                        Text(
+                            ratingText,
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 11.sp,
+                                color = AppColors.Ink,
+                            ),
+                        )
+                    }
+                    if (ratingShown && eventsShown) Spacer(Modifier.width(8.dp))
+                    if (eventsShown) {
+                        Text(
+                            "${vm.upcomingEventCount} event${if (vm.upcomingEventCount == 1) "" else "s"}",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 11.sp,
+                                color = AppColors.Coral,
+                            ),
+                        )
+                    }
+                }
             }
+        }
+
+        Spacer(Modifier.width(8.dp))
+
+        // Heart — inline, matches EventRowCard (28dp white circle, 16dp coral icon)
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(AppColors.White)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onFavoriteToggle,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (isFavorited) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                contentDescription = "Favorite",
+                modifier = Modifier.size(16.dp),
+                tint = if (isFavorited) AppColors.Coral else AppColors.Ink3,
+            )
         }
     }
 }
@@ -544,12 +855,6 @@ private fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -
 private fun VenueMeta(vm: VenueWithMeta) {
     val metaStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3)
     Row(verticalAlignment = Alignment.CenterVertically) {
-        // Show venue category (e.g. "Restaurant") when available
-        val categoryLabel = vm.venue.category?.snakeToTitleCase()
-        if (categoryLabel != null) {
-            Text(categoryLabel, style = metaStyle)
-            DotSeparator()
-        }
         Text(vm.venue.city, style = metaStyle)
         if (vm.distanceMiles != null) {
             DotSeparator()
@@ -1223,4 +1528,436 @@ private fun parseWeekday(startAt: String?): String {
     } catch (_: Exception) {
         ""
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Events list — mirrors VenueGrid visually (72dp thumbnail + meta row).
+// ═══════════════════════════════════════════════════════════════════
+
+@Composable
+private fun EventGrid(
+    events: List<live.localapp.local.domain.model.Event>,
+    savedEvents: List<live.localapp.local.domain.model.Event>,
+    favoriteIds: Set<String>,
+    userLat: Double?,
+    userLng: Double?,
+    hasMore: Boolean,
+    onLoadMore: () -> Unit,
+    onEventClick: (live.localapp.local.domain.model.Event) -> Unit,
+    onFavoriteToggle: (live.localapp.local.domain.model.Event) -> Unit,
+) {
+    if (events.isEmpty() && savedEvents.isEmpty()) {
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+            Text(
+                "No events found",
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    color = AppColors.Ink3,
+                ),
+            )
+        }
+        return
+    }
+
+    androidx.compose.foundation.lazy.LazyColumn(
+        contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        if (savedEvents.isNotEmpty()) {
+            item {
+                SavedEventsSection(
+                    events = savedEvents,
+                    userLat = userLat,
+                    userLng = userLng,
+                    onEventClick = onEventClick,
+                    onFavoriteToggle = onFavoriteToggle,
+                )
+            }
+        }
+        items(events.size, key = { events[it].id }) { i ->
+            EventRowCard(
+                event = events[i],
+                isFavorited = events[i].id in favoriteIds,
+                userLat = userLat,
+                userLng = userLng,
+                onClick = { onEventClick(events[i]) },
+                onFavoriteToggle = { onFavoriteToggle(events[i]) },
+            )
+        }
+        if (hasMore) {
+            item {
+                LoadMoreButton(onClick = onLoadMore)
+            }
+        }
+        item { Spacer(Modifier.height(80.dp)) }
+    }
+}
+
+/**
+ * Horizontal album carousel for saved events — mirrors the Home screen's
+ * `SavedEventsAlbumCarousel` look and feel so the two surfaces stay visually
+ * consistent. Tappable header toggles expand/collapse.
+ */
+@Composable
+private fun SavedEventsSection(
+    events: List<live.localapp.local.domain.model.Event>,
+    userLat: Double?,
+    userLng: Double?,
+    onEventClick: (live.localapp.local.domain.model.Event) -> Unit,
+    onFavoriteToggle: (live.localapp.local.domain.model.Event) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(true) }
+
+    Column(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
+        // Header — tappable to collapse/expand, matches Home styling.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { expanded = !expanded },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "Saved Events (${events.size})",
+                modifier = Modifier.weight(1f),
+                style = TextStyle(
+                    fontFamily = AppFonts.Heading,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    color = AppColors.Coral,
+                    letterSpacing = (-0.3).sp,
+                ),
+            )
+            Icon(
+                if (expanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+                contentDescription = if (expanded) "Collapse" else "Expand",
+                modifier = Modifier.size(20.dp),
+                tint = AppColors.Coral,
+            )
+        }
+
+        if (expanded) {
+            Spacer(Modifier.height(12.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                events.forEach { event ->
+                    SavedAlbumEventCard(
+                        event = event,
+                        onClick = { onEventClick(event) },
+                        onUnfavorite = { onFavoriteToggle(event) },
+                    )
+                }
+            }
+            Spacer(Modifier.height(14.dp))
+            Box(
+                modifier = Modifier.fillMaxWidth().height(1.dp).background(AppColors.Mist),
+            )
+            Spacer(Modifier.height(4.dp))
+        }
+    }
+}
+
+@Composable
+private fun SavedAlbumEventCard(
+    event: live.localapp.local.domain.model.Event,
+    onClick: () -> Unit,
+    onUnfavorite: () -> Unit,
+) {
+    val cardShape = RoundedCornerShape(16.dp)
+    Box(
+        modifier = Modifier
+            .width(156.dp)
+            .height(190.dp)
+            .clip(cardShape)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            ),
+    ) {
+        // Full-bleed image or category gradient fallback
+        if (!event.imageUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = event.imageUrl,
+                contentDescription = event.title,
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop,
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(gradientForCategory(event.subcategory ?: event.category)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.CalendarMonth,
+                    contentDescription = null,
+                    modifier = Modifier.size(48.dp),
+                    tint = AppColors.Ink3.copy(alpha = 0.3f),
+                )
+            }
+        }
+
+        // Date pill top-left
+        val dateText = event.dateDisplay
+        if (dateText.isNotBlank()) {
+            Text(
+                dateText,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(10.dp)
+                    .background(Color.Black.copy(alpha = 0.6f), RoundedCornerShape(8.dp))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 10.sp,
+                    color = Color.White,
+                ),
+                maxLines = 1,
+            )
+        }
+
+        // Heart — top-right
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(8.dp)
+                .size(28.dp)
+                .background(Color.Black.copy(alpha = 0.4f), CircleShape)
+                .clip(CircleShape)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onUnfavorite,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.Favorite,
+                contentDescription = "Remove",
+                modifier = Modifier.size(14.dp),
+                tint = AppColors.Coral,
+            )
+        }
+
+        // Title at bottom with gradient scrim
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .background(
+                    Brush.verticalGradient(
+                        colors = listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f)),
+                    ),
+                )
+                .padding(horizontal = 12.dp, vertical = 14.dp),
+        ) {
+            Text(
+                event.title,
+                style = TextStyle(
+                    fontFamily = AppFonts.Heading,
+                    fontWeight = FontWeight.Black,
+                    fontSize = 14.sp,
+                    color = Color.White,
+                ),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+@Composable
+private fun EventRowCard(
+    event: live.localapp.local.domain.model.Event,
+    isFavorited: Boolean,
+    userLat: Double?,
+    userLng: Double?,
+    onClick: () -> Unit,
+    onFavoriteToggle: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.White)
+            .clickable(onClick = onClick)
+            .padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Thumbnail
+        Box(
+            modifier = Modifier
+                .size(72.dp)
+                .clip(RoundedCornerShape(10.dp))
+                .background(gradientForCategory(event.subcategory ?: event.category)),
+            contentAlignment = Alignment.Center,
+        ) {
+            if (!event.imageUrl.isNullOrBlank()) {
+                coil3.compose.AsyncImage(
+                    model = event.imageUrl,
+                    contentDescription = event.title,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)),
+                )
+            } else {
+                Icon(
+                    Icons.Outlined.CalendarMonth,
+                    contentDescription = null,
+                    tint = AppColors.White.copy(alpha = 0.85f),
+                    modifier = Modifier.size(28.dp),
+                )
+            }
+        }
+
+        Spacer(Modifier.width(12.dp))
+
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                event.title,
+                style = TextStyle(
+                    fontFamily = AppFonts.Heading,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 15.sp,
+                    color = AppColors.Ink,
+                    lineHeight = 18.sp,
+                ),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(3.dp))
+            val metaParts = buildList {
+                event.venueName?.takeIf { it.isNotBlank() }?.let { add(it) }
+                val distLabel = distanceLabel(event, userLat, userLng)
+                if (distLabel.isNotBlank()) add(distLabel)
+            }
+            if (metaParts.isNotEmpty()) {
+                Text(
+                    metaParts.joinToString(" · "),
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 11.sp,
+                        color = AppColors.Ink3,
+                    ),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (event.dateDisplay.isNotBlank() || event.priceDisplay.isNotBlank() || event.isFree) {
+                Spacer(Modifier.height(3.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (event.dateDisplay.isNotBlank()) {
+                        Text(
+                            event.dateDisplay,
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 11.sp,
+                                color = AppColors.Coral,
+                            ),
+                        )
+                    }
+                    if (event.isFree) {
+                        if (event.dateDisplay.isNotBlank()) Spacer(Modifier.width(8.dp))
+                        Text(
+                            "Free",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 11.sp,
+                                color = AppColors.Sage,
+                            ),
+                        )
+                    } else if (event.priceDisplay.isNotBlank()) {
+                        if (event.dateDisplay.isNotBlank()) Spacer(Modifier.width(8.dp))
+                        Text(
+                            event.priceDisplay,
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 11.sp,
+                                color = AppColors.Ink3,
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.width(8.dp))
+
+        // Heart — matches venue card style (28dp white circle, 16dp coral)
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .background(AppColors.White)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onFavoriteToggle,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (isFavorited) Icons.Filled.Favorite else Icons.Outlined.FavoriteBorder,
+                contentDescription = "Favorite",
+                modifier = Modifier.size(16.dp),
+                tint = if (isFavorited) AppColors.Coral else AppColors.Ink3,
+            )
+        }
+    }
+}
+
+@Composable
+private fun LoadMoreButton(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 12.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(22.dp))
+                .background(AppColors.White)
+                .clickable(onClick = onClick)
+                .padding(horizontal = 24.dp, vertical = 12.dp),
+        ) {
+            Text(
+                "Load more",
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 13.sp,
+                    color = AppColors.Coral,
+                ),
+            )
+        }
+    }
+}
+
+private fun distanceLabel(
+    event: live.localapp.local.domain.model.Event,
+    userLat: Double?,
+    userLng: Double?,
+): String {
+    val lat = event.venueLat ?: return ""
+    val lng = event.venueLng ?: return ""
+    if (userLat == null || userLng == null) return ""
+    val miles = live.localapp.local.domain.model.distanceMiles(userLat, userLng, lat, lng)
+    if (miles <= 0.0 || miles > 500.0) return ""
+    return if (miles < 1.0) "<1 mi" else "${miles.toInt()} mi"
 }

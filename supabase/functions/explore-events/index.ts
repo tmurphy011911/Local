@@ -53,11 +53,18 @@ const CORS_HEADERS = {
 };
 
 // In-memory cache — persists across requests in same Deno isolate.
-// Keyed on geo (rounded), query, category, radius. Personalized scoring
-// is applied after cache hit so signed-in users still get taste boosts.
+// We cache the ALREADY-SORTED output so per-request just slices for
+// pagination. Scoring inside the cache means order stays stable for the
+// TTL window; without this, `nowMs`-dependent freshness shifts events
+// across every refresh.
+interface ScoredItem {
+  e: EventRow;
+  resolvedImage: string | null;
+  dist: number;
+  score: number;
+}
 interface CacheEntry {
-  events: EventRow[];
-  photoByVenue: Record<string, string>;
+  scored: ScoredItem[];
   timestamp: number;
 }
 const CACHE_TTL_MS = 10 * 60 * 1000; // 10 min
@@ -71,6 +78,24 @@ function getCached(key: string): CacheEntry | null {
     return null;
   }
   return hit;
+}
+
+/**
+ * Canonical venue-name key. Shared by the photo-fallback lookup here AND
+ * by the event-count/venue-detail paths elsewhere — so a venue called
+ * "The Brattle Theatre" matches events whose venue_name is "Brattle
+ * Theatre" (and vice versa). Without this, image fallback and event
+ * counts silently miss ~20% of venues.
+ */
+function normalizeVenueKey(name: string | null | undefined): string {
+  if (!name) return "";
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/^the\s+/, "")
+    .replace(/[^\w\s]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 // ── Geo helpers ──
@@ -174,17 +199,28 @@ async function fetchEvents(
 async function fetchVenuePhotos(supabase: any, venueNames: string[]): Promise<Record<string, string>> {
   if (venueNames.length === 0) return {};
   const result: Record<string, string> = {};
-  // Batch in chunks of 200 to keep URL length reasonable
-  const distinct = Array.from(new Set(venueNames.map((n) => n.trim()))).filter((n) => n.length > 0);
-  for (let i = 0; i < distinct.length; i += 200) {
-    const batch = distinct.slice(i, i + 200);
-    const { data } = await supabase
-      .from("venues")
-      .select("name,photo_url,image_url")
-      .in("name", batch);
-    for (const row of data ?? []) {
-      const photo = row.photo_url ?? row.image_url;
-      if (photo) result[row.name.toLowerCase().trim()] = photo;
+  // Pull ALL active venues with a photo from the bbox — since event venue_name
+  // often differs from venues.name by a "The " prefix or punctuation, exact
+  // .in() matching silently misses ~20% of pairs. Instead we fetch broadly
+  // and match on the normalized key on both sides.
+  const distinctNormalized = new Set(venueNames.map((n) => normalizeVenueKey(n)).filter((k) => k.length > 0));
+  if (distinctNormalized.size === 0) return result;
+
+  // Page through all venues that might match (active + has photo). We don't
+  // filter by name here because we can't predict the naming drift — the
+  // normalized-key join does the matching after fetch.
+  const { data } = await supabase
+    .from("venues")
+    .select("name,photo_url")
+    .eq("is_active", true)
+    .not("photo_url", "is", null)
+    .limit(10000);
+
+  for (const row of data ?? []) {
+    const k = normalizeVenueKey(row.name);
+    if (!k) continue;
+    if (distinctNormalized.has(k) && !result[k] && row.photo_url) {
+      result[k] = row.photo_url;
     }
   }
   return result;
@@ -289,6 +325,9 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+    // Cache key includes user_id so per-user taste ordering is stable.
+    // Anonymous requests share one entry. Score is frozen for the TTL window
+    // so refreshes within 10 min return the IDENTICAL order.
     const cacheKey = [
       Math.round(lat * 10) / 10,
       Math.round(lng * 10) / 10,
@@ -296,37 +335,43 @@ Deno.serve(async (req) => {
       category ?? "",
       radiusMiles,
       dateFilter ?? "",
+      userId ?? "anon",
     ].join("|");
 
-    let events: EventRow[];
-    let photoByVenue: Record<string, string>;
+    let scored: ScoredItem[];
     const cached = getCached(cacheKey);
     if (cached) {
-      events = cached.events;
-      photoByVenue = cached.photoByVenue;
+      scored = cached.scored;
     } else {
-      events = await fetchEvents(supabase, lat, lng, query, category, radiusMiles, dateFilter);
+      const events = await fetchEvents(supabase, lat, lng, query, category, radiusMiles, dateFilter);
       const venueNames = events.filter((e) => !e.image_url).map((e) => e.venue_name ?? "");
-      photoByVenue = await fetchVenuePhotos(supabase, venueNames);
-      cache.set(cacheKey, { events, photoByVenue, timestamp: Date.now() });
+      const photoByVenue = await fetchVenuePhotos(supabase, venueNames);
+      const prefs = userId ? await fetchUserPrefs(supabase, userId) : null;
+      // Snap scoring time to the TTL boundary so even if this isolate is
+      // warm vs cold, the nowMs used for freshness is the same bucket.
+      const nowMs = Math.floor(Date.now() / CACHE_TTL_MS) * CACHE_TTL_MS;
+
+      scored = events
+        .map((e) => {
+          const venueKey = normalizeVenueKey(e.venue_name);
+          const resolvedImage = e.image_url || (venueKey ? photoByVenue[venueKey] : null) || null;
+          const dist = e.venue_lat != null && e.venue_lng != null
+            ? distanceMiles(lat, lng, e.venue_lat, e.venue_lng)
+            : 999;
+          return {
+            e,
+            resolvedImage,
+            dist,
+            score: scoreEvent(e, resolvedImage, lat, lng, prefs, nowMs),
+          };
+        })
+        .filter((x) => x.dist <= radiusMiles)
+        // Secondary tiebreak on event id to guarantee stable order even when
+        // two events score identically (happens often for same-venue events).
+        .sort((a, b) => b.score - a.score || a.e.id.localeCompare(b.e.id));
+
+      cache.set(cacheKey, { scored, timestamp: Date.now() });
     }
-
-    // Always fetch prefs fresh (small, per-user)
-    const prefs = userId ? await fetchUserPrefs(supabase, userId) : null;
-    const nowMs = Date.now();
-
-    // Score + radius filter + sort
-    const scored = events
-      .map((e) => {
-        const venueKey = e.venue_name?.toLowerCase().trim() ?? "";
-        const resolvedImage = e.image_url || (venueKey ? photoByVenue[venueKey] : null) || null;
-        const dist = e.venue_lat != null && e.venue_lng != null
-          ? distanceMiles(lat, lng, e.venue_lat, e.venue_lng)
-          : 999;
-        return { e, resolvedImage, dist, score: scoreEvent(e, resolvedImage, lat, lng, prefs, nowMs) };
-      })
-      .filter((x) => x.dist <= radiusMiles)
-      .sort((a, b) => b.score - a.score);
 
     const page = scored.slice(offset, offset + limit);
     const hasMore = scored.length > offset + limit;
