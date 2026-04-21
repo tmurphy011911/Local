@@ -384,7 +384,7 @@ private fun ChatHeader(onBack: (() -> Unit)? = null, onReset: (() -> Unit)? = nu
         }
 
         Text(
-            "Yocal the Local",
+            "ask yocal",
             modifier = Modifier.weight(1f),
             style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = AppColors.Ink),
         )

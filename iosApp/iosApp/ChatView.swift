@@ -252,7 +252,7 @@ struct ChatView: View {
                 }
                 .buttonStyle(.plain)
 
-                Text("Yocal the Local")
+                Text("ask yocal")
                     .font(F.display(22, .black))
                     .foregroundColor(C.ink)
 
@@ -541,10 +541,12 @@ private struct MultiDayPlanCardView: View {
     private var dayHeader: some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
-                Text("DAY \(dayIndex + 1) OF \(days.count)")
-                    .font(F.body(10, .black))
-                    .tracking(0.8)
-                    .foregroundColor(.white.opacity(0.7))
+                if days.count > 1 {
+                    Text("DAY \(dayIndex + 1) OF \(days.count)")
+                        .font(F.body(10, .black))
+                        .tracking(0.8)
+                        .foregroundColor(.white.opacity(0.7))
+                }
                 Spacer()
                 HStack(spacing: 16) {
                     if safeDayIndex > 0 {
@@ -890,12 +892,12 @@ private struct PlanCelebrationOverlay: View {
 
                 Spacer().frame(height: 20)
 
-                // Plan summary card
+                // Plan summary card — full rich plan card (same as chat)
                 if !days.isEmpty {
-                    planSummaryCard
+                    MultiDayPlanCardView(days: days, weather: [:], showSave: false)
                         .offset(y: cardOffset)
                         .opacity(cardOpacity)
-                        .padding(.horizontal, 18)
+                        .padding(.horizontal, 14)
                 }
 
                 Spacer()
@@ -945,45 +947,6 @@ private struct PlanCelebrationOverlay: View {
             }
         }
         .task { await runAnimations() }
-    }
-
-    // MARK: - Plan summary card (white card showing stops)
-
-    private var planSummaryCard: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            ForEach(Array(days.enumerated()), id: \.offset) { dayIdx, day in
-                if days.count > 1 {
-                    Text(day.label)
-                        .font(F.body(11, .black))
-                        .foregroundColor(C.coral)
-                        .padding(.top, dayIdx > 0 ? 4 : 0)
-                }
-                ForEach(day.slots, id: \.id) { slot in
-                    HStack(spacing: 10) {
-                        Text(slot.time)
-                            .font(F.body(12, .heavy))
-                            .foregroundColor(C.ink3)
-                            .frame(width: 60, alignment: .leading)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(slot.name)
-                                .font(F.body(13, .bold))
-                                .foregroundColor(C.ink)
-                                .lineLimit(1)
-                            if !slot.detail.isEmpty {
-                                Text(slot.detail)
-                                    .font(F.body(11, .semibold))
-                                    .foregroundColor(C.ink3)
-                                    .lineLimit(1)
-                            }
-                        }
-                        Spacer()
-                    }
-                }
-            }
-        }
-        .padding(16)
-        .background(.white)
-        .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
     // MARK: - Animations
