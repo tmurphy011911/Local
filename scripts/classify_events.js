@@ -61,9 +61,15 @@ const AUTO_EXCLUDE_PATTERNS = [
   { label: "recovery-meeting", re: /\b(aa|na)(?!a)\b[\s\S]{0,30}\b(meeting|group|open|closed|speaker|beginners|big book|step study)\b[\s\S]{0,60}\b(tuesday|wednesday|monday|thursday|friday|saturday|sunday|weekly|daily|every)\b/i },
   // Weekday/cadence + bare acronym: "Tuesday AA", "Weekly NA"
   { label: "recovery-meeting", re: /\b(tuesday|wednesday|monday|thursday|friday|saturday|sunday|daily|weekly|morning|evening|noon|lunchtime)\s+(aa|na|oa|ga)\b(?!a)/i },
-  // Youth / scholastic sports (title must contain youth qualifier + sport)
-  { label: "youth-sports", re: /\b(jv|junior varsity|varsity|freshman|sub-varsity|middle school|high school|elementary|peewee|pee-wee|t-?ball|little league|cal ripken|pop warner|aau|\bu\s?\d{1,2}\b)\b[\s\S]{0,40}\b(baseball|softball|basketball|soccer|football|hockey|lacrosse|volleyball|tennis|track|wrestling|golf|rugby|crew|rowing|field hockey|swim|swimming|cross.?country|cheer|dance team)\b/i },
-  { label: "youth-sports", re: /\b(baseball|softball|basketball|soccer|football|hockey|lacrosse|volleyball|tennis|track|wrestling|golf|rugby|field hockey)\b[\s\S]{0,40}\b(jv|junior varsity|varsity|freshman|middle school|high school|elementary|peewee|pee-wee|little league)\b/i },
+  // Youth / scholastic sports — catches "Varsity Baseball", "JV Lacrosse",
+  // "Middle School Track", "MS Girls Tennis", "Girls HS Volleyball", etc.
+  // MS/HS are the most common abbreviations in crawler data.
+  { label: "youth-sports", re: /\b(jv|junior varsity|varsity|freshman|sub-varsity|middle school|high school|elementary|peewee|pee-wee|t-?ball|little league|cal ripken|pop warner|aau|\bu\s?\d{1,2}\b|\bms\b|\bhs\b)\b[\s\S]{0,40}\b(baseball|softball|basketball|soccer|football|hockey|lacrosse|volleyball|tennis|track|wrestling|golf|rugby|crew|rowing|field hockey|swim|swimming|cross.?country|cheer|dance team)\b/i },
+  { label: "youth-sports", re: /\b(baseball|softball|basketball|soccer|football|hockey|lacrosse|volleyball|tennis|track|wrestling|golf|rugby|field hockey)\b[\s\S]{0,40}\b(jv|junior varsity|varsity|freshman|middle school|high school|elementary|peewee|pee-wee|little league|\bms\b|\bhs\b)\b/i },
+  // "Girls MS" / "Boys HS" / "Co-Ed JV" — gender prefix immediately followed by scholastic qualifier
+  { label: "youth-sports", re: /\b(girls|boys|co[-\s]?ed)\s+(ms|hs|jv|varsity|junior varsity|middle school|high school)\b/i },
+  // Sport + "@ <School>" pattern — HS/MS sports schedules commonly title like "Varsity Tennis @ Tabor"
+  { label: "youth-sports", re: /\b(baseball|softball|basketball|soccer|football|hockey|lacrosse|volleyball|tennis|track|wrestling|golf|rugby|field hockey)\b[\s\S]{0,15}@\s+[A-Z][a-z]+/ },
   // Government / civic / HOA committee meetings
   { label: "civic-meeting", re: /\b(school committee|school board|town council|city council|select board|planning board|zoning board|conservation commission|historic district commission|board of health|board of selectmen|abutters meeting|hoa meeting|homeowners? association meeting|condo association meeting)\b/i },
   // Internal / private / trainings

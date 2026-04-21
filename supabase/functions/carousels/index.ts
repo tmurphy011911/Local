@@ -12,6 +12,7 @@ interface EventRow {
   category: string;
   subcategory: string | null;
   sub_subcategory: string | null;
+  team_name: string | null;
   start_at: string | null;
   end_at: string | null;
   is_free: boolean;
@@ -211,45 +212,6 @@ const minorSportsPatterns = [
   "river hawks", "wildcats", "minutemen", "eagles hockey",
   "mountain kings", "nordiques", "mariners vs", "thunder vs",
   "big east", "ncaa", "college",
-];
-
-interface ProTeamDef {
-  slug: string;
-  title: string;
-  keyword: string;
-  excludeKeywords: string[];
-}
-
-const bostonProTeams: ProTeamDef[] = [
-  { slug: "sports-bruins", title: "Boston Bruins", keyword: "bruins", excludeKeywords: ["providence"] },
-  { slug: "sports-celtics", title: "Boston Celtics", keyword: "celtics", excludeKeywords: [] },
-  { slug: "sports-red-sox", title: "Boston Red Sox", keyword: "red sox", excludeKeywords: ["worcester", "woosox", "portland", "salem", "greenville"] },
-  { slug: "sports-patriots", title: "New England Patriots", keyword: "new england patriots", excludeKeywords: [] },
-  { slug: "sports-revolution", title: "New England Revolution", keyword: "new england revolution", excludeKeywords: [] },
-];
-
-const minorLeagueTeams: ProTeamDef[] = [
-  { slug: "sports-woosox", title: "Worcester Red Sox", keyword: "worcester red sox", excludeKeywords: [] },
-  { slug: "sports-woosox2", title: "Worcester Red Sox", keyword: "woosox", excludeKeywords: [] },
-];
-
-const areaColleges: ProTeamDef[] = [
-  { slug: "college-northeastern", title: "Northeastern Huskies", keyword: "northeastern", excludeKeywords: [] },
-  { slug: "college-bc", title: "Boston College Eagles", keyword: "boston college", excludeKeywords: [] },
-  { slug: "college-bu", title: "Boston University Terriers", keyword: "boston university", excludeKeywords: [] },
-  { slug: "college-bu2", title: "Boston University Terriers", keyword: "bu terriers", excludeKeywords: [] },
-  { slug: "college-harvard", title: "Harvard Crimson", keyword: "harvard", excludeKeywords: [] },
-  { slug: "college-mit", title: "MIT Engineers", keyword: "mit engineers", excludeKeywords: [] },
-  { slug: "college-tufts", title: "Tufts Jumbos", keyword: "tufts", excludeKeywords: [] },
-  { slug: "college-umass", title: "UMass Minutemen", keyword: "umass", excludeKeywords: [] },
-  { slug: "college-holycross", title: "Holy Cross Crusaders", keyword: "holy cross", excludeKeywords: [] },
-  { slug: "college-providence", title: "Providence Friars", keyword: "providence friars", excludeKeywords: [] },
-  { slug: "college-uconn", title: "UConn Huskies", keyword: "uconn", excludeKeywords: [] },
-  { slug: "college-merrimack", title: "Merrimack Warriors", keyword: "merrimack", excludeKeywords: [] },
-  { slug: "college-bentley", title: "Bentley Falcons", keyword: "bentley", excludeKeywords: [] },
-  { slug: "college-wpi", title: "WPI Engineers", keyword: "wpi", excludeKeywords: [] },
-  { slug: "college-brandeis", title: "Brandeis Judges", keyword: "brandeis", excludeKeywords: [] },
-  { slug: "college-brown", title: "Brown Bears", keyword: "brown bears", excludeKeywords: [] },
 ];
 
 interface SportsCarouselDef {
@@ -548,6 +510,14 @@ function cleanEvents(
   const filtered = reclassified
     .filter(e => !isGovernmentNoise(e))
     .filter(e => e.subcategory !== "no-public-interest")
+    // Global minimum-quality floor — hide events whose venue has
+    // public_interest_rank <= 10 (community centers, K-12 athletic
+    // fields, junk listings). Applied BEFORE carousel assembly so
+    // bottom-tier venues don't pollute any surface.
+    .filter(e => {
+      const info = venueCache.get((e.venue_name ?? "").toLowerCase());
+      return info?.rank == null || info.rank > 10;
+    })
     .filter(e => !isLivestreamDuplicate(e, reclassified));
   const deduped = distinctByBaseTitle(filtered);
   // Apply venue photo fallback and venue description
@@ -1153,85 +1123,54 @@ function buildSportsCarousels(
 ): CarouselSection[] {
   const result: CarouselSection[] = [];
 
-  function matchesTeam(event: ProcessedEvent, team: ProTeamDef): boolean {
-    const titleLc = event.title.toLowerCase();
-    const regex = new RegExp(`\\b${team.keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`);
-    if (!regex.test(titleLc)) return false;
-    const fullText = `${titleLc} ${(event.venue_name ?? "").toLowerCase()}`;
-    return !team.excludeKeywords.some(kw => fullText.includes(kw));
+  // Tier by sub_subcategory: pro leagues first, then college, then minor league, else other.
+  const proSubs = new Set(["hockey", "basketball", "baseball", "football", "soccer"]);
+  function teamTier(subSub: string | null | undefined): number {
+    const s = (subSub ?? "").toLowerCase();
+    if (proSubs.has(s)) return 0;
+    if (s === "college-sports") return 1;
+    if (s === "minor-league") return 2;
+    return 3;
   }
 
-  // 1. Pro team carousels
-  for (const team of bostonProTeams) {
-    const events = allSports
-      .filter(e => matchesTeam(e, team))
-      .slice(0, CAROUSEL_DISPLAY_LIMIT);
-    if (events.length === 0) continue;
+  function slugFor(teamName: string): string {
+    return "sports-team-" + teamName.toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  }
+
+  // 1. Team carousels — group by team_name
+  const byTeam = new Map<string, ProcessedEvent[]>();
+  for (const event of allSports) {
+    const name = (event.team_name ?? "").trim();
+    if (!name) continue;
+    const bucket = byTeam.get(name) ?? [];
+    bucket.push(event);
+    byTeam.set(name, bucket);
+  }
+
+  const teamEntries = Array.from(byTeam.entries()).map(([name, events]) => {
+    const tier = Math.min(...events.map(e => teamTier(e.sub_subcategory)));
+    return { name, events, tier };
+  });
+  teamEntries.sort((a, b) => {
+    if (a.tier !== b.tier) return a.tier - b.tier;
+    return a.name.localeCompare(b.name);
+  });
+
+  for (const entry of teamEntries) {
+    const events = entry.events.slice(0, CAROUSEL_DISPLAY_LIMIT);
     events.forEach(e => seenEventIds.add(e.id));
     result.push({
-      slug: team.slug,
-      title: team.title,
+      slug: slugFor(entry.name),
+      title: entry.name,
       subtitle: null,
       filter_type: "sports_team",
       events,
     });
   }
 
-  // 1b. Minor league (merge keyword variants)
-  const minorLeagueEvents: ProcessedEvent[] = [];
-  const minorLeagueIds = new Set<string>();
-  for (const team of minorLeagueTeams) {
-    for (const event of allSports) {
-      const text = `${event.title} ${event.venue_name ?? ""}`.toLowerCase();
-      if (text.includes(team.keyword) && !minorLeagueIds.has(event.id)) {
-        minorLeagueIds.add(event.id);
-        minorLeagueEvents.push(event);
-      }
-    }
-  }
-  if (minorLeagueEvents.length > 0) {
-    const capped = minorLeagueEvents.slice(0, CAROUSEL_DISPLAY_LIMIT);
-    capped.forEach(e => seenEventIds.add(e.id));
-    result.push({
-      slug: "sports-woosox",
-      title: minorLeagueTeams[0].title,
-      subtitle: null,
-      filter_type: "sports_team",
-      events: capped,
-    });
-  }
-
-  // 1c. College team carousels
-  const collegeSlugsSeen = new Set<string>();
-  for (const college of areaColleges) {
-    const baseSlug = college.slug.replace(/2$/, "");
-    if (collegeSlugsSeen.has(baseSlug)) {
-      // Just claim the events
-      for (const event of allSports) {
-        const text = `${event.title} ${event.venue_name ?? ""}`.toLowerCase();
-        if (text.includes(college.keyword)) seenEventIds.add(event.id);
-      }
-      continue;
-    }
-    const events = allSports
-      .filter(event => {
-        const text = `${event.title} ${event.venue_name ?? ""}`.toLowerCase();
-        return text.includes(college.keyword);
-      })
-      .slice(0, CAROUSEL_DISPLAY_LIMIT);
-    if (events.length === 0) continue;
-    events.forEach(e => seenEventIds.add(e.id));
-    collegeSlugsSeen.add(baseSlug);
-    result.push({
-      slug: baseSlug,
-      title: college.title,
-      subtitle: null,
-      filter_type: "sports_college",
-      events,
-    });
-  }
-
-  // 2. By sport type
+  // 2. By sport type — picks up events without a team_name
   for (const sport of sportTypes) {
     const events = allSports
       .filter(e => e.sub_subcategory === sport.subSubcategory)

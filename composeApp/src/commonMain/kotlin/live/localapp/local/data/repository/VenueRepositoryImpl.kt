@@ -22,8 +22,9 @@ class VenueRepositoryImpl(
         userLat: Double,
         userLng: Double,
     ): List<VenueWithMeta> {
-        // 1. Fetch active venues within geo-radius of user
-        val radiusMiles = 30.0
+        // 1. Fetch active venues within geo-radius of user.
+        // 100 miles is the scrollable-list cap; search uses a wider fetch.
+        val radiusMiles = 100.0
         val latDelta = radiusMiles / 69.0
         val lngDelta = radiusMiles / 50.0
         val venues = supabaseClient.from("venues")
@@ -39,80 +40,26 @@ class VenueRepositoryImpl(
             .decodeList<VenueDto>()
             .map { it.toDomain() }
 
-        // 2. Fetch upcoming events using same geo-radius
-        val nowIso = kotlin.time.Clock.System.now().toString()
-        val events = try {
-            val upcoming = mutableListOf<EventDto>()
-            for (page in 0 until 5) {
-                val batch = supabaseClient.from("events")
-                    .select {
-                        filter {
-                            eq("is_active", true)
-                            gte("start_at", nowIso)
-                            gte("venue_lat", userLat - latDelta)
-                            lte("venue_lat", userLat + latDelta)
-                            gte("venue_lng", userLng - lngDelta)
-                            lte("venue_lng", userLng + lngDelta)
-                        }
-                        order("start_at", Order.ASCENDING)
-                        limit(1000)
-                        range((page * 1000).toLong(), ((page + 1) * 1000 - 1).toLong())
-                    }
-                    .decodeList<EventDto>()
-                upcoming.addAll(batch)
-                if (batch.size < 1000) break
-            }
-            upcoming
-                .distinctBy { it.id }
-                .map { it.toDomain() }
-        } catch (_: Exception) {
-            emptyList()
-        }
+        // Events are NOT fetched during grid load — loading the page used to pull
+        // ~1000 events in a bbox query just to compute counts + derive tags, which
+        // bloated first paint. Event lists + counts now load lazily on venue detail
+        // open (see PlacesViewModel.selectVenue + getUpcomingEventsForVenue).
 
-        // 3. Group events by venue name (lowercase)
-        val eventsByVenue = events.groupBy { (it.venueName ?: "").lowercase().trim() }
-
-        // 4. Determine the highest-ranked venue to feature
         val topRank = venues.maxByOrNull { it.publicInterestRank ?: 0 }
 
-        // 5. Enrich venues with distance, event counts, categories
         return venues.mapNotNull { venue ->
             val lat = venue.latitude ?: return@mapNotNull null
             val lng = venue.longitude ?: return@mapNotNull null
             val dist = distanceMiles(userLat, userLng, lat, lng)
-            val venueKey = venue.name.lowercase().trim()
-            // Match events by exact name, or fuzzy containment for slight naming differences
-            val venueEvents = eventsByVenue[venueKey]
-                ?: eventsByVenue.entries
-                    .filter { (eventVenue, _) ->
-                        eventVenue.isNotEmpty() && (eventVenue.contains(venueKey) || venueKey.contains(eventVenue))
-                    }
-                    .flatMap { it.value }
-                    .ifEmpty { null }
-                ?: emptyList()
 
-            // Use the venue's own category first, fall back to event-derived categories
-            val eventCategories = venueEvents.mapNotNull { it.subcategory?.lowercase() }
-                .groupingBy { it }
-                .eachCount()
-                .entries
-                .sortedByDescending { it.value }
-            val primaryCat = venue.category ?: eventCategories.firstOrNull()?.key
-            val tags = buildList {
-                // Lead with the venue's own category if present
-                venue.category?.let { add(categoryDisplayName(it)) }
-                // Add event-derived categories
-                eventCategories.take(3).forEach { (cat, _) ->
-                    val display = categoryDisplayName(cat)
-                    if (display !in this) add(display)
-                }
-            }.take(3)
+            val primaryCat = venue.category
+            val tags = venue.category?.let { listOf(categoryDisplayName(it)) } ?: emptyList()
 
             VenueWithMeta(
                 venue = venue,
                 distanceMiles = dist,
-                upcomingEventCount = venueEvents.size,
-                upcomingEvents = venueEvents,
+                upcomingEventCount = 0,
+                upcomingEvents = emptyList(),
                 primaryCategory = primaryCat,
                 tags = tags,
                 isFeatured = venue.id == topRank?.id,
@@ -132,12 +79,9 @@ class VenueRepositoryImpl(
                     .thenByDescending { it.upcomingEventCount }
                     .thenByDescending { it.venue.photoUrl != null }
             ).first()
-            // Merge events from all duplicates
-            val allEvents = dupes.flatMap { it.upcomingEvents }.distinctBy { it.id }
-            best.copy(
-                upcomingEventCount = allEvents.size,
-                upcomingEvents = allEvents,
-            )
+            // Events aren't populated on grid load (see getVenues comment) — leave
+            // both fields untouched; PlacesViewModel.selectVenue hydrates on click.
+            best
         }
     }
 
@@ -156,16 +100,18 @@ class VenueRepositoryImpl(
         val coreName = venueName.trim()
             .removePrefix("The ").removePrefix("the ")
             .trim()
+        // City filter dropped on purpose — venue.city vs event.city casing mismatches
+        // were silently returning zero rows. Venue name is unique enough in practice.
         return try {
             supabaseClient.from("events")
                 .select {
                     filter {
-                        eq("city", city)
                         eq("is_active", true)
                         ilike("venue_name", "%${coreName}%")
                         gte("start_at", nowIso)
                     }
                     order("start_at", Order.ASCENDING)
+                    limit(50)
                 }
                 .decodeList<EventDto>()
                 .map { it.toDomain() }
@@ -184,6 +130,10 @@ class VenueRepositoryImpl(
             .select {
                 filter {
                     eq("is_active", true)
+                    // Global minimum-quality floor — hide rank <= 10 venues
+                    // (community centers, K-12 fields, junk listings) from
+                    // every discovery surface including Yocal chat results.
+                    gt("public_interest_rank", 10)
                     if (!location.isNullOrBlank()) {
                         ilike("city", "%${location}%")
                     }
@@ -201,6 +151,42 @@ class VenueRepositoryImpl(
             }
             .decodeList<VenueDto>()
             .map { it.toDomain() }
+    }
+
+    /**
+     * Cache for the life of the repository singleton — low-rank venue set
+     * barely changes (3-5 rows) and is needed on every chat-tool call, so
+     * caching here avoids per-turn round-trips.
+     */
+    private var lowRankVenueCache: Set<String>? = null
+
+    override suspend fun getLowRankVenueNames(): Set<String> {
+        lowRankVenueCache?.let { return it }
+        val rows = try {
+            supabaseClient.from("venues")
+                .select(io.github.jan.supabase.postgrest.query.Columns.list("name")) {
+                    filter {
+                        lte("public_interest_rank", 10)
+                        eq("is_active", true)
+                    }
+                }
+                .decodeList<LowRankVenueRow>()
+        } catch (_: Exception) {
+            emptyList()
+        }
+        val set = buildSet {
+            for (r in rows) {
+                val raw = r.name.trim()
+                if (raw.isNotEmpty()) {
+                    add(raw.lowercase())
+                    // Normalized form: strip "the " and non-alphanumerics — aligns
+                    // with how edge functions build their venue-name keys.
+                    add(raw.lowercase().removePrefix("the ").replace(Regex("[^a-z0-9\\s]"), "").trim())
+                }
+            }
+        }
+        lowRankVenueCache = set
+        return set
     }
 
     override suspend fun findVenueByNameAndCity(name: String, city: String): Venue? {
@@ -246,6 +232,53 @@ class VenueRepositoryImpl(
         } catch (_: Throwable) { null }
     }
 
+    override suspend fun searchByNameWide(
+        query: String,
+        userLat: Double,
+        userLng: Double,
+        limit: Int,
+    ): List<VenueWithMeta> {
+        if (query.isBlank()) return emptyList()
+        // Cap to 100mi around the user — same as getVenues. Prevents
+        // far-away venues from leaking into the Places list via search.
+        val radiusMiles = 100.0
+        val latDelta = radiusMiles / 69.0
+        val lngDelta = radiusMiles / 50.0
+        return try {
+            val raw = supabaseClient.from("venues")
+                .select {
+                    filter {
+                        eq("is_active", true)
+                        ilike("name", "%${query}%")
+                        gte("lat", userLat - latDelta)
+                        lte("lat", userLat + latDelta)
+                        gte("lng", userLng - lngDelta)
+                        lte("lng", userLng + lngDelta)
+                    }
+                    limit(limit.toLong())
+                }
+                .decodeList<VenueDto>()
+                .map { it.toDomain() }
+            raw.mapNotNull { venue ->
+                val lat = venue.latitude ?: return@mapNotNull null
+                val lng = venue.longitude ?: return@mapNotNull null
+                val dist = distanceMiles(userLat, userLng, lat, lng)
+                // Belt-and-suspenders: drop anything >100mi in case the
+                // bbox filter isn't tight enough near high latitudes.
+                if (dist > radiusMiles) return@mapNotNull null
+                VenueWithMeta(
+                    venue = venue,
+                    distanceMiles = dist,
+                    upcomingEventCount = 0,
+                    upcomingEvents = emptyList(),
+                    primaryCategory = venue.category,
+                    tags = venue.category?.let { listOf(categoryDisplayName(it)) } ?: emptyList(),
+                    googleRating = venue.googleRating,
+                )
+            }
+        } catch (_: Throwable) { emptyList() }
+    }
+
     private fun categoryDisplayName(cat: String): String = when (cat) {
         "music" -> "Music"
         "sports" -> "Sports"
@@ -259,3 +292,6 @@ class VenueRepositoryImpl(
         else -> cat.snakeToTitleCase()
     }
 }
+
+@kotlinx.serialization.Serializable
+private data class LowRankVenueRow(val name: String)

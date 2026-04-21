@@ -445,8 +445,7 @@ class ChatViewModel(
             ItineraryDay(
                 label = parsedDay.label,
                 shortName = shortName,
-                slots = slots.map { it.copy(time = normalizeTimeDisplay(it.time)) }
-                    .sortedBy { parseTimeForSort(it.time) },
+                slots = sortSlotsByTime(slots.map { it.copy(time = normalizeTimeDisplay(it.time)) }),
             )
         }
     }
@@ -542,6 +541,13 @@ class ChatViewModel(
                     }
                 }
                 is StreamEvent.ToolUseStart -> {
+                    // If Claude already streamed partial text in this round, commit
+                    // it as a real message before entering the search state — otherwise
+                    // the partial response disappears and the UI reverts to the idiom.
+                    if (!isToolRound && streamBuffer.isNotEmpty()) {
+                        val pending = streamBuffer.toString().trim()
+                        if (pending.isNotEmpty()) addAiMessage(pending)
+                    }
                     _uiState.update { it.copy(isSearching = true, streamingText = "") }
                     streamBuffer.clear()
                 }
@@ -715,13 +721,14 @@ class ChatViewModel(
                 println("Tool loop capped at $maxToolRounds rounds — forcing completion")
                 val assistantBlocks = claudeApi.buildAssistantContentBlocks(response)
                 conversationHistory.add(ClaudeMessage.blocks("assistant", assistantBlocks))
+                val anchor = dateAnchorText()
                 val toolResultBlocks = kotlinx.serialization.json.buildJsonArray {
                     for (call in toolCalls) {
                         val result = executeToolCall(call.name, call.input)
                         add(kotlinx.serialization.json.buildJsonObject {
                             put("type", JsonPrimitive("tool_result"))
                             put("tool_use_id", JsonPrimitive(call.id))
-                            put("content", JsonPrimitive(result))
+                            put("content", JsonPrimitive(anchor + result))
                         })
                     }
                 }
@@ -759,6 +766,7 @@ class ChatViewModel(
             val assistantBlocks = claudeApi.buildAssistantContentBlocks(response)
             conversationHistory.add(ClaudeMessage.blocks("assistant", assistantBlocks))
 
+            val anchor = dateAnchorText()
             val toolResultBlocks = kotlinx.serialization.json.buildJsonArray {
                 for (call in toolCalls) {
                     println("Executing tool: ${call.name} with input: ${call.input}")
@@ -767,12 +775,44 @@ class ChatViewModel(
                     add(kotlinx.serialization.json.buildJsonObject {
                         put("type", JsonPrimitive("tool_result"))
                         put("tool_use_id", JsonPrimitive(call.id))
-                        put("content", JsonPrimitive(result))
+                        put("content", JsonPrimitive(anchor + result))
                     })
                 }
             }
             conversationHistory.add(ClaudeMessage.blocks("user", toolResultBlocks))
         }
+    }
+
+    /**
+     * Short date anchor re-stated in every tool_result so Claude doesn't drift
+     * across tool rounds. Prepends to each tool result content.
+     * Gives today's date + explicit mappings for "this [weekday]" and "next [weekday]".
+     */
+    private fun dateAnchorText(): String {
+        return try {
+            val now = kotlinx.datetime.Instant.fromEpochMilliseconds(kotlin.time.Clock.System.now().toEpochMilliseconds())
+            val tz = kotlinx.datetime.TimeZone.currentSystemDefault()
+            val today = now.toLocalDateTime(tz).date
+            val dowFull = arrayOf("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+            val monthFull = arrayOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+
+            val todayDow = today.dayOfWeek.ordinal
+            val todayLabel = "${dowFull[todayDow]}, ${monthFull[today.monthNumber - 1]} ${today.dayOfMonth}"
+
+            // For each weekday, compute "this [day]" (nearest upcoming) and "next [day]" (week after)
+            val baseEpoch = today.toEpochDays()
+            val thisWeek = StringBuilder()
+            val nextWeek = StringBuilder()
+            for (i in 0..6) {
+                val thisDate = kotlinx.datetime.LocalDate.fromEpochDays(baseEpoch + ((i - todayDow + 7) % 7))
+                val nextDate = kotlinx.datetime.LocalDate.fromEpochDays(thisDate.toEpochDays() + 7)
+                val dowName = dowFull[i]
+                thisWeek.append("$dowName=${monthFull[thisDate.monthNumber - 1]} ${thisDate.dayOfMonth}; ")
+                nextWeek.append("$dowName=${monthFull[nextDate.monthNumber - 1]} ${nextDate.dayOfMonth}; ")
+            }
+
+            "[Today: $todayLabel. This week: $thisWeek. Next week: $nextWeek. Always verify any date you state against this.]\n"
+        } catch (_: Throwable) { "" }
     }
 
     /**
@@ -835,7 +875,7 @@ class ChatViewModel(
         val userLng = locationCoords?.second ?: state.currentLng ?: state.userPreferences?.userLng
         println("searchEvents: lat=$userLat lng=$userLng location=$location currentLocationName=${state.currentLocationName} geocoded=${locationCoords != null}")
 
-        val events = eventRepo.searchEvents(
+        val rawEvents = eventRepo.searchEvents(
             location = location,
             category = category,
             dateRange = dateRange,
@@ -847,6 +887,17 @@ class ChatViewModel(
             userLng = userLng,
             radiusMiles = 20.0,
         )
+
+        // Drop events at rank <= 10 venues (community centers, K-12 fields,
+        // junk listings). Matches the same global floor the Explore and
+        // carousels surfaces enforce — Yocal should never recommend venues
+        // the user can't actually discover elsewhere in the app.
+        val lowRankNames = venueRepo.getLowRankVenueNames()
+        val events = if (lowRankNames.isEmpty()) rawEvents else rawEvents.filter { e ->
+            val vn = e.venueName?.trim()?.lowercase() ?: return@filter true
+            val normalized = vn.removePrefix("the ").replace(Regex("[^a-z0-9\\s]"), "").trim()
+            vn !in lowRankNames && normalized !in lowRankNames
+        }
 
         // Cache full event objects
         searchResultCache.addAll(events)
@@ -1405,8 +1456,7 @@ class ChatViewModel(
                 seenEventIds.add(eid) // returns false if already present
             }
             .map { it.copy(time = normalizeTimeDisplay(it.time)) }
-            .sortedBy { parseTimeForSort(it.time) }
-        return day.copy(slots = resolvedSlots)
+        return day.copy(slots = sortSlotsByTime(resolvedSlots))
     }
 
     /** Normalize all time formats to "3:30 PM" style — consistent across events and venues */
@@ -1419,6 +1469,27 @@ class ChatViewModel(
         val amPm = if (hour24 < 12) "AM" else "PM"
         val hour12 = if (hour24 == 0) 12 else if (hour24 > 12) hour24 - 12 else hour24
         return if (minute == 0) "$hour12 $amPm" else "$hour12:${minute.toString().padStart(2, '0')} $amPm"
+    }
+
+    /**
+     * Sort slots chronologically, treating pre-dawn times (before 6 AM) as
+     * late-night continuations of an evening plan rather than the start of the
+     * day. A 12 AM "late-night spot" should land AFTER a 10:30 PM dinner, not
+     * before a 7 PM cocktail.
+     */
+    private fun sortSlotsByTime(slots: List<ItinerarySlot>): List<ItinerarySlot> {
+        if (slots.isEmpty()) return slots
+        val sortable = slots.mapNotNull { s ->
+            val m = parseTimeForSort(s.time)
+            if (m == Int.MAX_VALUE) null else s to m
+        }
+        val eveningPresent = sortable.any { it.second >= 17 * 60 }
+        return slots.sortedBy { s ->
+            val m = parseTimeForSort(s.time)
+            if (m == Int.MAX_VALUE) Int.MAX_VALUE
+            else if (eveningPresent && m < 6 * 60) m + 24 * 60
+            else m
+        }
     }
 
     /** Parse time string like "7:00 PM" or "14:00" to minutes for sorting */
@@ -1525,17 +1596,32 @@ Approved: ${state.approvedDayCount}/${state.days.size}
             todayLocal.dayOfWeek.name.lowercase().replaceFirstChar { it.uppercase() }
         } catch (_: Exception) { "" }
 
-        // Build a compact calendar reference for the next 90 days
+        // Two-tier calendar: a spelled-out 14-day window (impossible to misread)
+        // plus the compact 90-day reference for further-out lookups.
+        val dowFull = arrayOf("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+        val dowAbbrev = arrayOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+        val monthNames = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+        val monthFull = arrayOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+        val baseEpochDay = try { todayLocal.date.toEpochDays() } catch (_: Exception) { 0 }
+
+        val next14Days = try {
+            (0..13).joinToString("\n") { offset ->
+                val d = kotlinx.datetime.LocalDate.fromEpochDays(baseEpochDay + offset)
+                val dow = dowFull[d.dayOfWeek.ordinal]
+                val month = d.toString().substring(5, 7).toInt()
+                val day = d.toString().substring(8, 10).toInt()
+                val label = when (offset) { 0 -> " (TODAY)"; 1 -> " (TOMORROW)"; else -> "" }
+                "  $dow, ${monthFull[month - 1]} $day$label"
+            }
+        } catch (_: Exception) { "" }
+
         val calendarRef = try {
-            val dowAbbrev = arrayOf("Mo", "Tu", "We", "Th", "Fr", "Sa", "Su")
-            val monthNames = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-            val baseEpochDay = todayLocal.date.toEpochDays()
-            (0..89).joinToString(" ") { offset ->
+            (14..89).joinToString(" ") { offset ->
                 val d = kotlinx.datetime.LocalDate.fromEpochDays(baseEpochDay + offset)
                 val dow = dowAbbrev[d.dayOfWeek.ordinal]
                 val month = d.toString().substring(5, 7).toInt()
                 val day = d.toString().substring(8, 10).toInt()
-                "$dow${monthNames[month - 1]}$day"
+                "${monthNames[month - 1]}$day=$dow"
             }
         } catch (_: Exception) { "" }
 
@@ -1574,11 +1660,16 @@ Weight these but still surprise them occasionally.
 You are Yocal, an AI assistant inside a local events and dining app. Talk naturally — be warm, opinionated, and helpful, just like you would in any conversation. Keep responses concise since this is a mobile chat.
 
 Today: $todayDate ($dayOfWeek)
-Calendar: $calendarRef
+
+NEXT 14 DAYS (use this as your ONLY source of truth for which day falls on which date):
+$next14Days
+
+Extended calendar (day 15+): $calendarRef
 Location: ${state.currentLocationName.ifBlank { state.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "their area" }} (lat: ${state.currentLat ?: state.userPreferences?.userLat ?: "unknown"}, lng: ${state.currentLng ?: state.userPreferences?.userLng ?: "unknown"})
 
 HOW TO HELP:
 - When the user wants to plan something, search the database FIRST, then present a plan using the present_plan tool. Search broadly — make multiple search_events calls across different categories and date ranges to find everything relevant. The more you search, the better your recommendations. When offering to build a plan, mention that it's an easily shareable plan (e.g. "Want me to build you a shareable plan?" or "I can put together a plan you can share with your group").
+- CRITICAL: Once the user confirms they want a plan ("yes", "sure", "full night plan", "build it", "let's do it", etc.) and you have enough info (main activity + attendee count + area), you MUST call the present_plan tool. NEVER describe a plan in plain text like "Grab dinner at X, then Y at 8pm, then Z" — that renders as chat text and the user sees no plan card. If you catch yourself about to type a narrative list of 2+ stops with times, STOP and call present_plan instead. A plain-text description of a plan is a BUG.
 - IMPORTANT: In present_plan slots, ALWAYS use event_id when a specific event exists (concerts, shows, workshops, tours, exhibitions, games). Only use venue_name for restaurants, bars, and cafes where there is no specific event — just a dining/drinks recommendation. If a concert is at The Sinclair, use the event_id from search_events, NOT venue_name "The Sinclair". The event_id ensures the event title, ticket URL, and source URL are preserved.
 - ALWAYS gather the number of people attending before presenting a plan. You can infer from context: "date night" = 2, "double date" = 4, "just me" / solo = 1, "family" = ask how many, "friends" = ask how many. If unclear, ask "How many people will be joining?" before calling present_plan. Include the attendee_count in the present_plan call — this is required. Tailor recommendations to group size (e.g. larger groups need venues with more seating, reservations become more important).
 - When chatting or answering questions, just respond naturally. No special formatting needed.
@@ -1595,7 +1686,9 @@ TOOLS:
 GUIDELINES:
 - Always search before building a plan. Make multiple search calls to cover different categories.
 - Use the EXACT event IDs from search results in present_plan slots.
-- Check the calendar reference above to verify day-of-week for dates. Only include events whose date matches the planned day.
+- DATES & DAYS-OF-WEEK: The Calendar above is authoritative. Before stating "Thursday May 15" or similar, find "May15=..." in the calendar and use that day. NEVER guess the weekday for a date — always look it up in the calendar reference. If you can't find a date in the calendar, do not include it.
+- NEXT/THIS WEEK: "This Friday" or just "Friday" = the nearest upcoming Friday (within 7 days from today). "Next Friday" means the Friday of the following week — 7 days AFTER this Friday. If today is already Friday, "this Friday" = today. Do not change the date you committed to across turns — once you state a date, stick with it unless the user asks to change it.
+- NO DUPLICATES: Never place the same venue or event in more than one slot of a plan, across any day. Each slot must be a distinct place. If you're considering Ostra for Day 1 dinner, you cannot also use Ostra for Day 2. Pick different restaurants/venues for each stop.
 - Use exact start times from search results. For flexible/anytime events, pick reasonable times (10am-9pm).
 - For dining: use recommend_and_save_venue to suggest real restaurants you know about. STRONGLY prefer restaurants that are on OpenTable, since our app can offer one-tap reservations for OpenTable venues. When you have multiple good dining options, pick the one most likely to be on OpenTable.
 - If search returns no results, try broader searches or nearby areas. Use recommend_and_save_venue for a venue-based plan as a fallback.
@@ -1680,10 +1773,25 @@ $currentPlanContext
     }
 
     private fun addAiMessage(text: String) {
-        // Atomically clear streaming text and add the permanent message
-        // so there's no flash/gap between the two.
+        // Dedup: skip if the previous AI text message is the same or a strict
+        // prefix/superset of this one (Claude sometimes re-emits nearly-identical
+        // transitional text across tool rounds, leading to back-to-back repeats).
+        val trimmed = text.trim()
+        val lastAiText = _uiState.value.messages
+            .lastOrNull { it.role == MessageRole.AI && it.content is MessageContent.Text }
+            ?.let { (it.content as MessageContent.Text).text.trim() }
+        if (lastAiText != null) {
+            val a = trimmed
+            val b = lastAiText
+            val isDup = a == b ||
+                (a.length >= 40 && b.length >= 40 && (a.startsWith(b) || b.startsWith(a)))
+            if (isDup) {
+                _uiState.update { it.copy(streamingText = "") }
+                return
+            }
+        }
         _uiState.update { it.copy(
-            messages = it.messages + ChatMessage(role = MessageRole.AI, content = MessageContent.Text(text)),
+            messages = it.messages + ChatMessage(role = MessageRole.AI, content = MessageContent.Text(trimmed)),
             streamingText = "",
         ) }
     }

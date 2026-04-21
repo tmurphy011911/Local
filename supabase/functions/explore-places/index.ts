@@ -116,6 +116,10 @@ async function fetchVenues(
       "id,name,address,city,state,lat,lng,photo_url,description,category,google_rating,website,reservation_url,public_interest_rank,is_active",
     )
     .eq("is_active", true)
+    // Global minimum-quality floor — venues with public_interest_rank <= 10
+    // (community centers, K-12 athletic fields, etc.) are hidden everywhere
+    // in the app. Adjust MIN_PUBLIC_INTEREST_RANK if this threshold changes.
+    .gt("public_interest_rank", 10)
     .gte("lat", lat - latDelta)
     .lte("lat", lat + latDelta)
     .gte("lng", lng - lngDelta)

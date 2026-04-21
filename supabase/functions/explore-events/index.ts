@@ -61,6 +61,7 @@ interface ScoredItem {
   e: EventRow;
   resolvedImage: string | null;
   dist: number;
+  venueRank: number | null;
   score: number;
 }
 interface CacheEntry {
@@ -196,31 +197,28 @@ async function fetchEvents(
   return (data ?? []) as EventRow[];
 }
 
-async function fetchVenuePhotos(supabase: any, venueNames: string[]): Promise<Record<string, string>> {
-  if (venueNames.length === 0) return {};
-  const result: Record<string, string> = {};
-  // Pull ALL active venues with a photo from the bbox — since event venue_name
-  // often differs from venues.name by a "The " prefix or punctuation, exact
-  // .in() matching silently misses ~20% of pairs. Instead we fetch broadly
-  // and match on the normalized key on both sides.
-  const distinctNormalized = new Set(venueNames.map((n) => normalizeVenueKey(n)).filter((k) => k.length > 0));
-  if (distinctNormalized.size === 0) return result;
+interface VenueMeta {
+  photoUrl: string | null;
+  rank: number | null;
+}
 
-  // Page through all venues that might match (active + has photo). We don't
-  // filter by name here because we can't predict the naming drift — the
-  // normalized-key join does the matching after fetch.
+async function fetchVenueMeta(supabase: any): Promise<Record<string, VenueMeta>> {
+  // Pull every active venue's name + photo + rank in one call. We don't
+  // bbox-filter or .in() because event venue_names drift from venues.name
+  // (punctuation, "The " prefix) and we'd silently miss ~20% of joins.
+  const result: Record<string, VenueMeta> = {};
   const { data } = await supabase
     .from("venues")
-    .select("name,photo_url")
+    .select("name,photo_url,public_interest_rank")
     .eq("is_active", true)
-    .not("photo_url", "is", null)
-    .limit(10000);
-
+    .limit(20000);
   for (const row of data ?? []) {
     const k = normalizeVenueKey(row.name);
     if (!k) continue;
-    if (distinctNormalized.has(k) && !result[k] && row.photo_url) {
-      result[k] = row.photo_url;
+    // If duplicates normalize to the same key, keep the higher-ranked row.
+    const existing = result[k];
+    if (!existing || (row.public_interest_rank ?? 0) > (existing.rank ?? 0)) {
+      result[k] = { photoUrl: row.photo_url ?? null, rank: row.public_interest_rank ?? null };
     }
   }
   return result;
@@ -240,6 +238,7 @@ async function fetchUserPrefs(supabase: any, userId: string): Promise<UserPrefs 
 function scoreEvent(
   e: EventRow,
   resolvedImage: string | null,
+  venueRank: number | null,
   userLat: number,
   userLng: number,
   prefs: UserPrefs | null,
@@ -248,7 +247,7 @@ function scoreEvent(
   const eLat = e.venue_lat;
   const eLng = e.venue_lng;
   const distance = eLat != null && eLng != null ? distanceMiles(userLat, userLng, eLat, eLng) : 30;
-  const proxScore = 1 / (1 + distance / 4); // 0..1 — falls off around ~4mi
+  const proxScore = 1 / (1 + distance / 4);
 
   let freshness = 0.3;
   if (e.start_at) {
@@ -261,6 +260,9 @@ function scoreEvent(
     }
   }
 
+  // Rank: treat null as 0, cap at 100, normalize.
+  const rankScore = (venueRank != null ? Math.min(100, Math.max(0, venueRank)) : 0) / 100;
+
   const tasteCats = new Set((prefs?.selected_categories ?? []).map((c) => c.toLowerCase().trim()));
   const tasteVenues = new Set((prefs?.selected_venues ?? []).map((v) => v.toLowerCase().trim()));
   const taste =
@@ -272,15 +274,19 @@ function scoreEvent(
   const savedVenueBoost =
     e.venue_name && tasteVenues.has(e.venue_name.toLowerCase().trim()) ? 1 : 0;
 
-  const hasImage = resolvedImage ? 0.1 : 0;
+  const hasImage = resolvedImage ? 1 : 0;
 
-  // Weights: proximity 35 · freshness 25 · taste 20 · saved venue 10 · image 10
+  // Weights tuned so venue quality dominates. Previously freshness/proximity
+  // let today-at-a-community-center beat tomorrow-at-a-landmark; now venue
+  // rank carries a ~30% share so major venues consistently lead the feed.
+  // proximity 22 · venueRank 30 · freshness 15 · taste 18 · saved 10 · image 5
   return (
-    proxScore * 0.35 +
-    freshness * 0.25 +
-    taste * 0.2 +
-    savedVenueBoost * 0.1 +
-    hasImage
+    proxScore * 0.22 +
+    rankScore * 0.30 +
+    freshness * 0.15 +
+    taste * 0.18 +
+    savedVenueBoost * 0.10 +
+    hasImage * 0.05
   );
 }
 
@@ -344,17 +350,16 @@ Deno.serve(async (req) => {
       scored = cached.scored;
     } else {
       const events = await fetchEvents(supabase, lat, lng, query, category, radiusMiles, dateFilter);
-      const venueNames = events.filter((e) => !e.image_url).map((e) => e.venue_name ?? "");
-      const photoByVenue = await fetchVenuePhotos(supabase, venueNames);
+      const venueMeta = await fetchVenueMeta(supabase);
       const prefs = userId ? await fetchUserPrefs(supabase, userId) : null;
-      // Snap scoring time to the TTL boundary so even if this isolate is
-      // warm vs cold, the nowMs used for freshness is the same bucket.
       const nowMs = Math.floor(Date.now() / CACHE_TTL_MS) * CACHE_TTL_MS;
 
       scored = events
         .map((e) => {
           const venueKey = normalizeVenueKey(e.venue_name);
-          const resolvedImage = e.image_url || (venueKey ? photoByVenue[venueKey] : null) || null;
+          const meta = venueKey ? venueMeta[venueKey] : undefined;
+          const resolvedImage = e.image_url || meta?.photoUrl || null;
+          const venueRank = meta?.rank ?? null;
           const dist = e.venue_lat != null && e.venue_lng != null
             ? distanceMiles(lat, lng, e.venue_lat, e.venue_lng)
             : 999;
@@ -362,12 +367,15 @@ Deno.serve(async (req) => {
             e,
             resolvedImage,
             dist,
-            score: scoreEvent(e, resolvedImage, lat, lng, prefs, nowMs),
+            venueRank,
+            score: scoreEvent(e, resolvedImage, venueRank, lat, lng, prefs, nowMs),
           };
         })
         .filter((x) => x.dist <= radiusMiles)
-        // Secondary tiebreak on event id to guarantee stable order even when
-        // two events score identically (happens often for same-venue events).
+        // Global minimum-quality floor — hide events whose venue has
+        // public_interest_rank <= 10 (community centers, K-12 athletic
+        // fields, etc.). Null rank passes (untagged venues stay visible).
+        .filter((x) => x.venueRank == null || x.venueRank > 10)
         .sort((a, b) => b.score - a.score || a.e.id.localeCompare(b.e.id));
 
       cache.set(cacheKey, { scored, timestamp: Date.now() });
