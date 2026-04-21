@@ -50,6 +50,13 @@ const PREFILTER_ONLY = process.env.PREFILTER_ONLY === "1";
 const AUTO_EXCLUDE_PATTERNS = [
   // Recovery / support-group meetings (title OR description match)
   { label: "recovery-meeting", re: /\b(alcoholics anonymous|narcotics anonymous|overeaters anonymous|gamblers anonymous|aa meeting|aa group|na meeting|a\.a\.|n\.a\.|al-anon|alateen|nar-anon|12.?step|twelve.?step|smart recovery|refuge recovery|celebrate recovery|sober support|sobriety meeting|sobriety group|recovery group|recovery meeting|codependents anonymous|co-dependents anonymous|coda\b)\b/i },
+  // Bare-acronym titles: "AA - April 21", "NA: 7pm", "AL-Anon Weekly", etc.
+  // Anchored at start-of-title + dash/colon/space (or inside venue text with
+  // obvious meeting context) so this doesn't catch AA batteries or AAA baseball.
+  // Negative lookahead `(?!a)` prevents AAA matching the bare-AA branch.
+  { label: "recovery-meeting", re: /^(aa|na|oa|ga|al.?anon|alateen|nar.?anon|coda)(?!a)\b\s*[-–—:|]/i },
+  { label: "recovery-meeting", re: /^(aa|na)(?!a)\b\s+(meeting|open|closed|speaker|beginners|big book|step|tradition|recurring|weekly|group)/i },
+  { label: "recovery-meeting", re: /\b(tuesday|wednesday|monday|thursday|friday|saturday|sunday|daily|weekly|morning|evening|noon|lunchtime)\s+(aa|na|oa|ga)\b(?!a)/i },
   // Youth / scholastic sports (title must contain youth qualifier + sport)
   { label: "youth-sports", re: /\b(jv|junior varsity|varsity|freshman|sub-varsity|middle school|high school|elementary|peewee|pee-wee|t-?ball|little league|cal ripken|pop warner|aau|\bu\s?\d{1,2}\b)\b[\s\S]{0,40}\b(baseball|softball|basketball|soccer|football|hockey|lacrosse|volleyball|tennis|track|wrestling|golf|rugby|crew|rowing|field hockey|swim|swimming|cross.?country|cheer|dance team)\b/i },
   { label: "youth-sports", re: /\b(baseball|softball|basketball|soccer|football|hockey|lacrosse|volleyball|tennis|track|wrestling|golf|rugby|field hockey)\b[\s\S]{0,40}\b(jv|junior varsity|varsity|freshman|middle school|high school|elementary|peewee|pee-wee|little league)\b/i },
