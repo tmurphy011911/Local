@@ -400,12 +400,11 @@ IMPORTANT classification rules:
 - Film screenings and movie showings are "arts" with sub_subcategory "film"
 - A venue's default classification is often WRONG. Classify by the EVENT content, not the venue.
 - ANY event with "vs" or "vs." in the title is almost certainly "sports" — games, matches, competitions. Never classify these as music/arts/etc.
-- Pro Boston sports teams (Celtics, Bruins, Red Sox, Patriots, Revolution) are ALWAYS subcategory "sports". Bruins = hockey, Celtics = basketball, Red Sox = baseball, Patriots = football, Revolution = soccer.
-- Pro Boston sports (Celtics, Bruins, Red Sox, Patriots, Revolution) should get "pro-sports" tag
+- Pro sports teams (MLB, NBA, NFL, NHL, MLS, and equivalents in any metro) are ALWAYS subcategory "sports" with sub_subcategory matching the sport (hockey, basketball, baseball, football, soccer, etc.).
+- Pro sports teams in major leagues (MLB, NBA, NFL, NHL, MLS) should get the "pro-sports" tag. Minor-league affiliates (AAA/AA baseball, AHL hockey, USL soccer, etc.) get "minor-league" sub_subcategory, not "pro-sports".
 - Free events should get the "free" tag
 - Events good for families should get "family-friendly"
 - Recurring events should get the "recurring" tag — this is KEY for always_on classification
-- Use "boston-essential" sparingly for truly iconic Boston experiences
 - Use "hidden-gem" for unique, lesser-known events worth discovering
 - Kids-focused events should be subcategory "for-kids" even if they could fit another category
 
@@ -414,7 +413,7 @@ Respond with a JSON array. Each element must have:
 - "category": "upcoming" or "always_on" (string)
 - "subcategory": one of the valid subcategories (string)
 - "sub_subcategory": deeper classification or null (string or null)
-- "team_name": for sports events, the team name exactly as commonly known (e.g. "Boston Bruins", "Northeastern Huskies", "Worcester Red Sox"). null for non-sports events or sports events not tied to a specific team (string or null)
+- "team_name": for sports events, the team name exactly as commonly known — pro, college, or minor-league — in the metro the event belongs to (e.g. "Boston Bruins", "Philadelphia Eagles", "Northeastern Huskies", "Worcester Red Sox", "Lehigh Valley IronPigs"). Use the canonical "City Nickname" form. null for non-sports events or sports events not tied to a specific team (string or null)
 - "tags": array of tag strings (max 5)
 
 ONLY output the JSON array, no other text.
