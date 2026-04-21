@@ -1,6 +1,6 @@
 # Carousel Spec: Daily / Weekly / Monthly Recurring Event Carousels
 
-> **Status:** Pending — apply after the CarouselRepositoryImpl segmented-control refactor is complete.
+> **Status:** Pending — implement in `supabase/functions/carousels/index.ts`.
 > **Date:** 2026-03-19
 
 ---

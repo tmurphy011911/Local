@@ -18,10 +18,12 @@
  *   node scripts/classify_events.js --revert
  *
  * Optional:
- *   DRY_RUN=1          — preview batch submission without sending
- *   BATCH_SIZE=50      — events per Claude request within the batch (default: 50)
- *   FORCE=1            — re-classify already-classified events
- *   POLL_INTERVAL=60   — seconds between status checks (default: 60)
+ *   DRY_RUN=1             — preview batch submission without sending
+ *   BATCH_SIZE=50         — events per Claude request within the batch (default: 50)
+ *   FORCE=1               — re-classify already-classified events
+ *   POLL_INTERVAL=60      — seconds between status checks (default: 60)
+ *   PREFILTER_ONLY=1      — only run pattern-based auto-exclusion, skip Claude
+ *   TEAM_NAME_BACKFILL=1  — only backfill team_name on sports events where it's null
  */
 
 const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
@@ -39,6 +41,10 @@ const REVERT_MODE = process.argv.includes("--revert");
 // pass. Useful for backfilling `no-public-interest` across already-classified
 // events without burning API calls or disturbing prior classifications.
 const PREFILTER_ONLY = process.env.PREFILTER_ONLY === "1";
+// When set, only backfill `team_name` on sports events that still have it null.
+// Skips auto-exclusion + reclassification; writes only team_name (not category
+// / subcategory / tags). Used to hydrate the server-side dynamic team carousels.
+const TEAM_NAME_BACKFILL = process.env.TEAM_NAME_BACKFILL === "1";
 
 // ── Rule-based auto-exclusion ─────────────────────────────────────────
 //
@@ -428,6 +434,8 @@ async function main() {
   if (!SUPABASE_SERVICE_KEY) { console.error("Missing SUPABASE_SERVICE_KEY"); process.exit(1); }
 
   if (REVERT_MODE) return await revertClassifications();
+
+  if (TEAM_NAME_BACKFILL) return await runTeamNameBackfill();
 
   console.log(`Event Classifier (Batch API) — all metros, batch size: ${BATCH_SIZE}`);
   if (DRY_RUN) console.log("DRY RUN — no API calls\n");
@@ -846,6 +854,165 @@ async function revertClassifications() {
   }
 
   console.log(`\nReverted ${reverted} events back to original categories.`);
+}
+
+// ── Team name backfill ──
+//
+// Targets the narrow slice of sports events that were classified before
+// `team_name` was added to the prompt (or whose first pass failed to extract
+// it). Fetches sports events with `team_name IS NULL`, runs the standard
+// classifier prompt, and writes back ONLY `team_name` — never touches
+// category/subcategory/sub_subcategory/tags so prior classifications stand.
+
+async function runTeamNameBackfill() {
+  console.log("Team Name Backfill — sports events missing team_name");
+  if (DRY_RUN) console.log("DRY RUN — no API calls\n");
+
+  const events = await fetchSportsEventsMissingTeamName();
+  console.log(`Fetched ${events.length} sports events with null team_name`);
+  if (events.length === 0) return;
+
+  const chunks = [];
+  for (let i = 0; i < events.length; i += BATCH_SIZE) {
+    chunks.push(events.slice(i, i + BATCH_SIZE));
+  }
+  console.log(`Submitting ${chunks.length} requests in one batch\n`);
+
+  const batchRequests = chunks.map((chunk, i) => ({
+    custom_id: `chunk-${i}`,
+    params: {
+      model: MODEL,
+      max_tokens: 8192,
+      messages: [{
+        role: "user",
+        content: buildPrompt(chunk.map(e => ({
+          id: e.id,
+          title: e.title,
+          description: (e.description || "").slice(0, 200),
+          current_category: "upcoming",
+          current_subcategory: "sports",
+          venue_name: e.venue_name,
+          venue_city: e.venue_city,
+          is_free: e.is_free,
+        }))),
+      }],
+    },
+  }));
+
+  if (DRY_RUN) {
+    console.log(`Would submit batch with ${batchRequests.length} requests (${events.length} events)`);
+    return;
+  }
+
+  const batchId = await submitBatch(batchRequests);
+  console.log(`Batch submitted: ${batchId}`);
+
+  const batchResult = await pollBatch(batchId);
+  console.log(`\nBatch complete — succeeded: ${batchResult.request_counts.succeeded}, errored: ${batchResult.request_counts.errored}, expired: ${batchResult.request_counts.expired}`);
+
+  await processTeamNameResults(batchId);
+}
+
+async function fetchSportsEventsMissingTeamName() {
+  const all = [];
+  const pageSize = 1000;
+  let offset = 0;
+
+  while (true) {
+    const now = new Date().toISOString();
+    const cols = "id,title,description,venue_name,venue_city,is_free";
+    const url = `${SUPABASE_URL}/rest/v1/events?start_at=gte.${now}&subcategory=eq.sports&team_name=is.null&select=${cols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
+    const res = await fetch(url, {
+      headers: {
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      },
+    });
+    if (!res.ok) throw new Error(`Fetch failed: ${res.status} ${await res.text()}`);
+    const rows = await res.json();
+    all.push(...rows);
+    if (rows.length < pageSize) break;
+    offset += pageSize;
+  }
+
+  return all;
+}
+
+async function processTeamNameResults(batchId) {
+  const res = await fetch(`${API_BASE}/messages/batches/${batchId}/results`, {
+    headers: {
+      "x-api-key": ANTHROPIC_API_KEY,
+      "anthropic-version": "2023-06-01",
+    },
+  });
+  if (!res.ok) throw new Error(`Failed to fetch results (${res.status}): ${await res.text()}`);
+
+  const lines = (await res.text()).split("\n").filter(Boolean);
+  let patched = 0;
+  let noTeam = 0;
+  let errors = 0;
+
+  for (const line of lines) {
+    const result = JSON.parse(line);
+    if (result.result.type !== "succeeded") {
+      errors++;
+      console.error(`  ${result.custom_id} failed: ${result.result.type}`);
+      continue;
+    }
+
+    const responseText = result.result.message.content[0].text.trim();
+    let jsonStr = responseText;
+    const codeBlockMatch = responseText.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) jsonStr = codeBlockMatch[1].trim();
+
+    let classifications;
+    try {
+      classifications = JSON.parse(jsonStr);
+    } catch (err) {
+      errors++;
+      console.error(`  ${result.custom_id} — JSON parse error: ${err.message}`);
+      continue;
+    }
+
+    const updates = [];
+    for (const c of classifications) {
+      if (c.id && typeof c.team_name === "string" && c.team_name.trim()) {
+        updates.push({ id: c.id, team_name: c.team_name.trim() });
+      } else {
+        noTeam++;
+      }
+    }
+
+    if (updates.length === 0) continue;
+    await writeTeamNameOnly(updates);
+    patched += updates.length;
+    console.log(`  ${result.custom_id}: patched ${updates.length}`);
+  }
+
+  console.log(`\n========================================`);
+  console.log(`Done. Patched team_name on ${patched} events. ${noTeam} had no detectable team. Errors: ${errors}`);
+}
+
+async function writeTeamNameOnly(updates) {
+  const concurrency = 10;
+  for (let i = 0; i < updates.length; i += concurrency) {
+    const batch = updates.slice(i, i + concurrency);
+    await Promise.all(batch.map(async (u) => {
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/events?id=eq.${u.id}`, {
+        method: "PATCH",
+        headers: {
+          apikey: SUPABASE_SERVICE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+          "Content-Type": "application/json",
+          Prefer: "return=minimal",
+        },
+        body: JSON.stringify({ team_name: u.team_name }),
+      });
+      if (!res.ok) {
+        console.error(`  Failed to update ${u.id}: ${await res.text()}`);
+      }
+    }));
+  }
 }
 
 main().catch(err => { console.error(err); process.exit(1); });
