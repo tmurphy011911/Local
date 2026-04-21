@@ -55,7 +55,11 @@ const AUTO_EXCLUDE_PATTERNS = [
   // obvious meeting context) so this doesn't catch AA batteries or AAA baseball.
   // Negative lookahead `(?!a)` prevents AAA matching the bare-AA branch.
   { label: "recovery-meeting", re: /^(aa|na|oa|ga|al.?anon|alateen|nar.?anon|coda)(?!a)\b\s*[-–—:|]/i },
-  { label: "recovery-meeting", re: /^(aa|na)(?!a)\b\s+(meeting|open|closed|speaker|beginners|big book|step|tradition|recurring|weekly|group)/i },
+  // AA/NA followed WITHIN 30 chars by meeting-vocab — catches
+  // "AA Men's Meeting", "NA Women's Group", "AA Big Book Study", etc.
+  { label: "recovery-meeting", re: /^(aa|na)(?!a)\b[\s\S]{0,30}\b(meeting|group|open|closed|speaker|beginners|big book|step study|tradition|anniversary|share)\b/i },
+  { label: "recovery-meeting", re: /\b(aa|na)(?!a)\b[\s\S]{0,30}\b(meeting|group|open|closed|speaker|beginners|big book|step study)\b[\s\S]{0,60}\b(tuesday|wednesday|monday|thursday|friday|saturday|sunday|weekly|daily|every)\b/i },
+  // Weekday/cadence + bare acronym: "Tuesday AA", "Weekly NA"
   { label: "recovery-meeting", re: /\b(tuesday|wednesday|monday|thursday|friday|saturday|sunday|daily|weekly|morning|evening|noon|lunchtime)\s+(aa|na|oa|ga)\b(?!a)/i },
   // Youth / scholastic sports (title must contain youth qualifier + sport)
   { label: "youth-sports", re: /\b(jv|junior varsity|varsity|freshman|sub-varsity|middle school|high school|elementary|peewee|pee-wee|t-?ball|little league|cal ripken|pop warner|aau|\bu\s?\d{1,2}\b)\b[\s\S]{0,40}\b(baseball|softball|basketball|soccer|football|hockey|lacrosse|volleyball|tennis|track|wrestling|golf|rugby|crew|rowing|field hockey|swim|swimming|cross.?country|cheer|dance team)\b/i },
