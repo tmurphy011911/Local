@@ -275,6 +275,46 @@ async function fetchUserPrefs(supabase: any, userId: string): Promise<UserPrefs 
   return data ?? null;
 }
 
+/**
+ * Learned category weights from the user's own click/favorite/plan-add
+ * history. Ported from the carousels edge function — same `get_category_affinity`
+ * Postgres RPC, same normalization to 0-1. Anonymous → empty map → no boost.
+ */
+async function fetchCategoryAffinity(supabase: any, userId: string | null): Promise<Record<string, number>> {
+  if (!userId) return {};
+  const { data } = await supabase.rpc("get_category_affinity", { p_user_id: userId });
+  if (!data || !Array.isArray(data)) return {};
+  const maxWeight = Math.max(...data.map((e: any) => e.weight ?? 0), 1);
+  const out: Record<string, number> = {};
+  for (const row of data) {
+    out[String(row.category ?? "").toLowerCase()] = Math.min((row.weight ?? 0) / maxWeight, 1);
+  }
+  return out;
+}
+
+/**
+ * Community engagement signal: total favorites + plan-adds per event from
+ * everyone (personal + community columns summed). Used to surface what
+ * other users are actually saving, a passive crowd signal with no privacy
+ * concerns. Falls back to empty map if the RPC doesn't exist or errors.
+ */
+async function fetchCommunityScores(supabase: any, userId: string | null): Promise<Record<string, number>> {
+  try {
+    const { data } = await supabase.rpc("get_community_scores", { p_user_id: userId });
+    if (!data || !Array.isArray(data)) return {};
+    const out: Record<string, number> = {};
+    for (const row of data) {
+      const favs = (row.personal_favorites ?? 0) + (row.community_favorites ?? 0);
+      const plans = (row.personal_plan_adds ?? 0) + (row.community_plan_adds ?? 0);
+      const score = favs + plans * 2; // plan-adds are stronger intent than favorites
+      if (score > 0) out[row.item_id] = score;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
 // ── Scoring ──
 
 function scoreEvent(
@@ -284,6 +324,9 @@ function scoreEvent(
   userLat: number,
   userLng: number,
   prefs: UserPrefs | null,
+  affinityMap: Record<string, number>,
+  communityScores: Record<string, number>,
+  maxCommunityScore: number,
   nowMs: number,
 ): number {
   const eLat = e.venue_lat;
@@ -302,7 +345,6 @@ function scoreEvent(
     }
   }
 
-  // Rank: treat null as 0, cap at 100, normalize.
   const rankScore = (venueRank != null ? Math.min(100, Math.max(0, venueRank)) : 0) / 100;
 
   const tasteCats = new Set((prefs?.selected_categories ?? []).map((c) => c.toLowerCase().trim()));
@@ -318,17 +360,29 @@ function scoreEvent(
 
   const hasImage = resolvedImage ? 1 : 0;
 
-  // Weights tuned so venue quality dominates. Previously freshness/proximity
-  // let today-at-a-community-center beat tomorrow-at-a-landmark; now venue
-  // rank carries a ~30% share so major venues consistently lead the feed.
-  // proximity 22 · venueRank 30 · freshness 15 · taste 18 · saved 10 · image 5
+  // Affinity: learned preference from this user's own history (categories
+  // they've clicked / favorited / added to plans most). 0-1 normalized.
+  const affinity =
+    (e.subcategory && affinityMap[e.subcategory.toLowerCase()]) ||
+    affinityMap[e.category.toLowerCase()] ||
+    0;
+
+  // Community: log-scaled crowd save count. Log so one wildly popular event
+  // doesn't dwarf everyone — diminishing returns above ~50 saves.
+  const rawSaves = communityScores[e.id] ?? 0;
+  const community = maxCommunityScore > 0 ? Math.log1p(rawSaves) / Math.log1p(maxCommunityScore) : 0;
+
+  // proximity 20 · rank 26 · freshness 13 · taste 15 · saved 8 · image 4
+  //   + affinity 8 · community 6 = 100
   return (
-    proxScore * 0.22 +
-    rankScore * 0.30 +
-    freshness * 0.15 +
-    taste * 0.18 +
-    savedVenueBoost * 0.10 +
-    hasImage * 0.05
+    proxScore * 0.20 +
+    rankScore * 0.26 +
+    freshness * 0.13 +
+    taste * 0.15 +
+    savedVenueBoost * 0.08 +
+    hasImage * 0.04 +
+    affinity * 0.08 +
+    community * 0.06
   );
 }
 
@@ -392,8 +446,13 @@ Deno.serve(async (req) => {
       scored = cached.scored;
     } else {
       const events = await fetchEvents(supabase, lat, lng, query, category, radiusMiles, dateFilter);
-      const venueMeta = await fetchVenueMeta(supabase);
-      const prefs = userId ? await fetchUserPrefs(supabase, userId) : null;
+      const [venueMeta, prefs, affinityMap, communityScores] = await Promise.all([
+        fetchVenueMeta(supabase),
+        userId ? fetchUserPrefs(supabase, userId) : Promise.resolve(null),
+        fetchCategoryAffinity(supabase, userId),
+        fetchCommunityScores(supabase, userId),
+      ]);
+      const maxCommunityScore = Math.max(0, ...Object.values(communityScores));
       const nowMs = Math.floor(Date.now() / CACHE_TTL_MS) * CACHE_TTL_MS;
 
       const raw = events
@@ -410,7 +469,7 @@ Deno.serve(async (req) => {
             resolvedImage,
             dist,
             venueRank,
-            score: scoreEvent(e, resolvedImage, venueRank, lat, lng, prefs, nowMs),
+            score: scoreEvent(e, resolvedImage, venueRank, lat, lng, prefs, affinityMap, communityScores, maxCommunityScore, nowMs),
           };
         })
         .filter((x) => x.dist <= radiusMiles)
