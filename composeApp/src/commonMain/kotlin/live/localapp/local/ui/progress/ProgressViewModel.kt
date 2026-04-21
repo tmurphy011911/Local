@@ -70,6 +70,8 @@ data class ProgressUiState(
     val selectedSegment: Int = 0, // 0 = Progress, 1 = Earn
     // Celebrations
     val celebration: CelebrationEvent? = null,
+    // Loading
+    val isLoaded: Boolean = false,
 )
 
 class ProgressViewModel(
@@ -351,10 +353,12 @@ class ProgressViewModel(
                         globalActions = globalActions,
                         globalCompletedMilestones = globalCompleted,
                         globalTotalMilestones = globalTotal,
+                        isLoaded = true,
                     )
                 }
             } catch (e: Throwable) {
                 println("ProgressVM.loadBadgeData error: ${e.message}")
+                _uiState.update { it.copy(isLoaded = true) }
             }
         }
     }

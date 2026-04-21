@@ -49,6 +49,7 @@ import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Place
+import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -130,7 +131,9 @@ import org.koin.mp.KoinPlatform
 
 enum class Tab(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Outlined.Home),
-    PLACES("Places", Icons.Outlined.Place),
+    // Enum name kept as PLACES to avoid churning every call site; user-facing label
+    // is "Explore" (rebuilt into a dual Events/Places experience).
+    PLACES("Explore", Icons.Outlined.Search),
     PLANS("Plans", Icons.Outlined.CalendarMonth),
     CHAT("Chat", Icons.Outlined.AutoAwesome), // AI concierge — not shown in tab bar
     PROFILE("Profile", Icons.Outlined.Person),
@@ -161,6 +164,12 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     val userPrefsRepo: UserPreferencesRepository = remember { koin.get() }
     val isLoggedIn = userPrefsRepo.getLocalUserId() != null
     var showLocationSheet by remember { mutableStateOf(false) }
+
+    // Home lobby tutorial — shown once on very first app open
+    val homeTutorialSettings = remember { com.russhwolf.settings.Settings() }
+    var showHomeTutorial by remember {
+        mutableStateOf(!homeTutorialSettings.getBoolean("home_tutorial_seen", false))
+    }
 
     // Gate chat behind auth + sync location (defined as a lambda referencing hoisted VMs below)
 
@@ -322,10 +331,29 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         val userId = userPrefsRepo.getLocalUserId()
         if (userId != null) {
             chatVm.setCurrentLocation(homeState.userLat ?: 42.3601, homeState.userLng ?: -71.0589, homeState.locationName)
-            showChat = true
+            if (hasNativeTabBar) {
+                openChatSheet {}
+            } else {
+                showChat = true
+            }
         } else {
             showLoginPrompt = true
         }
+    }
+
+    LaunchedEffect(Unit) {
+        setupNativeTabBarCallbacks(
+            onTabSelected = { idx ->
+                selectedTab = when (idx) {
+                    0 -> Tab.HOME
+                    1 -> Tab.PLACES
+                    2 -> Tab.PLANS
+                    3 -> Tab.PROFILE
+                    else -> Tab.HOME
+                }
+            },
+            onChatTapped = { openChatOrLogin() },
+        )
     }
 
     Box(
@@ -334,7 +362,18 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             .background(AppColors.White)
             .windowInsetsPadding(WindowInsets.statusBars),
     ) {
+        // Home tutorial overlay — shown once on first launch
+        if (showHomeTutorial) {
+            live.localapp.local.ui.home.HomeTutorial(
+                onComplete = {
+                    homeTutorialSettings.putBoolean("home_tutorial_seen", true)
+                    showHomeTutorial = false
+                },
+            )
+        }
+
         // Main tab content — fills entire screen, tab bar overlays on top
+        if (!showHomeTutorial) {
         Box(modifier = Modifier.fillMaxSize()) {
             Box(modifier = Modifier.fillMaxSize()) {
                 when (selectedTab) {
@@ -358,6 +397,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                             homeVm.toggleEventFavorite(eventId, event.subcategory ?: event.category)
                                         },
                                         showDirections = false,
+                                        isFavorited = event.id in homeState.favoriteEventIds,
                                     )
                                 } else {
                                     detailFromPlans = false
@@ -396,6 +436,11 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             onLocationClick = { showLocationSheet = true },
                             userInitial = initial,
                             onVenueClickWithBounds = if (hasNativeHeroTransition) { venue, bounds ->
+                                val currentState = placesVm.uiState.value
+                                val isFav = venue.venue.id in currentState.favoriteVenueIds
+                                // Present the detail IMMEDIATELY with empty events — the Swift
+                                // view shows a skeleton in that case. Fetch events async and
+                                // push them in once ready.
                                 showNativeVenueDetail(
                                     venueWithMeta = venue,
                                     cardX = bounds.left / density,
@@ -403,8 +448,40 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                     cardW = bounds.width / density,
                                     cardH = bounds.height / density,
                                     onDismissed = {},
+                                    isFavorited = isFav,
+                                    onFavorited = { venueId ->
+                                        placesVm.toggleVenueFavorite(venueId, venue.primaryCategory)
+                                    },
                                 )
+                                scope.launch {
+                                    val events = try {
+                                        venueRepo.getUpcomingEventsForVenue(venue.venue.name, venue.venue.city)
+                                    } catch (_: Exception) {
+                                        emptyList()
+                                    }
+                                    live.localapp.local.platform.updateNativeVenueDetailEvents(venue.venue.id, events)
+                                }
                             } else null,
+                            onEventClick = { event ->
+                                val currentState = placesVm.uiState.value
+                                val isFav = event.id in currentState.favoriteEventIds
+                                if (hasNativeHeroTransition) {
+                                    showNativeEventDetail(
+                                        event = event,
+                                        cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                                        cardImageUrl = event.imageUrl,
+                                        onDismissed = {},
+                                        onFavorited = { eventId ->
+                                            placesVm.toggleEventFavorite(eventId, event.subcategory ?: event.category)
+                                        },
+                                        showDirections = false,
+                                        isFavorited = isFav,
+                                    )
+                                } else {
+                                    detailFromPlans = false
+                                    detailEvent = event
+                                }
+                            },
                         )
                     }
                     Tab.PROFILE -> {
@@ -457,7 +534,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                             openChatOrLogin()
                                         },
                                         onSetGroupSize = { size ->
-                                            scope.launch { planRepo.updateGroupSize(plan.id, size) }
+                                            plansVm.setGroupSize(plan.id, size)
                                         },
                                     )
                                 } else {
@@ -506,6 +583,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                             onDismissed = {},
                                             onFavorited = { id -> homeVm.toggleEventFavorite(id, event.subcategory ?: event.category) },
                                             showDirections = true,
+                                            isFavorited = event.id in homeState.favoriteEventIds,
                                         )
                                     } else {
                                         detailFromPlans = true
@@ -582,9 +660,24 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 + fadeOut(animationSpec = tween(150)),
         ) {
             selectedPlan?.let { plan ->
+                val plansVm: PlansViewModel = koin.get()
+                val plansState by plansVm.uiState.collectAsState()
+                // Is this plan in the current user's own plans list? That list is
+                // filtered by user_id at query time, so membership is authoritative —
+                // more robust than comparing creatorId strings which can drift across
+                // re-auth / fresh installs.
+                val ownsPlan = plansState.upcomingPlans.any { it.id == plan.id } ||
+                    plansState.pastPlans.any { it.id == plan.id }
+                val currentUserId = plansVm.currentUserId()
+                val isCreator = ownsPlan ||
+                    (plan.creatorId != null && plan.creatorId == currentUserId)
+                var showPlanChat by remember(plan.id) { mutableStateOf(false) }
+                var planChatPrefill by remember(plan.id) { mutableStateOf<String?>(null) }
                 Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
                     PlanDetailScreen(
                         plan = plan,
+                        isCreator = isCreator,
+                        onOpenChat = { showPlanChat = true },
                         onBack = { selectedPlan = null },
                         onShare = {
                             scope.launch {
@@ -596,24 +689,100 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             }
                         },
                         onEditPlan = {
-                            selectedPlan = null
-                            pendingChatMessage = "Edit my plan: ${plan.title}"
-                            chatOpenCount++
-                            openChatOrLogin()
+                            planChatPrefill = "@yocal I'd like to edit this plan."
+                            showPlanChat = true
                         },
                         onEditDay = { dayLabel ->
-                            selectedPlan = null
-                            pendingChatMessage = "Change $dayLabel of ${plan.title}"
-                            chatOpenCount++
-                            openChatOrLogin()
+                            planChatPrefill = "@yocal I'd like to change $dayLabel."
+                            showPlanChat = true
                         },
                         onSetGroupSize = { size ->
-                            scope.launch {
-                                planRepo.updateGroupSize(plan.id, size)
-                                selectedPlan = plan.copy(groupSize = size)
-                            }
+                            plansVm.setGroupSize(plan.id, size)
+                            selectedPlan = plan.copy(groupSize = size)
                         },
+                        onSetAttendeesCanEdit = { canEdit ->
+                            plansVm.setAttendeesCanEdit(plan.id, canEdit)
+                            selectedPlan = plan.copy(attendeesCanEdit = canEdit)
+                        },
+                        onEditName = { newName ->
+                            plansVm.setPlanName(plan.id, newName)
+                            selectedPlan = plan.copy(title = newName)
+                        },
+                        onRemoveSlot = { dayIdx, slotId ->
+                            plansVm.removeSlotFromPlan(plan.id, dayIdx, slotId)
+                            val updatedDays = plan.days.mapIndexed { i, d ->
+                                if (i == dayIdx) d.copy(slots = d.slots.filter { it.id != slotId }) else d
+                            }
+                            selectedPlan = plan.copy(days = updatedDays)
+                        },
+                        onAddSlot = { dayIdx, slot ->
+                            plansVm.addSlotToDay(plan.id, dayIdx, slot)
+                            val updatedDays = plan.days.mapIndexed { i, d ->
+                                if (i == dayIdx) d.copy(slots = d.slots + slot) else d
+                            }
+                            selectedPlan = plan.copy(days = updatedDays)
+                        },
+                        onAddDay = {
+                            plansVm.addDayToPlan(plan.id)
+                            val nextIndex = plan.days.size + 1
+                            val newDay = live.localapp.local.domain.model.PlanDay(label = "Day $nextIndex", shortName = "Day $nextIndex", slots = emptyList())
+                            selectedPlan = plan.copy(days = plan.days + newDay)
+                        },
+                        onRemoveDay = { dayIdx ->
+                            plansVm.removeDayFromPlan(plan.id, dayIdx)
+                            selectedPlan = plan.copy(days = plan.days.filterIndexed { i, _ -> i != dayIdx })
+                        },
+                        onDeletePlan = {
+                            plansVm.deletePlan(plan.id)
+                            selectedPlan = null
+                        },
+                        userLat = homeState.userLat,
+                        userLng = homeState.userLng,
                     )
+
+                    if (showPlanChat) {
+                        if (hasNativeHeroTransition) {
+                            // iOS — present native SwiftUI PlanChatView
+                            val prefill = planChatPrefill
+                            LaunchedEffect(plan.id, prefill) {
+                                live.localapp.local.platform.openPlanChatSheet(
+                                    plan = plan,
+                                    prePopulatedMessage = prefill,
+                                    onDismiss = {
+                                        showPlanChat = false
+                                        planChatPrefill = null
+                                    },
+                                )
+                            }
+                        } else {
+                            // Android — Compose ModalBottomSheet
+                            val planChatVm = remember(plan.id) {
+                                koin.get<live.localapp.local.ui.plans.PlanChatViewModel> {
+                                    org.koin.core.parameter.parametersOf(plan)
+                                }
+                            }
+                            androidx.compose.material3.ModalBottomSheet(
+                                onDismissRequest = {
+                                    showPlanChat = false
+                                    planChatPrefill = null
+                                },
+                                sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true),
+                                containerColor = AppColors.Snow,
+                            ) {
+                                Box(modifier = Modifier.fillMaxWidth().fillMaxHeight(0.92f)) {
+                                    live.localapp.local.ui.plans.PlanChatScreen(
+                                        planTitle = plan.title,
+                                        viewModel = planChatVm,
+                                        onClose = {
+                                            showPlanChat = false
+                                            planChatPrefill = null
+                                        },
+                                        prePopulatedMessage = planChatPrefill,
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -631,6 +800,8 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     PlanDetailScreen(
                         plan = plan,
                         isShared = true,
+                        // A user viewing a shared invite link is by definition not the creator.
+                        isCreator = false,
                         onBack = {
                             // Didn't accept — add to pending invites so it shows in "Invited" section
                             val plansVm: PlansViewModel = koin.get()
@@ -753,6 +924,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         onDismissed = { },
                         onFavorited = { id -> homeVm.toggleEventFavorite(id, event.subcategory ?: event.category) },
                         showDirections = detailFromPlans,
+                        isFavorited = event.id in homeState.favoriteEventIds,
                     )
                 }
             } else {
@@ -777,16 +949,18 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             }
             }
         }
+        } // end if (!showHomeTutorial)
 
         // Location settings sheet — shared across all tabs
         if (showLocationSheet) {
             live.localapp.local.ui.home.LocationSettingsSheet(
                 currentLocationName = homeState.locationName,
+                gpsLocationName = homeState.gpsLocationName,
                 locationMode = homeState.locationMode,
                 manualLocationName = homeState.manualLocationName,
                 radiusFilter = homeState.radiusFilter,
                 hasLocationPermission = homeState.hasLocationPermission,
-                onSelectCurrentLocation = { homeVm.setLocationMode(live.localapp.local.ui.home.LocationMode.CURRENT_LOCATION) },
+                onSelectCurrentLocation = { /* mode only flips to CURRENT_LOCATION on successful GPS fix */ },
                 onGpsLocation = { lat, lng ->
                     homeVm.setUserLocation(lat, lng)
                     homeVm.setHasLocationPermission(true)
@@ -1444,7 +1618,7 @@ private fun GlobalLevelUpOverlay(event: CelebrationEvent.StatusLevelUp, onDismis
                     .clickable {
                         presentShareSheet(
                             "I just reached ${event.newTier.label} on Local with ${formatNumber(event.totalPoints)} points!",
-                            "https://apps.apple.com/app/id6740043653",
+                            "https://apps.apple.com/app/id6761425705",
                         )
                     }
                     .padding(horizontal = 40.dp, vertical = 16.dp),

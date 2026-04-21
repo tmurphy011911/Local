@@ -19,6 +19,9 @@ struct ComposeView: UIViewControllerRepresentable {
         // Wire chat sheet background animation
         setupChatSheetBridge(composeVC: vc)
 
+        // Wire plan chat sheet (per-plan group chat)
+        setupPlanChatSheetBridge(composeVC: vc)
+
         // Wire share sheet bridge
         setupShareBridge(composeVC: vc)
 
@@ -87,7 +90,8 @@ struct ComposeView: UIViewControllerRepresentable {
             venueCity, venueLat, venueLng,
             isFree, priceDisplay, ticketUrl, sourceUrl,
             category, subcategory, source,
-            cardX, cardY, cardW, cardH, cardImageUrl in
+            cardX, cardY, cardW, cardH, cardImageUrl,
+            isFavorited in
 
             DispatchQueue.main.async {
                 guard let window = composeVC.view.window ?? UIApplication.shared.connectedScenes
@@ -101,7 +105,7 @@ struct ComposeView: UIViewControllerRepresentable {
                     title: title,
                     description: description,
                     venueDescription: venueDescription,
-                    imageUrl: imageUrl,
+                    imageUrl: imageUrl ?? cardImageUrl,
                     startAt: startAt,
                     venueName: venueName,
                     venueAddress: venueAddress,
@@ -115,7 +119,8 @@ struct ComposeView: UIViewControllerRepresentable {
                     category: category,
                     subcategory: subcategory,
                     source: source,
-                    showDirections: detailBridge.showDirections
+                    showDirections: detailBridge.showDirections,
+                    isFavorited: isFavorited.boolValue
                 )
 
                 let cardFrame = CGRect(
@@ -125,8 +130,28 @@ struct ComposeView: UIViewControllerRepresentable {
                     height: CGFloat(cardH)
                 )
 
-                transition.present(event: event, cardFrame: cardFrame, in: window) {
-                    detailBridge.onDismissed?()
+                // When opened from chat plan cards, coords are all zero —
+                // use a bottom-slide modal instead of the hero transition.
+                if cardFrame.width == 0 && cardFrame.height == 0 {
+                    weak var weakHostingVC: UIHostingController<EventDetailView>?
+                    let detailView = EventDetailView(event: event, onDismiss: {
+                        weakHostingVC?.dismiss(animated: true) {
+                            detailBridge.onDismissed?()
+                        }
+                    })
+                    let hostingVC = UIHostingController(rootView: detailView)
+                    weakHostingVC = hostingVC
+                    hostingVC.modalPresentationStyle = .pageSheet
+                    if let sheet = hostingVC.sheetPresentationController {
+                        sheet.detents = [.large()]
+                        sheet.prefersGrabberVisible = true
+                    }
+                    let topVC = window.rootViewController?.presentedViewController ?? window.rootViewController
+                    topVC?.present(hostingVC, animated: true)
+                } else {
+                    transition.present(event: event, cardFrame: cardFrame, in: window) {
+                        detailBridge.onDismissed?()
+                    }
                 }
             }
         }
@@ -145,7 +170,7 @@ struct ComposeView: UIViewControllerRepresentable {
         let transition = VenueDetailTransitionController.shared
 
         venueBridge.showVenueDetail = {
-            name, address, city,
+            id, name, address, city,
             lat, lng,
             photoUrl, description,
             category, googleRating,
@@ -153,6 +178,7 @@ struct ComposeView: UIViewControllerRepresentable {
             upcomingEventCount,
             upcomingEventsJson,
             reservationUrl,
+            isFavorited,
             cardX, cardY, cardW, cardH in
 
             DispatchQueue.main.async {
@@ -189,6 +215,7 @@ struct ComposeView: UIViewControllerRepresentable {
                 }
 
                 let venue = VenueDetailData(
+                    id: id,
                     name: name,
                     address: address,
                     city: city,
@@ -212,15 +239,57 @@ struct ComposeView: UIViewControllerRepresentable {
                     height: CGFloat(cardH)
                 )
 
-                transition.present(venue: venue, cardFrame: cardFrame, in: window) {
-                    venueBridge.onDismissed?()
-                }
+                transition.present(
+                    venue: venue,
+                    cardFrame: cardFrame,
+                    in: window,
+                    isFavorited: isFavorited.boolValue,
+                    onFavorite: { vid in venueBridge.onFavorited?(vid) },
+                    onDismissed: { venueBridge.onDismissed?() }
+                )
             }
         }
 
         venueBridge.dismissVenueDetail = {
             DispatchQueue.main.async {
                 transition.dismiss()
+            }
+        }
+
+        // Async events arrive via this bridge call after the detail has been presented.
+        // Parse, then broadcast via NotificationCenter so the SwiftUI VenueDetailView
+        // picks it up in an .onReceive and swaps skeleton -> real events.
+        venueBridge.updateVenueEvents = { venueId, upcomingEventsJson in
+            DispatchQueue.main.async {
+                var events: [VenueUpcomingEvent] = []
+                if let data = (upcomingEventsJson as String).data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                    events = json.compactMap { dict in
+                        guard let id = dict["id"] as? String,
+                              let title = dict["title"] as? String else { return nil }
+                        return VenueUpcomingEvent(
+                            id: id,
+                            title: title,
+                            description: dict["description"] as? String,
+                            startAt: dict["startAt"] as? String,
+                            category: dict["category"] as? String,
+                            subcategory: dict["subcategory"] as? String,
+                            imageUrl: dict["imageUrl"] as? String,
+                            isFree: dict["isFree"] as? Bool ?? false,
+                            priceDisplay: dict["priceDisplay"] as? String,
+                            dateDisplay: dict["dateDisplay"] as? String,
+                            venueName: dict["venueName"] as? String,
+                            venueCity: dict["venueCity"] as? String,
+                            ticketUrl: dict["ticketUrl"] as? String,
+                            sourceUrl: dict["sourceUrl"] as? String
+                        )
+                    }
+                }
+                NotificationCenter.default.post(
+                    name: .venueEventsDidUpdate,
+                    object: nil,
+                    userInfo: ["venueId": venueId as String, "events": events]
+                )
             }
         }
     }
@@ -300,6 +369,19 @@ struct ComposeView: UIViewControllerRepresentable {
                 hostingVC.presentationController?.delegate = dismissDelegate
                 ChatSheetTransition.shared.dismissDelegate = dismissDelegate
 
+                // Wire paywall: when Kotlin's PremiumGate blocks a plan,
+                // present the native SwiftUI paywall over the chat sheet.
+                ChatBridge.shared.onPlanBlocked = {
+                    DispatchQueue.main.async {
+                        let paywallView = PaywallView(onDismiss: {
+                            hostingVC.dismiss(animated: true)
+                        })
+                        let paywallVC = UIHostingController(rootView: paywallView)
+                        paywallVC.modalPresentationStyle = .fullScreen
+                        hostingVC.present(paywallVC, animated: true)
+                    }
+                }
+
                 rootVC.present(hostingVC, animated: true) {
                     bridge.onOpenComplete?()
                 }
@@ -312,6 +394,71 @@ struct ComposeView: UIViewControllerRepresentable {
                     vc.dismiss(animated: true) {
                         bridge.onCloseComplete?()
                         ChatSheetTransition.shared.presentedChatVC = nil
+                    }
+                } else {
+                    bridge.onCloseComplete?()
+                }
+            }
+        }
+    }
+
+    // MARK: - Plan Chat Sheet Bridge (per-plan group chat)
+
+    private func setupPlanChatSheetBridge(composeVC: UIViewController) {
+        let bridge = PlanChatSheetBridge.shared
+        let chatBridge = PlanChatBridge.shared
+
+        bridge.onOpenSheet = {
+            DispatchQueue.main.async {
+                guard let windowScene = UIApplication.shared.connectedScenes
+                    .compactMap({ $0 as? UIWindowScene }).first,
+                    let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController else {
+                    bridge.onOpenComplete?()
+                    return
+                }
+
+                // Find topmost presented VC (plan detail may be presented above root)
+                var presenter: UIViewController = rootVC
+                while let next = presenter.presentedViewController { presenter = next }
+
+                let planChat = PlanChatView(
+                    planTitle: chatBridge.planTitle,
+                    prePopulated: chatBridge.prePopulatedMessage,
+                    onDismiss: {
+                        presenter.presentedViewController?.dismiss(animated: true) {
+                            chatBridge.onClose?()
+                            PlanChatSheetTransition.shared.presentedVC = nil
+                        }
+                    }
+                )
+                let hostingVC = UIHostingController(rootView: planChat)
+                hostingVC.modalPresentationStyle = .pageSheet
+                if let sheet = hostingVC.sheetPresentationController {
+                    sheet.detents = [.large()]
+                    sheet.prefersGrabberVisible = true
+                }
+
+                PlanChatSheetTransition.shared.presentedVC = hostingVC
+
+                let dismissDelegate = PlanChatDismissDelegate {
+                    chatBridge.onClose?()
+                    PlanChatSheetTransition.shared.presentedVC = nil
+                }
+                hostingVC.presentationController?.delegate = dismissDelegate
+                PlanChatSheetTransition.shared.dismissDelegate = dismissDelegate
+
+                presenter.present(hostingVC, animated: true) {
+                    bridge.onOpenComplete?()
+                }
+            }
+        }
+
+        bridge.onCloseSheet = {
+            DispatchQueue.main.async {
+                if let vc = PlanChatSheetTransition.shared.presentedVC {
+                    vc.dismiss(animated: true) {
+                        bridge.onCloseComplete?()
+                        PlanChatSheetTransition.shared.presentedVC = nil
                     }
                 } else {
                     bridge.onCloseComplete?()

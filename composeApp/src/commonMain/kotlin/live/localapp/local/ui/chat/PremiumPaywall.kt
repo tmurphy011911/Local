@@ -22,6 +22,7 @@ import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Restaurant
 import androidx.compose.material.icons.outlined.Share
+import androidx.compose.material.icons.outlined.People
 import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -145,10 +146,10 @@ fun PremiumPaywall(
 
             // Benefits
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                BenefitRow(Icons.Outlined.CalendarMonth, "Unlimited shareable plans", "Build as many plans as you want")
-                BenefitRow(Icons.Outlined.Restaurant, "One-tap reservations", "Book tables directly from your plan")
-                BenefitRow(Icons.Outlined.Star, "Priority recommendations", "First access to trending events")
-                BenefitRow(Icons.Outlined.Share, "Group coordination", "Share, vote, and confirm with your crew")
+                BenefitRow(Icons.Outlined.CalendarMonth, "Unlimited Plans", "Build as many shareable plans as you want")
+                BenefitRow(Icons.Outlined.Share, "Easily Share", "One tap to send your plan to friends and family")
+                BenefitRow(Icons.Outlined.Star, "Weekly Snapshot", "Personalized event picks delivered to you each week")
+                BenefitRow(Icons.Outlined.People, "Group Coordination", "Share, vote, and confirm plans with your crew")
             }
 
             Spacer(Modifier.weight(1f))

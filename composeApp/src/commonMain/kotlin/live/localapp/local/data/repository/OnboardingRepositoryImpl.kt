@@ -82,10 +82,17 @@ class OnboardingRepositoryImpl(
         println("OnboardingRepo: loaded ${events.size} events for metro='$metro'")
 
         // Get state codes from venues table (more reliable than events)
+        // Geo-filter to match the event radius — no need for the full table
         val venueStates = try {
             supabaseClient.from("venues")
                 .select(columns = Columns.list("city", "state")) {
-                    filter { eq("is_active", true) }
+                    filter {
+                        eq("is_active", true)
+                        gte("lat", userLat - latDelta)
+                        lte("lat", userLat + latDelta)
+                        gte("lng", userLng - lngDelta)
+                        lte("lng", userLng + lngDelta)
+                    }
                 }
                 .decodeList<VenueCityStateDto>()
                 .groupBy { it.city }
@@ -104,11 +111,17 @@ class OnboardingRepositoryImpl(
             .groupBy { it.venueCity }
             .mapValues { it.value.size }
 
-        // Get venue ranks + photos from venues table (needed for both neighborhoods and venues)
+        // Get venue ranks + photos — geo-filtered to match event radius
         val venueRanks = try {
             supabaseClient.from("venues")
                 .select(columns = Columns.list("name", "city", "public_interest_rank", "photo_url")) {
-                    filter { eq("is_active", true) }
+                    filter {
+                        eq("is_active", true)
+                        gte("lat", userLat - latDelta)
+                        lte("lat", userLat + latDelta)
+                        gte("lng", userLng - lngDelta)
+                        lte("lng", userLng + lngDelta)
+                    }
                 }
                 .decodeList<VenueRankDto>()
                 .associateBy { it.name.lowercase() }
@@ -192,23 +205,23 @@ class OnboardingRepositoryImpl(
             return null
         }
 
-        val categoryList = events.mapNotNull { resolveCategory(it) }
-        val categoryCounts = categoryList.groupBy { it }.mapValues { it.value.size }.filter { it.value >= 3 }
-
-        // Build category → best venue photo (highest ranked venue that has events in this category)
-        // venueRanks is keyed by lowercase venue name
+        // Single pass: resolve categories and build venue-by-category map simultaneously
+        val categoryCounts = mutableMapOf<String, Int>()
         val venuesByCategory = mutableMapOf<String, MutableList<VenueRankDto>>()
         for (event in events) {
             val resolved = resolveCategory(event) ?: continue
+            categoryCounts[resolved] = (categoryCounts[resolved] ?: 0) + 1
             val venueName = event.venueName ?: continue
             val venueData = venueRanks[venueName.lowercase()] ?: continue
             if (venueData.photoUrl == null) continue
             venuesByCategory.getOrPut(resolved) { mutableListOf() }.add(venueData)
         }
+        // Filter out categories with fewer than 3 events
+        val filteredCategoryCounts = categoryCounts.filter { it.value >= 3 }
         val usedPhotos = mutableSetOf<String>()
         val categoryPhotos = mutableMapOf<String, String>()
         // Sort categories by count so popular ones get first pick of photos
-        for (cat in categoryCounts.keys.sortedByDescending { categoryCounts[it] ?: 0 }) {
+        for (cat in filteredCategoryCounts.keys.sortedByDescending { filteredCategoryCounts[it] ?: 0 }) {
             val candidates = venuesByCategory[cat]
                 ?.sortedByDescending { it.publicInterestRank ?: 0 }
                 ?: continue
@@ -224,7 +237,7 @@ class OnboardingRepositoryImpl(
             venueCount = venueNames.size,
             neighborhoods = neighborhoods,
             venueNames = venueNames,
-            categoryCounts = categoryCounts,
+            categoryCounts = filteredCategoryCounts,
             categoryPhotos = categoryPhotos,
         )
     }

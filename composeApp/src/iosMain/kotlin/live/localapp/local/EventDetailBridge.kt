@@ -21,7 +21,8 @@ object EventDetailBridge {
         isFree: Boolean, priceDisplay: String, ticketUrl: String?, sourceUrl: String?,
         category: String, subcategory: String?,
         source: String?,
-        cardX: Float, cardY: Float, cardW: Float, cardH: Float, cardImageUrl: String?
+        cardX: Float, cardY: Float, cardW: Float, cardH: Float, cardImageUrl: String?,
+        isFavorited: Boolean,
     ) -> Unit)? = null
 
     /** Swift sets this. Compose calls it to dismiss the native detail screen. */

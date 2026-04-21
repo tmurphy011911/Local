@@ -120,3 +120,18 @@ actual fun checkLocationPermissionGranted(): Boolean {
     val status = CLLocationManager.authorizationStatus()
     return status == kCLAuthorizationStatusAuthorizedWhenInUse || status == kCLAuthorizationStatusAuthorizedAlways
 }
+
+@Composable
+actual fun OnAppResumeEffect(onResume: () -> Unit) {
+    val callback = androidx.compose.runtime.rememberUpdatedState(onResume)
+    androidx.compose.runtime.DisposableEffect(Unit) {
+        val observer = platform.Foundation.NSNotificationCenter.defaultCenter.addObserverForName(
+            name = platform.UIKit.UIApplicationDidBecomeActiveNotification,
+            `object` = null,
+            queue = platform.Foundation.NSOperationQueue.mainQueue,
+        ) { _ -> callback.value() }
+        onDispose {
+            platform.Foundation.NSNotificationCenter.defaultCenter.removeObserver(observer)
+        }
+    }
+}

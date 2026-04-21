@@ -1798,44 +1798,55 @@ class CarouselRepositoryImpl(
             "workshop" to "arts", "lecture" to "arts",
         )
 
-        // Fetch all active events (both upcoming and always_on) to compute counts
-        if (categoryOrder == null) {
-            // Fetch upcoming events (have start_at >= now)
-            val upcomingEvents = supabaseClient.from("events")
-                .select(columns = io.github.jan.supabase.postgrest.query.Columns.list("subcategory")) {
-                    filter {
-                        eq("city", city)
-                        eq("is_active", true)
-                        gte("start_at", now)
+        // Fetch upcoming + always-on events in parallel (just subcategory column for counts)
+        val (upcomingCounts, alwaysOnCounts) = kotlinx.coroutines.coroutineScope {
+            val upcomingDeferred = async {
+                supabaseClient.from("events")
+                    .select(columns = io.github.jan.supabase.postgrest.query.Columns.list("subcategory")) {
+                        filter {
+                            eq("city", city)
+                            eq("is_active", true)
+                            gte("start_at", now)
+                        }
                     }
-                }
-                .decodeList<SubcategoryDto>()
-
-            // Fetch always-on events (category = "always_on", start_at may be null)
-            val alwaysOnEvents = supabaseClient.from("events")
-                .select(columns = io.github.jan.supabase.postgrest.query.Columns.list("subcategory")) {
-                    filter {
-                        eq("city", city)
-                        eq("is_active", true)
-                        eq("category", "always_on")
+                    .decodeList<SubcategoryDto>()
+            }
+            val alwaysOnDeferred = async {
+                supabaseClient.from("events")
+                    .select(columns = io.github.jan.supabase.postgrest.query.Columns.list("subcategory")) {
+                        filter {
+                            eq("city", city)
+                            eq("is_active", true)
+                            eq("category", "always_on")
+                        }
                     }
-                }
-                .decodeList<SubcategoryDto>()
+                    .decodeList<SubcategoryDto>()
+            }
+            upcomingDeferred.await() to alwaysOnDeferred.await()
+        }
 
-            val mappedList = mutableListOf<String>()
-            for (dto in upcomingEvents + alwaysOnEvents) {
+        // Map subcategories to parent categories
+        fun mapSubcategories(dtos: List<SubcategoryDto>): List<String> {
+            val mapped = mutableListOf<String>()
+            for (dto in dtos) {
                 val raw = dto.subcategory?.lowercase() ?: continue
                 if (raw in excludeNav) continue
                 if (navNormalize.containsKey(raw)) {
-                    val mapped = navNormalize[raw] ?: continue // null means exclude
-                    if (mapped in validNavCategories) mappedList.add(mapped)
+                    val m = navNormalize[raw] ?: continue
+                    if (m in validNavCategories) mapped.add(m)
                 } else if (raw in validNavCategories) {
-                    mappedList.add(raw)
+                    mapped.add(raw)
                 }
             }
-            val combinedCounts = mappedList.groupBy { it }.mapValues { it.value.size }
+            return mapped
+        }
 
-            categoryOrder = combinedCounts.entries
+        val countsMapped = mapSubcategories(upcomingCounts + alwaysOnCounts)
+        val counts = countsMapped.groupBy { it }.mapValues { it.value.size }
+
+        // Build stable ordering once
+        if (categoryOrder == null) {
+            categoryOrder = counts.entries
                 .sortedWith(
                     compareBy<Map.Entry<String, Int>> { it.key == "other" }
                         .thenByDescending { it.key in userFavorites }
@@ -1845,40 +1856,6 @@ class CarouselRepositoryImpl(
         }
 
         val order = categoryOrder!!
-
-        // Fetch unified counts (all active events regardless of category)
-        val upcomingCounts = supabaseClient.from("events")
-            .select(columns = io.github.jan.supabase.postgrest.query.Columns.list("subcategory")) {
-                filter {
-                    eq("city", city)
-                    eq("is_active", true)
-                    gte("start_at", now)
-                }
-            }
-            .decodeList<SubcategoryDto>()
-
-        val alwaysOnCounts = supabaseClient.from("events")
-            .select(columns = io.github.jan.supabase.postgrest.query.Columns.list("subcategory")) {
-                filter {
-                    eq("city", city)
-                    eq("is_active", true)
-                    eq("category", "always_on")
-                }
-            }
-            .decodeList<SubcategoryDto>()
-
-        val countsMapped = mutableListOf<String>()
-        for (dto in upcomingCounts + alwaysOnCounts) {
-            val raw = dto.subcategory?.lowercase() ?: continue
-            if (raw in excludeNav) continue
-            if (navNormalize.containsKey(raw)) {
-                val mapped = navNormalize[raw] ?: continue
-                if (mapped in validNavCategories) countsMapped.add(mapped)
-            } else if (raw in validNavCategories) {
-                countsMapped.add(raw)
-            }
-        }
-        val counts = countsMapped.groupBy { it }.mapValues { it.value.size }
 
         if (counts.isEmpty()) return emptyList()
 

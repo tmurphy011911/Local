@@ -199,7 +199,7 @@ class ServerCarouselRepository : CarouselRepository {
     private fun CategoryInfoDto.toDomain(): CategoryInfo = CategoryInfo(
         id = id,
         label = label,
-        iconUrl = iconUrl,
+        iconUrl = "$iconUrl?v=${live.localapp.local.domain.repository.CATEGORY_ICONS_VERSION}",
         eventCount = eventCount,
     )
 }

@@ -26,6 +26,17 @@ actual fun requestHeroCollapse(onComplete: () -> Unit) {
 actual fun openChatSheet(onReady: () -> Unit) { onReady() }
 actual fun closeChatSheet(onDone: () -> Unit) { onDone() }
 
+actual fun openPlanChatSheet(
+    plan: live.localapp.local.domain.model.Plan,
+    prePopulatedMessage: String?,
+    onDismiss: () -> Unit,
+) {
+    // No-op on Android — Compose ModalBottomSheet in AppNavigation handles it
+}
+actual fun closePlanChatSheet() {
+    // No-op
+}
+
 actual fun showNativeEventDetail(
     event: live.localapp.local.domain.model.Event,
     cardX: Float,
@@ -36,6 +47,7 @@ actual fun showNativeEventDetail(
     onDismissed: () -> Unit,
     onFavorited: ((String) -> Unit)?,
     showDirections: Boolean,
+    isFavorited: Boolean,
 ) {
     // No-op on Android — Compose handles the detail screen
 }
@@ -62,6 +74,15 @@ actual fun showNativeVenueDetail(
     cardW: Float,
     cardH: Float,
     onDismissed: () -> Unit,
+    isFavorited: Boolean,
+    onFavorited: ((String) -> Unit)?,
 ) {
     // No-op on Android — Compose handles the detail screen
+}
+
+actual fun updateNativeVenueDetailEvents(
+    venueId: String,
+    upcomingEvents: List<live.localapp.local.domain.model.Event>,
+) {
+    // No-op on Android — Compose detail reads events reactively from PlacesViewModel state
 }

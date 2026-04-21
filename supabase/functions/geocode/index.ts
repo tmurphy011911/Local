@@ -22,7 +22,55 @@ Deno.serve(async (req) => {
 
   try {
     const body = await req.json();
-    const { query, placeId } = body;
+    const { query, placeId, lat, lng } = body;
+
+    // Reverse geocode: coords → city
+    if (typeof lat === "number" && typeof lng === "number") {
+      // Note: intentionally no result_type filter — it returns empty results for
+      // coords on highways, water boundaries, or just outside a locality's polygon.
+      // Instead we fetch all results and scan address_components for the components
+      // we care about.
+      const params = new URLSearchParams({
+        latlng: `${lat},${lng}`,
+        key: GOOGLE_PLACES_API_KEY,
+      });
+      const revRes = await fetch(
+        `https://maps.googleapis.com/maps/api/geocode/json?${params}`,
+      );
+      if (!revRes.ok) {
+        const errBody = await revRes.text();
+        console.error("Reverse geocode HTTP error:", revRes.status, errBody);
+        return new Response(
+          JSON.stringify({ city: "", state: "", error: "Reverse geocode failed" }),
+          { status: 200, headers: { "Content-Type": "application/json", ...CORS_HEADERS } },
+        );
+      }
+      const revData = await revRes.json();
+      if (revData.status !== "OK" && revData.status !== "ZERO_RESULTS") {
+        console.error("Reverse geocode status:", revData.status, revData.error_message);
+      }
+      let city = "";
+      let neighborhood = "";
+      let county = "";
+      let state = "";
+      for (const result of revData.results || []) {
+        for (const comp of result.address_components || []) {
+          const types: string[] = comp.types || [];
+          if (!city && types.includes("locality")) city = comp.long_name || "";
+          if (!city && types.includes("postal_town")) city = comp.long_name || "";
+          if (!neighborhood && types.includes("sublocality_level_1")) neighborhood = comp.long_name || "";
+          if (!county && types.includes("administrative_area_level_2")) county = comp.long_name || "";
+          if (!state && types.includes("administrative_area_level_1")) state = comp.short_name || "";
+        }
+        if (city && state) break;
+      }
+      // Fall back through the hierarchy — locality → sublocality → county.
+      if (!city) city = neighborhood || county || "";
+      return new Response(
+        JSON.stringify({ city, state }),
+        { status: 200, headers: { "Content-Type": "application/json", ...CORS_HEADERS } },
+      );
+    }
 
     // Resolve a place ID to lat/lng
     if (placeId) {

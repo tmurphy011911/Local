@@ -58,6 +58,7 @@ expect fun showNativeEventDetail(
     onDismissed: () -> Unit,
     onFavorited: ((String) -> Unit)? = null,
     showDirections: Boolean = false,
+    isFavorited: Boolean = false,
 )
 
 /**
@@ -69,6 +70,21 @@ expect fun openChatSheet(onReady: () -> Unit)
 
 /** Animate the background scale-up and close the chat sheet. */
 expect fun closeChatSheet(onDone: () -> Unit)
+
+/**
+ * Present the plan-specific group chat as a native sheet on iOS.
+ * On Android this is a no-op — Compose handles the sheet directly.
+ *
+ * [onDismiss] fires when the user closes the sheet (swipe or tap X).
+ */
+expect fun openPlanChatSheet(
+    plan: live.localapp.local.domain.model.Plan,
+    prePopulatedMessage: String?,
+    onDismiss: () -> Unit,
+)
+
+/** Close the plan chat sheet. */
+expect fun closePlanChatSheet()
 
 expect fun showNativePlanDetail(
     plan: live.localapp.local.domain.model.Plan,
@@ -90,4 +106,16 @@ expect fun showNativeVenueDetail(
     cardW: Float,
     cardH: Float,
     onDismissed: () -> Unit,
+    isFavorited: Boolean = false,
+    onFavorited: ((String) -> Unit)? = null,
+)
+
+/**
+ * Pushes freshly-fetched upcoming events into an already-presented native venue detail.
+ * Called after the grid card animates in, so the detail page opens instantly with a
+ * skeleton and swaps in real events when the fetch completes. iOS-only; no-op on Android.
+ */
+expect fun updateNativeVenueDetailEvents(
+    venueId: String,
+    upcomingEvents: List<live.localapp.local.domain.model.Event>,
 )

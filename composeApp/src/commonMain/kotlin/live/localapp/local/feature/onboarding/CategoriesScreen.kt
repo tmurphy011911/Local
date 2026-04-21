@@ -6,10 +6,12 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -147,6 +149,7 @@ fun CategoriesScreen(
                     columns = GridCells.Fixed(2),
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                     verticalArrangement = Arrangement.spacedBy(9.dp),
+                    contentPadding = PaddingValues(bottom = 140.dp),
                     modifier = Modifier.weight(1f),
                 ) {
                     items(items, key = { it.id }) { item ->
@@ -159,42 +162,22 @@ fun CategoriesScreen(
                     }
                 }
             }
+        }
 
-            // Bottom
-            Column(
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
-            ) {
-                // Hint bar
-                val count = selected.size
-                Text(
-                    text = buildAnnotatedString {
-                        withStyle(SpanStyle(
-                            fontWeight = FontWeight.ExtraBold,
-                            color = if (isValid) AppColors.Plum else AppColors.Ink3,
-                        )) {
-                            append("$count selected")
-                        }
-                        append(if (count > 0) " \u2014 looking great!" else "")
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 10.dp),
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        color = AppColors.Ink3,
-                    ),
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                )
-
-                OnboardingButton(
-                    text = "Continue \u2192",
-                    color = AppColors.Plum,
-                    shadowColor = AppColors.PlumDk,
-                    onClick = onNext,
-                )
-            }
+        // Floating CTA — content scrolls underneath
+        Column(
+            modifier = Modifier
+                .align(androidx.compose.ui.Alignment.BottomCenter)
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(horizontal = 24.dp, vertical = 14.dp),
+        ) {
+            OnboardingButton(
+                text = "Continue \u2192",
+                color = AppColors.Plum,
+                shadowColor = AppColors.PlumDk,
+                onClick = onNext,
+            )
         }
     }
 }

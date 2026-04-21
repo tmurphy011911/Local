@@ -314,10 +314,9 @@ fun ProgressScreen(
                 }
             } else {
 
-            if (state.totalPoints == 0 && state.stateProgresses.isEmpty()) {
+            if (!state.isLoaded) {
                 ProfileSkeletonLoader()
-            }
-
+            } else {
             PullToRefreshBox(
                 isRefreshing = false,
                 onRefresh = { viewModel.refresh() },
@@ -386,8 +385,9 @@ fun ProgressScreen(
                     )
                 }
             }
+            } // end PullToRefreshBox
+            } // end else (isLoaded)
             } // end else (logged in)
-            }
         }
 
         // Celebrations are rendered globally in AppNavigation
@@ -1957,6 +1957,14 @@ private fun stateAbbrevToFull(abbrev: String): String = when (abbrev.uppercase()
 @Composable
 private fun SubscriptionSection(onUpgrade: () -> Unit) {
     val gate = remember { live.localapp.local.ui.chat.PremiumGate() }
+    var introPrice by remember { mutableStateOf<String?>(null) }
+    var monthlyPrice by remember { mutableStateOf("$6.99") }
+    LaunchedEffect(Unit) {
+        live.localapp.local.platform.fetchSubscriptionPricing { m, _, i ->
+            if (m != null) monthlyPrice = m
+            introPrice = i
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1965,7 +1973,7 @@ private fun SubscriptionSection(onUpgrade: () -> Unit) {
             .border(1.dp, AppColors.Pebble, RoundedCornerShape(16.dp))
             .padding(16.dp),
     ) {
-        Text("Subscription", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = AppColors.Ink3, letterSpacing = 1.sp))
+        Text("SUBSCRIPTION", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = AppColors.Ink3, letterSpacing = 1.sp))
         Spacer(Modifier.height(10.dp))
 
         if (gate.isPremium) {
@@ -1989,7 +1997,10 @@ private fun SubscriptionSection(onUpgrade: () -> Unit) {
         } else {
             Text("Free Plan", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AppColors.Ink))
             Spacer(Modifier.height(4.dp))
-            Text("Upgrade to build unlimited shareable plans", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3))
+            Text(
+                if (introPrice != null) "Start today for ${introPrice}/mo" else "Upgrade for ${monthlyPrice}/mo",
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
+            )
             Spacer(Modifier.height(10.dp))
             Box(
                 modifier = Modifier
@@ -2000,7 +2011,7 @@ private fun SubscriptionSection(onUpgrade: () -> Unit) {
                     .padding(vertical = 12.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text("Upgrade for \$0.99/mo", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = Color.White))
+                Text("Upgrade to Local Pro", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = Color.White))
             }
         }
     }

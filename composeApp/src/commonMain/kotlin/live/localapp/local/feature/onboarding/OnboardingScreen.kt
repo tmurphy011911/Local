@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,6 +35,7 @@ import androidx.compose.ui.unit.sp
 import live.localapp.local.ui.theme.AppFonts
 import androidx.compose.ui.unit.dp
 import live.localapp.local.platform.RequestLocationEffect
+import live.localapp.local.platform.checkLocationPermissionGranted
 import live.localapp.local.ui.theme.AppColors
 
 private val STEP_ORDER = OnboardingStep.entries.toList()
@@ -65,6 +67,19 @@ fun OnboardingScreen(
         },
     )
 
+    // If system-level location permission is already granted (e.g. a prior install
+    // on this device), skip the ask screen — transition to SUCCESS so the user sees
+    // the loader, then kick off the GPS fetch. Coords arrive via onAllowLocation.
+    LaunchedEffect(state.currentStep) {
+        if (state.currentStep == OnboardingStep.LOCATION &&
+            !requestingLocation &&
+            checkLocationPermissionGranted()
+        ) {
+            viewModel.onLocationPregranted()
+            requestingLocation = true
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         AnimatedContent(
             targetState = state.currentStep,
@@ -84,7 +99,7 @@ fun OnboardingScreen(
                         onComplete = { viewModel.onSplashComplete() },
                     )
                     OnboardingStep.LOCATION -> LocationAskScreen(
-                        onAllow = { println("LOCATION: Allow tapped, setting requestingLocation=true"); requestingLocation = true },
+                        onAllow = { requestingLocation = true },
                         onManual = { viewModel.onDenyLocation() },
                     )
                     OnboardingStep.MANUAL_ADDRESS -> ManualAddressScreen(

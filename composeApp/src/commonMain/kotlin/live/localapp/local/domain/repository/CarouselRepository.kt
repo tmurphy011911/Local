@@ -2,6 +2,9 @@ package live.localapp.local.domain.repository
 
 import live.localapp.local.domain.model.CarouselSection
 
+/** Bump when category-icon assets in Supabase Storage are replaced — busts CDN + on-device caches. */
+const val CATEGORY_ICONS_VERSION = 2
+
 data class CategoryInfo(
     val id: String,
     val label: String,

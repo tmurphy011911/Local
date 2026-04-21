@@ -9,10 +9,12 @@ data class Plan(
     val createdAt: String,
     val dateDisplay: String,   // e.g. "Nov 8–10" or "This Saturday"
     val isPast: Boolean = false,
+    val creatorId: String? = null,
     val creatorName: String? = null,
     val shareToken: String? = null,
     val groupSize: Int? = null,
     val confirmedCount: Int = 1,
+    val attendeesCanEdit: Boolean = false,
 )
 
 data class PlanDay(
@@ -44,6 +46,7 @@ data class PlanSlot(
     val sourceUrl: String? = null,
     val venueWebsite: String? = null,
     val venueCategory: String? = null,
+    val isReserved: Boolean = false,
 )
 
 data class PlanTravel(

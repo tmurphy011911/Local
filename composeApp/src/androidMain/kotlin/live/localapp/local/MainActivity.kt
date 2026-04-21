@@ -25,7 +25,7 @@ class MainActivity : ComponentActivity() {
         if (!Purchases.isConfigured) {
             Purchases.logLevel = LogLevel.DEBUG
             Purchases.configure(
-                PurchasesConfiguration.Builder(this, "goog_YourGooglePlayAPIKeyHere")
+                PurchasesConfiguration.Builder(this, "goog_ktssSARuahhCjlJaIGVLUQGEtYi")
                     .build()
             )
         }

@@ -27,7 +27,7 @@ class VersionCheckService(
         // Current app version — update on each release
         const val CURRENT_VERSION = "1.0"
 
-        const val IOS_STORE_URL = "https://apps.apple.com/app/local/id0000000000" // TODO: replace with real App Store ID
+        const val IOS_STORE_URL = "https://apps.apple.com/app/local/id6761425705"
         const val ANDROID_STORE_URL = "https://play.google.com/store/apps/details?id=live.localapp.local"
     }
 

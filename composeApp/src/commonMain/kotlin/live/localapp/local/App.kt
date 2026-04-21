@@ -21,8 +21,10 @@ import live.localapp.local.domain.repository.EventRepository
 import live.localapp.local.domain.repository.PlanRepository
 import live.localapp.local.domain.repository.VenueRepository
 import live.localapp.local.feature.onboarding.SplashScreen
+import androidx.compose.runtime.rememberCoroutineScope
 import live.localapp.local.platform.checkClipboardForDeepLink
 import live.localapp.local.platform.clearClipboardDeepLink
+import live.localapp.local.platform.setDeepLinkCallback
 import live.localapp.local.ui.navigation.AppNavigation
 import live.localapp.local.ui.detail.EventDetailScreen
 import live.localapp.local.ui.plans.PlanDetailScreen
@@ -43,6 +45,21 @@ private sealed class DeepLinkContent {
 @Composable
 fun App() {
     LocalAppTheme {
+        // Configure Coil's singleton ImageLoader once. Default memory cache is ~30 images
+        // which causes constant re-decode during venue grid scroll. 25% of available RAM is
+        // the Coil-recommended value and restores 60 fps scrolling.
+        remember {
+            coil3.SingletonImageLoader.setSafe { ctx ->
+                coil3.ImageLoader.Builder(ctx)
+                    .memoryCache {
+                        coil3.memory.MemoryCache.Builder()
+                            .maxSizePercent(ctx, 0.25)
+                            .build()
+                    }
+                    .build()
+            }
+        }
+
         val supabaseClient = remember { KoinPlatform.getKoin().get<SupabaseClient>() }
         val userPrefsRepo = remember { KoinPlatform.getKoin().get<UserPreferencesRepository>() }
 
@@ -76,6 +93,37 @@ fun App() {
 
         // Deep link content (shown before auth for new users)
         var deepLinkContent by remember { mutableStateOf<DeepLinkContent?>(null) }
+
+        // Scope that outlives the Splash LaunchedEffect — used by the deep-link
+        // callback, which may fire any time after cold-start.
+        val appScope = rememberCoroutineScope()
+
+        // Register a pre-auth deep-link callback. iOS onOpenURL often fires AFTER
+        // Compose renders, so this catches Universal Link /p/{token} tokens that
+        // arrive too late for the clipboard check below. DeepLinkBridge on iOS
+        // buffers the token if this callback hasn't been registered yet.
+        LaunchedEffect(Unit) {
+            setDeepLinkCallback { token ->
+                appScope.launch {
+                    try {
+                        val plan = KoinPlatform.getKoin().get<PlanRepository>().getSharedPlan(token)
+                        if (plan != null) {
+                            deepLinkContent = DeepLinkContent.SharedPlan(plan)
+                            clearClipboardDeepLink()
+                            println("App: deep link plan via callback '${plan.title}'")
+                        }
+                    } catch (_: Exception) {}
+                }
+            }
+        }
+
+        // If a deep link arrives while the user is on the phone-auth screen,
+        // pivot back to the DEEP_LINK state so the plan is shown first.
+        LaunchedEffect(deepLinkContent) {
+            if (deepLinkContent != null && appState == AppState.AUTH) {
+                appState = AppState.DEEP_LINK
+            }
+        }
 
         when (appState) {
             AppState.SPLASH -> {
@@ -164,6 +212,8 @@ fun App() {
                         PlanDetailScreen(
                             plan = content.plan,
                             isShared = true,
+                            // A user viewing a shared invite link is by definition not the creator.
+                            isCreator = false,
                             onBack = { appState = AppState.AUTH },
                             onSaveToPlan = {
                                 val plansVm = KoinPlatform.getKoin().get<live.localapp.local.ui.plans.PlansViewModel>()

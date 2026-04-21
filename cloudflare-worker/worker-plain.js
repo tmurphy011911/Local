@@ -7,7 +7,7 @@ var ASSETLINKS = JSON.stringify([{
   target: {
     namespace: "android_app",
     package_name: "live.localapp.local",
-    sha256_cert_fingerprints: ["TODO:REPLACE_WITH_SHA256_FINGERPRINT"]
+    sha256_cert_fingerprints: ["33:6E:38:76:81:6E:64:6F:18:78:7F:3A:1A:CA:1B:D4:D2:12:9A:6B:21:7D:67:BA:E6:5C:E1:C7:AA:DF:94:A1"]
   }
 }]);
 

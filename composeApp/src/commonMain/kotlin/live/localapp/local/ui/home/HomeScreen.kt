@@ -161,6 +161,18 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
         )
     }
 
+    // Radius-filtered carousel list — memoized so it's not rebuilt every recomposition
+    val displayCarousels = remember(state.carousels, state.radiusFilter) {
+        val radius = state.radiusFilter
+        if (radius == null) {
+            state.carousels
+        } else {
+            state.carousels
+                .map { section -> section.copy(events = section.events.filter { (it.distanceMiles ?: 999.0) <= radius }) }
+                .filter { it.events.isNotEmpty() }
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -234,14 +246,6 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                     }
                 } else {
                     val isForYou = state.selectedCategory == "foryou"
-                    val radius = state.radiusFilter
-                    val displayCarousels = if (radius == null) {
-                        state.carousels
-                    } else {
-                        state.carousels
-                            .map { section -> section.copy(events = section.events.filter { (it.distanceMiles ?: 999.0) <= radius }) }
-                            .filter { it.events.isNotEmpty() }
-                    }
                     displayCarousels.forEach { section ->
                         item(key = section.slug) {
                             CarouselSectionView(
@@ -373,7 +377,7 @@ private const val ICON_BASE = "${Config.SUPABASE_URL}/storage/v1/object/public/c
 private val forYouTile = CategoryInfo(
     id = "foryou",
     label = "For You",
-    iconUrl = "$ICON_BASE/foryou.png",
+    iconUrl = "$ICON_BASE/foryou.png?v=${live.localapp.local.domain.repository.CATEGORY_ICONS_VERSION}",
     eventCount = 0,
 )
 

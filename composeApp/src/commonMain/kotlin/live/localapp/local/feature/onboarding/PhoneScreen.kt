@@ -282,7 +282,19 @@ fun PhoneScreen(
                             )
                         }
 
-                        Spacer(Modifier.height(16.dp))
+                        Spacer(Modifier.height(6.dp))
+
+                        Text(
+                            "Used only for display purposes",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 11.sp,
+                                color = AppColors.Ink3,
+                            ),
+                        )
+
+                        Spacer(Modifier.height(14.dp))
 
                         // Phone input
                         Row(
@@ -397,11 +409,13 @@ fun PhoneScreen(
                         modifier = Modifier.padding(horizontal = 28.dp, vertical = 28.dp),
                         verticalArrangement = Arrangement.spacedBy(10.dp),
                     ) {
+                        val canContinue = firstName.trim().isNotBlank() && phoneNumber.filter { it.isDigit() }.length == 10
                         OnboardingButton(
                             text = "Continue \u2192",
                             color = AppColors.Coral,
                             shadowColor = AppColors.CoralDk,
                             onClick = onSubmit,
+                            enabled = canContinue,
                         )
 
                         val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current

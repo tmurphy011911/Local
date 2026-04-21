@@ -6,7 +6,7 @@ class VenueDetailTransitionController {
     static let shared = VenueDetailTransitionController()
 
     // MARK: - State
-    private var hostingController: UIHostingController<AnyView>?
+    private var hostingController: UIViewController?
     private var dimView: UIView?
     private var originalFrame: CGRect = .zero
     private var cachedHeroImage: UIImage?
@@ -15,25 +15,45 @@ class VenueDetailTransitionController {
 
     // MARK: - Present
 
-    func present(venue: VenueDetailData, cardFrame: CGRect, in window: UIWindow, onDismissed: @escaping () -> Void) {
+    func present(
+        venue: VenueDetailData,
+        cardFrame: CGRect,
+        in window: UIWindow,
+        isFavorited: Bool = false,
+        onFavorite: ((String) -> Void)? = nil,
+        onDismissed: @escaping () -> Void
+    ) {
         cleanup()
 
         self.originalFrame = cardFrame
         self.onDismissed = onDismissed
         self.cachedHeroImage = nil
 
-        // Determine if we have a real card frame for the morph animation
-        self.hasValidCardFrame = cardFrame.width > 10 && cardFrame.height > 10
+        // Always present as a slide-up-from-bottom sheet (matches the feel of
+        // the in-detail event presentation and avoids the card-morph stretch on
+        // tall venue cards). Card-morph branch kept below for potential reuse.
+        self.hasValidCardFrame = false
 
-        // Pre-download the hero image for the dismiss animation
+        // Hero image for the dismiss animation. Hit URLCache synchronously first —
+        // if the image was viewed before (thumbnail OR prior detail visit), it's already
+        // decoded and we skip the blank-frame jank on dismiss. Only fall back to network
+        // if truly uncached.
         if let urlStr = venue.photoUrl, let url = URL(string: urlStr) {
-            URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
-                if let data = data, let img = UIImage(data: data) {
+            let request = URLRequest(url: url)
+            if let cached = URLCache.shared.cachedResponse(for: request),
+               let img = UIImage(data: cached.data) {
+                self.cachedHeroImage = img
+            } else {
+                URLSession.shared.dataTask(with: request) { [weak self] data, response, _ in
+                    guard let data = data, let img = UIImage(data: data) else { return }
+                    if let response = response {
+                        URLCache.shared.storeCachedResponse(CachedURLResponse(response: response, data: data), for: request)
+                    }
                     DispatchQueue.main.async {
                         self?.cachedHeroImage = img
                     }
-                }
-            }.resume()
+                }.resume()
+            }
         }
 
         // Dim overlay
@@ -44,14 +64,14 @@ class VenueDetailTransitionController {
         window.addSubview(dim)
         self.dimView = dim
 
-        // Create the SwiftUI detail view
-        let detailView = VenueDetailView(venue: venue) { [weak self] in
-            self?.dismiss()
-        }
-        let hosting = UIHostingController(rootView: AnyView(
-            detailView
-                .ignoresSafeArea(.all)
-        ))
+        // Create the SwiftUI detail view (concrete type — no AnyView)
+        let detailView = VenueDetailView(
+            venue: venue,
+            onDismiss: { [weak self] in self?.dismiss() },
+            isFavorited: isFavorited,
+            onFavorite: onFavorite
+        )
+        let hosting = UIHostingController(rootView: detailView)
         hosting.view.backgroundColor = .white
 
         if hasValidCardFrame {
@@ -122,7 +142,7 @@ class VenueDetailTransitionController {
         dismissWithSlideDown(hosting: hosting, window: window)
     }
 
-    private func dismissWithCardMorph(hosting: UIHostingController<AnyView>, window: UIView) {
+    private func dismissWithCardMorph(hosting: UIViewController, window: UIView) {
         let screenBounds = window.bounds
         let heroRect = CGRect(x: 0, y: 0, width: screenBounds.width, height: 200)
         let cardImageHeight: CGFloat = 80
@@ -177,7 +197,7 @@ class VenueDetailTransitionController {
         )
     }
 
-    private func dismissWithSlideDown(hosting: UIHostingController<AnyView>, window: UIView) {
+    private func dismissWithSlideDown(hosting: UIViewController, window: UIView) {
         UIView.animate(
             withDuration: 0.35,
             delay: 0,

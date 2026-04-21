@@ -118,6 +118,21 @@ class OnboardingViewModel(
         _state.update { it.copy(splashComplete = true, currentStep = OnboardingStep.LOCATION) }
     }
 
+    /**
+     * Called when the OS-level location permission is already granted (e.g. a prior
+     * install), so we can skip the ask screen and show the SuccessScreen loader while
+     * the actual GPS coordinates arrive. Coords will be wired in via [onAllowLocation].
+     */
+    fun onLocationPregranted() {
+        _state.update {
+            it.copy(
+                locationGranted = true,
+                locationMode = "current",
+                currentStep = OnboardingStep.SUCCESS,
+            )
+        }
+    }
+
     fun onAllowLocation(lat: Double, lng: Double) {
         val city = nearestCity(lat, lng)
         println("onAllowLocation: lat=$lat lng=$lng city=$city")

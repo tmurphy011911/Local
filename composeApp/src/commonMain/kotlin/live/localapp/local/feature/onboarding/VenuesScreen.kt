@@ -7,11 +7,13 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -230,6 +232,7 @@ fun VenuesScreen(
                     columns = GridCells.Fixed(2),
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                     verticalArrangement = Arrangement.spacedBy(9.dp),
+                    contentPadding = PaddingValues(bottom = 120.dp),
                     modifier = Modifier.weight(1f),
                 ) {
                     items(displayItems, key = { it.id }) { item ->
@@ -272,17 +275,22 @@ fun VenuesScreen(
                     }
                 }
             }
+        }
 
-            Column(
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 14.dp),
-            ) {
-                OnboardingButton(
-                    text = "Next: Event types \u2192",
-                    color = AppColors.Plum,
-                    shadowColor = AppColors.PlumDk,
-                    onClick = onNext,
-                )
-            }
+        // Floating CTA
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(horizontal = 24.dp, vertical = 14.dp),
+        ) {
+            OnboardingButton(
+                text = "Next: Event types \u2192",
+                color = AppColors.Plum,
+                shadowColor = AppColors.PlumDk,
+                onClick = onNext,
+            )
         }
     }
 }

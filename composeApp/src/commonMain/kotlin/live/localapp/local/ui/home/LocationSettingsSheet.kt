@@ -40,6 +40,7 @@ private data class PlaceSuggestion(val placeId: String, val mainText: String, va
 @Composable
 fun LocationSettingsSheet(
     currentLocationName: String,
+    gpsLocationName: String = "",
     locationMode: LocationMode,
     manualLocationName: String,
     radiusFilter: Double?,
@@ -54,19 +55,74 @@ fun LocationSettingsSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var requestingGps by remember { mutableStateOf(false) }
+    var showEnableDialog by remember { mutableStateOf(false) }
+    var awaitingSettingsReturn by remember { mutableStateOf(false) }
 
     // GPS request triggered when user taps "Current Location"
     live.localapp.local.platform.RequestLocationEffect(
         active = requestingGps,
         onLocation = { lat, lng ->
             requestingGps = false
+            awaitingSettingsReturn = false
             onGpsLocation(lat, lng)
         },
         onDenied = {
             requestingGps = false
-            onGpsDenied()
+            if (awaitingSettingsReturn) {
+                // User returned from Settings but still didn't grant — stay on manual silently
+                awaitingSettingsReturn = false
+                onGpsDenied()
+            } else {
+                showEnableDialog = true
+            }
         },
     )
+
+    // When user returns from Settings, re-check permission and retry if now granted.
+    live.localapp.local.platform.OnAppResumeEffect {
+        if (awaitingSettingsReturn && live.localapp.local.platform.checkLocationPermissionGranted()) {
+            requestingGps = true
+        }
+    }
+
+    if (showEnableDialog) {
+        AlertDialog(
+            onDismissRequest = { showEnableDialog = false },
+            title = {
+                Text(
+                    "Location is Off",
+                    style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = AppColors.Ink),
+                )
+            },
+            text = {
+                Text(
+                    "Enable location for Local in Settings to use your current location. Otherwise we'll keep using the address you entered.",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink2, lineHeight = 20.sp),
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    showEnableDialog = false
+                    awaitingSettingsReturn = true
+                    openAppSettings()
+                }) {
+                    Text(
+                        "Open Settings",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = AppColors.Coral),
+                    )
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showEnableDialog = false }) {
+                    Text(
+                        "Cancel",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink3),
+                    )
+                }
+            },
+            containerColor = AppColors.Snow,
+        )
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -151,14 +207,19 @@ fun LocationSettingsSheet(
                         "Current Location",
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = AppColors.Ink),
                     )
-                    if (isCurrentSelected && currentLocationName.isNotBlank()) {
+                    // Prefer the reverse-geocoded GPS city; fall back to generic
+                    // text while it's being fetched or if reverse geocode fails.
+                    // Avoid echoing the manual-address name here — that was
+                    // misleading when Current was active.
+                    val subtitle = when {
+                        isCurrentSelected && hasLocationPermission && gpsLocationName.isNotBlank() -> gpsLocationName
+                        isCurrentSelected && hasLocationPermission -> "Using device GPS"
+                        !hasLocationPermission -> "Tap to enable location"
+                        else -> ""
+                    }
+                    if (subtitle.isNotBlank()) {
                         Text(
-                            currentLocationName,
-                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
-                        )
-                    } else if (!hasLocationPermission && !isCurrentSelected) {
-                        Text(
-                            "Tap to enable location",
+                            subtitle,
                             style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
                         )
                     }

@@ -31,6 +31,7 @@ private data class PlanDto(
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("is_past") val isPast: Boolean = false,
     @SerialName("group_size") val groupSize: Int? = null,
+    @SerialName("attendees_can_edit") val attendeesCanEdit: Boolean = false,
 )
 
 @Serializable
@@ -144,7 +145,9 @@ private fun PlanDto.toDomain(): Plan {
         createdAt = createdAt,
         dateDisplay = dateDisplay,
         isPast = isPast,
+        creatorId = userId,
         groupSize = groupSize,
+        attendeesCanEdit = attendeesCanEdit,
     )
 }
 
@@ -374,6 +377,26 @@ class PlanRepositoryImpl(
             ) { filter { eq("id", planId) } }
         } catch (e: Throwable) {
             println("PlanRepository.updateGroupSize error: ${e.message}")
+        }
+    }
+
+    override suspend fun updatePlanName(planId: String, newName: String) {
+        try {
+            supabaseClient.from("plans").update(
+                mapOf("name" to newName),
+            ) { filter { eq("id", planId) } }
+        } catch (e: Throwable) {
+            println("PlanRepository.updatePlanName error: ${e.message}")
+        }
+    }
+
+    override suspend fun updateAttendeesCanEdit(planId: String, canEdit: Boolean) {
+        try {
+            supabaseClient.from("plans").update(
+                mapOf("attendees_can_edit" to canEdit),
+            ) { filter { eq("id", planId) } }
+        } catch (e: Throwable) {
+            println("PlanRepository.updateAttendeesCanEdit error: ${e.message}")
         }
     }
 

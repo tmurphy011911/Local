@@ -1,0 +1,13 @@
+name = "localapp-router"
+main = "worker-plain.js"
+compatibility_date = "2025-10-01"
+
+# Default workers.dev subdomain — useful for testing before attaching to a domain.
+# Keep enabled while we validate; can disable once the localapp.live route is live.
+workers_dev = true
+
+# Once localapp.live is a Cloudflare zone, uncomment the route to attach this worker
+# to https://localapp.live/*. Requires the zone to be active on your account.
+# [[routes]]
+# pattern = "localapp.live/*"
+# zone_name = "localapp.live"

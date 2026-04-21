@@ -2,6 +2,65 @@ import SwiftUI
 import UIKit
 import ComposeApp
 
+// MARK: - Shared formatters (hoisted to avoid per-row allocation)
+
+private let monthFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "MMM"
+    return f
+}()
+
+private let dayFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "d"
+    return f
+}()
+
+private let weekdayFormatter: DateFormatter = {
+    let f = DateFormatter()
+    f.dateFormat = "EEE"
+    return f
+}()
+
+// MARK: - Image cache
+
+private let venueImageCache: NSCache<NSURL, UIImage> = {
+    let c = NSCache<NSURL, UIImage>()
+    c.countLimit = 100
+    return c
+}()
+
+struct CachedVenueImage<Placeholder: View>: View {
+    let url: URL
+    let placeholder: Placeholder
+    @State private var image: UIImage?
+
+    init(url: URL, @ViewBuilder placeholder: () -> Placeholder) {
+        self.url = url
+        self.placeholder = placeholder()
+    }
+
+    var body: some View {
+        Group {
+            if let img = image {
+                Image(uiImage: img).resizable().scaledToFill()
+            } else {
+                placeholder
+            }
+        }
+        .task(id: url) {
+            if let cached = venueImageCache.object(forKey: url as NSURL) {
+                image = cached
+                return
+            }
+            guard let (data, _) = try? await URLSession.shared.data(from: url),
+                  let img = UIImage(data: data) else { return }
+            venueImageCache.setObject(img, forKey: url as NSURL)
+            image = img
+        }
+    }
+}
+
 // MARK: - Venue Data Model (Swift side)
 
 struct VenueUpcomingEvent: Identifiable {
@@ -22,6 +81,7 @@ struct VenueUpcomingEvent: Identifiable {
 }
 
 struct VenueDetailData {
+    let id: String
     let name: String
     let address: String?
     let city: String
@@ -96,12 +156,32 @@ private extension Color {
 
 // MARK: - VenueDetailView
 
+extension Notification.Name {
+    static let venueEventsDidUpdate = Notification.Name("venueEventsDidUpdate")
+}
+
 struct VenueDetailView: View {
     let venue: VenueDetailData
     let onDismiss: () -> Void
+    let onFavorite: ((String) -> Void)?
 
     @State private var mapsExpanded = false
     @State private var selectedDateFilter: DateFilter = .all
+    @State private var isFavorited: Bool
+    // Events now load async after present(). Seed with whatever the venue came with
+    // (usually empty now that the grid doesn't hydrate events), then swap in the
+    // real list when the bridge's .venueEventsDidUpdate notification fires.
+    @State private var liveEvents: [VenueUpcomingEvent]
+    @State private var isLoadingEvents: Bool
+
+    init(venue: VenueDetailData, onDismiss: @escaping () -> Void, isFavorited: Bool = false, onFavorite: ((String) -> Void)? = nil) {
+        self.venue = venue
+        self.onDismiss = onDismiss
+        self.onFavorite = onFavorite
+        self._isFavorited = State(initialValue: isFavorited)
+        self._liveEvents = State(initialValue: venue.upcomingEvents)
+        self._isLoadingEvents = State(initialValue: venue.upcomingEvents.isEmpty)
+    }
 
     enum DateFilter: String, CaseIterable {
         case all = "All"
@@ -116,7 +196,7 @@ struct VenueDetailView: View {
         let now = Date()
         let todayStart = cal.startOfDay(for: now)
 
-        return venue.upcomingEvents.filter { event in
+        return liveEvents.filter { event in
             guard let startAt = event.startAt, let date = parseISO(startAt) else { return true }
             switch selectedDateFilter {
             case .all: return true
@@ -148,13 +228,11 @@ struct VenueDetailView: View {
         guard let startAt = event.startAt, let date = parseISO(startAt) else {
             return ("", "", "")
         }
-        let mf = DateFormatter()
-        mf.dateFormat = "MMM"
-        let df = DateFormatter()
-        df.dateFormat = "d"
-        let wf = DateFormatter()
-        wf.dateFormat = "EEE"
-        return (mf.string(from: date).uppercased(), df.string(from: date), wf.string(from: date).uppercased())
+        return (
+            monthFormatter.string(from: date).uppercased(),
+            dayFormatter.string(from: date),
+            weekdayFormatter.string(from: date).uppercased()
+        )
     }
 
     var body: some View {
@@ -173,6 +251,7 @@ struct VenueDetailView: View {
             }
         }
         .background(AppColor.snow)
+        .ignoresSafeArea(.all)
     }
 
     // MARK: - Hero Image
@@ -185,20 +264,11 @@ struct VenueDetailView: View {
 
                 // Image
                 if let urlStr = venue.photoUrl, let url = URL(string: urlStr) {
-                    AsyncImage(url: url) { phase in
-                        switch phase {
-                        case .success(let image):
-                            image.resizable().scaledToFill()
-                                .frame(width: geo.size.width, height: 200)
-                                .clipped()
-                        case .failure:
-                            placeholderGradient
-                        case .empty:
-                            AppColor.mist
-                        @unknown default:
-                            placeholderGradient
-                        }
+                    CachedVenueImage(url: url) {
+                        AppColor.mist
                     }
+                    .frame(width: geo.size.width, height: 200)
+                    .clipped()
                 } else {
                     placeholderGradient
                 }
@@ -228,16 +298,24 @@ struct VenueDetailView: View {
                 }
 
                 // Top buttons
-                HStack {
+                HStack(spacing: 8) {
                     // Back button — top left
                     heroIconButton(systemName: "arrow.left") { onDismiss() }
 
                     Spacer()
 
-                    // Share button — top right
+                    // Favorite (heart) — matches EventDetailView
+                    heroIconButton(
+                        systemName: isFavorited ? "heart.fill" : "heart",
+                        tint: isFavorited ? AppColor.coral : AppColor.ink
+                    ) {
+                        isFavorited.toggle()
+                        onFavorite?(venue.id)
+                    }
+
+                    // Share — uses venue ID for URL consistency with events
                     heroIconButton(systemName: "square.and.arrow.up") {
-                        let encodedName = venue.name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? venue.name
-                        let shareUrl = "https://localapp.live/v/\(encodedName)"
+                        let shareUrl = "https://localapp.live/v/\(venue.id)"
                         ShareBridge.shared.presentShareSheet?(venue.name, shareUrl)
                     }
                 }
@@ -256,11 +334,11 @@ struct VenueDetailView: View {
         )
     }
 
-    private func heroIconButton(systemName: String, action: @escaping () -> Void) -> some View {
+    private func heroIconButton(systemName: String, tint: Color = AppColor.ink, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(.system(size: 14, weight: .semibold))
-                .foregroundColor(AppColor.ink)
+                .foregroundColor(tint)
                 .frame(width: 36, height: 36)
                 .background(AppColor.white.opacity(0.9))
                 .clipShape(Circle())
@@ -347,7 +425,17 @@ struct VenueDetailView: View {
             }
 
             // Upcoming Events — compact list with date filter
-            if !venue.upcomingEvents.isEmpty {
+            if isLoadingEvents {
+                Spacer().frame(height: 8)
+
+                Text("Upcoming Events")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(AppColor.ink)
+
+                Spacer().frame(height: 12)
+
+                eventSkeleton()
+            } else if !liveEvents.isEmpty {
                 Spacer().frame(height: 8)
 
                 Text("Upcoming Events")
@@ -383,11 +471,13 @@ struct VenueDetailView: View {
                         .padding(.vertical, 16)
                         .frame(maxWidth: .infinity)
                 } else {
-                    ForEach(events) { event in
-                        eventListRow(event)
+                    LazyVStack(spacing: 0) {
+                        ForEach(events) { event in
+                            eventListRow(event)
+                        }
                     }
                 }
-            } else if venue.upcomingEventCount > 0 {
+            } else {
                 Spacer().frame(height: 8)
 
                 Text("Upcoming Events")
@@ -396,7 +486,7 @@ struct VenueDetailView: View {
 
                 Spacer().frame(height: 8)
 
-                Text("\(venue.upcomingEventCount) upcoming event\(venue.upcomingEventCount == 1 ? "" : "s") at this venue")
+                Text("No upcoming events at this venue")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(AppColor.ink3)
                     .padding(.vertical, 12)
@@ -410,6 +500,43 @@ struct VenueDetailView: View {
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
+        .onReceive(NotificationCenter.default.publisher(for: .venueEventsDidUpdate)) { note in
+            guard let payload = note.userInfo,
+                  let vid = payload["venueId"] as? String,
+                  vid == venue.id,
+                  let events = payload["events"] as? [VenueUpcomingEvent]
+            else { return }
+            liveEvents = events
+            isLoadingEvents = false
+        }
+    }
+
+    // Skeleton shown while events load after tap. Three shimmer rows keep the section
+    // from collapsing and signal "loading" without a spinner.
+    @ViewBuilder
+    private func eventSkeleton() -> some View {
+        VStack(spacing: 14) {
+            ForEach(0..<3, id: \.self) { _ in
+                HStack(spacing: 10) {
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(AppColor.pebble.opacity(0.4))
+                        .frame(width: 70, height: 70)
+                    VStack(alignment: .leading, spacing: 8) {
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(AppColor.pebble.opacity(0.5))
+                            .frame(width: 180, height: 13)
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(AppColor.pebble.opacity(0.4))
+                            .frame(width: 120, height: 10)
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(AppColor.pebble.opacity(0.3))
+                            .frame(width: 80, height: 10)
+                    }
+                    Spacer()
+                }
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     private func starsView(rating: Double) -> some View {
@@ -561,7 +688,8 @@ struct VenueDetailView: View {
                 event.ticketUrl, event.sourceUrl,
                 event.category ?? "", event.subcategory,
                 nil,
-                0, 0, 0, 0, event.imageUrl
+                0, 0, 0, 0, event.imageUrl,
+                KotlinBoolean(value: false)
             )
         }
     }
@@ -647,7 +775,8 @@ struct VenueDetailView: View {
                 event.ticketUrl, event.sourceUrl,
                 event.category ?? "", event.subcategory,
                 nil,
-                0, 0, 0, 0, event.imageUrl
+                0, 0, 0, 0, event.imageUrl,
+                KotlinBoolean(value: false)
             )
         }
     }

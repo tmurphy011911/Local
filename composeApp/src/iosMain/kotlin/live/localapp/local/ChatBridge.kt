@@ -14,14 +14,47 @@ import live.localapp.local.ui.chat.ItinerarySlot
  * Kotlin pushes state updates → Swift observes.
  * Swift sends actions → Kotlin executes.
  */
+/**
+ * Drop glyphs that SwiftUI's Nunito font can't render (emoji, misc symbols).
+ * Keeps ASCII, Latin, Cyrillic, CJK, arrows, and standard punctuation; strips
+ * anything in the Miscellaneous Symbols / Emoji / Dingbat ranges.
+ */
+private fun stripUnsupportedGlyphs(text: String): String {
+    val filtered = text.filter { c ->
+        val cp = c.code
+        cp < 0x2600 || (cp in 0x2800..0xFDFF) || (cp in 0xFE10..0xFE1F) || (cp in 0xFF00..0xFFEF)
+    }
+    // Collapse whitespace that was left by stripped glyphs.
+    return filtered.replace(Regex("[ \\t]{2,}"), " ")
+}
+
 object ChatBridge {
     // ── State pushed from Kotlin to Swift ──
-    var onStateUpdate: ((ChatStateSnapshot) -> Unit)? = null
+    // Keep the latest snapshot so we can replay it when SwiftUI attaches its
+    // observer after the VM has already fired (e.g. welcome greeting emitted
+    // before ChatView.onAppear wires up onStateUpdate).
+    private var lastSnapshot: ChatStateSnapshot? = null
+    private var _onStateUpdate: ((ChatStateSnapshot) -> Unit)? = null
+    var onStateUpdate: ((ChatStateSnapshot) -> Unit)?
+        get() = _onStateUpdate
+        set(value) {
+            _onStateUpdate = value
+            if (value != null) {
+                lastSnapshot?.let(value)
+            }
+        }
 
     // ── Actions from Swift to Kotlin ──
     var sendMessage: ((String) -> Unit)? = null
     var resetChat: (() -> Unit)? = null
     var onBack: (() -> Unit)? = null
+    // Quick reply: pass both label (display text) and action (command token)
+    // so the VM can route specials like "reset" / "save_plan" correctly.
+    var onQuickReply: ((String, String) -> Unit)? = null
+    // Fires when PremiumGate blocks a plan save — Swift presents the paywall.
+    var onPlanBlocked: (() -> Unit)? = null
+    // Clear the plan-saved celebration and reset chat.
+    var clearSuccessState: (() -> Unit)? = null
 
     // ── Event/venue taps from Swift ──
     var onEventTap: ((String, String?) -> Unit)? = null  // eventId, imageUrl
@@ -30,14 +63,19 @@ object ChatBridge {
     /** Push a state snapshot to Swift */
     fun pushState(state: ChatUiState) {
         val messages = state.messages.map { msg ->
+            val rawText = when (msg.content) {
+                is MessageContent.Text -> (msg.content as MessageContent.Text).text
+                is MessageContent.DayCardRef -> "[plan_card]"
+                is MessageContent.MultiDayPlanRef -> "[multi_day_plan]"
+            }
             ChatMessageSnapshot(
                 id = msg.id,
                 isUser = msg.role == MessageRole.USER,
-                text = when (msg.content) {
-                    is MessageContent.Text -> (msg.content as MessageContent.Text).text
-                    is MessageContent.DayCardRef -> "[plan_card]"
-                    is MessageContent.MultiDayPlanRef -> "[multi_day_plan]"
-                },
+                // SwiftUI's chat renderer uses Nunito, which doesn't ship emoji
+                // glyphs — anything outside the common Unicode planes shows as
+                // tofu. Strip before crossing the bridge. User text is passed
+                // through untouched.
+                text = if (msg.role == MessageRole.USER) rawText else stripUnsupportedGlyphs(rawText),
                 isPlanCard = msg.content is MessageContent.DayCardRef || msg.content is MessageContent.MultiDayPlanRef,
                 planSnapshot = when (msg.content) {
                     is MessageContent.DayCardRef -> (msg.content as MessageContent.DayCardRef).snapshot?.map { it.toSnapshot() }
@@ -52,7 +90,7 @@ object ChatBridge {
         val snapshot = ChatStateSnapshot(
             messages = messages,
             quickReplies = state.quickReplies.map { QuickReplySnapshot(it.label, it.isGreen, it.action) },
-            streamingText = state.streamingText,
+            streamingText = stripUnsupportedGlyphs(state.streamingText),
             isTyping = state.isTyping,
             isSearching = state.isSearching,
             isBusy = state.isBusy,
@@ -62,7 +100,8 @@ object ChatBridge {
             weather = state.weather.mapValues { (_, w) -> WeatherSnapshot(w.tempHigh, w.description) },
         )
 
-        onStateUpdate?.invoke(snapshot)
+        lastSnapshot = snapshot
+        _onStateUpdate?.invoke(snapshot)
     }
 
     var supersededIds: Set<String> = emptySet()

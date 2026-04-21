@@ -46,6 +46,23 @@ object AppColors {
     val Orange = Color(0xFFFF9B4E)
     val OrangeDk = Color(0xFFE07030)
 
+    // ── Plan Detail V5 palette — warm, scoped to the Plan Detail screen only.
+    //    Kept separate from the app-wide tokens above so we don't shift other
+    //    screens' coral/bg during the V5 rollout.
+    val V5Coral = Color(0xFFF56B63)
+    val V5CoralDk = Color(0xFFE94F47)
+    val V5CoralSoft = Color(0xFFFBE4E1)
+    val V5CoralInk = Color(0xFF7A231F)
+    val V5Ink = Color(0xFF1A1715)
+    val V5Ink2 = Color(0xFF3D3834)
+    val V5Ink3 = Color(0xFF6B6560)
+    val V5Ink4 = Color(0xFFA49E98)
+    val V5Line = Color(0xFFE8E3DD)
+    val V5LineSoft = Color(0xFFF1ECE6)
+    val V5Paper = Color(0xFFFBF8F4)
+    val V5Shade = Color(0xFFF5EFE8)
+    val V5Green = Color(0xFF4AA27A)
+
     val Ink = Color(0xFF1A1523)
     val Ink2 = Color(0xFF4A4458)
     val Ink3 = Color(0xFF8A849A)

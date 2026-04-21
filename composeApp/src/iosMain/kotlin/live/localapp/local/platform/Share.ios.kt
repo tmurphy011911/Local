@@ -48,8 +48,7 @@ actual fun requestAppReview() {
 }
 
 actual fun openAppStoreListing() {
-    // TODO: replace with real App Store ID
-    val url = platform.Foundation.NSURL(string = "https://apps.apple.com/app/local/id0000000000")!!
+    val url = platform.Foundation.NSURL(string = "https://apps.apple.com/app/local/id6761425705")!!
     platform.UIKit.UIApplication.sharedApplication.openURL(url, emptyMap<Any?, Any>()) { _ -> }
 }
 

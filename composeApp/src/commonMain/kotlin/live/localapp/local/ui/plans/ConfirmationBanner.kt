@@ -43,6 +43,7 @@ fun ConfirmationBanner(
     groupSize: Int?,
     confirmedCount: Int,
     creatorInitial: String,
+    isCreator: Boolean = true,
     onSetGroupSize: (Int) -> Unit,
     onShare: () -> Unit,
 ) {
@@ -56,89 +57,86 @@ fun ConfirmationBanner(
             .padding(16.dp),
     ) {
         if (groupSize != null && groupSize > 1) {
-            // State A or C: group size known
+            // State A or C: group size known — compact avatar stack + inline progress
             val allConfirmed = confirmedCount >= groupSize
 
-            // Avatar circles row
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                // Avatar circles (max 8 visible, then "+N")
-                val visibleCount = minOf(groupSize, 8)
-                val extraCount = if (groupSize > 8) groupSize - 8 else 0
-
-                Row(horizontalArrangement = Arrangement.spacedBy((-4).dp)) {
-                    for (i in 0 until visibleCount) {
-                        val isConfirmed = i < confirmedCount
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Compact overlapping avatar stack — max 4 visible, creator first, then "+N"
+                val maxVisible = 4
+                val visibleConfirmed = minOf(confirmedCount, maxVisible)
+                val showMoreBadge = groupSize > maxVisible
+                Row(horizontalArrangement = Arrangement.spacedBy((-6).dp)) {
+                    for (i in 0 until visibleConfirmed) {
                         val color = Color(AVATAR_COLORS[i % AVATAR_COLORS.size])
                         Box(
                             modifier = Modifier
-                                .size(32.dp)
-                                .background(
-                                    if (isConfirmed) color else Color.Transparent,
-                                    CircleShape,
-                                )
-                                .border(
-                                    2.dp,
-                                    if (isConfirmed) color else AppColors.Pebble,
-                                    CircleShape,
-                                ),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            if (isConfirmed) {
-                                val initial = if (i == 0) creatorInitial else "?"
-                                Text(
-                                    initial,
-                                    style = TextStyle(
-                                        fontFamily = AppFonts.Body,
-                                        fontWeight = FontWeight.Black,
-                                        fontSize = 12.sp,
-                                        color = Color.White,
-                                    ),
-                                )
-                            }
-                        }
-                    }
-                    if (extraCount > 0) {
-                        Box(
-                            modifier = Modifier
-                                .size(32.dp)
-                                .background(AppColors.Mist, CircleShape)
-                                .border(2.dp, AppColors.Pebble, CircleShape),
+                                .size(26.dp)
+                                .background(color, CircleShape)
+                                .border(2.dp, Color.White, CircleShape),
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
-                                "+$extraCount",
-                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = AppColors.Ink3),
+                                if (i == 0) creatorInitial else "?",
+                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 11.sp, color = Color.White),
+                            )
+                        }
+                    }
+                    // Empty slots shown as muted outlined circles (cap at maxVisible total)
+                    val remainingVisible = maxOf(0, minOf(groupSize, maxVisible) - visibleConfirmed)
+                    for (i in 0 until remainingVisible) {
+                        Box(
+                            modifier = Modifier
+                                .size(26.dp)
+                                .background(AppColors.Mist, CircleShape)
+                                .border(2.dp, Color.White, CircleShape),
+                        )
+                    }
+                    // "+N" badge when group exceeds maxVisible
+                    if (showMoreBadge) {
+                        val extra = groupSize - maxVisible
+                        Box(
+                            modifier = Modifier
+                                .size(26.dp)
+                                .background(AppColors.Mist, CircleShape)
+                                .border(2.dp, Color.White, CircleShape),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                "+$extra",
+                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Ink3),
                             )
                         }
                     }
                 }
 
-                Spacer(Modifier.weight(1f))
+                Spacer(Modifier.width(10.dp))
 
-                // X/Y confirmed text
-                Text(
-                    if (allConfirmed) "All confirmed" else "$confirmedCount of $groupSize confirmed",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 13.sp,
-                        color = if (allConfirmed) Color(0xFF2D9F73) else AppColors.Ink2,
-                    ),
-                )
-            }
-
-            // Celebratory text when all confirmed
-            if (allConfirmed) {
-                Spacer(Modifier.height(8.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(16.dp), tint = Color(0xFF2D9F73))
-                    Spacer(Modifier.width(4.dp))
+                // Progress text
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "Your crew is locked in!",
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color(0xFF2D9F73)),
+                        if (allConfirmed) "All confirmed" else "$confirmedCount of $groupSize confirmed",
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 13.sp,
+                            color = if (allConfirmed) Color(0xFF2D9F73) else AppColors.Ink,
+                        ),
                     )
+                    if (allConfirmed) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(12.dp), tint = Color(0xFF2D9F73))
+                            Spacer(Modifier.width(3.dp))
+                            Text(
+                                "Your crew is locked in",
+                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = Color(0xFF2D9F73)),
+                            )
+                        }
+                    } else {
+                        Text(
+                            "Share to get the rest on board",
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
+                        )
+                    }
                 }
             }
         } else {
@@ -163,36 +161,39 @@ fun ConfirmationBanner(
                 )
             }
 
-            Spacer(Modifier.height(12.dp))
+            // Number picker only shown to the creator — attendees can't set group size
+            if (isCreator) {
+                Spacer(Modifier.height(12.dp))
 
-            Text(
-                "How many people total?",
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
-            )
+                Text(
+                    "How many people total?",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
+                )
 
-            Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(8.dp))
 
-            // Number picker: 2-16
-            Row(
-                modifier = Modifier.horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                for (n in 2..16) {
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .background(AppColors.Mist, RoundedCornerShape(10.dp))
-                            .clip(RoundedCornerShape(10.dp))
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                            ) { onSetGroupSize(n) },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            "$n",
-                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = AppColors.Ink),
-                        )
+                // Number picker: 2-16
+                Row(
+                    modifier = Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    for (n in 2..16) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .background(AppColors.Mist, RoundedCornerShape(10.dp))
+                                .clip(RoundedCornerShape(10.dp))
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                ) { onSetGroupSize(n) },
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                "$n",
+                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = AppColors.Ink),
+                            )
+                        }
                     }
                 }
             }

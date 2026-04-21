@@ -24,6 +24,7 @@ struct EventDetailData {
     let subcategory: String?
     let source: String?
     var showDirections: Bool = false
+    var isFavorited: Bool = false
 
     var ctaUrl: String? { ticketUrl ?? sourceUrl }
     var hasLocation: Bool { venueLat != 0 && venueLng != 0 }
@@ -218,6 +219,7 @@ struct EventDetailView: View {
         self.onFavorite = onFavorite
         self.onDismiss = onDismiss
         self._countdown = State(initialValue: computeCountdown(startAt: event.startAt))
+        self._isFavorited = State(initialValue: event.isFavorited)
     }
 
     var body: some View {
@@ -312,12 +314,12 @@ struct EventDetailView: View {
                             let shareText = event.title
                             ShareBridge.shared.presentShareSheet?(shareText, shareUrl)
                         }
-                        heroIconButton(systemName: isFavorited ? "heart.fill" : "heart") {
-                            let wasFavorited = isFavorited
+                        heroIconButton(
+                            systemName: isFavorited ? "heart.fill" : "heart",
+                            tint: isFavorited ? AppColor.coral : AppColor.ink
+                        ) {
                             isFavorited.toggle()
-                            if !wasFavorited {
-                                onFavorite?(event.id)
-                            }
+                            onFavorite?(event.id)
                         }
                     }
                     .padding(.trailing, 16)
@@ -373,11 +375,11 @@ struct EventDetailView: View {
         }
     }
 
-    private func heroIconButton(systemName: String, action: @escaping () -> Void) -> some View {
+    private func heroIconButton(systemName: String, tint: Color = AppColor.ink, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemName)
                 .font(AppFont.body(14, weight: .semibold))
-                .foregroundColor(AppColor.ink)
+                .foregroundColor(tint)
                 .frame(width: 36, height: 36)
                 .background(AppColor.white.opacity(0.9))
                 .clipShape(Circle())

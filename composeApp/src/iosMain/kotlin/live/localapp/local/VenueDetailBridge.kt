@@ -15,6 +15,7 @@ object VenueDetailBridge {
      * Parameters: all venue fields + card frame (x, y, w, h in points).
      */
     var showVenueDetail: ((
+        id: String,
         name: String, address: String?, city: String,
         lat: Double, lng: Double,
         photoUrl: String?, description: String?,
@@ -23,12 +24,23 @@ object VenueDetailBridge {
         upcomingEventCount: Int,
         upcomingEventsJson: String,
         reservationUrl: String?,
+        isFavorited: Boolean,
         cardX: Float, cardY: Float, cardW: Float, cardH: Float
     ) -> Unit)? = null
+
+    /**
+     * Swift sets this. Compose calls it AFTER the detail has already been presented,
+     * with the freshly-fetched upcoming events. Used to replace the skeleton state.
+     * Parameters: venue id (for sanity check), events JSON (same shape as show call).
+     */
+    var updateVenueEvents: ((id: String, upcomingEventsJson: String) -> Unit)? = null
 
     /** Swift sets this. Compose calls it to dismiss the native venue detail screen. */
     var dismissVenueDetail: (() -> Unit)? = null
 
     /** Compose sets this. Swift calls it when the detail screen has been dismissed. */
     var onDismissed: (() -> Unit)? = null
+
+    /** Compose sets this. Swift calls it when the user taps the heart on the native detail. */
+    var onFavorited: ((String) -> Unit)? = null
 }

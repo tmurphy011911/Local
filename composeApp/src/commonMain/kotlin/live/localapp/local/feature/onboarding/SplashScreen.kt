@@ -248,24 +248,21 @@ fun SplashScreen(onComplete: () -> Unit) {
                             ),
                         )
                     }
+
+                    if (tapEnabled) {
+                        Spacer(Modifier.height(18.dp))
+                        Text(
+                            "Tap anywhere to continue",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.ExtraBold,
+                                fontSize = 12.sp,
+                                color = AppColors.Ink3,
+                            ),
+                        )
+                    }
                 }
             }
-        }
-
-        // Tap hint at bottom
-        if (tapEnabled) {
-            Text(
-                "Tap anywhere to continue",
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .padding(bottom = 40.dp),
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 12.sp,
-                    color = AppColors.Ink3,
-                ),
-            )
         }
     }
 }

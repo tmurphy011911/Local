@@ -391,7 +391,7 @@ private fun ChatHeader(onBack: (() -> Unit)? = null, onReset: (() -> Unit)? = nu
 
         if (onReset != null) {
             Text(
-                "Clear chat",
+                "Start over",
                 modifier = Modifier.clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null, onClick = onReset,

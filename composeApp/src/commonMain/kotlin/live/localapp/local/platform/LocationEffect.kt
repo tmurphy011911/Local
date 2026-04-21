@@ -22,3 +22,7 @@ expect fun RequestLocationEffect(
 
 /** Synchronous check: is location permission currently granted? */
 expect fun checkLocationPermissionGranted(): Boolean
+
+/** Fires [onResume] when the app returns to the foreground. */
+@Composable
+expect fun OnAppResumeEffect(onResume: () -> Unit)

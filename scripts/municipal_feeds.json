@@ -1,0 +1,11 @@
+[
+  {
+    "metro": "boston",
+    "name": "Boston.gov",
+    "type": "drupal_jsonapi",
+    "url": "https://www.boston.gov/jsonapi/node/event",
+    "city": "Boston",
+    "state": "MA",
+    "enabled": true
+  }
+]

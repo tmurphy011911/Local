@@ -11,6 +11,8 @@ interface PlanRepository {
     suspend fun getSharedPlan(shareToken: String): Plan?
     suspend fun acceptPlanInvite(shareToken: String): AcceptInviteResult
     suspend fun updateGroupSize(planId: String, groupSize: Int)
+    suspend fun updatePlanName(planId: String, newName: String)
+    suspend fun updateAttendeesCanEdit(planId: String, canEdit: Boolean)
     suspend fun getConfirmedCount(planId: String): Int
     suspend fun insertCreatorAttendee(planId: String)
 }

@@ -1,0 +1,225 @@
+package live.localapp.local.data.repository
+
+import io.ktor.client.HttpClient
+import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.client.request.parameter
+import io.ktor.client.statement.bodyAsText
+import io.ktor.serialization.kotlinx.json.json
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import live.localapp.local.Config
+import live.localapp.local.domain.model.Event
+import live.localapp.local.domain.model.Venue
+import live.localapp.local.domain.repository.EventPage
+import live.localapp.local.domain.repository.ExploreRepository
+import live.localapp.local.domain.repository.PlacePage
+import live.localapp.local.domain.repository.VenueWithMeta
+
+class HttpExploreRepository : ExploreRepository {
+
+    private val json = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+    }
+
+    private val httpClient = HttpClient {
+        install(ContentNegotiation) { json(json) }
+        install(HttpTimeout) {
+            requestTimeoutMillis = 30_000
+            connectTimeoutMillis = 15_000
+            socketTimeoutMillis = 30_000
+        }
+    }
+
+    private val eventsUrl = "${Config.SUPABASE_URL}/functions/v1/explore-events"
+    private val placesUrl = "${Config.SUPABASE_URL}/functions/v1/explore-places"
+
+    override suspend fun fetchEvents(
+        userLat: Double,
+        userLng: Double,
+        userId: String?,
+        query: String?,
+        category: String?,
+        radiusMiles: Double?,
+        dateFilter: String?,
+        cursor: String?,
+        limit: Int,
+    ): EventPage {
+        val res = httpClient.get(eventsUrl) {
+            header("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
+            parameter("lat", userLat)
+            parameter("lng", userLng)
+            userId?.let { parameter("user_id", it) }
+            query?.takeIf { it.isNotBlank() }?.let { parameter("query", it) }
+            category?.takeIf { it.isNotBlank() && it != "foryou" }?.let { parameter("category", it) }
+            radiusMiles?.let { parameter("radius", it) }
+            dateFilter?.takeIf { it.isNotBlank() }?.let { parameter("date_filter", it) }
+            cursor?.let { parameter("cursor", it) }
+            parameter("limit", limit)
+        }
+        val body = res.bodyAsText()
+        val parsed = json.decodeFromString<EventPageDto>(body)
+        return EventPage(
+            items = parsed.items.map { it.toDomain() },
+            cursor = parsed.cursor,
+            hasMore = parsed.hasMore,
+            total = parsed.total,
+        )
+    }
+
+    override suspend fun fetchPlaces(
+        userLat: Double,
+        userLng: Double,
+        userId: String?,
+        query: String?,
+        category: String?,
+        radiusMiles: Double?,
+        hasEventsOnly: Boolean,
+        cursor: String?,
+        limit: Int,
+    ): PlacePage {
+        val res = httpClient.get(placesUrl) {
+            header("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
+            parameter("lat", userLat)
+            parameter("lng", userLng)
+            userId?.let { parameter("user_id", it) }
+            query?.takeIf { it.isNotBlank() }?.let { parameter("query", it) }
+            category?.takeIf { it.isNotBlank() && it != "foryou" }?.let { parameter("category", it) }
+            radiusMiles?.let { parameter("radius", it) }
+            if (hasEventsOnly) parameter("has_events", "true")
+            cursor?.let { parameter("cursor", it) }
+            parameter("limit", limit)
+        }
+        val body = res.bodyAsText()
+        val parsed = json.decodeFromString<PlacePageDto>(body)
+        return PlacePage(
+            items = parsed.items.map { it.toDomain() },
+            cursor = parsed.cursor,
+            hasMore = parsed.hasMore,
+            total = parsed.total,
+        )
+    }
+}
+
+// ── DTOs ──
+
+@Serializable
+private data class EventPageDto(
+    val items: List<ExploreEventDto> = emptyList(),
+    val cursor: String? = null,
+    val hasMore: Boolean = false,
+    val total: Int = 0,
+)
+
+@Serializable
+private data class ExploreEventDto(
+    val id: String,
+    val title: String,
+    val description: String? = null,
+    val category: String = "",
+    val subcategory: String? = null,
+    val startAt: String? = null,
+    val endAt: String? = null,
+    val isFree: Boolean = false,
+    val priceMin: Double? = null,
+    val priceMax: Double? = null,
+    val ticketUrl: String? = null,
+    val imageUrl: String? = null,
+    val venueName: String? = null,
+    val venueCity: String = "",
+    val venueLat: Double? = null,
+    val venueLng: Double? = null,
+    val city: String = "",
+    val sourceUrl: String? = null,
+    val distanceMiles: Double? = null,
+) {
+    fun toDomain() = Event(
+        id = id,
+        title = title,
+        description = description,
+        category = category,
+        subcategory = subcategory,
+        subSubcategory = null,
+        imageUrl = imageUrl,
+        startAt = startAt,
+        endAt = endAt,
+        isFree = isFree,
+        priceMin = priceMin,
+        priceMax = priceMax,
+        ticketUrl = ticketUrl,
+        venueName = venueName,
+        venueAddress = null,
+        venueCity = venueCity,
+        venueState = null,
+        venueLat = venueLat,
+        venueLng = venueLng,
+        city = city.ifEmpty { venueCity },
+        source = null,
+        sourceUrl = sourceUrl,
+        distanceMiles = distanceMiles,
+        venueDescription = null,
+    )
+}
+
+@Serializable
+private data class PlacePageDto(
+    val items: List<ExplorePlaceDto> = emptyList(),
+    val cursor: String? = null,
+    val hasMore: Boolean = false,
+    val total: Int = 0,
+)
+
+@Serializable
+private data class ExplorePlaceDto(
+    val id: String,
+    val name: String,
+    val address: String? = null,
+    val city: String = "",
+    val state: String? = null,
+    val lat: Double? = null,
+    val lng: Double? = null,
+    val photoUrl: String? = null,
+    val description: String? = null,
+    val category: String? = null,
+    val tags: List<String> = emptyList(),
+    val distanceMiles: Double? = null,
+    val googleRating: Double? = null,
+    val website: String? = null,
+    val reservationUrl: String? = null,
+    val upcomingEventCount: Int = 0,
+    val publicInterestRank: Int? = null,
+    val isFeatured: Boolean = false,
+) {
+    fun toDomain(): VenueWithMeta = VenueWithMeta(
+        venue = Venue(
+            id = id,
+            name = name,
+            address = address,
+            city = city,
+            state = state,
+            country = null,
+            latitude = lat,
+            longitude = lng,
+            imageUrl = photoUrl,
+            photoUrl = photoUrl,
+            description = description,
+            publicInterestRank = publicInterestRank,
+            category = category,
+            placeType = null,
+            googleRating = googleRating,
+            website = website,
+            reservationUrl = reservationUrl,
+        ),
+        distanceMiles = distanceMiles,
+        upcomingEventCount = upcomingEventCount,
+        upcomingEvents = emptyList(),
+        primaryCategory = category,
+        tags = tags,
+        isFeatured = isFeatured,
+        googleRating = googleRating,
+    )
+}

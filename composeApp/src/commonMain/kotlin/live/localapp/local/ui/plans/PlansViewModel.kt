@@ -50,14 +50,15 @@ class PlansViewModel(
     }
 
     fun removeSlotFromPlan(planId: String, dayIndex: Int, slotId: String) {
-        // Optimistic UI update — remove the slot from the plan in state
+        // Optimistic UI update — remove the slot from the plan in state.
+        // Empty days are kept; the UI asks the user if they want to remove them.
         _uiState.update { state ->
             fun updatePlans(plans: List<Plan>) = plans.map { plan ->
                 if (plan.id != planId) return@map plan
                 val updatedDays = plan.days.mapIndexed { i, day ->
                     if (i != dayIndex) day
                     else day.copy(slots = day.slots.filter { it.id != slotId })
-                }.filter { it.slots.isNotEmpty() } // remove empty days
+                }
                 plan.copy(days = updatedDays)
             }
             state.copy(
@@ -67,6 +68,71 @@ class PlansViewModel(
         }
 
         // Persist the updated plan to the DB
+        viewModelScope.launch {
+            val allPlans = _uiState.value.upcomingPlans + _uiState.value.pastPlans
+            val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
+            planRepository.updatePlan(updatedPlan)
+        }
+    }
+
+    /** Remove an entire day from the plan. */
+    fun removeDayFromPlan(planId: String, dayIndex: Int) {
+        _uiState.update { state ->
+            fun updatePlans(plans: List<Plan>) = plans.map { plan ->
+                if (plan.id != planId) return@map plan
+                plan.copy(days = plan.days.filterIndexed { i, _ -> i != dayIndex })
+            }
+            state.copy(
+                upcomingPlans = updatePlans(state.upcomingPlans),
+                pastPlans = updatePlans(state.pastPlans),
+            )
+        }
+        viewModelScope.launch {
+            val allPlans = _uiState.value.upcomingPlans + _uiState.value.pastPlans
+            val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
+            planRepository.updatePlan(updatedPlan)
+        }
+    }
+
+    /** Add a blank day to the plan. */
+    fun addDayToPlan(planId: String) {
+        _uiState.update { state ->
+            fun updatePlans(plans: List<Plan>) = plans.map { plan ->
+                if (plan.id != planId) return@map plan
+                val nextIndex = plan.days.size + 1
+                val label = "Day $nextIndex"
+                val shortName = "Day $nextIndex"
+                val newDay = live.localapp.local.domain.model.PlanDay(label = label, shortName = shortName, slots = emptyList())
+                plan.copy(days = plan.days + newDay)
+            }
+            state.copy(
+                upcomingPlans = updatePlans(state.upcomingPlans),
+                pastPlans = updatePlans(state.pastPlans),
+            )
+        }
+        viewModelScope.launch {
+            val allPlans = _uiState.value.upcomingPlans + _uiState.value.pastPlans
+            val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
+            planRepository.updatePlan(updatedPlan)
+        }
+    }
+
+    /** Add a slot to a specific day. */
+    fun addSlotToDay(planId: String, dayIndex: Int, slot: live.localapp.local.domain.model.PlanSlot) {
+        _uiState.update { state ->
+            fun updatePlans(plans: List<Plan>) = plans.map { plan ->
+                if (plan.id != planId) return@map plan
+                val updatedDays = plan.days.mapIndexed { i, day ->
+                    if (i != dayIndex) day
+                    else day.copy(slots = day.slots + slot)
+                }
+                plan.copy(days = updatedDays)
+            }
+            state.copy(
+                upcomingPlans = updatePlans(state.upcomingPlans),
+                pastPlans = updatePlans(state.pastPlans),
+            )
+        }
         viewModelScope.launch {
             val allPlans = _uiState.value.upcomingPlans + _uiState.value.pastPlans
             val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
@@ -139,6 +205,51 @@ class PlansViewModel(
     fun processPendingAccept() {
         val plan = _uiState.value.pendingAcceptAfterAuth ?: return
         acceptInvite(plan)
+    }
+
+    /** Get the current user ID (for isCreator checks). */
+    fun currentUserId(): String? = userPreferencesRepository.getLocalUserId()
+
+    /** Update group size: optimistic local state + DB persist. */
+    fun setGroupSize(planId: String, size: Int) {
+        _uiState.update { state ->
+            fun updatePlans(plans: List<Plan>) = plans.map { p ->
+                if (p.id == planId) p.copy(groupSize = size) else p
+            }
+            state.copy(
+                upcomingPlans = updatePlans(state.upcomingPlans),
+                pastPlans = updatePlans(state.pastPlans),
+            )
+        }
+        viewModelScope.launch { planRepository.updateGroupSize(planId, size) }
+    }
+
+    /** Update plan name: optimistic local state + DB persist. */
+    fun setPlanName(planId: String, newName: String) {
+        _uiState.update { state ->
+            fun updatePlans(plans: List<Plan>) = plans.map { p ->
+                if (p.id == planId) p.copy(title = newName) else p
+            }
+            state.copy(
+                upcomingPlans = updatePlans(state.upcomingPlans),
+                pastPlans = updatePlans(state.pastPlans),
+            )
+        }
+        viewModelScope.launch { planRepository.updatePlanName(planId, newName) }
+    }
+
+    /** Toggle whether attendees can edit: optimistic local state + DB persist. */
+    fun setAttendeesCanEdit(planId: String, canEdit: Boolean) {
+        _uiState.update { state ->
+            fun updatePlans(plans: List<Plan>) = plans.map { p ->
+                if (p.id == planId) p.copy(attendeesCanEdit = canEdit) else p
+            }
+            state.copy(
+                upcomingPlans = updatePlans(state.upcomingPlans),
+                pastPlans = updatePlans(state.pastPlans),
+            )
+        }
+        viewModelScope.launch { planRepository.updateAttendeesCanEdit(planId, canEdit) }
     }
 
     fun deletePlan(planId: String) {
