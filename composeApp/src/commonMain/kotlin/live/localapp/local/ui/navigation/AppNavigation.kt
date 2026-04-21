@@ -12,6 +12,7 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
@@ -62,6 +63,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
@@ -164,6 +166,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     val userPrefsRepo: UserPreferencesRepository = remember { koin.get() }
     val isLoggedIn = userPrefsRepo.getLocalUserId() != null
     var showLocationSheet by remember { mutableStateOf(false) }
+    var showCreatePlanMenu by remember { mutableStateOf(false) }
 
     // Home lobby tutorial — shown once on very first app open
     val homeTutorialSettings = remember { com.russhwolf.settings.Settings() }
@@ -374,7 +377,11 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
 
         // Main tab content — fills entire screen, tab bar overlays on top
         if (!showHomeTutorial) {
-        Box(modifier = Modifier.fillMaxSize()) {
+        val contentBlur by animateDpAsState(
+            targetValue = if (showCreatePlanMenu) 16.dp else 0.dp,
+            animationSpec = tween(durationMillis = 180),
+        )
+        Box(modifier = Modifier.fillMaxSize().blur(contentBlur)) {
             Box(modifier = Modifier.fillMaxSize()) {
                 when (selectedTab) {
                     Tab.HOME -> {
@@ -614,11 +621,30 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
 
             }
 
+            // Create Plan scrim — rendered BELOW the tab bar so the button stays bright
+            live.localapp.local.ui.plans.CreatePlanScrim(
+                visible = showCreatePlanMenu,
+                onDismiss = { showCreatePlanMenu = false },
+            )
+
             // Floating tab bar — overlays content at bottom
             Box(modifier = Modifier.align(Alignment.BottomCenter)) {
                 val tabInitial = homeState.userName.firstOrNull()?.uppercase() ?: ""
-                BottomTabBar(selectedTab, onSelect = { selectedTab = it }, onChatClick = { openChatOrLogin() }, userInitial = tabInitial)
+                BottomTabBar(
+                    selectedTab,
+                    onSelect = { selectedTab = it },
+                    onCreatePlanClick = { showCreatePlanMenu = true },
+                    userInitial = tabInitial,
+                )
             }
+
+            // Menu items — rendered ABOVE the tab bar so they appear to spring from the button
+            live.localapp.local.ui.plans.CreatePlanMenuItems(
+                visible = showCreatePlanMenu,
+                onDismiss = { showCreatePlanMenu = false },
+                onYocal = { openChatOrLogin() },
+                onManual = { /* TODO: manual plan flow */ },
+            )
 
         // Venue detail — slide up / slide down transition
         AnimatedVisibility(
@@ -1201,10 +1227,10 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
 }
 
 /** Tabs rendered in the bar: 4 standard + AI concierge on the right. */
-private val NAV_TABS = listOf(Tab.HOME, Tab.PLACES, Tab.PLANS, Tab.PROFILE)
+private val NAV_TABS = listOf(Tab.HOME, Tab.PLACES, Tab.PLANS)
 
 @Composable
-private fun BottomTabBar(selectedTab: Tab, onSelect: (Tab) -> Unit, onChatClick: () -> Unit = {}, userInitial: String = "") {
+private fun BottomTabBar(selectedTab: Tab, onSelect: (Tab) -> Unit, onCreatePlanClick: () -> Unit = {}, userInitial: String = "") {
     val haptic = LocalHapticFeedback.current
     val pillShape = RoundedCornerShape(22.dp)
 
@@ -1214,11 +1240,11 @@ private fun BottomTabBar(selectedTab: Tab, onSelect: (Tab) -> Unit, onChatClick:
             .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(bottom = 4.dp),
     ) {
-        // Floating pill — centered, not full width
+        // Floating pill — left side, narrower to make room for wider Create Plan pill
         Row(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(start = 20.dp, end = 72.dp) // leave room for AI FAB on right
+                .align(Alignment.BottomStart)
+                .padding(start = 16.dp, end = 178.dp) // room for Create Plan button + margin
                 .height(52.dp)
                 .background(
                     Color(0xFFF0EDF6).copy(alpha = 0.75f),
@@ -1295,38 +1321,13 @@ private fun BottomTabBar(selectedTab: Tab, onSelect: (Tab) -> Unit, onChatClick:
             }
         }
 
-        // Floating AI button — separate, bottom right
-        val aiSelected = selectedTab == Tab.CHAT
-        Box(
+        // Create Plan pill — separate, bottom right
+        live.localapp.local.ui.plans.CreatePlanButton(
+            onClick = onCreatePlanClick,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 16.dp)
-                .size(52.dp)
-                .background(
-                    Brush.verticalGradient(
-                        if (aiSelected) listOf(AppColors.CoralDk, AppColors.Coral)
-                        else listOf(AppColors.Coral, Color(0xFFFF8787)),
-                    ),
-                    CircleShape,
-                )
-                .clip(CircleShape)
-                .pressable(
-                    onClick = {
-                        // Double haptic for Yocal open
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onChatClick()
-                    },
-                    scale = 0.88f,
-                ),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                Icons.Outlined.AutoAwesome,
-                contentDescription = "AI Concierge",
-                modifier = Modifier.size(24.dp),
-                tint = Color.White,
-            )
-        }
+                .padding(end = 16.dp),
+        )
     }
 }
 
