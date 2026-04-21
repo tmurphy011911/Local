@@ -913,6 +913,16 @@ async function runTeamNameBackfill() {
 }
 
 async function fetchSportsEventsMissingTeamName() {
+  // Many Ticketmaster-sourced events carry raw genre strings in `subcategory`
+  // (hockey, baseball, basketball, football, soccer) instead of the properly
+  // classified `subcategory="sports"` + `sub_subcategory="<sport>"` shape.
+  // Include those so we don't miss pro-team games when backfilling.
+  const sportSubcategories = [
+    "sports", "hockey", "baseball", "basketball", "football", "soccer",
+    "rugby", "lacrosse", "college-sports", "minor-league",
+  ];
+  const filter = sportSubcategories.map(s => `"${s}"`).join(",");
+
   const all = [];
   const pageSize = 1000;
   let offset = 0;
@@ -920,7 +930,7 @@ async function fetchSportsEventsMissingTeamName() {
   while (true) {
     const now = new Date().toISOString();
     const cols = "id,title,description,venue_name,venue_city,is_free";
-    const url = `${SUPABASE_URL}/rest/v1/events?start_at=gte.${now}&subcategory=eq.sports&team_name=is.null&select=${cols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
+    const url = `${SUPABASE_URL}/rest/v1/events?start_at=gte.${now}&subcategory=in.(${filter})&team_name=is.null&select=${cols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
     const res = await fetch(url, {
       headers: {
         apikey: SUPABASE_SERVICE_KEY,

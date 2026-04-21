@@ -1150,7 +1150,9 @@ function buildSportsCarousels(
   }
 
   const teamEntries = Array.from(byTeam.entries()).map(([name, events]) => {
-    const tier = Math.min(...events.map(e => teamTier(e.sub_subcategory)));
+    // Fall back to `subcategory` when raw Ticketmaster genre lives there
+    // (unclassified events carry "hockey"/"baseball"/etc. in subcategory).
+    const tier = Math.min(...events.map(e => teamTier(e.sub_subcategory ?? e.subcategory)));
     return { name, events, tier };
   });
   teamEntries.sort((a, b) => {
@@ -1170,10 +1172,12 @@ function buildSportsCarousels(
     });
   }
 
-  // 2. By sport type — picks up events without a team_name
+  // 2. By sport type — picks up events without a team_name. Match the sport
+  // against either sub_subcategory (classified) or subcategory (unclassified
+  // Ticketmaster rows where the genre still sits in subcategory).
   for (const sport of sportTypes) {
     const events = allSports
-      .filter(e => e.sub_subcategory === sport.subSubcategory)
+      .filter(e => e.sub_subcategory === sport.subSubcategory || e.subcategory === sport.subSubcategory)
       .filter(e => !seenEventIds.has(e.id))
       .slice(0, CAROUSEL_DISPLAY_LIMIT);
     if (events.length === 0) continue;
@@ -1762,12 +1766,21 @@ async function fetchRawSportsEvents(
   const latDelta = radiusMiles / 69.0;
   const lngDelta = radiusMiles / 50.0;
 
+  // Accept both the classified shape (subcategory = "sports") and the
+  // unclassified Ticketmaster shape where raw genre ends up in subcategory
+  // (hockey, baseball, basketball, football, soccer, etc.). Without this
+  // inclusion only a handful of properly-classified events match.
+  const sportSubcategories = [
+    "sports", "hockey", "baseball", "basketball", "football", "soccer",
+    "rugby", "lacrosse", "college-sports", "minor-league",
+  ];
+
   const promises = Array.from({ length: 7 }, async (_, page) => {
     const { data, error } = await supabase
       .from("events")
       .select("*")
       .eq("is_active", true)
-      .eq("subcategory", "sports")
+      .in("subcategory", sportSubcategories)
       .gte("start_at", now)
       .gte("venue_lat", lat - latDelta)
       .lte("venue_lat", lat + latDelta)
