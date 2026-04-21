@@ -1120,6 +1120,7 @@ function buildRecurringCarousels(
 function buildSportsCarousels(
   allSports: ProcessedEvent[],
   seenEventIds: Set<string>,
+  venueCache: Map<string, VenueInfo>,
 ): CarouselSection[] {
   const result: CarouselSection[] = [];
 
@@ -1139,6 +1140,19 @@ function buildSportsCarousels(
       .replace(/^-+|-+$/g, "");
   }
 
+  // MAX home-venue public_interest_rank across a team's events. Used as a
+  // popularity proxy so Red Sox (Fenway 98) and Celtics/Bruins (TD Garden 95)
+  // bubble above lesser teams. MAX (not AVG) so a team whose best venue is
+  // a landmark still ranks high even if some games are at smaller venues.
+  function topVenueRank(events: ProcessedEvent[]): number {
+    let max = 0;
+    for (const e of events) {
+      const info = venueCache.get((e.venue_name ?? "").toLowerCase());
+      if (info?.rank != null && info.rank > max) max = info.rank;
+    }
+    return max;
+  }
+
   // 1. Team carousels — group by team_name
   const byTeam = new Map<string, ProcessedEvent[]>();
   for (const event of allSports) {
@@ -1150,15 +1164,23 @@ function buildSportsCarousels(
   }
 
   const teamEntries = Array.from(byTeam.entries()).map(([name, events]) => {
-    // Fall back to `subcategory` when raw Ticketmaster genre lives there
-    // (unclassified events carry "hockey"/"baseball"/etc. in subcategory).
-    const tier = Math.min(...events.map(e => teamTier(e.sub_subcategory ?? e.subcategory)));
-    return { name, events, tier };
+    const rank = topVenueRank(events);
+    return { name, events, rank };
   });
+  // Pure popularity sort: highest home-venue rank wins. Tier-based grouping
+  // was unreliable (MIT's team_name covered mixed-sport events so its
+  // tier collapsed to pro, putting it above Red Sox). Venue rank IS the
+  // popularity signal — major stadiums = major teams.
   teamEntries.sort((a, b) => {
-    if (a.tier !== b.tier) return a.tier - b.tier;
+    if (a.rank !== b.rank) return b.rank - a.rank;
+    if (a.events.length !== b.events.length) return b.events.length - a.events.length;
     return a.name.localeCompare(b.name);
   });
+
+  console.log("[sports-teams] sort by topVenueRank DESC:");
+  for (const e of teamEntries) {
+    console.log(`  rank=${e.rank} events=${e.events.length} name=${e.name}`);
+  }
 
   for (const entry of teamEntries) {
     const events = entry.events.slice(0, CAROUSEL_DISPLAY_LIMIT);
@@ -1513,7 +1535,7 @@ function buildCarousels(
   // Sports-specific carousels (raw uncleaned events)
   if (filter.type === "category" && filter.value === "sports") {
     console.log(`Sports filter: rawSportsEvents=${rawSportsEvents.length}, seenIds=${seenEventIds.size}`);
-    const sportsCarousels = buildSportsCarousels(rawSportsEvents, seenEventIds);
+    const sportsCarousels = buildSportsCarousels(rawSportsEvents, seenEventIds, venueCache);
     console.log(`Sports carousels built: ${sportsCarousels.length} carousels, ${sportsCarousels.map(c => `${c.title}(${c.events.length})`).join(", ")}`);
     result.push(...sportsCarousels);
   }
@@ -1808,18 +1830,31 @@ async function fetchRawSportsEvents(
 async function fetchVenueCache(
   supabase: ReturnType<typeof createClient>,
 ): Promise<Map<string, VenueInfo>> {
-  const { data, error } = await supabase
-    .from("venues")
-    .select("name, public_interest_rank, photo_url, description")
-    .eq("is_active", true);
-  if (error) return new Map();
+  // PostgREST enforces the project's max_rows cap (1000 at time of writing)
+  // but we have ~9k active venues. Without pagination, major stadiums like
+  // Fenway and TD Garden can fall outside the window, which breaks the
+  // rank-based sort in buildSportsCarousels. Page through in 1000-row chunks.
   const cache = new Map<string, VenueInfo>();
-  for (const v of (data ?? [])) {
-    cache.set(v.name.toLowerCase(), {
-      rank: v.public_interest_rank,
-      photo_url: v.photo_url,
-      description: v.description,
-    });
+  const pageSize = 1000;
+  let offset = 0;
+  while (true) {
+    const { data, error } = await supabase
+      .from("venues")
+      .select("name, public_interest_rank, photo_url, description")
+      .eq("is_active", true)
+      .order("id", { ascending: true })
+      .range(offset, offset + pageSize - 1);
+    if (error) break;
+    const rows = data ?? [];
+    for (const v of rows) {
+      cache.set(v.name.toLowerCase(), {
+        rank: v.public_interest_rank,
+        photo_url: v.photo_url,
+        description: v.description,
+      });
+    }
+    if (rows.length < pageSize) break;
+    offset += pageSize;
   }
   return cache;
 }

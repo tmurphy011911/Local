@@ -1338,19 +1338,6 @@ private fun AiConciergeCard(onClick: () -> Unit = {}) {
                     )
                 }
 
-                Spacer(Modifier.height(4.dp))
-
-                // Subtitle
-                Text(
-                    "Date night? Visitors in town? Weekend plans?",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 13.sp,
-                        color = AppColors.White.copy(alpha = 0.78f),
-                    ),
-                )
-
                 Spacer(Modifier.height(12.dp))
 
                 // Input bar

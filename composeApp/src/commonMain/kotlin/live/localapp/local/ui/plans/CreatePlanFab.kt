@@ -10,6 +10,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -223,6 +224,7 @@ fun CreatePlanMenuItems(
                 delayMs = 0,
                 label = "Create a Plan with Yocal",
                 icon = Icons.Outlined.AutoAwesome,
+                outlined = true,
                 onClick = {
                     onYocal()
                     onDismiss()
@@ -239,6 +241,7 @@ private fun BounceInMenuItem(
     label: String,
     icon: ImageVector,
     onClick: () -> Unit,
+    outlined: Boolean = false,
 ) {
     val scale = remember { Animatable(0.6f) }
     val translateY = remember { Animatable(28f) }
@@ -283,6 +286,10 @@ private fun BounceInMenuItem(
             }
             .shadow(10.dp, RoundedCornerShape(24.dp))
             .background(Color.White, RoundedCornerShape(24.dp))
+            .then(
+                if (outlined) Modifier.border(1.dp, AppColors.Coral, RoundedCornerShape(24.dp))
+                else Modifier,
+            )
             .clip(RoundedCornerShape(24.dp))
             .clickable(onClick = onClick)
             .padding(horizontal = 16.dp, vertical = 12.dp),
