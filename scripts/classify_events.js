@@ -35,6 +35,91 @@ const FORCE = process.env.FORCE === "1";
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "60", 10) * 1000;
 
 const REVERT_MODE = process.argv.includes("--revert");
+// When set, skip the Claude batch and only apply the pattern-based auto-exclusion
+// pass. Useful for backfilling `no-public-interest` across already-classified
+// events without burning API calls or disturbing prior classifications.
+const PREFILTER_ONLY = process.env.PREFILTER_ONLY === "1";
+
+// ── Rule-based auto-exclusion ─────────────────────────────────────────
+//
+// Events matching any of these patterns get immediately tagged as
+// subcategory="no-public-interest" without a Claude round-trip. Each regex
+// is anchored with word boundaries to keep false-positive rates low.
+// If these ever start catching legit events, loosen the regex — don't remove.
+
+const AUTO_EXCLUDE_PATTERNS = [
+  // Recovery / support-group meetings (title OR description match)
+  { label: "recovery-meeting", re: /\b(alcoholics anonymous|narcotics anonymous|overeaters anonymous|gamblers anonymous|aa meeting|aa group|na meeting|a\.a\.|n\.a\.|al-anon|alateen|nar-anon|12.?step|twelve.?step|smart recovery|refuge recovery|celebrate recovery|sober support|sobriety meeting|sobriety group|recovery group|recovery meeting|codependents anonymous|co-dependents anonymous|coda\b)\b/i },
+  // Youth / scholastic sports (title must contain youth qualifier + sport)
+  { label: "youth-sports", re: /\b(jv|junior varsity|varsity|freshman|sub-varsity|middle school|high school|elementary|peewee|pee-wee|t-?ball|little league|cal ripken|pop warner|aau|\bu\s?\d{1,2}\b)\b[\s\S]{0,40}\b(baseball|softball|basketball|soccer|football|hockey|lacrosse|volleyball|tennis|track|wrestling|golf|rugby|crew|rowing|field hockey|swim|swimming|cross.?country|cheer|dance team)\b/i },
+  { label: "youth-sports", re: /\b(baseball|softball|basketball|soccer|football|hockey|lacrosse|volleyball|tennis|track|wrestling|golf|rugby|field hockey)\b[\s\S]{0,40}\b(jv|junior varsity|varsity|freshman|middle school|high school|elementary|peewee|pee-wee|little league)\b/i },
+  // Government / civic / HOA committee meetings
+  { label: "civic-meeting", re: /\b(school committee|school board|town council|city council|select board|planning board|zoning board|conservation commission|historic district commission|board of health|board of selectmen|abutters meeting|hoa meeting|homeowners? association meeting|condo association meeting)\b/i },
+  // Internal / private / trainings
+  { label: "private-event", re: /\b(staff training|employee training|internal meeting|members only meeting|private event|private gathering|private party)\b/i },
+  // Prayer / religious services (regular worship, not special events/concerts/festivals)
+  { label: "worship-service", re: /\b(early morning prayer|daily prayer|morning prayer|evening prayer|weekly prayer|prayer group|bible study|worship service|sunday service|mass service)\b/i },
+];
+
+function autoExcludeReason(event) {
+  const haystack = [event.title || "", event.description || "", event.venue_name || ""].join(" \u2014 ");
+  for (const pat of AUTO_EXCLUDE_PATTERNS) {
+    if (pat.re.test(haystack)) return pat.label;
+  }
+  return null;
+}
+
+async function applyAutoExclusions(events) {
+  const matches = [];
+  for (const e of events) {
+    const reason = autoExcludeReason(e);
+    if (reason) matches.push({ ...e, _autoExcludeReason: reason });
+  }
+  if (matches.length === 0) {
+    console.log("Auto-exclusion: 0 events matched patterns");
+    return new Set();
+  }
+
+  console.log(`\nAuto-exclusion: ${matches.length} events matched patterns`);
+  const byReason = {};
+  for (const m of matches) byReason[m._autoExcludeReason] = (byReason[m._autoExcludeReason] || 0) + 1;
+  for (const [reason, n] of Object.entries(byReason)) console.log(`  ${reason}: ${n}`);
+
+  if (DRY_RUN) {
+    console.log("DRY RUN — not writing auto-exclusions\n");
+    console.log("  Sample matches:");
+    for (const m of matches.slice(0, 10)) console.log(`    [${m._autoExcludeReason}] "${m.title}"`);
+    return new Set(matches.map((m) => m.id));
+  }
+
+  // Batch PATCH via per-row calls (PostgREST doesn't support multi-row updates
+  // with different values in one request). ~5 parallel is plenty.
+  let index = 0;
+  let updated = 0;
+  async function worker() {
+    while (index < matches.length) {
+      const i = index++;
+      const m = matches[i];
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/events?id=eq.${m.id}`, {
+        method: "PATCH",
+        headers: {
+          apikey: SUPABASE_SERVICE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          subcategory: "no-public-interest",
+          // Preserve an audit trail so we can revert if a pattern is too aggressive.
+          original_subcategory: m.subcategory || null,
+        }),
+      });
+      if (res.ok) updated++;
+    }
+  }
+  await Promise.all(Array.from({ length: 5 }, worker));
+  console.log(`  updated: ${updated}/${matches.length}\n`);
+  return new Set(matches.map((m) => m.id));
+}
 
 // ── Valid categories and tags ──
 
@@ -135,7 +220,13 @@ SUBCATEGORY RULES:
 - "outdoors" — hiking, cycling, kayaking, beach events, nature walks, cleanups, gardening
 - "for-kids" — storytime, kids camps, children's theatre, kids science, outdoor play
 - "other" — workshops, lectures, networking, community events, wellness, charity, religious, markets
-- "no-public-interest" — events that no member of the general public would be excited to discover and attend. Examples: private country club events, varsity/JV sports practices, internal corporate meetings, school committee meetings, private member-only gatherings, government abutters meetings, HOA meetings, staff trainings, etc. If a random person browsing the app would not want to attend, classify it here.
+- "no-public-interest" — events that no member of the general public would be excited to discover and attend. If a random person browsing the app would not want to attend, classify it here. Examples:
+  • Recovery / support groups — AA / NA / OA / GA / Al-Anon / Alateen / 12-step / SMART Recovery / Refuge Recovery / sober support meetings / grief groups
+  • Youth / scholastic sports games, practices, or tryouts — JV, varsity, freshman, middle school, high school, AAU, little league, pee-wee, pop warner, U-league (U10/U12/U14 etc.). Even state championship HS games are too niche.
+  • Private / member-only gatherings, private country-club events, private parties
+  • Civic / government meetings — school committee, town/city council, select board, planning/zoning board, conservation commission, abutters meetings, HOA meetings
+  • Internal corporate or staff trainings
+  • Routine worship services (weekly prayer, daily prayer, Sunday service, mass). Church concerts, festivals, or special community events are NOT this — they go to music/arts/other.
 
 IMPORTANT classification rules:
 - Film screenings and movie showings are "arts" with sub_subcategory "film"
@@ -184,11 +275,23 @@ async function main() {
   const events = await fetchAllEvents();
   console.log(`Fetched ${events.length} future events`);
 
-  // 2. Filter to unclassified events (unless FORCE)
+  // 2. Pattern-based auto-exclusion — catches AA/recovery meetings, youth/JV
+  //    sports, civic board meetings, etc. Deterministic, cheap, no Claude call.
+  //    Runs against ALL future events (not just unclassified) so backfills
+  //    already-misclassified events as well.
+  const autoExcludedIds = await applyAutoExclusions(events);
+
+  if (PREFILTER_ONLY) {
+    console.log("PREFILTER_ONLY=1 — skipping Claude batch\n");
+    return;
+  }
+
+  // 3. Filter to unclassified events (unless FORCE), minus auto-excluded ones.
+  const remaining = events.filter((e) => !autoExcludedIds.has(e.id));
   const toClassify = FORCE
-    ? events
-    : events.filter(e => !e.sub_subcategory && (!e.tags || e.tags.length === 0));
-  console.log(`${toClassify.length} events need classification${FORCE ? " (forced)" : ""}\n`);
+    ? remaining
+    : remaining.filter((e) => !e.sub_subcategory && (!e.tags || e.tags.length === 0));
+  console.log(`${toClassify.length} events need Claude classification${FORCE ? " (forced)" : ""}\n`);
   if (toClassify.length === 0) return;
 
   // 3. Build batch requests — one per chunk of BATCH_SIZE events
