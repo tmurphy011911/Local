@@ -69,17 +69,47 @@ const AUTO_EXCLUDE_PATTERNS = [
   // "Girls MS" / "Boys HS" / "Co-Ed JV" — gender prefix immediately followed by scholastic qualifier
   { label: "youth-sports", re: /\b(girls|boys|co[-\s]?ed)\s+(ms|hs|jv|varsity|junior varsity|middle school|high school)\b/i },
   // Sport + "@ <School>" pattern — HS/MS sports schedules commonly title like "Varsity Tennis @ Tabor"
-  { label: "youth-sports", re: /\b(baseball|softball|basketball|soccer|football|hockey|lacrosse|volleyball|tennis|track|wrestling|golf|rugby|field hockey)\b[\s\S]{0,15}@\s+[A-Z][a-z]+/ },
+  { label: "youth-sports", re: /\b(baseball|softball|basketball|soccer|football|hockey|lacrosse|volleyball|tennis|track|wrestling|golf|rugby|field hockey)\b[\s\S]{0,15}@\s+[A-Z][a-z]+/i },
+  // NCAA varsity at non-landmark schools — "Brown University Softball vs Holy
+  // Cross", "Northeastern Crew at Princeton", etc. These are low-public-interest
+  // college games that the user specifically asked to hide.
+  { label: "youth-sports", re: /\b\w+\s+(university|college)\s+(baseball|softball|basketball|soccer|football|hockey|lacrosse|volleyball|tennis|wrestling|rugby|field hockey|rowing|crew)\b[\s\S]{0,20}\b(vs\.?|@|at)\b/i },
   // Government / civic / HOA committee meetings
   { label: "civic-meeting", re: /\b(school committee|school board|town council|city council|select board|planning board|zoning board|conservation commission|historic district commission|board of health|board of selectmen|abutters meeting|hoa meeting|homeowners? association meeting|condo association meeting)\b/i },
   // Internal / private / trainings
   { label: "private-event", re: /\b(staff training|employee training|internal meeting|members only meeting|private event|private gathering|private party)\b/i },
-  // Academic-internal: thesis/dissertation defenses, PhD committee meetings,
-  // qualifying exams — these are closed to the public even when listed on a
-  // calendar. Don't surface to general-audience users.
+  // Academic-internal: thesis/dissertation defenses, qualifying exams — these
+  // are closed to the public even when listed on a calendar.
   { label: "academic-internal", re: /\b(thesis defense|dissertation defense|phd defense|qualifying exam|oral defense|prospectus defense|comprehensive exam|phd committee|dissertation proposal)\b/i },
-  // Prayer / religious services (regular worship, not special events/concerts/festivals)
-  { label: "worship-service", re: /\b(early morning prayer|daily prayer|morning prayer|evening prayer|weekly prayer|prayer group|bible study|worship service|sunday service|mass service)\b/i },
+  // Student thesis presentations and capstones — student+advisor+committee audiences only.
+  { label: "academic-internal", re: /\b(senior thesis|thesis presentation|thesis reading|undergraduate thesis|ma thesis|masters'?\s+thesis|honors thesis|capstone presentation|capstone showcase)\b/i },
+  // Informal department lunch seminars — LingLangLunch, Lunch Bunch, Brown Bag, etc.
+  // are all named patterns for "grad students + faculty only" reading/research groups.
+  { label: "academic-internal", re: /\b(brown[\s-]?bag|brownbag|lunch bunch|ling\s?lang\s?lunch|lunch seminar|dept seminar|department seminar|lab meeting|research group meeting|journal club)\b/i },
+  // Department seminar series — "MCBGP Seminar Series", "SEAM Seminar Presents",
+  // "Theory Seminar Talk" etc. are all internal dept calendars.
+  { label: "academic-internal", re: /\b\w+\s+seminar\s+(series|presents|presenting|talk)\b/i },
+  // Spanish / other-language equivalents that also appear on multilingual campuses
+  { label: "academic-internal", re: /\b(coloquio|\w+\s+colloquium\s+series)\b/i },
+  // Student showcases, undergrad fellow symposia, student-research days
+  { label: "academic-internal", re: /\b(student showcase|undergraduate research day|graduate research day|fellowship showcase|alumni showcase|student spotlight|student research symposium)\b/i },
+  // Medical / clinical residency rounds — hospital-internal, closed to public
+  { label: "academic-internal", re: /\b(grand rounds|morbidity\s+(&|and)\s+mortality|m&m rounds|tumor board|case conference|clinical rounds|medical rounds|resident rounds)\b/i },
+  // Prospective-student / recruiting events
+  { label: "recruiting", re: /\b(adoch|a day on college hill|accepted students day|admitted students day|prospective students? day|visit day for (prospective|admitted)|open house for (prospective|admitted))\b/i },
+  // Info sessions with academic/recruiting context (allows intervening words
+  // like "in Africa" between "Study Abroad" and "Information Session").
+  { label: "recruiting", re: /\b(study abroad|phd program|master'?s program|mba|graduate school|fellowship|scholarship|admissions|recruiting)\b[\s\S]{0,30}\b(info|information)\s+session\b/i },
+  { label: "recruiting", re: /\b(student panel webinar|alumnae?\s+panel|alumna panel|prospective student panel|incoming student panel)\b/i },
+  // Office hours / coffee-with-X / campus outreach tables — internal community
+  // events, not public programming
+  { label: "private-event", re: /\b(office hours|open office hours)\b/i },
+  { label: "private-event", re: /\bcoffee\s+(w\/|with)\s+the\s+\w+/i },
+  { label: "private-event", re: /\b(coffee chats?|public safety outreach|outreach table|welcome week|move[-\s]in day|move[-\s]out day)\b/i },
+  // Campus / workplace trainings — mandatory compliance, not for general audience
+  { label: "internal-training", re: /\b(bystander intervention|safezone training|title ix training|active shooter (training|drill)|consent training|sexual harassment training|diversity training|overdose education(\s*(&|and)\s*prevention)?|first aid training|cpr training|narcan training|fentanyl training)\b/i },
+  // Prayer / religious services — added midday/noon/daily/weekday variants
+  { label: "worship-service", re: /\b(early morning prayer|daily prayer|morning prayer|evening prayer|weekly prayer|prayer group|bible study|worship service|sunday service|mass service|midday mass|noon mass|daily mass|weekday mass|morning mass|evening mass|noon prayer|sunday mass|church service|eucharist)\b/i },
 ];
 
 function autoExcludeReason(event) {
