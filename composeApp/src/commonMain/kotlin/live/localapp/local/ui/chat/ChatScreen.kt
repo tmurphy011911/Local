@@ -1920,6 +1920,8 @@ private fun PlanSuccessOverlay(
     val homeOffsetY = remember { Animatable(60f) }
     val homeAlpha = remember { Animatable(0f) }
 
+    val haptic = LocalHapticFeedback.current
+
     LaunchedEffect(Unit) {
         // Rings
         launch {
@@ -1934,30 +1936,35 @@ private fun PlanSuccessOverlay(
             launch { ringBScale.animateTo(2.6f, tween(800)) }
             ringBAlpha.animateTo(0f, tween(700))
         }
-        // Check
+        // Check — haptic 1
         launch {
             delay(400)
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             checkScale.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium))
         }
-        // Title
+        // Title — haptic 2
         launch {
             delay(850)
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             titleScale.animateTo(1f, spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = Spring.StiffnessMedium))
         }
-        // Subtitle
+        // Subtitle — haptic 3
         launch {
             delay(1100)
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             subtitleAlpha.animateTo(1f, tween(400))
         }
-        // Plan card
+        // Plan card — haptic 4
         launch {
             delay(1200)
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             launch { cardOffsetY.animateTo(0f, tween(500, easing = EaseOutCubic)) }
             cardAlpha.animateTo(1f, tween(500))
         }
-        // CTAs — staggered: Share, View Plans, Home
+        // CTAs — staggered: Share, View Plans, Home. Haptic 5 on the group.
         launch {
             delay(1600)
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
             launch { shareOffsetY.animateTo(0f, tween(400, easing = EaseOutCubic)) }
             shareAlpha.animateTo(1f, tween(400))
         }

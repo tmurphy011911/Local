@@ -71,11 +71,17 @@ class PremiumGate {
         plansCreated = plansCreated + 1
     }
 
-    /** Whether the user can create a shareable plan without hitting the paywall */
+    /**
+     * Whether the user can save a plan without hitting the paywall.
+     *
+     * Previously: "first plan is free, then paywall" — undermined the paywall
+     * because users never had to pay to finish their first save. Tightened
+     * 2026-04-21 to require premium on every save. Tier-reward free months
+     * still bypass via `isPremium` → `rewardExpiryDate`.
+     */
     fun canCreatePlan(): Boolean {
         println("PremiumGate: canCreatePlan? isPremium=$isPremium plansCreated=$plansCreated")
-        if (isPremium) return true
-        return plansCreated < 1 // first plan is free
+        return isPremium
     }
 
     /** Whether the tutorial should show (first Yocal open) */

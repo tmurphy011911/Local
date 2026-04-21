@@ -1065,7 +1065,8 @@ class ChatViewModel(
                 consecutiveQuestionCount = 0
                 val title = parsed.planTitle ?: "Your Plan"
                 val builtDays = buildPlanFromRefs(parsed)
-                val validatedDays = validatePlanDates(builtDays)
+                val datedDays = validatePlanDates(builtDays)
+                val validatedDays = removeDuplicateSlots(datedDays)
 
                 _uiState.update {
                     it.copy(
@@ -1109,7 +1110,9 @@ class ChatViewModel(
                         if (dayIndex in days.indices) {
                             days[dayIndex] = validatedDay
                         }
-                        state.copy(days = days, currentDayIndex = dayIndex)
+                        // Dedup the whole plan so an update doesn't collide with
+                        // a venue already present on another day.
+                        state.copy(days = removeDuplicateSlots(days), currentDayIndex = dayIndex)
                     }
                 }
 
@@ -1132,6 +1135,18 @@ class ChatViewModel(
             }
 
             ParsedResponseType.APPROVE -> {
+                // Gate check BEFORE adding Claude's "I've added X to your plans" text
+                // so the user doesn't see a false confirmation when we're about to
+                // paywall them. Also resets isBusy via finishTurn so a second tap of
+                // "Save to My Plans" re-triggers the flow (previously got stuck).
+                val gateCheck = onPlanApprovalCheck
+                if (gateCheck != null && !gateCheck()) {
+                    println("APPROVE blocked by premium gate — showing paywall, leaving chat resumable")
+                    onPlanBlocked?.invoke()
+                    finishTurn(withApproveChip(emptyList()))
+                    return
+                }
+
                 if (responseText.isNotBlank()) {
                     addAiMessage(responseText)
                 }
@@ -1172,11 +1187,14 @@ class ChatViewModel(
     }
 
     private fun approvePlan() {
-        // Check premium gate before approving
+        // Primary gate check happens in the APPROVE branch before Claude's
+        // confirmation text is displayed. This is a defensive second check —
+        // if it ever fires, still reset busy state so the user can retry.
         val gateCheck = onPlanApprovalCheck
         if (gateCheck != null && !gateCheck()) {
-            println("approvePlan: BLOCKED by premium gate")
+            println("approvePlan: BLOCKED by premium gate (defensive)")
             onPlanBlocked?.invoke()
+            finishTurn(withApproveChip(emptyList()))
             return
         }
         println("approvePlan: gate passed, saving plan")
@@ -1392,6 +1410,43 @@ class ChatViewModel(
                 }
             }
             day.copy(slots = validSlots)
+        }
+    }
+
+    /**
+     * Strip duplicate slots across an entire plan. Claude's NO DUPLICATES prompt
+     * rule gets ignored often enough on multi-day plans that we enforce it
+     * in code. First occurrence wins; later duplicates are dropped (days can
+     * end up shorter than what Claude returned).
+     *
+     * Matching keys:
+     * - event_id (exact)
+     * - venue name (trimmed + lowercased)
+     */
+    private fun removeDuplicateSlots(days: List<ItineraryDay>): List<ItineraryDay> {
+        val seenEventIds = mutableSetOf<String>()
+        val seenNames = mutableSetOf<String>()
+        return days.map { day ->
+            val kept = day.slots.filter { slot ->
+                val nameKey = slot.name.trim().lowercase()
+                val eventId = slot.eventId
+                when {
+                    eventId != null && eventId in seenEventIds -> {
+                        println("removeDuplicateSlots: dropping duplicate event '${slot.name}' from '${day.label}'")
+                        false
+                    }
+                    nameKey.isNotBlank() && nameKey in seenNames -> {
+                        println("removeDuplicateSlots: dropping duplicate venue '${slot.name}' from '${day.label}'")
+                        false
+                    }
+                    else -> {
+                        if (eventId != null) seenEventIds.add(eventId)
+                        if (nameKey.isNotBlank()) seenNames.add(nameKey)
+                        true
+                    }
+                }
+            }
+            day.copy(slots = kept)
         }
     }
 
@@ -1672,6 +1727,7 @@ HOW TO HELP:
 - CRITICAL: Once the user confirms they want a plan ("yes", "sure", "full night plan", "build it", "let's do it", etc.) and you have enough info (main activity + attendee count + area), you MUST call the present_plan tool. NEVER describe a plan in plain text like "Grab dinner at X, then Y at 8pm, then Z" — that renders as chat text and the user sees no plan card. If you catch yourself about to type a narrative list of 2+ stops with times, STOP and call present_plan instead. A plain-text description of a plan is a BUG.
 - IMPORTANT: In present_plan slots, ALWAYS use event_id when a specific event exists (concerts, shows, workshops, tours, exhibitions, games). Only use venue_name for restaurants, bars, and cafes where there is no specific event — just a dining/drinks recommendation. If a concert is at The Sinclair, use the event_id from search_events, NOT venue_name "The Sinclair". The event_id ensures the event title, ticket URL, and source URL are preserved.
 - ALWAYS gather the number of people attending before presenting a plan. You can infer from context: "date night" = 2, "double date" = 4, "just me" / solo = 1, "family" = ask how many, "friends" = ask how many. If unclear, ask "How many people will be joining?" before calling present_plan. Include the attendee_count in the present_plan call — this is required. Tailor recommendations to group size (e.g. larger groups need venues with more seating, reservations become more important).
+- DO NOT ASSUME FOOD OR DRINKS. Never auto-add a dinner, brunch, coffee, bar, or cocktail stop unless the user has signaled they want food/drinks. "Date night" alone does NOT imply dinner. "Things to do Saturday" does NOT imply brunch. If the user hasn't mentioned eating/drinking, ask once before building the plan: "Want me to include a meal or a drink stop, or just activities?" Only skip the question when food/drink is explicitly in the request ("dinner and a show", "brunch plans", "where should we eat", "bar crawl", "coffee then a museum", etc.).
 - When chatting or answering questions, just respond naturally. No special formatting needed.
 - When the user wants to modify an existing plan (swap something, add something, change a slot, try something different), you MUST search for alternatives and then call update_plan. NEVER respond with just text when a plan exists and the user is asking to change it. Search for what they want, find the best match (or use recommend_and_save_venue), and call update_plan with the full slot list for that day — keeping unchanged slots (use their existing event_id/venue_name) and replacing the modified one. The CURRENT PLAN section below has event_ids and venue names you need to preserve unchanged slots.
 
@@ -1688,7 +1744,9 @@ GUIDELINES:
 - Use the EXACT event IDs from search results in present_plan slots.
 - DATES & DAYS-OF-WEEK: The Calendar above is authoritative. Before stating "Thursday May 15" or similar, find "May15=..." in the calendar and use that day. NEVER guess the weekday for a date — always look it up in the calendar reference. If you can't find a date in the calendar, do not include it.
 - NEXT/THIS WEEK: "This Friday" or just "Friday" = the nearest upcoming Friday (within 7 days from today). "Next Friday" means the Friday of the following week — 7 days AFTER this Friday. If today is already Friday, "this Friday" = today. Do not change the date you committed to across turns — once you state a date, stick with it unless the user asks to change it.
-- NO DUPLICATES: Never place the same venue or event in more than one slot of a plan, across any day. Each slot must be a distinct place. If you're considering Ostra for Day 1 dinner, you cannot also use Ostra for Day 2. Pick different restaurants/venues for each stop.
+- NO DUPLICATES (critical): Never place the same venue or event in more than one slot, ever — not on the same day, not across days. If Island Creek Raw Bar appears on Day 1, it cannot appear on Day 2 or Day 3. Before writing each slot, mentally scan every earlier slot in every earlier day and confirm the venue is different. The system will strip duplicates automatically but plans come out shorter than intended when that happens — so just pick a different place the first time.
+- TIME-OF-DAY FIT: Match the venue to the slot time. Morning (before 11am) = coffee shops, bakeries, brunch spots, breakfast diners — NEVER oyster bars, steakhouses, cocktail lounges, or raw bars. Lunch (11am-2pm) = casual restaurants, sandwich shops, cafes. Dinner (5pm+) = full-service restaurants, raw bars, steakhouses. A 9am oyster recommendation is always wrong.
+- EVENT DATE MUST MATCH SLOT DAY: If you place an event on Day 2 ("Friday, May 15"), that event's start_at must fall on May 15. Never put a May 16 event on a May 15 slot just because the timing works. If no event matches the day's date, use a venue_name (restaurant/bar) instead.
 - Use exact start times from search results. For flexible/anytime events, pick reasonable times (10am-9pm).
 - For dining: use recommend_and_save_venue to suggest real restaurants you know about. STRONGLY prefer restaurants that are on OpenTable, since our app can offer one-tap reservations for OpenTable venues. When you have multiple good dining options, pick the one most likely to be on OpenTable.
 - If search returns no results, try broader searches or nearby areas. Use recommend_and_save_venue for a venue-based plan as a fallback.

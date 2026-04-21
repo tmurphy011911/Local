@@ -952,6 +952,11 @@ private struct PlanCelebrationOverlay: View {
     // MARK: - Animations
 
     private func runAnimations() async {
+        // Medium impact feedback — fires as each piece floats onto the screen.
+        // 5 hits total: check, title, subtitle, card, CTAs.
+        let haptic = UIImpactFeedbackGenerator(style: .medium)
+        haptic.prepare()
+
         try? await Task.sleep(nanoseconds: 300_000_000)
         withAnimation(.easeOut(duration: 0.8)) {
             ringScale = 3.2
@@ -962,27 +967,32 @@ private struct PlanCelebrationOverlay: View {
         }
 
         try? await Task.sleep(nanoseconds: 100_000_000)
+        haptic.impactOccurred()
         withAnimation(.spring(response: 0.5, dampingFraction: 0.6)) {
             checkScale = 1
         }
 
         try? await Task.sleep(nanoseconds: 450_000_000)
+        haptic.impactOccurred()
         withAnimation(.spring(response: 0.5, dampingFraction: 0.6)) {
             titleScale = 1
         }
 
         try? await Task.sleep(nanoseconds: 250_000_000)
+        haptic.impactOccurred()
         withAnimation(.easeOut(duration: 0.4)) {
             subtitleOpacity = 1
         }
 
         try? await Task.sleep(nanoseconds: 200_000_000)
+        haptic.impactOccurred()
         withAnimation(.easeOut(duration: 0.5)) {
             cardOffset = 0
             cardOpacity = 1
         }
 
         try? await Task.sleep(nanoseconds: 300_000_000)
+        haptic.impactOccurred()
         withAnimation(.easeOut(duration: 0.4)) {
             ctaOffset = 0
             ctaOpacity = 1
