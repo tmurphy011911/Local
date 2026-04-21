@@ -88,6 +88,48 @@ function getCached(key: string): CacheEntry | null {
  * Theatre" (and vice versa). Without this, image fallback and event
  * counts silently miss ~20% of venues.
  */
+/**
+ * Round-robin through venue buckets so consecutive events come from
+ * different venues. Takes the already-score-sorted list and regroups it.
+ *
+ * Round 0: top event from venue A, top event from venue B, top event from
+ *          venue C, ... (where A, B, C are ordered by each venue's best
+ *          score so high-quality venues still appear first)
+ * Round 1: second-best event from each venue (if any)
+ * ...
+ *
+ * Result: user sees variety across venues in the visible window without
+ * any randomness — ordering stays deterministic under refresh.
+ */
+function interleaveByVenue(scored: ScoredItem[]): ScoredItem[] {
+  const byVenue = new Map<string, ScoredItem[]>();
+  for (const item of scored) {
+    const key = normalizeVenueKey(item.e.venue_name) || `__anon_${item.e.id}`;
+    const bucket = byVenue.get(key);
+    if (bucket) bucket.push(item);
+    else byVenue.set(key, [item]);
+  }
+  // Order buckets by the top item's score — best-venue-first in round 0.
+  const groups = Array.from(byVenue.values()).sort(
+    (a, b) => b[0].score - a[0].score || a[0].e.id.localeCompare(b[0].e.id),
+  );
+
+  const out: ScoredItem[] = [];
+  let round = 0;
+  while (true) {
+    let pulled = false;
+    for (const g of groups) {
+      if (round < g.length) {
+        out.push(g[round]);
+        pulled = true;
+      }
+    }
+    if (!pulled) break;
+    round++;
+  }
+  return out;
+}
+
 function normalizeVenueKey(name: string | null | undefined): string {
   if (!name) return "";
   return name
@@ -354,7 +396,7 @@ Deno.serve(async (req) => {
       const prefs = userId ? await fetchUserPrefs(supabase, userId) : null;
       const nowMs = Math.floor(Date.now() / CACHE_TTL_MS) * CACHE_TTL_MS;
 
-      scored = events
+      const raw = events
         .map((e) => {
           const venueKey = normalizeVenueKey(e.venue_name);
           const meta = venueKey ? venueMeta[venueKey] : undefined;
@@ -372,11 +414,14 @@ Deno.serve(async (req) => {
           };
         })
         .filter((x) => x.dist <= radiusMiles)
-        // Global minimum-quality floor — hide events whose venue has
-        // public_interest_rank <= 10 (community centers, K-12 athletic
-        // fields, etc.). Null rank passes (untagged venues stay visible).
         .filter((x) => x.venueRank == null || x.venueRank > 10)
         .sort((a, b) => b.score - a.score || a.e.id.localeCompare(b.e.id));
+
+      // Venue-diverse ordering: round-robin through venue groups so no single
+      // venue (Harvard Square, BPL) takes the entire top-10 slots. Within a
+      // round we take the top-scoring event from each venue, sorted by the
+      // venue's best score. Deterministic → stable under refresh.
+      scored = interleaveByVenue(raw);
 
       cache.set(cacheKey, { scored, timestamp: Date.now() });
     }
