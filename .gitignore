@@ -28,6 +28,10 @@ node_modules/
 scripts/crawl_results.json
 upsert_errors*
 
+# Build output
+composeApp/release/
+cloudflare-worker/.wrangler/
+
 # Stray files with keys in names
 SUPABASE_SERVICE_KEY=*
 node
