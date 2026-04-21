@@ -22,6 +22,17 @@ import live.localapp.local.domain.repository.UserPreferences
 import live.localapp.local.domain.repository.UserPreferencesRepository
 import live.localapp.local.domain.repository.VenueRepository
 import live.localapp.local.domain.service.BadgeService
+import io.ktor.client.HttpClient
+import io.ktor.client.request.header
+import io.ktor.client.request.post
+import io.ktor.client.request.setBody
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.ContentType
+import io.ktor.http.contentType
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import live.localapp.local.Config
 
 data class HomeUiState(
     val userName: String = "",
@@ -45,6 +56,10 @@ data class HomeUiState(
     val manualLng: Double? = null,
     val hasLocationPermission: Boolean = true,
     val isUnsupportedState: Boolean = false,
+    // City name reverse-geocoded from GPS lat/lng. Separate from locationName so
+    // the Current Location row in the settings sheet can show the true GPS city
+    // without getting mixed up with the manual address name.
+    val gpsLocationName: String = "",
 )
 
 enum class LocationMode { CURRENT_LOCATION, MANUAL }
@@ -139,16 +154,66 @@ class HomeViewModel(
             _uiState.update { it.copy(userLat = lat, userLng = lng, locationName = locName, isUnsupportedState = !isLocationInSupportedState(lat, lng)) }
             carouselRepository.invalidateAll()
             loadCarousels()
+            // Fire-and-forget reverse geocode to populate the GPS-specific city name
+            // shown in Location Settings. Coarse-rounded key avoids re-fetching on
+            // every tiny GPS tick.
+            viewModelScope.launch { refreshGpsLocationName(lat, lng) }
+        }
+    }
+
+    private var lastReverseGeocodeKey: String = ""
+
+    private suspend fun refreshGpsLocationName(lat: Double, lng: Double) {
+        // Round to ~1km resolution — avoid re-fetching on tiny GPS ticks.
+        val key = "${(lat * 100).toInt()},${(lng * 100).toInt()}"
+        if (key == lastReverseGeocodeKey) return
+        lastReverseGeocodeKey = key
+        val client = HttpClient()
+        try {
+            val response = client.post("${Config.SUPABASE_URL}/functions/v1/geocode") {
+                header("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
+                contentType(ContentType.Application.Json)
+                setBody("""{"lat":$lat,"lng":$lng}""")
+            }
+            val body = response.bodyAsText()
+            val json = Json.parseToJsonElement(body).jsonObject
+            val city = json["city"]?.jsonPrimitive?.content.orEmpty()
+            val stateCode = json["state"]?.jsonPrimitive?.content.orEmpty()
+            val display = if (city.isNotBlank() && stateCode.isNotBlank()) "$city, $stateCode"
+                else city
+            if (display.isNotBlank()) {
+                _uiState.update {
+                    it.copy(
+                        gpsLocationName = display,
+                        locationName = if (it.locationMode == LocationMode.CURRENT_LOCATION) display else it.locationName,
+                    )
+                }
+            }
+        } catch (_: Throwable) {
+            // Silent — sheet falls back to generic "Using device GPS" subtitle.
+        } finally {
+            client.close()
         }
     }
 
     fun setLocationMode(mode: LocationMode) {
         val current = _uiState.value
         _uiState.update { it.copy(locationMode = mode) }
-        if (mode == LocationMode.MANUAL && current.manualLat != null && current.manualLng != null) {
-            _uiState.update { it.copy(userLat = current.manualLat, userLng = current.manualLng, locationName = current.manualLocationName) }
-            carouselRepository.invalidateAll()
-            loadCarousels()
+        when (mode) {
+            LocationMode.MANUAL -> {
+                if (current.manualLat != null && current.manualLng != null) {
+                    _uiState.update { it.copy(userLat = current.manualLat, userLng = current.manualLng, locationName = current.manualLocationName) }
+                    carouselRepository.invalidateAll()
+                    loadCarousels()
+                }
+            }
+            LocationMode.CURRENT_LOCATION -> {
+                // Restore the GPS-resolved name immediately so the pill flips back
+                // from the manual address. Coords will sync when RequestLocationEffect fires.
+                if (current.gpsLocationName.isNotBlank()) {
+                    _uiState.update { it.copy(locationName = current.gpsLocationName) }
+                }
+            }
         }
         saveLocationPrefs()
     }
@@ -206,7 +271,12 @@ class HomeViewModel(
         val isFav = eventId in _uiState.value.favoriteEventIds
         if (isFav) {
             communityInterestRepository.removeFavorite(eventId, InteractionType.EVENT)
-            _uiState.update { it.copy(favoriteEventIds = it.favoriteEventIds - eventId) }
+            _uiState.update {
+                it.copy(
+                    favoriteEventIds = it.favoriteEventIds - eventId,
+                    savedThisWeek = it.savedThisWeek.filterNot { e -> e.id == eventId },
+                )
+            }
         } else {
             communityInterestRepository.recordFavorite(eventId, InteractionType.EVENT, category)
             _uiState.update { it.copy(favoriteEventIds = it.favoriteEventIds + eventId) }
@@ -320,16 +390,10 @@ class HomeViewModel(
                 val lat = state.userLat ?: state.userPreferences?.userLat ?: 42.3601
                 val lng = state.userLng ?: state.userPreferences?.userLng ?: -71.0589
 
-                val categories = if (loadCategories || state.availableCategories.isEmpty()) {
-                    carouselRepository.getAvailableCategories(
-                        userPreferences = state.userPreferences,
-                        userLat = lat,
-                        userLng = lng,
-                    )
-                } else {
-                    state.availableCategories
-                }
-
+                // ONE edge-function call. The carousels response includes categories, so
+                // we fetch carousels first then read cachedCategories. Previously we fired
+                // getAvailableCategories AND getCarousels in parallel, which caused TWO
+                // simultaneous round-trips to the same edge function on cold start.
                 val carousels = carouselRepository.getCarousels(
                     userLat = lat,
                     userLng = lng,
@@ -337,8 +401,21 @@ class HomeViewModel(
                     userPreferences = state.userPreferences,
                     locationName = state.locationName,
                 )
-                _uiState.update {
-                    it.copy(
+                val categories = if (loadCategories || state.availableCategories.isEmpty()) {
+                    carouselRepository.getAvailableCategories(
+                        userPreferences = state.userPreferences,
+                        userLat = lat,
+                        userLng = lng,
+                    )
+                } else state.availableCategories
+                // Guard against racing category switches — if the user tapped a new
+                // category while our fetch was in flight, the cancel may not have
+                // interrupted us in time (no suspension point between the await and
+                // this update). Writing state unconditionally was the reason Music's
+                // carousels appeared briefly on the For You tab after a quick tap.
+                _uiState.update { s ->
+                    if (s.selectedCategory != category) s
+                    else s.copy(
                         availableCategories = categories,
                         carousels = carousels,
                         isLoading = false,
@@ -351,11 +428,19 @@ class HomeViewModel(
                     kotlinx.coroutines.delay(1500)
                     try {
                         val s = _uiState.value
+                        val retryCategory = s.selectedCategory
                         val retryLat = s.userLat ?: s.userPreferences?.userLat ?: 42.3601
                         val retryLng = s.userLng ?: s.userPreferences?.userLng ?: -71.0589
+                        val carousels = carouselRepository.getCarousels(
+                            retryLat, retryLng,
+                            if (retryCategory == "foryou") null else retryCategory,
+                            s.userPreferences, s.locationName,
+                        )
                         val cats = carouselRepository.getAvailableCategories(s.userPreferences, retryLat, retryLng)
-                        val carousels = carouselRepository.getCarousels(retryLat, retryLng, if (s.selectedCategory == "foryou") null else s.selectedCategory, s.userPreferences, s.locationName)
-                        _uiState.update { it.copy(availableCategories = cats, carousels = carousels, isLoading = false, isRefreshing = false, error = null) }
+                        _uiState.update { cur ->
+                            if (cur.selectedCategory != retryCategory) cur
+                            else cur.copy(availableCategories = cats, carousels = carousels, isLoading = false, isRefreshing = false, error = null)
+                        }
                         return@launch
                     } catch (_: Exception) {}
                 }
