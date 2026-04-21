@@ -29,6 +29,295 @@ const MAX_VENUES = parseInt(process.env.MAX_VENUES || "0", 10);
 // when NPS_API_KEY isn't set. DEMO_KEY is fine for our 6 NPS venues weekly.
 const NPS_API_KEY = process.env.NPS_API_KEY || "DEMO_KEY";
 
+// ── Generic RSS / Atom adapter ─────────────────────────────────────────
+//
+// Many venues silently fail today because their /events page renders
+// client-side (JS) while advertising a clean RSS/Atom feed via
+// <link rel="alternate" type="application/rss+xml"> in the page head.
+// This adapter finds the feed, fetches it, parses items, and hands them
+// to Claude for date extraction. Feed descriptions are preserved verbatim
+// (via match-back after Claude extraction) so events inherit the feed's
+// rich description text instead of coming through empty.
+
+function findFeedLink(html) {
+  const linkRe = /<link\b[^>]*>/gi;
+  const candidates = [];
+  let m;
+  while ((m = linkRe.exec(html)) !== null) {
+    const tag = m[0];
+    const isAlternate = /rel\s*=\s*["']?alternate["']?/i.test(tag);
+    const isFeedType = /type\s*=\s*["']application\/(rss\+xml|atom\+xml)["']/i.test(tag);
+    if (!isAlternate || !isFeedType) continue;
+    const href = tag.match(/href\s*=\s*["']([^"']+)["']/i)?.[1];
+    const title = tag.match(/title\s*=\s*["']([^"']+)["']/i)?.[1] || "";
+    if (href) candidates.push({ href, title });
+  }
+  if (candidates.length === 0) return null;
+  // Prefer feed whose title mentions events; otherwise first.
+  return candidates.find((c) => /event/i.test(c.title)) || candidates[0];
+}
+
+function decodeXmlEntities(s) {
+  return String(s)
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)));
+}
+
+function extractXmlField(xml, field) {
+  const cdata = new RegExp(`<${field}\\b[^>]*><!\\[CDATA\\[([\\s\\S]*?)\\]\\]></${field}>`, "i").exec(xml);
+  if (cdata) return cdata[1].trim();
+  const plain = new RegExp(`<${field}\\b[^>]*>([\\s\\S]*?)</${field}>`, "i").exec(xml);
+  if (plain) return decodeXmlEntities(plain[1]).trim();
+  return null;
+}
+
+function parseFeedItems(xml) {
+  const items = [];
+  const blockRe = /<(item|entry)\b[^>]*>([\s\S]*?)<\/\1>/gi;
+  let m;
+  while ((m = blockRe.exec(xml)) !== null) {
+    const block = m[2];
+    const title = extractXmlField(block, "title");
+    if (!title) continue;
+    // RSS uses plain <link>URL</link>. Atom uses <link href="URL"/>
+    let link = extractXmlField(block, "link");
+    if (!link) {
+      const atomLink = block.match(/<link\b[^>]*href\s*=\s*["']([^"']+)["'][^>]*\/?\s*>/i);
+      if (atomLink) link = atomLink[1];
+    }
+    const description =
+      extractXmlField(block, "description") ||
+      extractXmlField(block, "summary") ||
+      extractXmlField(block, "content:encoded") ||
+      extractXmlField(block, "content") ||
+      "";
+    const pubDate = extractXmlField(block, "pubDate") || extractXmlField(block, "published") || extractXmlField(block, "updated") || null;
+    items.push({ title, link: link || "", description, pubDate });
+  }
+  return items;
+}
+
+async function crawlRssFeed(venue, rawHtml) {
+  const feedLink = findFeedLink(rawHtml);
+  if (!feedLink) return null;
+
+  let feedUrl;
+  try {
+    feedUrl = new URL(feedLink.href, venue.events_url).toString();
+  } catch {
+    return null;
+  }
+
+  let feedXml;
+  try {
+    feedXml = await fetchPage(feedUrl);
+  } catch (err) {
+    console.log(`    RSS fetch failed (${feedUrl}): ${err.message}`);
+    return null;
+  }
+
+  const items = parseFeedItems(feedXml);
+  if (items.length === 0) {
+    console.log(`    RSS feed parsed but has 0 items (${feedUrl})`);
+    return null;
+  }
+
+  console.log(`    📡 RSS: ${items.length} items from ${feedUrl}`);
+
+  // Per-item strategy: fetch each detail page and try JSON-LD Event schema first
+  // (reliable, fast, no Claude). RSS pubDate is WHEN THE ITEM WAS POSTED, not the
+  // event date — so without the detail-page fetch we'd miss anything without dates
+  // in its description (e.g. "Sheepshearing Festival" reads as seasonal text).
+  // Fall back to Claude for items without JSON-LD on the detail page.
+  const nowMs = Date.now();
+  const jsonLdEvents = [];
+  const fallbackItems = [];
+  let idx = 0;
+  const concurrency = 5;
+  async function worker() {
+    while (idx < items.length) {
+      const i = idx++;
+      const item = items[i];
+      if (!item.link) {
+        fallbackItems.push(item);
+        continue;
+      }
+      try {
+        const detailHtml = await fetchPage(item.link);
+        const found = parseJsonLdEvents(detailHtml).filter((e) => {
+          if (!e.title || !e.start_date) return false;
+          const ms = Date.parse(e.start_date);
+          return !isNaN(ms) && ms >= nowMs - 86_400_000; // allow earlier-today events
+        });
+        if (found.length === 0) {
+          fallbackItems.push(item);
+          continue;
+        }
+        // Richer RSS description beats JSON-LD's short summary.
+        const feedDesc = stripHtml(item.description || "").slice(0, 500).trim();
+        for (const e of found) {
+          if (feedDesc && (!e.description || e.description.length < feedDesc.length)) {
+            e.description = feedDesc;
+          }
+          if (!e.source_url) e.source_url = item.link;
+        }
+        jsonLdEvents.push(...found);
+      } catch {
+        fallbackItems.push(item);
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, worker));
+
+  let claudeEvents = [];
+  if (fallbackItems.length > 0) {
+    const compactText = fallbackItems
+      .map((item, i) => {
+        const desc = stripHtml(item.description || "").slice(0, 1200);
+        const pub = item.pubDate ? `Published: ${item.pubDate}` : "";
+        return `### Event ${i + 1}\nTitle: ${item.title}\nURL: ${item.link}\n${pub}\n\n${desc}`;
+      })
+      .join("\n\n---\n\n");
+    try {
+      const result = await extractEventsFromHtml(venue, compactText);
+      claudeEvents = (result.events || []).filter((e) => e.title && e.start_date);
+      const byLink = new Map(fallbackItems.map((i) => [i.link, i]));
+      const byTitle = new Map(fallbackItems.map((i) => [i.title.toLowerCase().trim(), i]));
+      for (const e of claudeEvents) {
+        const hit =
+          (e.source_url && byLink.get(e.source_url)) ||
+          byTitle.get((e.title || "").toLowerCase().trim()) ||
+          fallbackItems.find((it) => {
+            const t = it.title.toLowerCase();
+            const et = (e.title || "").toLowerCase();
+            return t.length > 8 && (et.includes(t) || t.includes(et.slice(0, Math.min(et.length, 20))));
+          });
+        if (hit) {
+          const feedDesc = stripHtml(hit.description || "").slice(0, 500).trim();
+          if (feedDesc && (!e.description || e.description.length < feedDesc.length)) {
+            e.description = feedDesc;
+          }
+          if (!e.source_url && hit.link) e.source_url = hit.link;
+        }
+      }
+    } catch (err) {
+      console.log(`    Claude RSS fallback failed: ${err.message}`);
+    }
+  }
+
+  const allEvents = [...jsonLdEvents, ...claudeEvents];
+  if (allEvents.length === 0) return null;
+
+  console.log(`    RSS breakdown: ${jsonLdEvents.length} via JSON-LD detail pages, ${claudeEvents.length} via Claude fallback`);
+
+  const rows = allEvents.map((e) => normalizeEvent(e, venue));
+  await updateVenueCrawlStatus(venue.id, true, venue.crawl_success_rate);
+  return { venue: venue.name, events: rows.length, status: "ok (rss)", rows };
+}
+
+// ── Description enrichment ────────────────────────────────────────────
+//
+// Second-pass enrichment: for any event whose description is missing or
+// short (< 40 chars) but has a source_url, fetch the detail page and
+// pull the description from structured data (JSON-LD Event.description,
+// og:description, <meta name="description">). No Claude call — pure
+// HTML parsing, ~100-200ms per page, cheap.
+
+function extractDescriptionFromHtml(html) {
+  // 1. JSON-LD Event.description (most reliable)
+  const jsonLdBlocks = html.match(/<script[^>]*type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi) || [];
+  for (const block of jsonLdBlocks) {
+    const body = block.replace(/<script[^>]*>/i, "").replace(/<\/script>/i, "").trim();
+    try {
+      const parsed = JSON.parse(body);
+      const walk = (node) => {
+        if (!node || typeof node !== "object") return null;
+        if (Array.isArray(node)) {
+          for (const item of node) {
+            const d = walk(item);
+            if (d) return d;
+          }
+          return null;
+        }
+        const t = node["@type"];
+        const isEventType = (typeof t === "string" && /Event|Exhibit/i.test(t))
+          || (Array.isArray(t) && t.some((x) => /Event|Exhibit/i.test(x)));
+        if (isEventType && typeof node.description === "string" && node.description.trim()) {
+          return node.description;
+        }
+        if (Array.isArray(node["@graph"])) {
+          const d = walk(node["@graph"]);
+          if (d) return d;
+        }
+        return null;
+      };
+      const desc = walk(parsed);
+      if (desc) return stripHtml(desc).slice(0, 500).trim();
+    } catch {
+      // Malformed JSON-LD — skip.
+    }
+  }
+
+  // 2. OpenGraph description
+  const og =
+    html.match(/<meta[^>]*property\s*=\s*["']og:description["'][^>]*content\s*=\s*["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]*content\s*=\s*["']([^"']+)["'][^>]*property\s*=\s*["']og:description["']/i)?.[1];
+  if (og) {
+    const d = decodeXmlEntities(stripHtml(og)).slice(0, 500).trim();
+    if (d.length >= 40) return d;
+  }
+
+  // 3. <meta name="description">
+  const meta =
+    html.match(/<meta[^>]*name\s*=\s*["']description["'][^>]*content\s*=\s*["']([^"']+)["']/i)?.[1] ||
+    html.match(/<meta[^>]*content\s*=\s*["']([^"']+)["'][^>]*name\s*=\s*["']description["']/i)?.[1];
+  if (meta) {
+    const d = decodeXmlEntities(stripHtml(meta)).slice(0, 500).trim();
+    if (d.length >= 40) return d;
+  }
+
+  return null;
+}
+
+async function enrichEventDescription(row) {
+  const current = (row.description || "").trim();
+  if (current.length >= 40) return row;
+  if (!row.source_url) return row;
+  try {
+    const html = await fetchPage(row.source_url);
+    const desc = extractDescriptionFromHtml(html);
+    if (desc && desc.length > current.length) {
+      row.description = desc;
+    }
+  } catch {
+    // Fetch failures are silent — keep existing value.
+  }
+  return row;
+}
+
+async function enrichDescriptions(rows, concurrency = 5) {
+  if (!rows || rows.length === 0) return rows;
+  let index = 0;
+  const out = new Array(rows.length);
+  async function worker() {
+    while (index < rows.length) {
+      const i = index++;
+      out[i] = await enrichEventDescription(rows[i]);
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(concurrency, rows.length) }, worker));
+  return out;
+}
+
+module.exports = module.exports || {};
+module.exports.extractDescriptionFromHtml = extractDescriptionFromHtml;
+module.exports.enrichEventDescription = enrichEventDescription;
+module.exports.enrichDescriptions = enrichDescriptions;
+
 // ── Category mapping from venue category to event category ──
 
 const VENUE_TO_EVENT_CATEGORY = {
@@ -291,28 +580,35 @@ function tagEasternTime(isoDate) {
   if (!isoDate) return null;
   // Already has timezone offset or Z — leave it alone
   if (/[Zz]$/.test(isoDate) || /[+-]\d{2}:\d{2}$/.test(isoDate)) return isoDate;
+  // Date-only values (YYYY-MM-DD) need a time component before we can tack on
+  // the offset, otherwise Postgres rejects "2026-07-10-04:00" as invalid.
+  const normalized = /^\d{4}-\d{2}-\d{2}$/.test(isoDate) ? isoDate + "T00:00:00" : isoDate;
   // Determine EDT vs EST based on date
   // EDT: second Sunday in March → first Sunday in November
   try {
-    const d = new Date(isoDate + "Z"); // parse as UTC to get month/day
+    const d = new Date(normalized + "Z"); // parse as UTC to get month/day
     const month = d.getUTCMonth(); // 0-indexed
     // Rough check: April-October is definitely EDT, Dec-Feb is EST
     // March and November need exact DST boundary checks but -04:00 is safe for most
     const isEDT = month >= 2 && month <= 10; // Mar-Nov → EDT (close enough)
-    return isoDate + (isEDT ? "-04:00" : "-05:00");
+    return normalized + (isEDT ? "-04:00" : "-05:00");
   } catch {
-    return isoDate + "-04:00"; // default EDT
+    return normalized + "-04:00"; // default EDT
   }
 }
 
 function normalizeEvent(event, venue) {
   const now = new Date().toISOString();
   const venueCity = (venue.city || "unknown").toLowerCase();
-  const sourceId = `crawl-${venueCity}-${Buffer.from(event.title + event.start_date + venue.name).toString("base64url").slice(0, 40)}`;
+  // Decode HTML entities before hashing so "Pattern &amp; Place" and
+  // "Pattern & Place" produce the same dedupe_hash across crawl paths.
+  const title = decodeXmlEntities(event.title || "").trim();
+  const description = event.description ? decodeXmlEntities(event.description).trim() : null;
+  const sourceId = `crawl-${venueCity}-${Buffer.from(title + event.start_date + venue.name).toString("base64url").slice(0, 40)}`;
 
   return {
-    title: event.title,
-    description: event.description || null,
+    title,
+    description: description || null,
     category: VENUE_TO_EVENT_CATEGORY[venue.category] || "other",
     subcategory: VENUE_TO_SUBCATEGORY[venue.category] || null,
     start_at: tagEasternTime(event.start_date),
@@ -1190,6 +1486,18 @@ async function crawlVenue(venue) {
       console.log(`    Tessitura detected for ${venue.name} — using HTML crawl`);
     }
 
+    // Generic RSS/Atom feed — sites that advertise a feed in <head> almost always
+    // have cleaner, more parseable event data than their HTML (Gore Place,
+    // Common Street, etc.). Try this before JSON-LD / Claude.
+    if (htmlLc.includes('type="application/rss+xml"') || htmlLc.includes('type="application/atom+xml"') ||
+        htmlLc.includes("type='application/rss+xml'") || htmlLc.includes("type='application/atom+xml'")) {
+      const rssResult = await crawlRssFeed(venue, rawHtml);
+      if (rssResult && rssResult.events > 0) {
+        console.log(`    ✓ RSS extracted ${rssResult.events} events for ${venue.name}`);
+        return rssResult;
+      }
+    }
+
     // JSON-LD schema.org Event extraction — try before Claude HTML fallback.
     // Many well-maintained sites (museums, universities, city gov) publish
     // structured event data we can parse deterministically.
@@ -1228,7 +1536,19 @@ async function crawlWithConcurrency(venues, concurrency) {
       console.log(`  [${i + 1}/${venues.length}] ${venue.name} (${venue.category})...`);
       const result = await crawlVenue(venue);
 
-      if (result.status === "ok") {
+      // Second-pass description enrichment — hit each event's source_url
+      // and pull description from JSON-LD / og:description / <meta name="description">.
+      // Applies to every crawl path uniformly.
+      if (result.rows && result.rows.length > 0) {
+        const before = result.rows.filter((r) => (r.description || "").length >= 40).length;
+        result.rows = await enrichDescriptions(result.rows);
+        const after = result.rows.filter((r) => (r.description || "").length >= 40).length;
+        if (after > before) {
+          console.log(`    ✨ Enriched ${after - before}/${result.rows.length} descriptions via source_url`);
+        }
+      }
+
+      if (result.status?.startsWith("ok")) {
         console.log(`    -> ${result.events} events extracted`);
       } else {
         console.log(`    -> ${result.status}: ${result.reason || ""}`);
@@ -1336,7 +1656,12 @@ async function main() {
     });
 }
 
-main().catch((err) => {
-  console.error("Fatal error:", err);
-  process.exit(1);
-});
+// Only auto-run when invoked directly — allows other scripts to require()
+// helper functions (enrichDescriptions, extractDescriptionFromHtml) without
+// kicking off the full crawler.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error("Fatal error:", err);
+    process.exit(1);
+  });
+}
