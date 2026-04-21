@@ -115,6 +115,13 @@ class VenueRepositoryImpl(
                 }
                 .decodeList<EventDto>()
                 .map { it.toDomain() }
+                // Mirror the no-public-interest exclusion the Explore feed and
+                // carousels already apply. Thesis defenses, AA meetings, varsity
+                // sports, etc. shouldn't surface on venue detail pages either.
+                // Post-filter (tiny list) because supabase-kt lacks a clean
+                // "null OR neq" primitive and PostgreSQL's 3-valued logic makes
+                // a server-side neq alone exclude the nulls we want to keep.
+                .filter { it.subcategory != "no-public-interest" }
         } catch (_: Exception) {
             emptyList()
         }

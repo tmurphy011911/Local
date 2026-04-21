@@ -74,6 +74,10 @@ const AUTO_EXCLUDE_PATTERNS = [
   { label: "civic-meeting", re: /\b(school committee|school board|town council|city council|select board|planning board|zoning board|conservation commission|historic district commission|board of health|board of selectmen|abutters meeting|hoa meeting|homeowners? association meeting|condo association meeting)\b/i },
   // Internal / private / trainings
   { label: "private-event", re: /\b(staff training|employee training|internal meeting|members only meeting|private event|private gathering|private party)\b/i },
+  // Academic-internal: thesis/dissertation defenses, PhD committee meetings,
+  // qualifying exams — these are closed to the public even when listed on a
+  // calendar. Don't surface to general-audience users.
+  { label: "academic-internal", re: /\b(thesis defense|dissertation defense|phd defense|qualifying exam|oral defense|prospectus defense|comprehensive exam|phd committee|dissertation proposal)\b/i },
   // Prayer / religious services (regular worship, not special events/concerts/festivals)
   { label: "worship-service", re: /\b(early morning prayer|daily prayer|morning prayer|evening prayer|weekly prayer|prayer group|bible study|worship service|sunday service|mass service)\b/i },
 ];
@@ -84,6 +88,112 @@ function autoExcludeReason(event) {
     if (pat.re.test(haystack)) return pat.label;
   }
   return null;
+}
+
+// ── Rule-based subcategory reclassification ──────────────────────────
+//
+// Events inherit their venue's category during crawl (e.g. an event at a
+// sports_venue → category/subcategory "sports"). That's wrong when a
+// hockey rink hosts a speaker series, a library hosts a yoga class, or
+// a museum hosts a concert — and the Claude classifier skips
+// already-classified rows, so these stay stuck.
+//
+// This pass runs on EVERY future event regardless of prior classification
+// and overrides subcategory when the title clearly describes a different
+// type of event. Deterministic, cheap, runs outside the Claude batch.
+
+const SUBCATEGORY_RECLASSIFY_PATTERNS = [
+  // Educational / networking / talks → "other"
+  {
+    subcategory: "other",
+    re: /\b(lunch\s*(&|and|&amp;|n)?\s*learn|luncheon\s*(&|and|&amp;)?\s*learn|breakfast\s*(&|and|&amp;)?\s*learn|workshop|seminar|symposium|lecture|panel discussion|panel talk|networking|open house|meet\s*(&|and|&amp;)?\s*greet|professional development|training session|community forum|town hall|round\s?table|info session|information session|fireside chat|guest speaker|keynote|distinguished lecture|colloquium|speaker series)\b/i,
+  },
+  // Fundraising / social / reception → "other"
+  {
+    subcategory: "other",
+    re: /\b(gala|fundraiser|fundraising|charity benefit|annual benefit|bake sale|raffle|cocktail reception|awards ceremony|awards gala|opening reception|annual meeting|member reception)\b/i,
+  },
+  // Film screenings → "arts"
+  {
+    subcategory: "arts",
+    re: /\b(film screening|movie night|movie club|screening of|film festival|documentary screening|short film program)\b/i,
+  },
+  // Book clubs / reading groups → "libraries"
+  {
+    subcategory: "libraries",
+    re: /\b(book club|book discussion|reading group|author talk|author signing|author event|poetry reading|literary salon)\b/i,
+  },
+  // Kids programming → "for-kids"
+  {
+    subcategory: "for-kids",
+    re: /\b(story ?time|toddler time|kids craft|children'?s (craft|class|workshop|program)|parent\s*(&|and)\s*child|baby ?time|family craft|toddler playtime|little learners|kids yoga|kids cooking)\b/i,
+  },
+];
+
+function reclassifyReason(event) {
+  const hay = [event.title || "", event.description || ""].join(" — ");
+  for (const p of SUBCATEGORY_RECLASSIFY_PATTERNS) {
+    if (p.re.test(hay) && event.subcategory !== p.subcategory) {
+      return p.subcategory;
+    }
+  }
+  return null;
+}
+
+async function applyReclassifications(events) {
+  const matches = [];
+  for (const e of events) {
+    const target = reclassifyReason(e);
+    if (target) matches.push({ ...e, _newSubcategory: target });
+  }
+  if (matches.length === 0) {
+    console.log("Reclassification: 0 events matched patterns");
+    return new Set();
+  }
+
+  console.log(`\nReclassification: ${matches.length} events matched patterns`);
+  const bySub = {};
+  for (const m of matches) {
+    const key = `${m.subcategory ?? "(none)"} -> ${m._newSubcategory}`;
+    bySub[key] = (bySub[key] || 0) + 1;
+  }
+  for (const [k, n] of Object.entries(bySub)) console.log(`  ${k}: ${n}`);
+
+  if (DRY_RUN) {
+    console.log("DRY RUN — not writing reclassifications\n");
+    console.log("  Sample:");
+    for (const m of matches.slice(0, 10)) {
+      console.log(`    [${m.subcategory} -> ${m._newSubcategory}] "${m.title}" @ ${m.venue_name}`);
+    }
+    return new Set(matches.map((m) => m.id));
+  }
+
+  let index = 0;
+  let updated = 0;
+  async function worker() {
+    while (index < matches.length) {
+      const i = index++;
+      const m = matches[i];
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/events?id=eq.${m.id}`, {
+        method: "PATCH",
+        headers: {
+          apikey: SUPABASE_SERVICE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          subcategory: m._newSubcategory,
+          // Preserve prior value once — original_subcategory is set by the
+          // auto-exclusion pass too, so only write if not already set.
+          ...(m.original_subcategory ? {} : { original_subcategory: m.subcategory ?? null }),
+        }),
+      });
+      if (res.ok) updated++;
+    }
+  }
+  await Promise.all(Array.from({ length: 5 }, worker));
+  console.log(`  updated: ${updated}/${matches.length}\n`);
+  return new Set(matches.map((m) => m.id));
 }
 
 async function applyAutoExclusions(events) {
@@ -297,6 +407,11 @@ async function main() {
   //    Runs against ALL future events (not just unclassified) so backfills
   //    already-misclassified events as well.
   const autoExcludedIds = await applyAutoExclusions(events);
+
+  // 3. Pattern-based reclassification — fixes obvious category mistakes
+  //    like speaker series at sports_venues inheriting "sports". Also runs
+  //    on already-classified events so it backfills stale data.
+  const reclassifiedIds = await applyReclassifications(events);
 
   if (PREFILTER_ONLY) {
     console.log("PREFILTER_ONLY=1 — skipping Claude batch\n");
