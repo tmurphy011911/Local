@@ -103,6 +103,11 @@ class VenueRepositoryImpl(
         // City filter dropped on purpose — venue.city vs event.city casing mismatches
         // were silently returning zero rows. Venue name is unique enough in practice.
         return try {
+            // Fetch generously — post-filter below drops no-public-interest rows,
+            // and venues like Brown University schedule dozens of thesis defenses
+            // that would otherwise fill the limit and leave the result empty.
+            // Bumping to 500 + client-side filter is simpler than the DSL needed
+            // for a server-side "subcategory IS NULL OR subcategory != ..." check.
             supabaseClient.from("events")
                 .select {
                     filter {
@@ -111,17 +116,12 @@ class VenueRepositoryImpl(
                         gte("start_at", nowIso)
                     }
                     order("start_at", Order.ASCENDING)
-                    limit(50)
+                    limit(500)
                 }
                 .decodeList<EventDto>()
                 .map { it.toDomain() }
-                // Mirror the no-public-interest exclusion the Explore feed and
-                // carousels already apply. Thesis defenses, AA meetings, varsity
-                // sports, etc. shouldn't surface on venue detail pages either.
-                // Post-filter (tiny list) because supabase-kt lacks a clean
-                // "null OR neq" primitive and PostgreSQL's 3-valued logic makes
-                // a server-side neq alone exclude the nulls we want to keep.
                 .filter { it.subcategory != "no-public-interest" }
+                .take(50)
         } catch (_: Exception) {
             emptyList()
         }
