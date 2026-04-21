@@ -170,9 +170,14 @@ function reclassifyReason(event) {
   return null;
 }
 
-async function applyReclassifications(events) {
+async function applyReclassifications(events, skipIds = new Set()) {
   const matches = [];
   for (const e of events) {
+    // Don't overwrite events that auto-exclusion already flagged as
+    // no-public-interest — otherwise a "Study Abroad Info Session"
+    // would flip from no-public-interest back to "other" because
+    // the reclassifier's "info session" rule runs after auto-exclusion.
+    if (skipIds.has(e.id)) continue;
     const target = reclassifyReason(e);
     if (target) matches.push({ ...e, _newSubcategory: target });
   }
@@ -440,8 +445,10 @@ async function main() {
 
   // 3. Pattern-based reclassification — fixes obvious category mistakes
   //    like speaker series at sports_venues inheriting "sports". Also runs
-  //    on already-classified events so it backfills stale data.
-  const reclassifiedIds = await applyReclassifications(events);
+  //    on already-classified events so it backfills stale data. Skip any
+  //    events that auto-exclusion just tagged as no-public-interest —
+  //    otherwise reclassifier patterns like "info session" would undo it.
+  const reclassifiedIds = await applyReclassifications(events, autoExcludedIds);
 
   if (PREFILTER_ONLY) {
     console.log("PREFILTER_ONLY=1 — skipping Claude batch\n");
