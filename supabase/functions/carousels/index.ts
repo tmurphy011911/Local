@@ -1859,8 +1859,43 @@ async function fetchVenueCache(
   return cache;
 }
 
+// Bounding boxes for supported states — mirrors the client-side
+// `SUPPORTED_STATE_BOUNDS` in HomeViewModel.kt. Used to filter carousels whose
+// `city` column is a state name (e.g. "Massachusetts").
+const STATE_BOUNDS: Record<string, { latMin: number; latMax: number; lngMin: number; lngMax: number }> = {
+  massachusetts: { latMin: 41.2, latMax: 42.9, lngMin: -73.5, lngMax: -69.9 },
+  "rhode island": { latMin: 41.1, latMax: 42.1, lngMin: -72.0, lngMax: -71.1 },
+  pennsylvania: { latMin: 39.7, latMax: 42.3, lngMin: -80.6, lngMax: -74.6 },
+};
+
+// True when a carousel whose `city` column is `carouselCity` is relevant to a
+// user at (lat,lng). Empty/null city → global carousel (always shown). State
+// names → match against STATE_BOUNDS. City names → match against knownCities
+// within a 60-mile radius.
+function carouselMatchesLocation(
+  carouselCity: string | null | undefined,
+  lat: number,
+  lng: number,
+): boolean {
+  if (!carouselCity) return true;
+  const key = carouselCity.trim().toLowerCase();
+  if (!key) return true;
+  const state = STATE_BOUNDS[key];
+  if (state) {
+    return lat >= state.latMin && lat <= state.latMax && lng >= state.lngMin && lng <= state.lngMax;
+  }
+  const city = knownCities.find((c) => c.name.toLowerCase() === key);
+  if (city) {
+    return distanceMiles(lat, lng, city.lat, city.lng) <= 60;
+  }
+  // Unknown key — assume global so we don't accidentally hide carousels.
+  return true;
+}
+
 async function fetchCarouselsConfig(
   supabase: ReturnType<typeof createClient>,
+  lat: number,
+  lng: number,
 ): Promise<CarouselConfig[]> {
   const { data, error } = await supabase
     .from("carousels")
@@ -1868,7 +1903,7 @@ async function fetchCarouselsConfig(
     .eq("is_active", true)
     .order("position", { ascending: true });
   if (error) return [];
-  return data ?? [];
+  return (data ?? []).filter((c: CarouselConfig) => carouselMatchesLocation(c.city, lat, lng));
 }
 
 async function fetchUserPreferences(
@@ -1999,7 +2034,7 @@ Deno.serve(async (req) => {
         fetchAllEvents(supabase, lat, lng, radiusMiles),
         fetchRawSportsEvents(supabase, lat, lng, radiusMiles),
         fetchVenueCache(supabase),
-        fetchCarouselsConfig(supabase),
+        fetchCarouselsConfig(supabase, lat, lng),
       ]);
       const deduped = deduplicateCrossSource(rawEvents);
       allEvents = cleanEvents(deduped, venues);

@@ -59,7 +59,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import androidx.compose.material.icons.outlined.Warning
 import live.localapp.local.Config
+import live.localapp.local.ui.home.isLocationInSupportedState
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 
@@ -382,6 +384,41 @@ fun ManualAddressScreen(
                             lineHeight = 18.sp,
                         ),
                     )
+                }
+
+                // Warn when the resolved place falls outside our supported markets.
+                // We still let them continue — seeing the warning is better than a
+                // silently-broken feed.
+                val outOfMarket = resolvedLat != null && resolvedLng != null &&
+                    !isLocationInSupportedState(resolvedLat, resolvedLng)
+                if (outOfMarket) {
+                    Spacer(Modifier.height(16.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(AppColors.SunLt, RoundedCornerShape(10.dp))
+                            .border(1.dp, AppColors.Sun, RoundedCornerShape(10.dp))
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Outlined.Warning,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = AppColors.SunDk,
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Text(
+                            "Local isn't live here yet — events and venues nearby will be limited. You can still browse.",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 12.sp,
+                                color = AppColors.SunDk,
+                                lineHeight = 18.sp,
+                            ),
+                        )
+                    }
                 }
 
                 Spacer(Modifier.height(32.dp))

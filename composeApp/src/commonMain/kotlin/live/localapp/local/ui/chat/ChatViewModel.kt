@@ -871,8 +871,11 @@ class ChatViewModel(
         // use that location's coordinates for the geo search
         val state = _uiState.value
         val locationCoords = if (!location.isNullOrBlank()) geocodeCity(location) else null
-        val userLat = locationCoords?.first ?: state.currentLat ?: state.userPreferences?.userLat
-        val userLng = locationCoords?.second ?: state.currentLng ?: state.userPreferences?.userLng
+        val prefs = state.userPreferences
+        val prefsEffectiveLat = prefs?.let { if (it.locationMode == "manual") it.manualLat ?: it.userLat else it.userLat }
+        val prefsEffectiveLng = prefs?.let { if (it.locationMode == "manual") it.manualLng ?: it.userLng else it.userLng }
+        val userLat = locationCoords?.first ?: state.currentLat ?: prefsEffectiveLat
+        val userLng = locationCoords?.second ?: state.currentLng ?: prefsEffectiveLng
         println("searchEvents: lat=$userLat lng=$userLng location=$location currentLocationName=${state.currentLocationName} geocoded=${locationCoords != null}")
 
         val rawEvents = eventRepo.searchEvents(
@@ -1720,7 +1723,7 @@ NEXT 14 DAYS (use this as your ONLY source of truth for which day falls on which
 $next14Days
 
 Extended calendar (day 15+): $calendarRef
-Location: ${state.currentLocationName.ifBlank { state.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "their area" }} (lat: ${state.currentLat ?: state.userPreferences?.userLat ?: "unknown"}, lng: ${state.currentLng ?: state.userPreferences?.userLng ?: "unknown"})
+Location: ${state.currentLocationName.ifBlank { state.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "their area" }} (lat: ${state.currentLat ?: state.userPreferences?.let { if (it.locationMode == "manual") it.manualLat ?: it.userLat else it.userLat } ?: "unknown"}, lng: ${state.currentLng ?: state.userPreferences?.let { if (it.locationMode == "manual") it.manualLng ?: it.userLng else it.userLng } ?: "unknown"})
 
 HOW TO HELP:
 - When the user wants to plan something, search the database FIRST, then present a plan using the present_plan tool. Search broadly — make multiple search_events calls across different categories and date ranges to find everything relevant. The more you search, the better your recommendations. When offering to build a plan, mention that it's an easily shareable plan (e.g. "Want me to build you a shareable plan?" or "I can put together a plan you can share with your group").

@@ -208,6 +208,16 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             if (userLat != null && userLng != null) vm.setUserLocation(userLat, userLng)
         }
     }
+
+    // Keep PlacesViewModel in sync with Home's effective location so the pill,
+    // distances, and unsupported-state flag don't drift when GPS or the manual
+    // address changes while the user is on the Places tab.
+    LaunchedEffect(homeState.userLat, homeState.userLng, homeState.locationName) {
+        val hLat = homeState.userLat
+        val hLng = homeState.userLng
+        if (hLat != null && hLng != null) placesVm.setUserLocation(hLat, hLng)
+        if (homeState.locationName.isNotBlank()) placesVm.setLocationName(homeState.locationName)
+    }
     val placesState by placesVm.uiState.collectAsState()
 
     // Observe chat success state to defer celebrations
