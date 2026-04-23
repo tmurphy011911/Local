@@ -588,7 +588,7 @@ private fun SavedVenuesCarousel(
     onVenueClick: (VenueWithMeta, Rect) -> Unit,
     onFavoriteToggle: (VenueWithMeta) -> Unit = {},
 ) {
-    var expanded by remember { mutableStateOf(true) }
+    var expanded by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         // Header — tappable to collapse/expand
@@ -1609,7 +1609,7 @@ private fun SavedEventsSection(
     onEventClick: (live.localapp.local.domain.model.Event) -> Unit,
     onFavoriteToggle: (live.localapp.local.domain.model.Event) -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(true) }
+    var expanded by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
         // Header — tappable to collapse/expand, matches Home styling.
