@@ -129,3 +129,10 @@ Platform-specific crawlers auto-detect and use structured APIs before falling ba
 - Events use geo-radius search (lat/lng bounding box), not city-name matching
 - `cleanMarkdown()` in ChatScreen preserves bullet points — don't strip them
 - `parseTimeForSort()` is the time parsing function in ChatViewModel (not `parseTimeToMinutes`)
+
+## TODO
+
+- [ ] Deploy `carousels` edge function to pick up city/state filtering added in commit `1230676` on `claude/mobile-editing-support-BDTIO` (stops MA-only carousels from leaking to out-of-market users):
+  ```bash
+  npx supabase functions deploy carousels --project-ref blifubxslaucshmlphdc
+  ```

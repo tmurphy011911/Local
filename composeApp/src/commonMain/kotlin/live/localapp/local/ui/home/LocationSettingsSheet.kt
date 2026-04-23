@@ -315,6 +315,8 @@ private fun ManualAddressOption(
     var displayAddress by remember { mutableStateOf(manualLocationName) }
     var suggestions by remember { mutableStateOf<List<PlaceSuggestion>>(emptyList()) }
     var isEditing by remember { mutableStateOf(false) }
+    var resolveError by remember { mutableStateOf<String?>(null) }
+    var isResolving by remember { mutableStateOf(false) }
     val httpClient = remember { HttpClient() }
     val focusRequester = remember { androidx.compose.ui.focus.FocusRequester() }
 
@@ -425,6 +427,30 @@ private fun ManualAddressOption(
                 },
             )
 
+            if (resolveError != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    resolveError ?: "",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
+                        color = AppColors.Coral,
+                    ),
+                )
+            } else if (isResolving) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    "Looking up address…",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 12.sp,
+                        color = AppColors.Ink3,
+                    ),
+                )
+            }
+
             // Suggestions
             suggestions.forEach { suggestion ->
                 val fullAddress = if (suggestion.secondaryText.isNotBlank()) "${suggestion.mainText}, ${suggestion.secondaryText}" else suggestion.mainText
@@ -438,11 +464,25 @@ private fun ManualAddressOption(
                             displayAddress = fullAddress
                             suggestions = emptyList()
                             isEditing = false
-                            resolvePlace(httpClient, suggestion.placeId) { lat, lng, city ->
-                                // Use city for the pill display, not full street address
-                                val pillName = city.ifBlank { suggestion.mainText }
-                                onSelect(lat, lng, pillName)
-                            }
+                            resolveError = null
+                            isResolving = true
+                            resolvePlace(
+                                httpClient = httpClient,
+                                placeId = suggestion.placeId,
+                                onResult = { lat, lng, city ->
+                                    isResolving = false
+                                    // Use city for the pill display, not full street address
+                                    val pillName = city.ifBlank { suggestion.mainText }
+                                    onSelect(lat, lng, pillName)
+                                },
+                                onFailure = {
+                                    isResolving = false
+                                    // Don't silently commit a name without coords — surface
+                                    // the error and keep the user's previous selection intact.
+                                    resolveError = "Couldn't resolve that address. Please try another."
+                                    isEditing = true
+                                },
+                            )
                         }
                         .padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -461,7 +501,12 @@ private fun ManualAddressOption(
     }
 }
 
-private fun resolvePlace(httpClient: HttpClient, placeId: String, onResult: (Double, Double, String) -> Unit) {
+private fun resolvePlace(
+    httpClient: HttpClient,
+    placeId: String,
+    onResult: (Double, Double, String) -> Unit,
+    onFailure: () -> Unit,
+) {
     kotlinx.coroutines.MainScope().launch {
         try {
             val response = httpClient.post("${Config.SUPABASE_URL}/functions/v1/geocode") {
@@ -471,10 +516,16 @@ private fun resolvePlace(httpClient: HttpClient, placeId: String, onResult: (Dou
             }
             val body = response.bodyAsText()
             val json = Json.parseToJsonElement(body).jsonObject
-            val lat = json["lat"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: return@launch
-            val lng = json["lng"]?.jsonPrimitive?.content?.toDoubleOrNull() ?: return@launch
+            val lat = json["lat"]?.jsonPrimitive?.content?.toDoubleOrNull()
+            val lng = json["lng"]?.jsonPrimitive?.content?.toDoubleOrNull()
+            if (lat == null || lng == null) {
+                onFailure()
+                return@launch
+            }
             val city = json["city"]?.jsonPrimitive?.content ?: ""
             onResult(lat, lng, city)
-        } catch (_: Exception) {}
+        } catch (_: Exception) {
+            onFailure()
+        }
     }
 }

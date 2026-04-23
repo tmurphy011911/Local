@@ -284,11 +284,7 @@ private fun SubTabTile(
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = modifier.clickable(
-            interactionSource = remember { MutableInteractionSource() },
-            indication = null,
-            onClick = onClick,
-        ),
+        modifier = modifier.pressable(onClick = onClick),
     ) {
         Spacer(Modifier.height(4.dp))
         CategoryIconWithFallback(
@@ -588,14 +584,14 @@ private fun SavedVenuesCarousel(
     onVenueClick: (VenueWithMeta, Rect) -> Unit,
     onFavoriteToggle: (VenueWithMeta) -> Unit = {},
 ) {
-    var expanded by remember { mutableStateOf(true) }
+    var expanded by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxWidth()) {
         // Header — tappable to collapse/expand
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { expanded = !expanded },
+                .pressable(onClick = { expanded = !expanded }, scale = 0.98f),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -1609,17 +1605,14 @@ private fun SavedEventsSection(
     onEventClick: (live.localapp.local.domain.model.Event) -> Unit,
     onFavoriteToggle: (live.localapp.local.domain.model.Event) -> Unit,
 ) {
-    var expanded by remember { mutableStateOf(true) }
+    var expanded by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxWidth().padding(bottom = 4.dp)) {
         // Header — tappable to collapse/expand, matches Home styling.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                ) { expanded = !expanded },
+                .pressable(onClick = { expanded = !expanded }, scale = 0.98f),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(

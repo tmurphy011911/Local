@@ -118,7 +118,13 @@ class HomeViewModel(
                     val hasPermission = live.localapp.local.platform.checkLocationPermissionGranted()
                     val storedMode = if (prefs.locationMode == "manual") LocationMode.MANUAL else LocationMode.CURRENT_LOCATION
                     // If stored as "current" but we don't have permission, treat as manual
-                    val mode = if (storedMode == LocationMode.CURRENT_LOCATION && !hasPermission) LocationMode.MANUAL else storedMode
+                    var mode = if (storedMode == LocationMode.CURRENT_LOCATION && !hasPermission) LocationMode.MANUAL else storedMode
+                    // Repair corrupted state: if MANUAL but saved coords are missing (e.g. a
+                    // past silent geocoding failure left only the name behind), revert to
+                    // CURRENT_LOCATION so the pill label doesn't lie about the coords we
+                    // actually query with.
+                    val manualCorrupted = mode == LocationMode.MANUAL && (prefs.manualLat == null || prefs.manualLng == null)
+                    if (manualCorrupted) mode = LocationMode.CURRENT_LOCATION
                     val effectiveLat = if (mode == LocationMode.MANUAL) prefs.manualLat ?: prefs.userLat else prefs.userLat
                     val effectiveLng = if (mode == LocationMode.MANUAL) prefs.manualLng ?: prefs.userLng else prefs.userLng
                     val effectiveName = if (mode == LocationMode.MANUAL && !prefs.manualLocationName.isNullOrBlank()) prefs.manualLocationName else cityDisplay
@@ -131,11 +137,14 @@ class HomeViewModel(
                             userPreferences = prefs,
                             locationMode = mode,
                             hasLocationPermission = hasPermission,
-                            manualLocationName = prefs.manualLocationName ?: if (mode == LocationMode.MANUAL) cityDisplay else "",
-                            manualLat = prefs.manualLat,
-                            manualLng = prefs.manualLng,
+                            manualLocationName = if (manualCorrupted) "" else (prefs.manualLocationName ?: if (mode == LocationMode.MANUAL) cityDisplay else ""),
+                            manualLat = if (manualCorrupted) null else prefs.manualLat,
+                            manualLng = if (manualCorrupted) null else prefs.manualLng,
+                            isUnsupportedState = !isLocationInSupportedState(effectiveLat ?: prefs.userLat, effectiveLng ?: prefs.userLng),
                         )
                     }
+                    // Persist the repair so the next cold open starts clean.
+                    if (manualCorrupted) saveLocationPrefs()
                 }
             }
             // Load carousels once, with prefs already set
