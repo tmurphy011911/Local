@@ -284,11 +284,7 @@ private fun SubTabTile(
 ) {
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = modifier.clickable(
-            interactionSource = remember { MutableInteractionSource() },
-            indication = null,
-            onClick = onClick,
-        ),
+        modifier = modifier.pressable(onClick = onClick),
     ) {
         Spacer(Modifier.height(4.dp))
         CategoryIconWithFallback(
@@ -595,7 +591,7 @@ private fun SavedVenuesCarousel(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { expanded = !expanded },
+                .pressable(onClick = { expanded = !expanded }, scale = 0.98f),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
@@ -1616,10 +1612,7 @@ private fun SavedEventsSection(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                ) { expanded = !expanded },
+                .pressable(onClick = { expanded = !expanded }, scale = 0.98f),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(

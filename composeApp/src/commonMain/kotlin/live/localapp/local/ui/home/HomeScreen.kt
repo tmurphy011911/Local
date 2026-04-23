@@ -548,6 +548,8 @@ private fun SeeAllSheet(
     favoriteIds: Set<String> = emptySet(),
 ) {
     var searchQuery by remember { mutableStateOf("") }
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
 
     val filteredEvents = remember(searchQuery, section.events) {
         if (searchQuery.isBlank()) section.events
@@ -564,7 +566,7 @@ private fun SeeAllSheet(
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        sheetState = sheetState,
         containerColor = AppColors.Snow,
         shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
         dragHandle = {
@@ -653,7 +655,15 @@ private fun SeeAllSheet(
                     val event = filteredEvents[index]
                     SeeAllEventRow(
                         event = event,
-                        onClick = { onEventClick(event) },
+                        onClick = {
+                            // Hide the sheet first so the event detail doesn't open
+                            // behind it, then notify the caller to open the event.
+                            scope.launch {
+                                sheetState.hide()
+                                onDismiss()
+                                onEventClick(event)
+                            }
+                        },
                         onFavorite = onFavorite?.let { fav -> { fav(event) } },
                         isFavorited = event.id in favoriteIds,
                     )
@@ -676,10 +686,10 @@ private fun SeeAllEventRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .pressable(onClick = onClick)
             .background(Color.White, RoundedCornerShape(12.dp))
             .border(1.dp, AppColors.Pebble, RoundedCornerShape(12.dp))
             .clip(RoundedCornerShape(12.dp))
-            .clickable(onClick = onClick)
             .padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -1399,7 +1409,7 @@ private fun SavedEventsAlbumCarousel(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { expanded = !expanded }
+                .pressable(onClick = { expanded = !expanded }, scale = 0.98f)
                 .padding(horizontal = 20.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
