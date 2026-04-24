@@ -113,7 +113,10 @@ fun PlanDetailScreen(
     userLng: Double? = null,
     onOpenChat: () -> Unit = {},
 ) {
-    val canEdit = isCreator || plan.attendeesCanEdit
+    // Only the creator can edit — attendees always see a read-only plan.
+    // The previous attendeesCanEdit escape hatch was removed; the creator
+    // is now the single source of truth for plan edits.
+    val canEdit = isCreator
     val readOnly = !canEdit || isShared
     val past = plan.isPast
     val firstImageUrl = plan.days.flatMap { it.slots }.firstNotNullOfOrNull { it.imageUrl }
@@ -170,16 +173,9 @@ fun PlanDetailScreen(
                 }
                 Spacer(Modifier.height(12.dp))
 
-                // Settings strip — Open / Locked plan (creator only)
-                if (isCreator && !past && !isShared) {
-                    Box(modifier = Modifier.padding(horizontal = 16.dp)) {
-                        SettingsStrip(
-                            allowEdit = plan.attendeesCanEdit,
-                            onToggle = onSetAttendeesCanEdit,
-                        )
-                    }
-                    Spacer(Modifier.height(16.dp))
-                }
+                // Settings strip (Open / Locked plan) has been removed — the
+                // plan is always creator-editable only, and attendees are always
+                // read-only, so the toggle no longer has meaning.
 
                 // Day tabs
                 if (plan.days.isNotEmpty()) {
@@ -257,7 +253,7 @@ fun PlanDetailScreen(
         if (!isShared && !past) {
             ChatPeekBar(
                 unread = plan.attendees.count { !it.confirmed }.coerceAtLeast(0),
-                preview = if (readOnly) "Tap to ask the group" else "Tap to see the group chat",
+                preview = if (isCreator) "Send a message to the group, or tag @yocal to make changes" else "Tap to see the group chat",
                 onClick = onOpenChat,
                 modifier = Modifier
                     .align(Alignment.BottomCenter)

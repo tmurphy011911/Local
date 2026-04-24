@@ -722,15 +722,13 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             selectedPlan?.let { plan ->
                 val plansVm: PlansViewModel = koin.get()
                 val plansState by plansVm.uiState.collectAsState()
-                // Is this plan in the current user's own plans list? That list is
-                // filtered by user_id at query time, so membership is authoritative —
-                // more robust than comparing creatorId strings which can drift across
-                // re-auth / fresh installs.
-                val ownsPlan = plansState.upcomingPlans.any { it.id == plan.id } ||
-                    plansState.pastPlans.any { it.id == plan.id }
                 val currentUserId = plansVm.currentUserId()
-                val isCreator = ownsPlan ||
-                    (plan.creatorId != null && plan.creatorId == currentUserId)
+                // Creator is authoritatively determined by plan.creatorId. Previously
+                // this also fell back to "is the plan in the user's own plans list,"
+                // but accepted-invite plans are also copied into the attendee's
+                // plans list, so that check falsely promoted attendees to creators
+                // and gave them the full edit UI.
+                val isCreator = plan.creatorId != null && plan.creatorId == currentUserId
                 var showPlanChat by remember(plan.id) { mutableStateOf(false) }
                 var planChatPrefill by remember(plan.id) { mutableStateOf<String?>(null) }
                 Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
