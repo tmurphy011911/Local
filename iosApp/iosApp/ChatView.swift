@@ -697,7 +697,10 @@ private struct MultiDayPlanCardView: View {
 
     private var saveButton: some View {
         Button {
-            ChatBridge.shared.sendMessage?("Looks good, add to My Plans")
+            // Direct approve — runs the gate + save in Kotlin without adding a
+            // "Looks good…" bubble to the chat. On gate failure the paywall is
+            // presented; on success the celebration/success state fires.
+            ChatBridge.shared.approvePlan?()
         } label: {
             Text("Save to My Plans")
                 .font(F.body(14, .heavy))

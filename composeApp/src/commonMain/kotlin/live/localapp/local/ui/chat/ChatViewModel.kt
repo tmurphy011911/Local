@@ -297,8 +297,9 @@ class ChatViewModel(
 
     fun onQuickReply(reply: QuickReply) {
         if (_uiState.value.isBusy) return
-        when {
-            reply.action == "reset" -> resetChat()
+        when (reply.action) {
+            "reset" -> resetChat()
+            "save_plan" -> approveCurrentPlan()
             else -> sendMessage(reply.label)
         }
     }
@@ -1187,6 +1188,21 @@ class ChatViewModel(
                 quickReplies = quickReplies,
             )
         }
+    }
+
+    /**
+     * Directly approve and save the current plan. Called from the "Save to My
+     * Plans" button and the save_plan quick-reply chip so a "Looks good…" user
+     * message is NOT added to the chat. Runs the gate check first — if blocked,
+     * invokes [onPlanBlocked] so the UI can present the paywall; the plan is
+     * resumable (state is left intact so a retry after subscribe works).
+     */
+    fun approveCurrentPlan() {
+        if (_uiState.value.days.isEmpty()) {
+            println("approveCurrentPlan: no plan to approve, ignoring")
+            return
+        }
+        approvePlan()
     }
 
     private fun approvePlan() {

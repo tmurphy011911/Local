@@ -51,6 +51,15 @@ object ChatBridge {
     // Quick reply: pass both label (display text) and action (command token)
     // so the VM can route specials like "reset" / "save_plan" correctly.
     var onQuickReply: ((String, String) -> Unit)? = null
+    // Direct plan approve — triggered by the "Save to My Plans" button. Bypasses
+    // the chat-message path so a user bubble isn't added; VM runs the gate
+    // check then the save flow.
+    var approvePlan: (() -> Unit)? = null
+    // Called by Swift after a successful RevenueCat purchase / restore so the
+    // Kotlin PremiumGate re-queries subscription status immediately (otherwise
+    // hasPaidSubscription stays false until the next app launch, and the save
+    // retry would re-trigger the paywall).
+    var refreshSubscription: (() -> Unit)? = null
     // Fires when PremiumGate blocks a plan save — Swift presents the paywall.
     var onPlanBlocked: (() -> Unit)? = null
     // Clear the plan-saved celebration and reset chat.

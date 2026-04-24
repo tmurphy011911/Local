@@ -9,7 +9,11 @@ private let coral = Color(red: 1.0, green: 0.42, blue: 0.42)         // #FF6B6B
 // MARK: - Paywall View
 
 struct PaywallView: View {
-    let onDismiss: () -> Void
+    /// Closes the paywall. `didPurchase` is true when the user successfully
+    /// subscribed or restored an active entitlement, false when they tapped
+    /// close without purchasing — callers use it to decide whether to resume
+    /// a pending plan save or drop it.
+    let onDismiss: (_ didPurchase: Bool) -> Void
     @State private var isAnnual = true
     @State private var monthlyPrice = "$6.99"
     @State private var annualPrice = "$49.99"
@@ -65,7 +69,7 @@ struct PaywallView: View {
     private var closeButton: some View {
         HStack {
             Spacer()
-            Button(action: onDismiss) {
+            Button(action: { onDismiss(false) }) {
                 Image(systemName: "xmark")
                     .font(.system(size: 16, weight: .bold))
                     .foregroundColor(.white.opacity(0.5))
@@ -228,7 +232,7 @@ struct PaywallView: View {
 
     private var secondaryCTAs: some View {
         VStack(spacing: 10) {
-            Button(action: onDismiss) {
+            Button(action: { onDismiss(false) }) {
                 Text("Remind me later")
                     .font(Font.custom("Nunito", size: 14).weight(.bold))
                     .foregroundColor(.white.opacity(0.6))
@@ -289,7 +293,7 @@ struct PaywallView: View {
             let result = try await Purchases.shared.purchase(package: pkg)
             if !result.userCancelled {
                 print("PaywallView: Purchase successful")
-                onDismiss()
+                onDismiss(true)
             }
         } catch {
             print("PaywallView: Purchase error: \(error)")
@@ -301,7 +305,7 @@ struct PaywallView: View {
             let info = try await Purchases.shared.restorePurchases()
             if info.entitlements.active.isEmpty == false {
                 print("PaywallView: Restore successful")
-                onDismiss()
+                onDismiss(true)
             }
         } catch {
             print("PaywallView: Restore error: \(error)")

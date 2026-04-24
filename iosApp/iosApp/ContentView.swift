@@ -371,14 +371,30 @@ struct ComposeView: UIViewControllerRepresentable {
 
                 // Wire paywall: when Kotlin's PremiumGate blocks a plan,
                 // present the native SwiftUI paywall over the chat sheet.
+                // On successful purchase/restore, dismiss only the paywall
+                // (not the chat), refresh Kotlin's PremiumGate from the
+                // RevenueCat entitlement, then fire approvePlan so the save
+                // resumes without the user tapping "Save" a second time.
                 ChatBridge.shared.onPlanBlocked = {
                     DispatchQueue.main.async {
-                        let paywallView = PaywallView(onDismiss: {
-                            hostingVC.dismiss(animated: true)
+                        var paywallVC: UIViewController?
+                        let paywallView = PaywallView(onDismiss: { didPurchase in
+                            paywallVC?.dismiss(animated: true) {
+                                guard didPurchase else { return }
+                                // Sync Kotlin's gate state from RevenueCat before
+                                // retrying, so canCreatePlan returns true. The
+                                // refresh is async — give it a brief window to
+                                // complete before firing the save.
+                                ChatBridge.shared.refreshSubscription?()
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                                    ChatBridge.shared.approvePlan?()
+                                }
+                            }
                         })
-                        let paywallVC = UIHostingController(rootView: paywallView)
-                        paywallVC.modalPresentationStyle = .fullScreen
-                        hostingVC.present(paywallVC, animated: true)
+                        let vc = UIHostingController(rootView: paywallView)
+                        vc.modalPresentationStyle = .fullScreen
+                        paywallVC = vc
+                        hostingVC.present(vc, animated: true)
                     }
                 }
 

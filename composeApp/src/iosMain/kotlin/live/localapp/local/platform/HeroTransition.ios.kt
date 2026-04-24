@@ -64,10 +64,24 @@ actual fun openChatSheet(onReady: () -> Unit) {
     // Premium gate — wire the approval check + blocked callback for iOS.
     // On Android this is set in AppNavigation's Compose sheet block.
     val premiumGate = live.localapp.local.ui.chat.PremiumGate()
-    chatVm.onPlanApprovalCheck = { premiumGate.canCreatePlan() }
-    chatVm.onPlanSaved = { premiumGate.recordPlanCreated() }
+    chatVm.onPlanApprovalCheck = { premiumGate.canCreatePlan(live.localapp.local.ui.chat.PlanSource.YOCAL) }
+    chatVm.onPlanSaved = { premiumGate.recordPlanCreated(live.localapp.local.ui.chat.PlanSource.YOCAL) }
     chatVm.onPlanBlocked = { ChatBridge.onPlanBlocked?.invoke() }
     ChatBridge.clearSuccessState = { chatVm.clearSuccessState() }
+    // Direct "Save to My Plans" tap bypasses the chat message path — the
+    // VM runs the gate + save in place, so no "Looks good…" user bubble
+    // is added to the transcript.
+    ChatBridge.approvePlan = { chatVm.approveCurrentPlan() }
+    // After a SwiftUI paywall purchase succeeds, Swift fires this so we can
+    // re-query RevenueCat and flip hasPaidSubscription to true right away
+    // (instead of waiting for the next app-launch checkSubscriptionStatus).
+    ChatBridge.refreshSubscription = {
+        live.localapp.local.platform.checkSubscriptionStatus { isPro, expiry ->
+            premiumGate.hasPaidSubscription = isPro
+            if (expiry != null) premiumGate.paidSubscriptionExpiry = expiry.take(10)
+            println("ChatBridge.refreshSubscription: isPro=$isPro expiry=$expiry")
+        }
+    }
 
     // Event/venue taps from plan cards in SwiftUI chat.
     // Fetch the full object then present the native detail screen.
