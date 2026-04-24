@@ -1024,6 +1024,15 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         // Chat bottom sheet
         if (showChat) {
             val chatVm: ChatViewModel = viewModel { koin.get<ChatViewModel>() }
+            // If the previous chat session ended with a successful plan save,
+            // the celebration state is still in the VM. Clear it on open so
+            // users get a fresh conversation instead of landing back on the
+            // success overlay. Fires only when reopening post-success.
+            LaunchedEffect(Unit) {
+                if (chatVm.uiState.value.showPlanSuccess) {
+                    chatVm.dismissPlanSuccess(navigateToPlans = false)
+                }
+            }
             val chatSheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
             val premiumGate = remember { live.localapp.local.ui.chat.PremiumGate() }
             var showTutorial by remember { mutableStateOf(premiumGate.shouldShowTutorial()) }

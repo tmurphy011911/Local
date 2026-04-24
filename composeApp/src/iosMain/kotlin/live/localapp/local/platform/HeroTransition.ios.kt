@@ -56,6 +56,14 @@ actual fun openChatSheet(onReady: () -> Unit) {
 
     // Start observing ChatViewModel state and pushing to bridge
     val chatVm = org.koin.mp.KoinPlatform.getKoin().get<live.localapp.local.ui.chat.ChatViewModel>()
+
+    // If the user's last visit ended in a successful save, the celebration
+    // overlay and saved-plan state are still in the VM. Opening the chat
+    // without clearing them would drop the user right back on the success
+    // screen instead of a fresh conversation, so reset here.
+    if (chatVm.uiState.value.showPlanSuccess) {
+        chatVm.dismissPlanSuccess(navigateToPlans = false)
+    }
     ChatBridge.sendMessage = { msg -> chatVm.sendMessage(msg) }
     ChatBridge.resetChat = { chatVm.resetChat() }
     ChatBridge.onQuickReply = { label, action ->
