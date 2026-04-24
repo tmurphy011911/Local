@@ -3,13 +3,16 @@ package live.localapp.local.ui.chat
 import com.russhwolf.settings.Settings
 import live.localapp.local.domain.model.StatusTier
 
+/** Which surface created a plan — gating is counted independently per source. */
+enum class PlanSource { YOCAL, MANUAL }
+
 /**
  * Manages premium gating state for Yocal chat / plan creation.
  *
  * Flow:
  * - Chat is always free
- * - First shareable plan is free
- * - After first plan, paywall appears when user tries to save/create another plan
+ * - First plan from Yocal is free; first plan from the manual builder is free
+ * - The second save on either surface triggers the paywall
  * - Premium users bypass all gates
  * - Tier rewards grant free Pro for a duration (checked on launch)
  */
@@ -22,10 +25,20 @@ class PremiumGate {
         get() = settings.getBoolean(KEY_TUTORIAL_SEEN, false)
         set(value) = settings.putBoolean(KEY_TUTORIAL_SEEN, value)
 
-    /** Number of shareable plans created */
+    /** Total number of plans created across all sources (for analytics/debug). */
     var plansCreated: Int
         get() = settings.getInt(KEY_PLANS_CREATED, 0)
         private set(value) = settings.putInt(KEY_PLANS_CREATED, value)
+
+    /** Plans saved from the Yocal chat. */
+    var yocalPlansCreated: Int
+        get() = settings.getInt(KEY_YOCAL_PLANS_CREATED, 0)
+        private set(value) = settings.putInt(KEY_YOCAL_PLANS_CREATED, value)
+
+    /** Plans saved from the manual build-a-plan flow. */
+    var manualPlansCreated: Int
+        get() = settings.getInt(KEY_MANUAL_PLANS_CREATED, 0)
+        private set(value) = settings.putInt(KEY_MANUAL_PLANS_CREATED, value)
 
     /** Whether the user has an active paid subscription (from StoreKit/RevenueCat) */
     var hasPaidSubscription: Boolean
@@ -66,22 +79,31 @@ class PremiumGate {
             return today <= expiry
         }
 
-    /** Record that a shareable plan was created */
-    fun recordPlanCreated() {
-        plansCreated = plansCreated + 1
+    /** Record that a plan was created from [source]. Increments the total + the per-source counter. */
+    fun recordPlanCreated(source: PlanSource) {
+        plansCreated += 1
+        when (source) {
+            PlanSource.YOCAL -> yocalPlansCreated += 1
+            PlanSource.MANUAL -> manualPlansCreated += 1
+        }
     }
 
     /**
-     * Whether the user can save a plan without hitting the paywall.
+     * Whether the user can save a plan from [source] without hitting the paywall.
      *
-     * Previously: "first plan is free, then paywall" — undermined the paywall
-     * because users never had to pay to finish their first save. Tightened
-     * 2026-04-21 to require premium on every save. Tier-reward free months
-     * still bypass via `isPremium` → `rewardExpiryDate`.
+     * Each surface gets its own free save — the first Yocal plan is free AND the
+     * first manual plan is free, independently. The second save on either
+     * surface triggers the paywall. Tier-reward free months still bypass via
+     * `isPremium` → `rewardExpiryDate`.
      */
-    fun canCreatePlan(): Boolean {
-        println("PremiumGate: canCreatePlan? isPremium=$isPremium plansCreated=$plansCreated")
-        return isPremium
+    fun canCreatePlan(source: PlanSource): Boolean {
+        if (isPremium) return true
+        val used = when (source) {
+            PlanSource.YOCAL -> yocalPlansCreated
+            PlanSource.MANUAL -> manualPlansCreated
+        }
+        println("PremiumGate: canCreatePlan? source=$source used=$used isPremium=$isPremium")
+        return used < 1
     }
 
     /** Whether the tutorial should show (first Yocal open) */
@@ -160,6 +182,8 @@ class PremiumGate {
     fun clear() {
         settings.remove(KEY_TUTORIAL_SEEN)
         settings.remove(KEY_PLANS_CREATED)
+        settings.remove(KEY_YOCAL_PLANS_CREATED)
+        settings.remove(KEY_MANUAL_PLANS_CREATED)
         settings.remove(KEY_HAS_PAID_SUB)
         settings.remove(KEY_PAID_SUB_EXPIRY)
         settings.remove(KEY_REWARD_EXPIRY)
@@ -170,6 +194,8 @@ class PremiumGate {
     companion object {
         private const val KEY_TUTORIAL_SEEN = "yocal_tutorial_seen"
         private const val KEY_PLANS_CREATED = "yocal_plans_created"
+        private const val KEY_YOCAL_PLANS_CREATED = "yocal_plans_created_yocal"
+        private const val KEY_MANUAL_PLANS_CREATED = "yocal_plans_created_manual"
         private const val KEY_HAS_PAID_SUB = "yocal_has_paid_sub"
         private const val KEY_PAID_SUB_EXPIRY = "yocal_paid_sub_expiry"
         private const val KEY_REWARD_EXPIRY = "yocal_reward_expiry"

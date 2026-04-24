@@ -1022,10 +1022,11 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             var showPaywall by remember { mutableStateOf(pendingShowPaywall) }
             if (pendingShowPaywall) pendingShowPaywall = false
 
-            // Wire premium gate into chat ViewModel
-            chatVm.onPlanApprovalCheck = { premiumGate.canCreatePlan() }
+            // Wire premium gate into chat ViewModel. Yocal and the manual builder
+            // each get their own free-save quota via PlanSource.
+            chatVm.onPlanApprovalCheck = { premiumGate.canCreatePlan(live.localapp.local.ui.chat.PlanSource.YOCAL) }
             chatVm.onPlanBlocked = { showPaywall = true; premiumGate.hasSeenPaywall = true }
-            chatVm.onPlanSaved = { premiumGate.recordPlanCreated() }
+            chatVm.onPlanSaved = { premiumGate.recordPlanCreated(live.localapp.local.ui.chat.PlanSource.YOCAL) }
 
             // Auto-send pending message when chat opens from event/template
             LaunchedEffect(chatOpenCount) {

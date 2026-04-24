@@ -195,6 +195,11 @@ struct ChatView: View {
                     withAnimation(.easeOut(duration: 0.2)) {
                         proxy.scrollTo("bottom", anchor: .bottom)
                     }
+                    // Collapse the keyboard as soon as a plan card arrives so the
+                    // generated plan is fully visible without the user dismissing.
+                    if state.messages.last?.isPlanCard == true {
+                        inputFocused = false
+                    }
                 }
                 .onChange(of: state.streamingText) { _ in
                     proxy.scrollTo("bottom", anchor: .bottom)
@@ -457,6 +462,8 @@ struct ChatView: View {
                     .font(.system(size: 15, weight: .medium))
                     .focused($inputFocused)
                     .textFieldStyle(.plain)
+                    .foregroundColor(C.ink)
+                    .tint(C.coral)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
                     .background(C.mist)
