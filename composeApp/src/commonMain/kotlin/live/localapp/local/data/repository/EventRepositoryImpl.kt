@@ -196,16 +196,79 @@ class EventRepositoryImpl(
             .decodeList<EventDto>()
             .map { it.toDomain() }
 
+        // Backfill missing event coords from the venues table BEFORE geo
+        // filtering — many crawled events have null venue_lat/venue_lng on
+        // the event row, but the venue itself has coords. Without this
+        // hydration the geo filter silently drops events whose venue is
+        // perfectly within radius (e.g. Yocal asking "what's on at Musikfest
+        // Café" returned nothing because Musikfest event rows had null
+        // coords even though the venue is 17 mi away in Bethlehem).
+        val coordHydrated = hydrateVenueCoords(rawEvents)
+
         val geoFiltered = if (userLat != null && userLng != null) {
             val radius = radiusMiles ?: 20.0
-            rawEvents.filter { e ->
-                val lat = e.venueLat ?: return@filter false
-                val lng = e.venueLng ?: return@filter false
+            coordHydrated.filter { e ->
+                val lat = e.venueLat
+                val lng = e.venueLng
+                // If we still have no coords for the venue (truly missing in
+                // both events + venues tables) and the caller supplied a
+                // keyword, keep the event — the keyword is a strong signal
+                // the user wants this specific venue/title regardless of
+                // geo. For pure geo browsing (no keyword) we still drop
+                // unknown-coord events to avoid noise.
+                if (lat == null || lng == null) {
+                    return@filter !keyword.isNullOrBlank()
+                }
                 live.localapp.local.domain.model.distanceMiles(userLat, userLng, lat, lng) <= radius
             }
-        } else rawEvents
+        } else coordHydrated
 
         return hydrateVenueImages(geoFiltered)
+    }
+
+    /**
+     * Backfills missing event.venueLat/venueLng from the venues table by
+     * looking up the matching venue's coordinates by name. Mirrors the
+     * one-batch-query pattern used by [hydrateVenueImages].
+     */
+    private suspend fun hydrateVenueCoords(events: List<Event>): List<Event> {
+        val needsCoords = events.filter { (it.venueLat == null || it.venueLng == null) && !it.venueName.isNullOrBlank() }
+        if (needsCoords.isEmpty()) return events
+
+        val venueNames = needsCoords.mapNotNull { it.venueName?.trim() }.distinct()
+        if (venueNames.isEmpty()) return events
+
+        val coordsByName = try {
+            val map = mutableMapOf<String, Pair<Double, Double>>()
+            venueNames.chunked(200).forEach { batch ->
+                val rows = supabaseClient.from("venues")
+                    .select(io.github.jan.supabase.postgrest.query.Columns.list("name", "latitude", "longitude")) {
+                        filter {
+                            isIn("name", batch)
+                        }
+                    }
+                    .decodeList<VenueCoordRow>()
+                for (r in rows) {
+                    val lat = r.latitude ?: continue
+                    val lng = r.longitude ?: continue
+                    map[r.name.lowercase().trim()] = lat to lng
+                }
+            }
+            map
+        } catch (_: Exception) {
+            emptyMap()
+        }
+
+        if (coordsByName.isEmpty()) return events
+
+        return events.map { e ->
+            if (e.venueLat != null && e.venueLng != null) e
+            else {
+                val key = e.venueName?.lowercase()?.trim() ?: return@map e
+                val coords = coordsByName[key] ?: return@map e
+                e.copy(venueLat = coords.first, venueLng = coords.second)
+            }
+        }
     }
 
     /**
@@ -262,4 +325,11 @@ class EventRepositoryImpl(
 private data class VenuePhotoRow(
     val name: String,
     @kotlinx.serialization.SerialName("photo_url") val photoUrl: String? = null,
+)
+
+@kotlinx.serialization.Serializable
+private data class VenueCoordRow(
+    val name: String,
+    val latitude: Double? = null,
+    val longitude: Double? = null,
 )
