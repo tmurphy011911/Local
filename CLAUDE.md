@@ -136,3 +136,14 @@ Platform-specific crawlers auto-detect and use structured APIs before falling ba
   ```bash
   npx supabase functions deploy carousels --project-ref blifubxslaucshmlphdc
   ```
+- [ ] Investigate Yocal empty-plan bug: asking about "interactive science museum Philadelphia" → picking Astronomy Day at the Franklin Institute (Sat Apr 25, 11am) → confirming solo + "just astronomy day" produced a `present_plan` card titled "Saturday, April 25" with **0 stops** and a Save button that would persist a garbage plan. Two things to check:
+  1. Does the event exist in the `events` table for 2026-04-25 with `is_active = true`?
+     ```sql
+     SELECT id, title, start_at, venue_name, is_active, source FROM events
+     WHERE (title ILIKE '%astronomy%' OR venue_name ILIKE '%franklin institute%')
+       AND start_at >= '2026-04-25' AND start_at < '2026-04-26';
+     ```
+     - Row exists & active → Yocal had it but dropped the `event_id` building the plan.
+     - Row exists & inactive → deactivation likely blocked the slot.
+     - No row → Yocal hallucinated the event (didn't come from `search_events`).
+  2. Likely fix (any case): tighten `present_plan` tool schema in `ClaudeApiService.kt:298-367` so each `days[].slots` has `minItems: 1` and each slot requires `event_id` OR `venue_name` via `anyOf`. Add a matching line to the Yocal system prompt forbidding empty `slots`, and add a client-side guard in `parsePlanSlot` so a 0-slot plan doesn't render a Save button.
