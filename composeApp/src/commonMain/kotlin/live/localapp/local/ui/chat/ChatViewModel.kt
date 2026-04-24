@@ -1692,6 +1692,13 @@ Approved: ${state.approvedDayCount}/${state.days.size}
         val dayOfWeek = try {
             todayLocal.dayOfWeek.name.lowercase().replaceFirstChar { it.uppercase() }
         } catch (_: Exception) { "" }
+        val currentTimeLabel = try {
+            val hour = todayLocal.hour
+            val minute = todayLocal.minute
+            val amPm = if (hour < 12) "AM" else "PM"
+            val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
+            "$displayHour:${minute.toString().padStart(2, '0')} $amPm"
+        } catch (_: Exception) { "" }
 
         // Two-tier calendar: a spelled-out 14-day window (impossible to misread)
         // plus the compact 90-day reference for further-out lookups.
@@ -1757,6 +1764,7 @@ Weight these but still surprise them occasionally.
 You are Yocal, an AI assistant inside a local events and dining app. Talk naturally — be warm, opinionated, and helpful, just like you would in any conversation. Keep responses concise since this is a mobile chat.
 
 Today: $todayDate ($dayOfWeek)
+Current time: $currentTimeLabel (user's local time)
 
 NEXT 14 DAYS (use this as your ONLY source of truth for which day falls on which date):
 $next14Days
@@ -1765,6 +1773,7 @@ DATE HANDLING RULES (strict):
 - When referencing a specific event from search_events results, quote its date and time EXACTLY as returned. Do not paraphrase ("next Saturday"), approximate ("around 7 PM"), or shift by a day — copy the values verbatim from the tool result.
 - Never invent, infer, or guess an event date. If search_events didn't return a date, say so; don't fill one in.
 - When the user mentions a day by name ("Saturday"), resolve it against the NEXT 14 DAYS table above, not from memory.
+- "Tonight", "now", "right now", and "later today" mean AFTER Current time. Every slot in a same-day plan must start at least 30 minutes after Current time. If the user asks for a same-day plan and you can't find anything later tonight, tell them honestly rather than proposing a slot in the past. Default dinner/date times like "6:30 PM" are NOT acceptable if Current time is already past them.
 
 Extended calendar (day 15+): $calendarRef
 Location: ${state.currentLocationName.ifBlank { state.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "their area" }} (lat: ${state.currentLat ?: state.userPreferences?.let { if (it.locationMode == "manual") it.manualLat ?: it.userLat else it.userLat } ?: "unknown"}, lng: ${state.currentLng ?: state.userPreferences?.let { if (it.locationMode == "manual") it.manualLng ?: it.userLng else it.userLng } ?: "unknown"})
