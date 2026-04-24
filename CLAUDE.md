@@ -136,6 +136,11 @@ Platform-specific crawlers auto-detect and use structured APIs before falling ba
   ```bash
   npx supabase functions deploy carousels --project-ref blifubxslaucshmlphdc
   ```
+- [ ] Yocal punts on venue/opening-hours questions instead of trying. Repro: "When does Dorney Park open?" → Yocal responds "I don't have real-time access…" and lists generic "check their website / call ahead" advice without calling any tool. Root causes and options:
+  1. **Fundamental gap**: Yocal's tools (`search_events`, `search_venues`, `get_event_details`, `recommend_and_save_venue`, `present_plan`, `update_plan` in `ClaudeApiService.kt:193-367`) include no web search / fetch, and seasonal hours aren't columns on `events` / `venues`.
+  2. **Prompt gap**: even so, Yocal should call `search_events` + `search_venues` for the subject before disclaiming. Add a rule: *"Before saying 'I don't have real-time info,' always run `search_events` and `search_venues` first. Only disclaim if both return nothing."*
+  3. **Bigger lift**: add a `web_search` tool (Claude's built-in `web_search_20250305` or a Brave/SerpAPI proxy) so Yocal can answer factual venue questions without DB coverage.
+  4. **Biggest lift**: extend `venues` with a `seasonal_schedule` / `hours` field and backfill from the crawl pipeline for seasonal venues (amusement parks, seasonal museums, etc.).
 - [ ] Investigate Yocal empty-plan bug: asking about "interactive science museum Philadelphia" → picking Astronomy Day at the Franklin Institute (Sat Apr 25, 11am) → confirming solo + "just astronomy day" produced a `present_plan` card titled "Saturday, April 25" with **0 stops** and a Save button that would persist a garbage plan. Two things to check:
   1. Does the event exist in the `events` table for 2026-04-25 with `is_active = true`?
      ```sql
