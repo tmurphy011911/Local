@@ -541,7 +541,11 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         LaunchedEffect(selectedTab) { if (isLoggedIn) plansVm.refresh() }
                         PlansScreen(
                             viewModel = plansVm,
-                            onNewPlan = { openChatOrLogin() },
+                            // "+ New Plan" opens the picker overlay (Build Manually /
+                            // Create with Yocal) — same surface the tab-bar "+ Create Plan"
+                            // button uses. Previously this jumped straight into Yocal,
+                            // bypassing the manual option.
+                            onNewPlan = { showCreatePlanMenu = true },
                             onPlanClick = { plan, bounds ->
                                 if (hasNativeHeroTransition) {
                                     showNativePlanDetail(
