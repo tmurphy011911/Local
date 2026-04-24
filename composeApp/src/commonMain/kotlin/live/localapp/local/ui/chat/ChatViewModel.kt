@@ -139,6 +139,11 @@ data class ChatUiState(
     val planAttendeeCount: Int = 1,
     // Plan success overlay
     val showPlanSuccess: Boolean = false,
+    // Server-side id of the plan that triggered the current success overlay,
+    // so the celebration's Share CTA can generate a real share URL.
+    val lastSavedPlanId: String? = null,
+    val lastSavedPlanTitle: String = "",
+    val lastSavedPlanCity: String = "",
     // Auth required prompt
     val showAuthPrompt: Boolean = false,
     // User info
@@ -1301,7 +1306,13 @@ class ChatViewModel(
                     dateDisplay = "",
                     groupSize = if (state.planAttendeeCount > 1) state.planAttendeeCount else null,
                 )
-                planRepo.savePlan(plan)
+                val savedPlanId = planRepo.savePlan(plan)
+                if (savedPlanId != null) {
+                    // Remember the id/title so the celebration overlay's Share Plan
+                    // button can share this exact plan without round-tripping
+                    // through the Plans tab first.
+                    _uiState.update { it.copy(lastSavedPlanId = savedPlanId, lastSavedPlanTitle = plan.title, lastSavedPlanCity = plan.city) }
+                }
                 onPlanSaved?.invoke()
                 // Badge: track plan created
                 val userState = cityToState(state.userPreferences?.city ?: "boston")
@@ -1337,6 +1348,24 @@ class ChatViewModel(
         if (_uiState.value.showPlanSuccess) {
             _uiState.update { it.copy(showPlanSuccess = false) }
             resetChat()
+        }
+    }
+
+    /**
+     * Share the plan that triggered the current success overlay. Looks up its
+     * share token and hands the system share sheet a real URL — previously the
+     * Share Plan button on the celebration just cleared the overlay, which
+     * looked like the chat had taken over.
+     */
+    fun shareLastSavedPlan() {
+        val state = _uiState.value
+        val planId = state.lastSavedPlanId ?: return
+        val title = state.lastSavedPlanTitle.ifBlank { "My Plan" }
+        val city = state.lastSavedPlanCity
+        viewModelScope.launch {
+            val token = try { planRepo.getShareToken(planId) } catch (_: Throwable) { null } ?: planId
+            val text = if (city.isNotBlank()) "$title — $city" else title
+            live.localapp.local.platform.presentShareSheet(text, "https://localapp.live/p/$token")
         }
     }
 

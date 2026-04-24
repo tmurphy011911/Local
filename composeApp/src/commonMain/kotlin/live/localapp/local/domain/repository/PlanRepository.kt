@@ -4,7 +4,8 @@ import live.localapp.local.domain.model.Plan
 
 interface PlanRepository {
     suspend fun getPlans(): List<Plan>
-    suspend fun savePlan(plan: Plan)
+    /** Insert a new plan. Returns the inserted plan's server-side id, or null on failure. */
+    suspend fun savePlan(plan: Plan): String?
     suspend fun updatePlan(plan: Plan)
     suspend fun deletePlan(planId: String)
     suspend fun getShareToken(planId: String): String?

@@ -68,6 +68,10 @@ object ChatBridge {
     var onPlanBlocked: (() -> Unit)? = null
     // Clear the plan-saved celebration and reset chat.
     var clearSuccessState: (() -> Unit)? = null
+    // Share the plan that triggered the current success celebration — fires
+    // the system share sheet. Set by iosMain; Swift calls it from the
+    // PlanCelebrationOverlay "Share Plan" button.
+    var sharePlan: (() -> Unit)? = null
 
     // ── Event/venue taps from Swift ──
     var onEventTap: ((String, String?) -> Unit)? = null  // eventId, imageUrl

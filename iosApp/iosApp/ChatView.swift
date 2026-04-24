@@ -225,7 +225,10 @@ struct ChatView: View {
                 PlanCelebrationOverlay(
                     days: state.days,
                     onSharePlan: {
-                        ChatBridge.shared.clearSuccessState?()
+                        // Fire the system share sheet for the plan we just
+                        // saved. Do NOT clear the success overlay — the user
+                        // can still tap View Plans or Home after sharing.
+                        ChatBridge.shared.sharePlan?()
                     },
                     onViewPlans: {
                         ChatBridge.shared.clearSuccessState?()

@@ -76,6 +76,7 @@ actual fun openChatSheet(onReady: () -> Unit) {
     chatVm.onPlanSaved = { premiumGate.recordPlanCreated(live.localapp.local.ui.chat.PlanSource.YOCAL) }
     chatVm.onPlanBlocked = { ChatBridge.onPlanBlocked?.invoke() }
     ChatBridge.clearSuccessState = { chatVm.clearSuccessState() }
+    ChatBridge.sharePlan = { chatVm.shareLastSavedPlan() }
     // Direct "Save to My Plans" tap bypasses the chat message path — the
     // VM runs the gate + save in place, so no "Looks good…" user bubble
     // is added to the transcript.
