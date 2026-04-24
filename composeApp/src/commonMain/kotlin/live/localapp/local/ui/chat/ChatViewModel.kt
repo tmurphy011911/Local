@@ -388,20 +388,23 @@ class ChatViewModel(
                         return@mapNotNull null
                     }
 
-                    // Use Claude's suggested time if provided, otherwise derive from event
-                    val time = if (ref.time.isNotBlank()) ref.time else {
-                        event.startAt?.let { iso ->
-                            try {
-                                val instant = kotlinx.datetime.Instant.parse(iso)
-                                val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
-                                val hour = local.hour
-                                val minute = local.minute
-                                val amPm = if (hour < 12) "AM" else "PM"
-                                val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
-                                if (minute == 0) "$displayHour $amPm" else "$displayHour:${minute.toString().padStart(2, '0')} $amPm"
-                            } catch (_: Exception) { "" }
-                        } ?: ""
-                    }
+                    // ALWAYS derive the slot time from the DB event's start_at —
+                    // never trust Claude's ref.time for event-backed slots. Claude
+                    // routinely misreads the calendar or invents approximate times,
+                    // which manifests as wrong day/time on plan cards. The DB is
+                    // the source of truth; fall back to Claude's value only if the
+                    // event has no start_at at all.
+                    val time = event.startAt?.let { iso ->
+                        try {
+                            val instant = kotlinx.datetime.Instant.parse(iso)
+                            val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+                            val hour = local.hour
+                            val minute = local.minute
+                            val amPm = if (hour < 12) "AM" else "PM"
+                            val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
+                            if (minute == 0) "$displayHour $amPm" else "$displayHour:${minute.toString().padStart(2, '0')} $amPm"
+                        } catch (_: Exception) { ref.time }
+                    } ?: ref.time
 
                     // Fall back to venue photo if event has no image
                     val slotImage = event.imageUrl ?: event.venueName?.let { name ->
@@ -440,11 +443,31 @@ class ChatViewModel(
                 }
             }
 
-            // Derive shortName from day label (e.g. "Saturday, April 5" -> "SAT")
-            val shortName = parsedDay.label.split(",").firstOrNull()?.trim()?.take(3)?.uppercase() ?: "DAY"
+            // Derive the day label from the earliest DB-backed event's date if
+            // any event slot exists — Claude's parsedDay.label often disagrees
+            // with the real date (e.g. claims "Friday, April 24" for a Saturday
+            // event). For venue-only days without any event_id anchor, fall back
+            // to Claude's label since there's no DB anchor to trust.
+            val earliestEventStart = slots
+                .mapNotNull { slot -> slot.eventId?.let { id -> eventsById[id] ?: cacheById[id] } }
+                .mapNotNull { it.startAt }
+                .mapNotNull { iso -> try { kotlinx.datetime.Instant.parse(iso) } catch (_: Exception) { null } }
+                .minOrNull()
+
+            val (label, shortName) = if (earliestEventStart != null) {
+                val local = earliestEventStart.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+                val dowFull = listOf("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+                val monthFull = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+                val derivedLabel = "${dowFull[local.dayOfWeek.ordinal]}, ${monthFull[local.month.ordinal]} ${local.dayOfMonth}"
+                val derivedShort = dowFull[local.dayOfWeek.ordinal].take(3).uppercase()
+                derivedLabel to derivedShort
+            } else {
+                val fallbackShort = parsedDay.label.split(",").firstOrNull()?.trim()?.take(3)?.uppercase() ?: "DAY"
+                parsedDay.label to fallbackShort
+            }
 
             ItineraryDay(
-                label = parsedDay.label,
+                label = label,
                 shortName = shortName,
                 slots = sortSlotsByTime(slots.map { it.copy(time = normalizeTimeDisplay(it.time)) }),
             )
@@ -1737,6 +1760,11 @@ Today: $todayDate ($dayOfWeek)
 
 NEXT 14 DAYS (use this as your ONLY source of truth for which day falls on which date):
 $next14Days
+
+DATE HANDLING RULES (strict):
+- When referencing a specific event from search_events results, quote its date and time EXACTLY as returned. Do not paraphrase ("next Saturday"), approximate ("around 7 PM"), or shift by a day — copy the values verbatim from the tool result.
+- Never invent, infer, or guess an event date. If search_events didn't return a date, say so; don't fill one in.
+- When the user mentions a day by name ("Saturday"), resolve it against the NEXT 14 DAYS table above, not from memory.
 
 Extended calendar (day 15+): $calendarRef
 Location: ${state.currentLocationName.ifBlank { state.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "their area" }} (lat: ${state.currentLat ?: state.userPreferences?.let { if (it.locationMode == "manual") it.manualLat ?: it.userLat else it.userLat } ?: "unknown"}, lng: ${state.currentLng ?: state.userPreferences?.let { if (it.locationMode == "manual") it.manualLng ?: it.userLng else it.userLng } ?: "unknown"})
