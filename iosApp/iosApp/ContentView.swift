@@ -19,6 +19,10 @@ struct ComposeView: UIViewControllerRepresentable {
         // Wire chat sheet background animation
         setupChatSheetBridge(composeVC: vc)
 
+        // Wire ChatBridge.presentPaywall so non-chat surfaces (Profile upgrade
+        // CTA, etc.) can show the native paywall without opening the chat.
+        setupPaywallBridge()
+
         // Wire plan chat sheet (per-plan group chat)
         setupPlanChatSheetBridge(composeVC: vc)
 
@@ -414,6 +418,37 @@ struct ComposeView: UIViewControllerRepresentable {
                 } else {
                     bridge.onCloseComplete?()
                 }
+            }
+        }
+    }
+
+    // MARK: - Paywall Bridge (surfaces that need the paywall without chat)
+
+    private func setupPaywallBridge() {
+        ChatBridge.shared.presentPaywall = { onPurchased in
+            DispatchQueue.main.async {
+                guard let windowScene = UIApplication.shared.connectedScenes
+                    .compactMap({ $0 as? UIWindowScene }).first,
+                    let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController else {
+                    onPurchased?(KotlinBoolean(value: false))
+                    return
+                }
+                // Present on the topmost VC so this works even if another
+                // sheet (e.g. Location Settings) is already up.
+                var presenter: UIViewController = rootVC
+                while let next = presenter.presentedViewController {
+                    presenter = next
+                }
+                var paywallVC: UIViewController?
+                let paywallView = PaywallView(onDismiss: { didPurchase in
+                    paywallVC?.dismiss(animated: true) {
+                        onPurchased?(KotlinBoolean(value: didPurchase))
+                    }
+                })
+                let vc = UIHostingController(rootView: paywallView)
+                vc.modalPresentationStyle = .fullScreen
+                paywallVC = vc
+                presenter.present(vc, animated: true)
             }
         }
     }

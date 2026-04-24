@@ -518,7 +518,19 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             onSignIn = { showLoginPrompt = true },
                             onNameChanged = { name -> homeVm.setUserName(name) },
                             onLocationClick = { showLocationSheet = true },
-                            onUpgrade = { pendingShowPaywall = true; showChat = true; chatOpenCount++ },
+                            onUpgrade = {
+                                // On iOS, show the native SwiftUI paywall directly — no need
+                                // to route through the chat sheet just to upgrade. On Android,
+                                // keep the existing path (open chat with pendingShowPaywall)
+                                // since the Compose PremiumPaywall lives inside that sheet.
+                                if (hasNativeTabBar) {
+                                    live.localapp.local.platform.presentNativePaywall { _ -> }
+                                } else {
+                                    pendingShowPaywall = true
+                                    showChat = true
+                                    chatOpenCount++
+                                }
+                            },
                             isLoggedIn = isLoggedIn,
                             locationName = homeState.locationName,
                             streakDays = homeState.streakDays,

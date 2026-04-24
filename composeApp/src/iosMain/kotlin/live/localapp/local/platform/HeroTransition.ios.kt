@@ -142,6 +142,32 @@ actual fun closeChatSheet(onDone: () -> Unit) {
     ChatSheetBridge.onCloseSheet?.invoke()
 }
 
+actual fun presentNativePaywall(onPurchased: (Boolean) -> Unit) {
+    val present = ChatBridge.presentPaywall
+    if (present == null) {
+        // Bridge not wired yet (Swift side hasn't attached). Fail closed so
+        // callers don't assume a purchase succeeded.
+        onPurchased(false)
+        return
+    }
+    present { purchased ->
+        if (purchased) {
+            // Mirror the in-chat paywall flow — sync Kotlin's PremiumGate from
+            // RevenueCat after a purchase / restore so subsequent gate checks
+            // pass without waiting for the next app launch.
+            live.localapp.local.platform.checkSubscriptionStatus { isPro, expiry ->
+                val gate = live.localapp.local.ui.chat.PremiumGate()
+                gate.hasPaidSubscription = isPro
+                if (expiry != null) gate.paidSubscriptionExpiry = expiry.take(10)
+                println("presentNativePaywall: post-purchase sync isPro=$isPro expiry=$expiry")
+                onPurchased(isPro)
+            }
+        } else {
+            onPurchased(false)
+        }
+    }
+}
+
 private var planChatObserverJob: kotlinx.coroutines.Job? = null
 
 actual fun openPlanChatSheet(

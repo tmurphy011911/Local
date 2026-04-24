@@ -60,6 +60,10 @@ object ChatBridge {
     // hasPaidSubscription stays false until the next app launch, and the save
     // retry would re-trigger the paywall).
     var refreshSubscription: (() -> Unit)? = null
+    // Presents the native SwiftUI PaywallView modally without requiring a chat
+    // session. Used by the Profile "Upgrade" CTA. The callback reports whether
+    // the user successfully subscribed / restored.
+    var presentPaywall: ((onPurchased: (Boolean) -> Unit) -> Unit)? = null
     // Fires when PremiumGate blocks a plan save — Swift presents the paywall.
     var onPlanBlocked: (() -> Unit)? = null
     // Clear the plan-saved celebration and reset chat.
