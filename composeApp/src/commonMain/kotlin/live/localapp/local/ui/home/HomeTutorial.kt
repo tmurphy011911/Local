@@ -23,8 +23,12 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import live.localapp.local.ui.icons.LocalIcon
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -45,48 +49,63 @@ private data class HomeTutorialStep(
     val headline: String,
     val styledWord: String,
     val subtext: String,
-    val iconText: String,
 )
 
-private val steps = listOf(
+private fun buildSteps(cityForCopy: String): List<HomeTutorialStep> = listOf(
     HomeTutorialStep(
         headline = "Welcome to",
         styledWord = "Local",
-        subtext = "Discover the best events, restaurants, and experiences in your area \u2014 all in one place.",
-        iconText = "L",
+        subtext = "No more \"fun things to do in $cityForCopy\" Google searches. Local has every event in your city \u2014 big, small, weird. Finally, all in one place.",
     ),
     HomeTutorialStep(
-        headline = "The more you engage, the better the",
-        styledWord = "experience",
-        subtext = "We learn what you love and surface more of it. Every tap, save, and plan makes Local smarter for you.",
-        iconText = "2",
+        headline = "Meet",
+        styledWord = "Yocal",
+        subtext = "Like a generic AI chatbot, except it actually knows your city. Yocal works from Local's own events and venues \u2014 not the internet's stale top-10 lists.",
     ),
     HomeTutorialStep(
-        headline = "Chat with Yocal to",
-        styledWord = "plan",
-        subtext = "Tell Yocal what you're in the mood for and get a personalized itinerary in seconds. Date night, family day, night out \u2014 just ask.",
-        iconText = "3",
+        headline = "Plans without",
+        styledWord = "spreadsheets",
+        subtext = "Stop making itinerary docs nobody opens. Tap to plan, tap to share. That's it.",
     ),
     HomeTutorialStep(
-        headline = "Share plans with",
-        styledWord = "friends",
-        subtext = "One tap to send your plan to the group. Everyone can view the stops, vote on changes, and confirm they're in.",
-        iconText = "4",
+        headline = "Built for",
+        styledWord = "you, by you",
+        subtext = "The more you save, plan, and show up, the smarter Local gets. Almost suspicious.",
     ),
     HomeTutorialStep(
-        headline = "Earn points and",
+        headline = "Show up,",
         styledWord = "level up",
-        subtext = "Every event you attend, plan you share, and place you discover earns points. Unlock rewards and climb the ranks.",
-        iconText = "5",
+        subtext = "Every event, plan, and place racks up points. Climb the ranks for real rewards \u2014 Ticketmaster gift cards on us.",
     ),
 )
 
+@Composable
+private fun StepIcon(page: Int, trigger: Int) {
+    val size = 140.dp
+    val mod = Modifier.size(size)
+    when (page) {
+        0 -> LocalIcon.ForYou(size = size, trigger = trigger, modifier = mod)
+        1 -> LocalIcon.Experiences(size = size, trigger = trigger, modifier = mod)
+        2 -> LocalIcon.Events(size = size, trigger = trigger, modifier = mod)
+        3 -> LocalIcon.Other(size = size, trigger = trigger, modifier = mod)
+        4 -> LocalIcon.Sports(size = size, trigger = trigger, modifier = mod)
+        else -> LocalIcon.ForYou(size = size, trigger = trigger, modifier = mod)
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-fun HomeTutorial(onComplete: () -> Unit) {
+fun HomeTutorial(cityName: String = "", onComplete: () -> Unit) {
+    val cityForCopy = cityName.substringBefore(",").trim().ifBlank { "your city" }
+    val steps = remember(cityForCopy) { buildSteps(cityForCopy) }
     val pagerState = rememberPagerState(pageCount = { steps.size })
     val scope = rememberCoroutineScope()
     val isLastPage = pagerState.currentPage == steps.lastIndex
+
+    val triggers = remember { mutableStateListOf<Int>().apply { repeat(steps.size) { add(0) } } }
+    LaunchedEffect(pagerState.currentPage) {
+        triggers[pagerState.currentPage] = triggers[pagerState.currentPage] + 1
+    }
 
     Box(
         modifier = Modifier
@@ -111,61 +130,25 @@ fun HomeTutorial(onComplete: () -> Unit) {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
-                    // Placeholder GIF area
                     Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(260.dp)
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(
-                                Brush.linearGradient(
-                                    listOf(Color(0xFFF0EDF6), Color(0xFFE8E4F0)),
-                                ),
-                            ),
+                        modifier = Modifier.size(140.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        if (page == 0) {
-                            Box(
-                                modifier = Modifier
-                                    .size(72.dp)
-                                    .background(AppColors.Coral, RoundedCornerShape(18.dp)),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(
-                                    "L",
-                                    style = TextStyle(
-                                        fontFamily = AppFonts.Heading,
-                                        fontWeight = FontWeight.Black,
-                                        fontSize = 36.sp,
-                                        color = Color.White,
-                                    ),
-                                )
-                            }
-                        } else {
-                            Text(
-                                "GIF placeholder",
-                                style = TextStyle(
-                                    fontFamily = AppFonts.Body,
-                                    fontWeight = FontWeight.Bold,
-                                    fontSize = 14.sp,
-                                    color = AppColors.Ink3,
-                                ),
-                            )
-                        }
+                        StepIcon(page = page, trigger = triggers[page])
                     }
 
-                    Spacer(Modifier.height(32.dp))
+                    Spacer(Modifier.height(40.dp))
 
-                    // Headline with styled word
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(
                             step.headline,
                             style = TextStyle(
                                 fontFamily = AppFonts.Heading,
                                 fontWeight = FontWeight.Black,
-                                fontSize = 26.sp,
+                                fontSize = 32.sp,
                                 color = AppColors.Ink,
                                 textAlign = TextAlign.Center,
+                                lineHeight = 38.sp,
                             ),
                         )
                         Text(
@@ -173,25 +156,26 @@ fun HomeTutorial(onComplete: () -> Unit) {
                             style = TextStyle(
                                 fontFamily = AppFonts.Heading,
                                 fontWeight = FontWeight.Black,
-                                fontSize = 26.sp,
+                                fontSize = 32.sp,
                                 fontStyle = FontStyle.Italic,
                                 color = AppColors.Coral,
                                 textAlign = TextAlign.Center,
+                                lineHeight = 38.sp,
                             ),
                         )
                     }
 
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(16.dp))
 
                     Text(
                         step.subtext,
                         style = TextStyle(
                             fontFamily = AppFonts.Body,
                             fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp,
+                            fontSize = 15.sp,
                             color = AppColors.Ink3,
                             textAlign = TextAlign.Center,
-                            lineHeight = 20.sp,
+                            lineHeight = 22.sp,
                         ),
                         modifier = Modifier.padding(horizontal = 8.dp),
                     )

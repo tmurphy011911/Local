@@ -20,7 +20,11 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.remember
+import live.localapp.local.ui.icons.LocalIcon
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -70,11 +74,29 @@ private val tutorialSteps = listOf(
     ),
 )
 
+@Composable
+private fun YocalStepIcon(page: Int, trigger: Int) {
+    val size = 140.dp
+    val mod = Modifier.size(size)
+    when (page) {
+        0 -> LocalIcon.ForYou(size = size, trigger = trigger, modifier = mod)
+        1 -> LocalIcon.Events(size = size, trigger = trigger, modifier = mod)
+        2 -> LocalIcon.Other(size = size, trigger = trigger, modifier = mod)
+        3 -> LocalIcon.Tours(size = size, trigger = trigger, modifier = mod)
+        else -> LocalIcon.ForYou(size = size, trigger = trigger, modifier = mod)
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun YocalTutorial(onComplete: () -> Unit) {
     val pagerState = rememberPagerState(pageCount = { tutorialSteps.size })
     val isLastPage = pagerState.currentPage == tutorialSteps.lastIndex
+
+    val triggers = remember { mutableStateListOf<Int>().apply { repeat(tutorialSteps.size) { add(0) } } }
+    LaunchedEffect(pagerState.currentPage) {
+        triggers[pagerState.currentPage] = triggers[pagerState.currentPage] + 1
+    }
 
     Box(
         modifier = Modifier
@@ -100,42 +122,23 @@ fun YocalTutorial(onComplete: () -> Unit) {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
-                    // GIF placeholder area
                     Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(240.dp)
-                            .clip(RoundedCornerShape(20.dp))
-                            .background(
-                                Brush.linearGradient(
-                                    listOf(Color(0xFFF0EDF6), Color(0xFFE8E4F0)),
-                                ),
-                            ),
+                        modifier = Modifier.size(140.dp),
                         contentAlignment = Alignment.Center,
                     ) {
-                        // Step number as placeholder
-                        Text(
-                            "Step ${page + 1}",
-                            style = TextStyle(
-                                fontFamily = AppFonts.Heading,
-                                fontWeight = FontWeight.Black,
-                                fontSize = 48.sp,
-                                color = AppColors.Ink3.copy(alpha = 0.2f),
-                            ),
-                        )
+                        YocalStepIcon(page = page, trigger = triggers[page])
                     }
 
-                    Spacer(Modifier.height(32.dp))
+                    Spacer(Modifier.height(40.dp))
 
-                    // Headline
                     Text(
                         step.headline,
                         style = TextStyle(
                             fontFamily = AppFonts.Heading,
                             fontWeight = FontWeight.Black,
-                            fontSize = 26.sp,
+                            fontSize = 32.sp,
                             color = AppColors.Ink,
-                            lineHeight = 32.sp,
+                            lineHeight = 38.sp,
                         ),
                         textAlign = TextAlign.Center,
                     )
@@ -144,17 +147,16 @@ fun YocalTutorial(onComplete: () -> Unit) {
                         style = TextStyle(
                             fontFamily = AppFonts.Heading,
                             fontWeight = FontWeight.Black,
-                            fontSize = 26.sp,
+                            fontSize = 32.sp,
                             fontStyle = FontStyle.Italic,
                             color = AppColors.Coral,
-                            lineHeight = 32.sp,
+                            lineHeight = 38.sp,
                         ),
                         textAlign = TextAlign.Center,
                     )
 
-                    Spacer(Modifier.height(12.dp))
+                    Spacer(Modifier.height(16.dp))
 
-                    // Subtext
                     Text(
                         step.subtext,
                         style = TextStyle(

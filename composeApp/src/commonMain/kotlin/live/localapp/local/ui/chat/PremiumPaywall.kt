@@ -196,7 +196,7 @@ fun PremiumPaywall(
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    if (isAnnual) "Start Premium" else if (hasIntro) "Try for $displayMonthly" else "Start Premium",
+                    if (isAnnual) "Start Local Pro" else if (hasIntro) "Try for $displayMonthly" else "Start Local Pro",
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.Black,
@@ -208,16 +208,14 @@ fun PremiumPaywall(
 
             Spacer(Modifier.height(10.dp))
 
-            // Restore + terms
             Text(
-                "Restore purchase",
-                modifier = Modifier.pressable(onClick = onRestore),
+                "Not Now",
+                modifier = Modifier.pressable(onClick = onDismiss),
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 12.sp,
-                    color = Color.White.copy(alpha = 0.4f),
-                    textDecoration = TextDecoration.Underline,
+                    fontSize = 14.sp,
+                    color = Color.White.copy(alpha = 0.6f),
                 ),
             )
         }

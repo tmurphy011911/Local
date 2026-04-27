@@ -10,6 +10,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.background
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
@@ -282,16 +283,27 @@ private fun SubTabTile(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    var trigger by remember { mutableStateOf(0) }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = modifier.pressable(onClick = onClick),
+        modifier = modifier.pressable(onClick = { trigger++; onClick() }),
     ) {
         Spacer(Modifier.height(4.dp))
-        CategoryIconWithFallback(
-            name = iconName,
-            fallbackName = "foryou",
-            modifier = Modifier.size(50.dp),
-        )
+        when (iconName) {
+            "events" -> live.localapp.local.ui.icons.LocalIcon.Events(
+                size = 50.dp, trigger = trigger,
+                modifier = Modifier.size(50.dp).clipToBounds(),
+            )
+            "places" -> live.localapp.local.ui.icons.LocalIcon.Places(
+                size = 50.dp, trigger = trigger,
+                modifier = Modifier.size(50.dp).clipToBounds(),
+            )
+            else -> CategoryIconWithFallback(
+                name = iconName,
+                fallbackName = "foryou",
+                modifier = Modifier.size(50.dp),
+            )
+        }
         Spacer(Modifier.height(5.dp))
         Text(
             label,

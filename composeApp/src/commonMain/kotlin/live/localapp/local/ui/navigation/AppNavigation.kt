@@ -386,6 +386,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         // Home tutorial overlay — shown once on first launch
         if (showHomeTutorial) {
             live.localapp.local.ui.home.HomeTutorial(
+                cityName = homeState.locationName,
                 onComplete = {
                     homeTutorialSettings.putBoolean("home_tutorial_seen", true)
                     showHomeTutorial = false
@@ -1259,7 +1260,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     horizontalAlignment = Alignment.CenterHorizontally,
                 ) {
                     Text(
-                        "Sign in to use Yocal",
+                        "Sign in to continue",
                         style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = AppColors.Ink),
                     )
                     Spacer(Modifier.height(8.dp))

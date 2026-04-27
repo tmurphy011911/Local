@@ -1,5 +1,6 @@
 package live.localapp.local.ui.home
 
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.LinearEasing
@@ -474,33 +475,38 @@ private fun CategoryTileItem(
         targetValue = if (isActive) 1.08f else 1f,
         animationSpec = tween(150),
     )
+    var trigger by remember { mutableStateOf(0) }
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         modifier = Modifier
             .width(64.dp)
-            .pressable(onClick = onClick),
+            .pressable(onClick = { trigger++; onClick() }),
     ) {
         Box(
             modifier = Modifier
                 .size(50.dp)
+                .clipToBounds()
                 .graphicsLayer { scaleX = scale; scaleY = scale },
             contentAlignment = Alignment.Center,
         ) {
-            val localIcon = categoryDrawable(tile.id)
-            if (localIcon != null) {
-                Image(
-                    painter = painterResource(localIcon),
-                    contentDescription = tile.label,
-                    modifier = Modifier.size(50.dp),
-                    contentScale = ContentScale.Fit,
-                )
-            } else {
-                Icon(
-                    categoryIcon(tile.id),
-                    contentDescription = null,
-                    modifier = Modifier.size(28.dp),
-                    tint = AppColors.Ink3.copy(alpha = 0.3f),
-                )
+            val rendered = renderLocalCategoryIcon(tile.id, trigger)
+            if (!rendered) {
+                val localIcon = categoryDrawable(tile.id)
+                if (localIcon != null) {
+                    Image(
+                        painter = painterResource(localIcon),
+                        contentDescription = tile.label,
+                        modifier = Modifier.size(50.dp),
+                        contentScale = ContentScale.Fit,
+                    )
+                } else {
+                    Icon(
+                        categoryIcon(tile.id),
+                        contentDescription = null,
+                        modifier = Modifier.size(28.dp),
+                        tint = AppColors.Ink3.copy(alpha = 0.3f),
+                    )
+                }
             }
         }
 
@@ -1095,6 +1101,31 @@ private fun categoryColors(category: String): Pair<Color, Color> = when (categor
     "outdoors" -> AppColors.BgSageStart to AppColors.BgSageEnd
     "nightlife" -> AppColors.BgPlumStart to AppColors.BgPlumEnd
     else -> AppColors.BgCoralStart to AppColors.BgCoralEnd
+}
+
+@Composable
+private fun renderLocalCategoryIcon(category: String, trigger: Int): Boolean {
+    val size = 50.dp
+    val mod = Modifier.size(size)
+    when (category.lowercase()) {
+        "foryou" -> live.localapp.local.ui.icons.LocalIcon.ForYou(size = size, trigger = trigger, modifier = mod)
+        "music" -> live.localapp.local.ui.icons.LocalIcon.Music(size = size, trigger = trigger, modifier = mod)
+        "sports" -> live.localapp.local.ui.icons.LocalIcon.Sports(size = size, trigger = trigger, modifier = mod)
+        "arts" -> live.localapp.local.ui.icons.LocalIcon.Art(size = size, trigger = trigger, modifier = mod)
+        "theatre" -> live.localapp.local.ui.icons.LocalIcon.Theatre(size = size, trigger = trigger, modifier = mod)
+        "comedy" -> live.localapp.local.ui.icons.LocalIcon.Comedy(size = size, trigger = trigger, modifier = mod)
+        "food" -> live.localapp.local.ui.icons.LocalIcon.Food(size = size, trigger = trigger, modifier = mod)
+        "outdoors" -> live.localapp.local.ui.icons.LocalIcon.Outdoors(size = size, trigger = trigger, modifier = mod)
+        "tours" -> live.localapp.local.ui.icons.LocalIcon.Tours(size = size, trigger = trigger, modifier = mod)
+        "libraries" -> live.localapp.local.ui.icons.LocalIcon.Libraries(size = size, trigger = trigger, modifier = mod)
+        "for-kids" -> live.localapp.local.ui.icons.LocalIcon.Kids(size = size, trigger = trigger, modifier = mod)
+        "experiences" -> live.localapp.local.ui.icons.LocalIcon.Experiences(size = size, trigger = trigger, modifier = mod)
+        "nightlife" -> live.localapp.local.ui.icons.LocalIcon.Nightlife(size = size, trigger = trigger, modifier = mod)
+        "museums" -> live.localapp.local.ui.icons.LocalIcon.Museums(size = size, trigger = trigger, modifier = mod)
+        "other" -> live.localapp.local.ui.icons.LocalIcon.Other(size = size, trigger = trigger, modifier = mod)
+        else -> return false
+    }
+    return true
 }
 
 private fun categoryDrawable(category: String): DrawableResource? = when (category.lowercase()) {

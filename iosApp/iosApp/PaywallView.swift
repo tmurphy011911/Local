@@ -223,25 +223,23 @@ struct PaywallView: View {
     }
 
     private var ctaLabel: String {
-        if isAnnual { return "Start Premium" }
+        if isAnnual { return "Start Local Pro" }
         if let intro = introPrice { return "Try for \(intro)" }
-        return "Start Premium"
+        return "Start Local Pro"
     }
 
-    // MARK: - Remind Me Later
+    // MARK: - Not Now
     // Restore Purchase was removed — users who re-install or switch devices
     // get their entitlement back automatically via RevenueCat's
     // checkSubscriptionStatus on login / app launch.
 
     private var secondaryCTAs: some View {
-        VStack(spacing: 10) {
-            Button(action: { onDismiss(false) }) {
-                Text("Remind me later")
-                    .font(Font.custom("Nunito", size: 14).weight(.bold))
-                    .foregroundColor(.white.opacity(0.6))
-            }
-            .buttonStyle(.plain)
+        Button(action: { onDismiss(false) }) {
+            Text("Not Now")
+                .font(Font.custom("Nunito", size: 14).weight(.bold))
+                .foregroundColor(.white.opacity(0.6))
         }
+        .buttonStyle(.plain)
     }
 
     // MARK: - RevenueCat
