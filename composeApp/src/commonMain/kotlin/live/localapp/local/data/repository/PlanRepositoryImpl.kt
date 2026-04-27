@@ -201,10 +201,10 @@ class PlanRepositoryImpl(
         }
     }
 
-    override suspend fun savePlan(plan: Plan) {
+    override suspend fun savePlan(plan: Plan): String? {
         val userId = userPrefsRepo.getLocalUserId()
         println("PlanRepository.savePlan: userId=$userId title=${plan.title}")
-        if (userId == null) return
+        if (userId == null) return null
         try {
             val dayDtos = plan.days.map { day ->
                 PlanDayDto(
@@ -249,9 +249,11 @@ class PlanRepositoryImpl(
             if (result?.id != null) {
                 try { insertCreatorAttendee(result.id) } catch (_: Throwable) {}
             }
+            return result?.id
         } catch (e: Throwable) {
             println("PlanRepository.savePlan error: ${e::class.simpleName}: ${e.message}")
             e.printStackTrace()
+            return null
         }
     }
 

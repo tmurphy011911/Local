@@ -195,6 +195,11 @@ struct ChatView: View {
                     withAnimation(.easeOut(duration: 0.2)) {
                         proxy.scrollTo("bottom", anchor: .bottom)
                     }
+                    // Collapse the keyboard as soon as a plan card arrives so the
+                    // generated plan is fully visible without the user dismissing.
+                    if state.messages.last?.isPlanCard == true {
+                        inputFocused = false
+                    }
                 }
                 .onChange(of: state.streamingText) { _ in
                     proxy.scrollTo("bottom", anchor: .bottom)
@@ -220,7 +225,10 @@ struct ChatView: View {
                 PlanCelebrationOverlay(
                     days: state.days,
                     onSharePlan: {
-                        ChatBridge.shared.clearSuccessState?()
+                        // Fire the system share sheet for the plan we just
+                        // saved. Do NOT clear the success overlay — the user
+                        // can still tap View Plans or Home after sharing.
+                        ChatBridge.shared.sharePlan?()
                     },
                     onViewPlans: {
                         ChatBridge.shared.clearSuccessState?()
@@ -457,6 +465,8 @@ struct ChatView: View {
                     .font(.system(size: 15, weight: .medium))
                     .focused($inputFocused)
                     .textFieldStyle(.plain)
+                    .foregroundColor(C.ink)
+                    .tint(C.coral)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
                     .background(C.mist)
@@ -690,7 +700,10 @@ private struct MultiDayPlanCardView: View {
 
     private var saveButton: some View {
         Button {
-            ChatBridge.shared.sendMessage?("Looks good, add to My Plans")
+            // Direct approve — runs the gate + save in Kotlin without adding a
+            // "Looks good…" bubble to the chat. On gate failure the paywall is
+            // presented; on success the celebration/success state fires.
+            ChatBridge.shared.approvePlan?()
         } label: {
             Text("Save to My Plans")
                 .font(F.body(14, .heavy))

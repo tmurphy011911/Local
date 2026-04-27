@@ -26,6 +26,9 @@ actual fun requestHeroCollapse(onComplete: () -> Unit) {
 actual fun openChatSheet(onReady: () -> Unit) { onReady() }
 actual fun closeChatSheet(onDone: () -> Unit) { onDone() }
 
+// No native paywall on Android — callers fall back to the Compose PremiumPaywall.
+actual fun presentNativePaywall(onPurchased: (Boolean) -> Unit) { onPurchased(false) }
+
 actual fun openPlanChatSheet(
     plan: live.localapp.local.domain.model.Plan,
     prePopulatedMessage: String?,

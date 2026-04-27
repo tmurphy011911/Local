@@ -139,6 +139,11 @@ data class ChatUiState(
     val planAttendeeCount: Int = 1,
     // Plan success overlay
     val showPlanSuccess: Boolean = false,
+    // Server-side id of the plan that triggered the current success overlay,
+    // so the celebration's Share CTA can generate a real share URL.
+    val lastSavedPlanId: String? = null,
+    val lastSavedPlanTitle: String = "",
+    val lastSavedPlanCity: String = "",
     // Auth required prompt
     val showAuthPrompt: Boolean = false,
     // User info
@@ -297,8 +302,9 @@ class ChatViewModel(
 
     fun onQuickReply(reply: QuickReply) {
         if (_uiState.value.isBusy) return
-        when {
-            reply.action == "reset" -> resetChat()
+        when (reply.action) {
+            "reset" -> resetChat()
+            "save_plan" -> approveCurrentPlan()
             else -> sendMessage(reply.label)
         }
     }
@@ -387,20 +393,23 @@ class ChatViewModel(
                         return@mapNotNull null
                     }
 
-                    // Use Claude's suggested time if provided, otherwise derive from event
-                    val time = if (ref.time.isNotBlank()) ref.time else {
-                        event.startAt?.let { iso ->
-                            try {
-                                val instant = kotlinx.datetime.Instant.parse(iso)
-                                val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
-                                val hour = local.hour
-                                val minute = local.minute
-                                val amPm = if (hour < 12) "AM" else "PM"
-                                val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
-                                if (minute == 0) "$displayHour $amPm" else "$displayHour:${minute.toString().padStart(2, '0')} $amPm"
-                            } catch (_: Exception) { "" }
-                        } ?: ""
-                    }
+                    // ALWAYS derive the slot time from the DB event's start_at —
+                    // never trust Claude's ref.time for event-backed slots. Claude
+                    // routinely misreads the calendar or invents approximate times,
+                    // which manifests as wrong day/time on plan cards. The DB is
+                    // the source of truth; fall back to Claude's value only if the
+                    // event has no start_at at all.
+                    val time = event.startAt?.let { iso ->
+                        try {
+                            val instant = kotlinx.datetime.Instant.parse(iso)
+                            val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+                            val hour = local.hour
+                            val minute = local.minute
+                            val amPm = if (hour < 12) "AM" else "PM"
+                            val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
+                            if (minute == 0) "$displayHour $amPm" else "$displayHour:${minute.toString().padStart(2, '0')} $amPm"
+                        } catch (_: Exception) { ref.time }
+                    } ?: ref.time
 
                     // Fall back to venue photo if event has no image
                     val slotImage = event.imageUrl ?: event.venueName?.let { name ->
@@ -439,11 +448,31 @@ class ChatViewModel(
                 }
             }
 
-            // Derive shortName from day label (e.g. "Saturday, April 5" -> "SAT")
-            val shortName = parsedDay.label.split(",").firstOrNull()?.trim()?.take(3)?.uppercase() ?: "DAY"
+            // Derive the day label from the earliest DB-backed event's date if
+            // any event slot exists — Claude's parsedDay.label often disagrees
+            // with the real date (e.g. claims "Friday, April 24" for a Saturday
+            // event). For venue-only days without any event_id anchor, fall back
+            // to Claude's label since there's no DB anchor to trust.
+            val earliestEventStart = slots
+                .mapNotNull { slot -> slot.eventId?.let { id -> eventsById[id] ?: cacheById[id] } }
+                .mapNotNull { it.startAt }
+                .mapNotNull { iso -> try { kotlinx.datetime.Instant.parse(iso) } catch (_: Exception) { null } }
+                .minOrNull()
+
+            val (label, shortName) = if (earliestEventStart != null) {
+                val local = earliestEventStart.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+                val dowFull = listOf("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
+                val monthFull = listOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+                val derivedLabel = "${dowFull[local.dayOfWeek.ordinal]}, ${monthFull[local.month.ordinal]} ${local.dayOfMonth}"
+                val derivedShort = dowFull[local.dayOfWeek.ordinal].take(3).uppercase()
+                derivedLabel to derivedShort
+            } else {
+                val fallbackShort = parsedDay.label.split(",").firstOrNull()?.trim()?.take(3)?.uppercase() ?: "DAY"
+                parsedDay.label to fallbackShort
+            }
 
             ItineraryDay(
-                label = parsedDay.label,
+                label = label,
                 shortName = shortName,
                 slots = sortSlotsByTime(slots.map { it.copy(time = normalizeTimeDisplay(it.time)) }),
             )
@@ -1189,6 +1218,21 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * Directly approve and save the current plan. Called from the "Save to My
+     * Plans" button and the save_plan quick-reply chip so a "Looks good…" user
+     * message is NOT added to the chat. Runs the gate check first — if blocked,
+     * invokes [onPlanBlocked] so the UI can present the paywall; the plan is
+     * resumable (state is left intact so a retry after subscribe works).
+     */
+    fun approveCurrentPlan() {
+        if (_uiState.value.days.isEmpty()) {
+            println("approveCurrentPlan: no plan to approve, ignoring")
+            return
+        }
+        approvePlan()
+    }
+
     private fun approvePlan() {
         // Primary gate check happens in the APPROVE branch before Claude's
         // confirmation text is displayed. This is a defensive second check —
@@ -1262,7 +1306,13 @@ class ChatViewModel(
                     dateDisplay = "",
                     groupSize = if (state.planAttendeeCount > 1) state.planAttendeeCount else null,
                 )
-                planRepo.savePlan(plan)
+                val savedPlanId = planRepo.savePlan(plan)
+                if (savedPlanId != null) {
+                    // Remember the id/title so the celebration overlay's Share Plan
+                    // button can share this exact plan without round-tripping
+                    // through the Plans tab first.
+                    _uiState.update { it.copy(lastSavedPlanId = savedPlanId, lastSavedPlanTitle = plan.title, lastSavedPlanCity = plan.city) }
+                }
                 onPlanSaved?.invoke()
                 // Badge: track plan created
                 val userState = cityToState(state.userPreferences?.city ?: "boston")
@@ -1298,6 +1348,24 @@ class ChatViewModel(
         if (_uiState.value.showPlanSuccess) {
             _uiState.update { it.copy(showPlanSuccess = false) }
             resetChat()
+        }
+    }
+
+    /**
+     * Share the plan that triggered the current success overlay. Looks up its
+     * share token and hands the system share sheet a real URL — previously the
+     * Share Plan button on the celebration just cleared the overlay, which
+     * looked like the chat had taken over.
+     */
+    fun shareLastSavedPlan() {
+        val state = _uiState.value
+        val planId = state.lastSavedPlanId ?: return
+        val title = state.lastSavedPlanTitle.ifBlank { "My Plan" }
+        val city = state.lastSavedPlanCity
+        viewModelScope.launch {
+            val token = try { planRepo.getShareToken(planId) } catch (_: Throwable) { null } ?: planId
+            val text = if (city.isNotBlank()) "$title — $city" else title
+            live.localapp.local.platform.presentShareSheet(text, "https://localapp.live/p/$token")
         }
     }
 
@@ -1653,6 +1721,13 @@ Approved: ${state.approvedDayCount}/${state.days.size}
         val dayOfWeek = try {
             todayLocal.dayOfWeek.name.lowercase().replaceFirstChar { it.uppercase() }
         } catch (_: Exception) { "" }
+        val currentTimeLabel = try {
+            val hour = todayLocal.hour
+            val minute = todayLocal.minute
+            val amPm = if (hour < 12) "AM" else "PM"
+            val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
+            "$displayHour:${minute.toString().padStart(2, '0')} $amPm"
+        } catch (_: Exception) { "" }
 
         // Two-tier calendar: a spelled-out 14-day window (impossible to misread)
         // plus the compact 90-day reference for further-out lookups.
@@ -1718,16 +1793,23 @@ Weight these but still surprise them occasionally.
 You are Yocal, an AI assistant inside a local events and dining app. Talk naturally — be warm, opinionated, and helpful, just like you would in any conversation. Keep responses concise since this is a mobile chat.
 
 Today: $todayDate ($dayOfWeek)
+Current time: $currentTimeLabel (user's local time)
 
 NEXT 14 DAYS (use this as your ONLY source of truth for which day falls on which date):
 $next14Days
+
+DATE HANDLING RULES (strict):
+- When referencing a specific event from search_events results, quote its date and time EXACTLY as returned. Do not paraphrase ("next Saturday"), approximate ("around 7 PM"), or shift by a day — copy the values verbatim from the tool result.
+- Never invent, infer, or guess an event date. If search_events didn't return a date, say so; don't fill one in.
+- When the user mentions a day by name ("Saturday"), resolve it against the NEXT 14 DAYS table above, not from memory.
+- "Tonight", "now", "right now", and "later today" mean AFTER Current time. Every slot in a same-day plan must start at least 30 minutes after Current time. If the user asks for a same-day plan and you can't find anything later tonight, tell them honestly rather than proposing a slot in the past. Default dinner/date times like "6:30 PM" are NOT acceptable if Current time is already past them.
 
 Extended calendar (day 15+): $calendarRef
 Location: ${state.currentLocationName.ifBlank { state.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "their area" }} (lat: ${state.currentLat ?: state.userPreferences?.let { if (it.locationMode == "manual") it.manualLat ?: it.userLat else it.userLat } ?: "unknown"}, lng: ${state.currentLng ?: state.userPreferences?.let { if (it.locationMode == "manual") it.manualLng ?: it.userLng else it.userLng } ?: "unknown"})
 
 HOW TO HELP:
 - When the user wants to plan something, search the database FIRST, then present a plan using the present_plan tool. Search broadly — make multiple search_events calls across different categories and date ranges to find everything relevant. The more you search, the better your recommendations. When offering to build a plan, mention that it's an easily shareable plan (e.g. "Want me to build you a shareable plan?" or "I can put together a plan you can share with your group").
-- CRITICAL: Once the user confirms they want a plan ("yes", "sure", "full night plan", "build it", "let's do it", etc.) and you have enough info (main activity + attendee count + area), you MUST call the present_plan tool. NEVER describe a plan in plain text like "Grab dinner at X, then Y at 8pm, then Z" — that renders as chat text and the user sees no plan card. If you catch yourself about to type a narrative list of 2+ stops with times, STOP and call present_plan instead. A plain-text description of a plan is a BUG.
+- CRITICAL: Once the user confirms they want a plan ("yes", "sure", "full night plan", "build it", "let's do it", "no thanks" to extras, etc.) and you have enough info (main activity + attendee count), your VERY NEXT message MUST be a present_plan tool call — even for a single-stop plan. NEVER describe a plan in plain text. NEVER write phrases like "There's your plan!", "Here's your plan", "I've added X to your plans", or "Grab dinner at X, then Y at 8pm" — that renders as chat text and the user sees no plan card, which means no plan was actually saved. Single-stop plans (just the concert, just the show, just the dinner) STILL go through present_plan with one slot — there is no minimum stop count. If your reply is going to confirm or describe a plan in any way, STOP, drop the text, and call present_plan instead. A plain-text description or confirmation of a plan is a BUG.
 - IMPORTANT: In present_plan slots, ALWAYS use event_id when a specific event exists (concerts, shows, workshops, tours, exhibitions, games). Only use venue_name for restaurants, bars, and cafes where there is no specific event — just a dining/drinks recommendation. If a concert is at The Sinclair, use the event_id from search_events, NOT venue_name "The Sinclair". The event_id ensures the event title, ticket URL, and source URL are preserved.
 - ALWAYS gather the number of people attending before presenting a plan. You can infer from context: "date night" = 2, "double date" = 4, "just me" / solo = 1, "family" = ask how many, "friends" = ask how many. If unclear, ask "How many people will be joining?" before calling present_plan. Include the attendee_count in the present_plan call — this is required. Tailor recommendations to group size (e.g. larger groups need venues with more seating, reservations become more important).
 - DO NOT ASSUME FOOD OR DRINKS. Never auto-add a dinner, brunch, coffee, bar, or cocktail stop unless the user has signaled they want food/drinks. "Date night" alone does NOT imply dinner. "Things to do Saturday" does NOT imply brunch. If the user hasn't mentioned eating/drinking, ask once before building the plan: "Want me to include a meal or a drink stop, or just activities?" Only skip the question when food/drink is explicitly in the request ("dinner and a show", "brunch plans", "where should we eat", "bar crawl", "coffee then a museum", etc.).

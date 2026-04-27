@@ -288,15 +288,23 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         }
     }
 
-    // Sync subscription status from RevenueCat on launch
-    LaunchedEffect(Unit) {
+    // Sync subscription status from RevenueCat whenever the active user ID
+    // changes — on launch, on login, and on account-switch. Without this,
+    // hasPaidSubscription stays cached in Settings across users on the same
+    // device (User A subscribes, logs out, User B logs in and inherits Pro).
+    val currentUserId = userPrefsRepo.getLocalUserId()
+    LaunchedEffect(currentUserId) {
+        val gate = live.localapp.local.ui.chat.PremiumGate()
+        // Start from a clean slate for the new user; RevenueCat re-populates
+        // below if the actual entitlement is still active.
+        gate.hasPaidSubscription = false
+        gate.paidSubscriptionExpiry = ""
         checkSubscriptionStatus { isPro, expiryDate ->
-            val gate = live.localapp.local.ui.chat.PremiumGate()
             gate.hasPaidSubscription = isPro
             if (expiryDate != null) {
                 gate.paidSubscriptionExpiry = expiryDate.take(10) // ISO date
             }
-            println("RevenueCat sync: isPro=$isPro expiry=$expiryDate")
+            println("RevenueCat sync: userId=$currentUserId isPro=$isPro expiry=$expiryDate")
         }
     }
 
@@ -510,7 +518,19 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             onSignIn = { showLoginPrompt = true },
                             onNameChanged = { name -> homeVm.setUserName(name) },
                             onLocationClick = { showLocationSheet = true },
-                            onUpgrade = { pendingShowPaywall = true; showChat = true; chatOpenCount++ },
+                            onUpgrade = {
+                                // On iOS, show the native SwiftUI paywall directly — no need
+                                // to route through the chat sheet just to upgrade. On Android,
+                                // keep the existing path (open chat with pendingShowPaywall)
+                                // since the Compose PremiumPaywall lives inside that sheet.
+                                if (hasNativeTabBar) {
+                                    live.localapp.local.platform.presentNativePaywall { _ -> }
+                                } else {
+                                    pendingShowPaywall = true
+                                    showChat = true
+                                    chatOpenCount++
+                                }
+                            },
                             isLoggedIn = isLoggedIn,
                             locationName = homeState.locationName,
                             streakDays = homeState.streakDays,
@@ -521,7 +541,11 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         LaunchedEffect(selectedTab) { if (isLoggedIn) plansVm.refresh() }
                         PlansScreen(
                             viewModel = plansVm,
-                            onNewPlan = { openChatOrLogin() },
+                            // "+ New Plan" opens the picker overlay (Build Manually /
+                            // Create with Yocal) — same surface the tab-bar "+ Create Plan"
+                            // button uses. Previously this jumped straight into Yocal,
+                            // bypassing the manual option.
+                            onNewPlan = { showCreatePlanMenu = true },
                             onPlanClick = { plan, bounds ->
                                 if (hasNativeHeroTransition) {
                                     showNativePlanDetail(
@@ -698,15 +722,13 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             selectedPlan?.let { plan ->
                 val plansVm: PlansViewModel = koin.get()
                 val plansState by plansVm.uiState.collectAsState()
-                // Is this plan in the current user's own plans list? That list is
-                // filtered by user_id at query time, so membership is authoritative —
-                // more robust than comparing creatorId strings which can drift across
-                // re-auth / fresh installs.
-                val ownsPlan = plansState.upcomingPlans.any { it.id == plan.id } ||
-                    plansState.pastPlans.any { it.id == plan.id }
                 val currentUserId = plansVm.currentUserId()
-                val isCreator = ownsPlan ||
-                    (plan.creatorId != null && plan.creatorId == currentUserId)
+                // Creator is authoritatively determined by plan.creatorId. Previously
+                // this also fell back to "is the plan in the user's own plans list,"
+                // but accepted-invite plans are also copied into the attendee's
+                // plans list, so that check falsely promoted attendees to creators
+                // and gave them the full edit UI.
+                val isCreator = plan.creatorId != null && plan.creatorId == currentUserId
                 var showPlanChat by remember(plan.id) { mutableStateOf(false) }
                 var planChatPrefill by remember(plan.id) { mutableStateOf<String?>(null) }
                 Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
@@ -1016,16 +1038,35 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         // Chat bottom sheet
         if (showChat) {
             val chatVm: ChatViewModel = viewModel { koin.get<ChatViewModel>() }
+            // If the previous chat session ended with a successful plan save,
+            // the celebration state is still in the VM. Clear it on open so
+            // users get a fresh conversation instead of landing back on the
+            // success overlay. Fires only when reopening post-success.
+            LaunchedEffect(Unit) {
+                if (chatVm.uiState.value.showPlanSuccess) {
+                    chatVm.dismissPlanSuccess(navigateToPlans = false)
+                }
+            }
             val chatSheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
             val premiumGate = remember { live.localapp.local.ui.chat.PremiumGate() }
             var showTutorial by remember { mutableStateOf(premiumGate.shouldShowTutorial()) }
             var showPaywall by remember { mutableStateOf(pendingShowPaywall) }
+            // Tracks a save attempt that was interrupted by the paywall so we can
+            // resume the save automatically once the user subscribes / restores.
+            var pendingPlanSaveAfterPaywall by remember { mutableStateOf(false) }
             if (pendingShowPaywall) pendingShowPaywall = false
 
-            // Wire premium gate into chat ViewModel
-            chatVm.onPlanApprovalCheck = { premiumGate.canCreatePlan() }
-            chatVm.onPlanBlocked = { showPaywall = true; premiumGate.hasSeenPaywall = true }
-            chatVm.onPlanSaved = { premiumGate.recordPlanCreated() }
+            // Wire premium gate into chat ViewModel. Yocal and the manual builder
+            // each get their own free-save quota via PlanSource.
+            chatVm.onPlanApprovalCheck = { premiumGate.canCreatePlan(live.localapp.local.ui.chat.PlanSource.YOCAL) }
+            chatVm.onPlanBlocked = {
+                showPaywall = true
+                premiumGate.hasSeenPaywall = true
+                // Remember the user was mid-save so we can resume automatically
+                // after they subscribe — no second manual tap required.
+                pendingPlanSaveAfterPaywall = true
+            }
+            chatVm.onPlanSaved = { premiumGate.recordPlanCreated(live.localapp.local.ui.chat.PlanSource.YOCAL) }
 
             // Auto-send pending message when chat opens from event/template
             LaunchedEffect(chatOpenCount) {
@@ -1118,13 +1159,53 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                     if (success) {
                                         premiumGate.hasPaidSubscription = true
                                         showPaywall = false
+                                        // Resume the save the user was trying to make
+                                        // when the paywall intercepted them.
+                                        if (pendingPlanSaveAfterPaywall) {
+                                            pendingPlanSaveAfterPaywall = false
+                                            chatVm.approveCurrentPlan()
+                                        }
                                     } else {
                                         // Products may not be approved yet — show error or grant for testing
                                         println("Paywall: Purchase failed — products may not be approved by Apple yet")
                                     }
                                 }
                             },
-                            onDismiss = { showPaywall = false },
+                            onRestore = {
+                                println("Paywall: Restore tapped")
+                                live.localapp.local.platform.restorePurchases { restored ->
+                                    println("Paywall: Restore result=$restored")
+                                    if (restored) {
+                                        premiumGate.hasPaidSubscription = true
+                                        showPaywall = false
+                                        if (pendingPlanSaveAfterPaywall) {
+                                            pendingPlanSaveAfterPaywall = false
+                                            chatVm.approveCurrentPlan()
+                                        }
+                                    } else {
+                                        // Fall back to a fresh status check — in sandbox/test
+                                        // environments the restore API sometimes returns false
+                                        // while the account does have an active sub.
+                                        live.localapp.local.platform.checkSubscriptionStatus { isPro, expiry ->
+                                            if (isPro) {
+                                                premiumGate.hasPaidSubscription = true
+                                                if (expiry != null) premiumGate.paidSubscriptionExpiry = expiry.take(10)
+                                                showPaywall = false
+                                                if (pendingPlanSaveAfterPaywall) {
+                                                    pendingPlanSaveAfterPaywall = false
+                                                    chatVm.approveCurrentPlan()
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            },
+                            onDismiss = {
+                                showPaywall = false
+                                // User explicitly dismissed — drop the pending save so
+                                // we don't auto-fire it on the next paywall close.
+                                pendingPlanSaveAfterPaywall = false
+                            },
                         )
                     } else {
                     ChatScreen(

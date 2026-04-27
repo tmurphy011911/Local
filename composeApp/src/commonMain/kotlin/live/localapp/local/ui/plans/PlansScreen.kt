@@ -206,7 +206,7 @@ fun PlansScreen(
                     Row(
                         modifier = Modifier
                             .background(AppColors.Coral, RoundedCornerShape(10.dp))
-                            .clickable { onNewPlan() }
+                            .pressable(onClick = onNewPlan)
                             .padding(horizontal = 12.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -1524,17 +1524,17 @@ private fun PlanTemplates(onNewPlan: () -> Unit, onTemplateClick: ((String) -> U
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(AppColors.White, RoundedCornerShape(14.dp))
-                    .border(1.5.dp, AppColors.Pebble, RoundedCornerShape(14.dp))
-                    .clip(RoundedCornerShape(14.dp))
-                    .clickable {
+                    .pressable(onClick = {
                         val msg = templateMessages[title]
                         if (msg != null && onTemplateClick != null) {
                             onTemplateClick(msg)
                         } else {
                             onNewPlan()
                         }
-                    }
+                    })
+                    .background(AppColors.White, RoundedCornerShape(14.dp))
+                    .border(1.5.dp, AppColors.Pebble, RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(14.dp))
                     .padding(horizontal = 16.dp, vertical = 14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {

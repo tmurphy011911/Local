@@ -51,10 +51,27 @@ object ChatBridge {
     // Quick reply: pass both label (display text) and action (command token)
     // so the VM can route specials like "reset" / "save_plan" correctly.
     var onQuickReply: ((String, String) -> Unit)? = null
+    // Direct plan approve — triggered by the "Save to My Plans" button. Bypasses
+    // the chat-message path so a user bubble isn't added; VM runs the gate
+    // check then the save flow.
+    var approvePlan: (() -> Unit)? = null
+    // Called by Swift after a successful RevenueCat purchase / restore so the
+    // Kotlin PremiumGate re-queries subscription status immediately (otherwise
+    // hasPaidSubscription stays false until the next app launch, and the save
+    // retry would re-trigger the paywall).
+    var refreshSubscription: (() -> Unit)? = null
+    // Presents the native SwiftUI PaywallView modally without requiring a chat
+    // session. Used by the Profile "Upgrade" CTA. The callback reports whether
+    // the user successfully subscribed / restored.
+    var presentPaywall: ((onPurchased: (Boolean) -> Unit) -> Unit)? = null
     // Fires when PremiumGate blocks a plan save — Swift presents the paywall.
     var onPlanBlocked: (() -> Unit)? = null
     // Clear the plan-saved celebration and reset chat.
     var clearSuccessState: (() -> Unit)? = null
+    // Share the plan that triggered the current success celebration — fires
+    // the system share sheet. Set by iosMain; Swift calls it from the
+    // PlanCelebrationOverlay "Share Plan" button.
+    var sharePlan: (() -> Unit)? = null
 
     // ── Event/venue taps from Swift ──
     var onEventTap: ((String, String?) -> Unit)? = null  // eventId, imageUrl

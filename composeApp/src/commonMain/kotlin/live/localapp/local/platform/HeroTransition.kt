@@ -72,6 +72,17 @@ expect fun openChatSheet(onReady: () -> Unit)
 expect fun closeChatSheet(onDone: () -> Unit)
 
 /**
+ * Present the native RevenueCat-backed paywall on iOS. Used by surfaces that
+ * want the paywall without opening the chat first (Profile "Upgrade" CTA,
+ * etc.). On Android this is a no-op — callers should fall back to the Compose
+ * `PremiumPaywall` inside the chat sheet.
+ *
+ * [onPurchased] fires true if the user successfully subscribed / restored an
+ * entitlement, false if they dismissed without purchasing.
+ */
+expect fun presentNativePaywall(onPurchased: (Boolean) -> Unit)
+
+/**
  * Present the plan-specific group chat as a native sheet on iOS.
  * On Android this is a no-op — Compose handles the sheet directly.
  *

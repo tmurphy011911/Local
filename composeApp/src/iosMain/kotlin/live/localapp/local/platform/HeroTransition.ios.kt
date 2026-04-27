@@ -56,6 +56,14 @@ actual fun openChatSheet(onReady: () -> Unit) {
 
     // Start observing ChatViewModel state and pushing to bridge
     val chatVm = org.koin.mp.KoinPlatform.getKoin().get<live.localapp.local.ui.chat.ChatViewModel>()
+
+    // If the user's last visit ended in a successful save, the celebration
+    // overlay and saved-plan state are still in the VM. Opening the chat
+    // without clearing them would drop the user right back on the success
+    // screen instead of a fresh conversation, so reset here.
+    if (chatVm.uiState.value.showPlanSuccess) {
+        chatVm.dismissPlanSuccess(navigateToPlans = false)
+    }
     ChatBridge.sendMessage = { msg -> chatVm.sendMessage(msg) }
     ChatBridge.resetChat = { chatVm.resetChat() }
     ChatBridge.onQuickReply = { label, action ->
@@ -64,10 +72,25 @@ actual fun openChatSheet(onReady: () -> Unit) {
     // Premium gate — wire the approval check + blocked callback for iOS.
     // On Android this is set in AppNavigation's Compose sheet block.
     val premiumGate = live.localapp.local.ui.chat.PremiumGate()
-    chatVm.onPlanApprovalCheck = { premiumGate.canCreatePlan() }
-    chatVm.onPlanSaved = { premiumGate.recordPlanCreated() }
+    chatVm.onPlanApprovalCheck = { premiumGate.canCreatePlan(live.localapp.local.ui.chat.PlanSource.YOCAL) }
+    chatVm.onPlanSaved = { premiumGate.recordPlanCreated(live.localapp.local.ui.chat.PlanSource.YOCAL) }
     chatVm.onPlanBlocked = { ChatBridge.onPlanBlocked?.invoke() }
     ChatBridge.clearSuccessState = { chatVm.clearSuccessState() }
+    ChatBridge.sharePlan = { chatVm.shareLastSavedPlan() }
+    // Direct "Save to My Plans" tap bypasses the chat message path — the
+    // VM runs the gate + save in place, so no "Looks good…" user bubble
+    // is added to the transcript.
+    ChatBridge.approvePlan = { chatVm.approveCurrentPlan() }
+    // After a SwiftUI paywall purchase succeeds, Swift fires this so we can
+    // re-query RevenueCat and flip hasPaidSubscription to true right away
+    // (instead of waiting for the next app-launch checkSubscriptionStatus).
+    ChatBridge.refreshSubscription = {
+        live.localapp.local.platform.checkSubscriptionStatus { isPro, expiry ->
+            premiumGate.hasPaidSubscription = isPro
+            if (expiry != null) premiumGate.paidSubscriptionExpiry = expiry.take(10)
+            println("ChatBridge.refreshSubscription: isPro=$isPro expiry=$expiry")
+        }
+    }
 
     // Event/venue taps from plan cards in SwiftUI chat.
     // Fetch the full object then present the native detail screen.
@@ -118,6 +141,32 @@ actual fun closeChatSheet(onDone: () -> Unit) {
     chatObserverJob = null
     ChatSheetBridge.onCloseComplete = onDone
     ChatSheetBridge.onCloseSheet?.invoke()
+}
+
+actual fun presentNativePaywall(onPurchased: (Boolean) -> Unit) {
+    val present = ChatBridge.presentPaywall
+    if (present == null) {
+        // Bridge not wired yet (Swift side hasn't attached). Fail closed so
+        // callers don't assume a purchase succeeded.
+        onPurchased(false)
+        return
+    }
+    present { purchased ->
+        if (purchased) {
+            // Mirror the in-chat paywall flow — sync Kotlin's PremiumGate from
+            // RevenueCat after a purchase / restore so subsequent gate checks
+            // pass without waiting for the next app launch.
+            live.localapp.local.platform.checkSubscriptionStatus { isPro, expiry ->
+                val gate = live.localapp.local.ui.chat.PremiumGate()
+                gate.hasPaidSubscription = isPro
+                if (expiry != null) gate.paidSubscriptionExpiry = expiry.take(10)
+                println("presentNativePaywall: post-purchase sync isPro=$isPro expiry=$expiry")
+                onPurchased(isPro)
+            }
+        } else {
+            onPurchased(false)
+        }
+    }
 }
 
 private var planChatObserverJob: kotlinx.coroutines.Job? = null
