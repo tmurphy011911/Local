@@ -122,7 +122,7 @@ fun PremiumPaywall(
 
             // Headline
             Text(
-                "Yocal Premium",
+                "Local Pro",
                 style = TextStyle(
                     fontFamily = AppFonts.Heading,
                     fontWeight = FontWeight.Black,

@@ -24,6 +24,17 @@ data class PlanDay(
     val travel: List<PlanTravel> = emptyList(),
 )
 
+/**
+ * Reservation state machine per Plan Detail spec V1 (April 27, 2026).
+ *  - NONE:        default, no reservation made
+ *  - MADE:        creator has booked and saved party_size + time
+ *  - UNAVAILABLE: creator marked the venue as unavailable; swap flow surfaces alternatives
+ */
+enum class ReservationState { NONE, MADE, UNAVAILABLE }
+
+/** Ticket state machine — same shape as ReservationState but for ticketed events. */
+enum class TicketState { NONE, BOUGHT, UNAVAILABLE }
+
 data class PlanSlot(
     val id: String,
     val time: String,
@@ -46,8 +57,31 @@ data class PlanSlot(
     val sourceUrl: String? = null,
     val venueWebsite: String? = null,
     val venueCategory: String? = null,
-    val isReserved: Boolean = false,
-)
+    /**
+     * Whether the underlying venue accepts/requires reservations. Joined from
+     * `venues.reservable` at slot-creation time. Null when the slot is an event
+     * (eventId != null) or when the venue isn't joined yet — UI defaults to
+     * "treat as reservable" (i.e. show the Reservation chip) when null.
+     */
+    val venueReservable: Boolean? = null,
+    /** Reservation state machine — see [ReservationState]. */
+    val reservationState: ReservationState = ReservationState.NONE,
+    /** Number of people the reservation is for (when state == MADE). */
+    val reservationPartySize: Int? = null,
+    /**
+     * Reservation time as the user entered it in the Details Sheet. May differ
+     * from [time] when the user picks a slightly different reservation time;
+     * the time-update cascade syncs [time] to this and re-sorts the day.
+     */
+    val reservationTime: String? = null,
+    /** Ticket state machine — see [TicketState]. */
+    val ticketState: TicketState = TicketState.NONE,
+    /** Number of tickets purchased (when state == BOUGHT). */
+    val ticketCount: Int? = null,
+) {
+    /** Back-compat: derived from the reservation state machine. */
+    val isReserved: Boolean get() = reservationState == ReservationState.MADE
+}
 
 data class PlanTravel(
     val mode: String,        // "walk" or "drive"

@@ -149,7 +149,7 @@ fun PlansScreen(
                 )
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "Sign in to build plans with Yocal, save events, and keep everything in one place.",
+                    "Sign in to build plans with Bo, save events, and keep everything in one place.",
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.Medium,
@@ -491,7 +491,7 @@ private fun SavedVenueRow(venue: Venue, onPlanForVenue: () -> Unit = {}) {
         ) {
             Icon(
                 Icons.Outlined.AutoAwesome,
-                contentDescription = "Plan with Yocal",
+                contentDescription = "Plan with Bo",
                 modifier = Modifier
                     .size(22.dp)
                     .clickable(

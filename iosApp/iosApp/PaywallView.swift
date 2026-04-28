@@ -95,7 +95,7 @@ struct PaywallView: View {
 
     private var headline: some View {
         VStack(spacing: 4) {
-            Text("Yocal Premium")
+            Text("Local Pro")
                 .font(Font.custom("Fraunces", size: 28).weight(.black))
                 .foregroundColor(.white)
             Text("Plan together, effortlessly")

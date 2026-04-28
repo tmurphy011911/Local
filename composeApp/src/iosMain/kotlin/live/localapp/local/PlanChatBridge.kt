@@ -37,6 +37,9 @@ object PlanChatBridge {
     var cancelChange: (() -> Unit)? = null
     var onClose: (() -> Unit)? = null
 
+    /** Kotlin -> Swift. Bo applied a plan edit; sheet should auto-dismiss after a brief success state. */
+    var onPlanEditApplied: (() -> Unit)? = null
+
     /** Called by Kotlin when PlanChatViewModel state changes. */
     fun pushState(state: PlanChatUiState) {
         val uid = currentUserId
@@ -61,6 +64,7 @@ object PlanChatBridge {
         confirmChange = null
         cancelChange = null
         onClose = null
+        onPlanEditApplied = null
         planTitle = ""
         planId = ""
         prePopulatedMessage = null

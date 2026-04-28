@@ -108,7 +108,36 @@ expect fun showNativePlanDetail(
     onEditPlan: () -> Unit = {},
     onEditDay: (String) -> Unit = {},
     onSetGroupSize: (Int) -> Unit = {},
+    onChangeName: (String) -> Unit = {},
+    onDeletePlan: () -> Unit = {},
+    onAddDay: () -> Unit = {},
+    onAddEvent: (Int) -> Unit = {},
+    onSetSlotReserved: (Int, String, Boolean) -> Unit = { _, _, _ -> },
+    onSaveReservationDetails: (Int, String, Int, String) -> Unit = { _, _, _, _ -> },
+    onReservationUnavailable: (Int, String) -> Unit = { _, _ -> },
+    onClearReservation: (Int, String) -> Unit = { _, _ -> },
+    onSaveTicketDetails: (Int, String, Int) -> Unit = { _, _, _ -> },
+    onTicketsUnavailable: (Int, String) -> Unit = { _, _ -> },
+    onClearTickets: (Int, String) -> Unit = { _, _ -> },
+    onReplaceSlot: (Int, String, String) -> Unit = { _, _, _ -> },
+    onRemoveSlot: (Int, String) -> Unit = { _, _ -> },
+    onInvite: () -> Unit = {},
+    onChangeRsvp: (String) -> Unit = {},
+    onRemoveAttendee: (String) -> Unit = {},
+    onRequestSwapAlternatives: (Int, String) -> Unit = { _, _ -> },
+    onSwapInAlternative: (Int, String, String) -> Unit = { _, _, _ -> },
+    onSeeMoreSwapOptions: (Int, String, String) -> Unit = { _, _, _ -> },
 )
+
+/** Push updated plan state to a presented native plan detail view. No-op on Android. */
+expect fun pushNativePlanState(plan: live.localapp.local.domain.model.Plan)
+
+/** Tell the native plan-chat sheet that Bo just applied an edit — it should show
+ *  a brief success state and auto-dismiss. No-op on Android. */
+expect fun signalPlanEditApplied()
+
+/** Reply to a Swap Sheet "request alternatives" call from the native side. JSON is a list of SwapAlternative. No-op on Android. */
+expect fun pushSwapAlternatives(json: String)
 
 expect fun showNativeVenueDetail(
     venueWithMeta: live.localapp.local.domain.repository.VenueWithMeta,

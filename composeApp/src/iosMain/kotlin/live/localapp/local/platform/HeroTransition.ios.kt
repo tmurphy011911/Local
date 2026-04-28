@@ -263,17 +263,59 @@ actual fun showNativePlanDetail(
     onEditPlan: () -> Unit,
     onEditDay: (String) -> Unit,
     onSetGroupSize: (Int) -> Unit,
+    onChangeName: (String) -> Unit,
+    onDeletePlan: () -> Unit,
+    onAddDay: () -> Unit,
+    onAddEvent: (Int) -> Unit,
+    onSetSlotReserved: (Int, String, Boolean) -> Unit,
+    onSaveReservationDetails: (Int, String, Int, String) -> Unit,
+    onReservationUnavailable: (Int, String) -> Unit,
+    onClearReservation: (Int, String) -> Unit,
+    onSaveTicketDetails: (Int, String, Int) -> Unit,
+    onTicketsUnavailable: (Int, String) -> Unit,
+    onClearTickets: (Int, String) -> Unit,
+    onReplaceSlot: (Int, String, String) -> Unit,
+    onRemoveSlot: (Int, String) -> Unit,
+    onInvite: () -> Unit,
+    onChangeRsvp: (String) -> Unit,
+    onRemoveAttendee: (String) -> Unit,
+    onRequestSwapAlternatives: (Int, String) -> Unit,
+    onSwapInAlternative: (Int, String, String) -> Unit,
+    onSeeMoreSwapOptions: (Int, String, String) -> Unit,
 ) {
     PlanDetailBridge.onDismissed = onDismissed
     PlanDetailBridge.onShare = onShare
     PlanDetailBridge.onEditPlan = onEditPlan
     PlanDetailBridge.onEditDay = onEditDay
     PlanDetailBridge.onSetGroupSize = onSetGroupSize
-    PlanDetailBridge.onSetGroupSize = onSetGroupSize
+    PlanDetailBridge.onChangeName = onChangeName
+    PlanDetailBridge.onDeletePlan = onDeletePlan
+    PlanDetailBridge.onAddDay = onAddDay
+    PlanDetailBridge.onAddEvent = onAddEvent
+    PlanDetailBridge.onSetSlotReserved = onSetSlotReserved
+    PlanDetailBridge.onSaveReservationDetails = onSaveReservationDetails
+    PlanDetailBridge.onReservationUnavailable = onReservationUnavailable
+    PlanDetailBridge.onClearReservation = onClearReservation
+    PlanDetailBridge.onSaveTicketDetails = onSaveTicketDetails
+    PlanDetailBridge.onTicketsUnavailable = onTicketsUnavailable
+    PlanDetailBridge.onClearTickets = onClearTickets
+    PlanDetailBridge.onRequestSwapAlternatives = onRequestSwapAlternatives
+    PlanDetailBridge.onSwapInAlternative = onSwapInAlternative
+    PlanDetailBridge.onSeeMoreSwapOptions = onSeeMoreSwapOptions
+    PlanDetailBridge.onReplaceSlot = onReplaceSlot
+    PlanDetailBridge.onRemoveSlot = onRemoveSlot
+    PlanDetailBridge.onInvite = onInvite
+    PlanDetailBridge.onChangeRsvp = onChangeRsvp
+    PlanDetailBridge.onRemoveAttendee = onRemoveAttendee
 
     // Serialize plan to JSON for Swift — preserves attendee + creator + group
     // metadata so the Compose PlanDetailScreen can render the creator view
     // correctly when re-hydrated on the iOS side.
+    val currentUserId = try {
+        org.koin.mp.KoinPlatform.getKoin()
+            .get<live.localapp.local.domain.repository.UserPreferencesRepository>()
+            .getLocalUserId()
+    } catch (_: Throwable) { null }
     val planJson = kotlinx.serialization.json.buildJsonObject {
         put("id", kotlinx.serialization.json.JsonPrimitive(plan.id))
         put("title", kotlinx.serialization.json.JsonPrimitive(plan.title))
@@ -286,6 +328,7 @@ actual fun showNativePlanDetail(
         put("groupSize", kotlinx.serialization.json.JsonPrimitive(plan.groupSize))
         put("confirmedCount", kotlinx.serialization.json.JsonPrimitive(plan.confirmedCount))
         put("attendeesCanEdit", kotlinx.serialization.json.JsonPrimitive(plan.attendeesCanEdit))
+        put("currentUserId", kotlinx.serialization.json.JsonPrimitive(currentUserId))
         put("attendees", kotlinx.serialization.json.buildJsonArray {
             plan.attendees.forEach { a ->
                 add(kotlinx.serialization.json.buildJsonObject {
@@ -313,6 +356,12 @@ actual fun showNativePlanDetail(
                                 put("price", kotlinx.serialization.json.JsonPrimitive(slot.price))
                                 put("isFree", kotlinx.serialization.json.JsonPrimitive(slot.isFree))
                                 put("isReserved", kotlinx.serialization.json.JsonPrimitive(slot.isReserved))
+                                put("venueReservable", kotlinx.serialization.json.JsonPrimitive(slot.venueReservable))
+                                put("reservationState", kotlinx.serialization.json.JsonPrimitive(slot.reservationState.name.lowercase()))
+                                put("reservationPartySize", kotlinx.serialization.json.JsonPrimitive(slot.reservationPartySize))
+                                put("reservationTime", kotlinx.serialization.json.JsonPrimitive(slot.reservationTime))
+                                put("ticketState", kotlinx.serialization.json.JsonPrimitive(slot.ticketState.name.lowercase()))
+                                put("ticketCount", kotlinx.serialization.json.JsonPrimitive(slot.ticketCount))
                                 put("imageUrl", kotlinx.serialization.json.JsonPrimitive(slot.imageUrl))
                                 put("ticketUrl", kotlinx.serialization.json.JsonPrimitive(slot.ticketUrl))
                                 put("venueRating", kotlinx.serialization.json.JsonPrimitive(slot.venueRating))
@@ -334,6 +383,93 @@ actual fun showNativePlanDetail(
 
     PlanDetailBridge.showPlanDetail?.invoke(planJson, cardX, cardY, cardW, cardH)
 }
+
+actual fun pushSwapAlternatives(json: String) {
+    PlanDetailBridge.onSwapAlternativesReady?.invoke(json)
+}
+
+actual fun pushNativePlanState(plan: live.localapp.local.domain.model.Plan) {
+    val planJson = serializePlanToJson(plan)
+    PlanDetailBridge.pushPlanState?.invoke(planJson)
+}
+
+actual fun signalPlanEditApplied() {
+    live.localapp.local.PlanChatBridge.onPlanEditApplied?.invoke()
+}
+
+private fun serializePlanToJson(plan: live.localapp.local.domain.model.Plan): String =
+    kotlinx.serialization.json.buildJsonObject {
+        put("id", kotlinx.serialization.json.JsonPrimitive(plan.id))
+        put("title", kotlinx.serialization.json.JsonPrimitive(plan.title))
+        put("city", kotlinx.serialization.json.JsonPrimitive(plan.city))
+        put("dateDisplay", kotlinx.serialization.json.JsonPrimitive(plan.dateDisplay))
+        put("isPast", kotlinx.serialization.json.JsonPrimitive(plan.isPast))
+        put("creatorId", kotlinx.serialization.json.JsonPrimitive(plan.creatorId))
+        put("creatorName", kotlinx.serialization.json.JsonPrimitive(plan.creatorName))
+        put("shareToken", kotlinx.serialization.json.JsonPrimitive(plan.shareToken))
+        put("groupSize", kotlinx.serialization.json.JsonPrimitive(plan.groupSize))
+        put("confirmedCount", kotlinx.serialization.json.JsonPrimitive(plan.confirmedCount))
+        put("attendeesCanEdit", kotlinx.serialization.json.JsonPrimitive(plan.attendeesCanEdit))
+        put("attendees", kotlinx.serialization.json.buildJsonArray {
+            plan.attendees.forEach { a ->
+                add(kotlinx.serialization.json.buildJsonObject {
+                    put("id", kotlinx.serialization.json.JsonPrimitive(a.id))
+                    put("name", kotlinx.serialization.json.JsonPrimitive(a.name))
+                    put("initials", kotlinx.serialization.json.JsonPrimitive(a.initials))
+                    put("confirmed", kotlinx.serialization.json.JsonPrimitive(a.confirmed))
+                    put("avatarColor", kotlinx.serialization.json.JsonPrimitive(a.avatarColor))
+                })
+            }
+        })
+        put("days", kotlinx.serialization.json.buildJsonArray {
+            plan.days.forEachIndexed { idx, day ->
+                add(kotlinx.serialization.json.buildJsonObject {
+                    put("dayIndex", kotlinx.serialization.json.JsonPrimitive(idx))
+                    put("label", kotlinx.serialization.json.JsonPrimitive(day.label))
+                    put("shortName", kotlinx.serialization.json.JsonPrimitive(day.shortName))
+                    put("travel", kotlinx.serialization.json.buildJsonArray {
+                        day.travel.forEach { t ->
+                            add(kotlinx.serialization.json.buildJsonObject {
+                                put("mode", kotlinx.serialization.json.JsonPrimitive(t.mode))
+                                put("mins", kotlinx.serialization.json.JsonPrimitive(t.mins))
+                            })
+                        }
+                    })
+                    put("slots", kotlinx.serialization.json.buildJsonArray {
+                        day.slots.forEach { slot ->
+                            add(kotlinx.serialization.json.buildJsonObject {
+                                put("id", kotlinx.serialization.json.JsonPrimitive(slot.id))
+                                put("time", kotlinx.serialization.json.JsonPrimitive(slot.time))
+                                put("emoji", kotlinx.serialization.json.JsonPrimitive(slot.emoji))
+                                put("name", kotlinx.serialization.json.JsonPrimitive(slot.name))
+                                put("detail", kotlinx.serialization.json.JsonPrimitive(slot.detail))
+                                put("price", kotlinx.serialization.json.JsonPrimitive(slot.price))
+                                put("isFree", kotlinx.serialization.json.JsonPrimitive(slot.isFree))
+                                put("isReserved", kotlinx.serialization.json.JsonPrimitive(slot.isReserved))
+                                put("venueReservable", kotlinx.serialization.json.JsonPrimitive(slot.venueReservable))
+                                put("reservationState", kotlinx.serialization.json.JsonPrimitive(slot.reservationState.name.lowercase()))
+                                put("reservationPartySize", kotlinx.serialization.json.JsonPrimitive(slot.reservationPartySize))
+                                put("reservationTime", kotlinx.serialization.json.JsonPrimitive(slot.reservationTime))
+                                put("ticketState", kotlinx.serialization.json.JsonPrimitive(slot.ticketState.name.lowercase()))
+                                put("ticketCount", kotlinx.serialization.json.JsonPrimitive(slot.ticketCount))
+                                put("imageUrl", kotlinx.serialization.json.JsonPrimitive(slot.imageUrl))
+                                put("ticketUrl", kotlinx.serialization.json.JsonPrimitive(slot.ticketUrl))
+                                put("venueRating", kotlinx.serialization.json.JsonPrimitive(slot.venueRating))
+                                put("venueAddress", kotlinx.serialization.json.JsonPrimitive(slot.venueAddress))
+                                put("venueLat", kotlinx.serialization.json.JsonPrimitive(slot.venueLat))
+                                put("venueLng", kotlinx.serialization.json.JsonPrimitive(slot.venueLng))
+                                put("venueCategory", kotlinx.serialization.json.JsonPrimitive(slot.venueCategory))
+                                put("venueWebsite", kotlinx.serialization.json.JsonPrimitive(slot.venueWebsite))
+                                put("sourceUrl", kotlinx.serialization.json.JsonPrimitive(slot.sourceUrl))
+                                put("reservationUrl", kotlinx.serialization.json.JsonPrimitive(slot.reservationUrl))
+                                put("eventId", kotlinx.serialization.json.JsonPrimitive(slot.eventId))
+                            })
+                        }
+                    })
+                })
+            }
+        })
+    }.toString()
 
 actual fun showNativeVenueDetail(
     venueWithMeta: VenueWithMeta,

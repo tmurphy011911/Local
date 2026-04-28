@@ -59,8 +59,8 @@ private fun buildSteps(cityForCopy: String): List<HomeTutorialStep> = listOf(
     ),
     HomeTutorialStep(
         headline = "Meet",
-        styledWord = "Yocal",
-        subtext = "Like a generic AI chatbot, except it actually knows your city. Yocal works from Local's own events and venues \u2014 not the internet's stale top-10 lists.",
+        styledWord = "Bo",
+        subtext = "Like a generic AI chatbot, except Bo actually knows your city. Bo works from Local's own events and venues \u2014 not the internet's stale top-10 lists.",
     ),
     HomeTutorialStep(
         headline = "Plans without",

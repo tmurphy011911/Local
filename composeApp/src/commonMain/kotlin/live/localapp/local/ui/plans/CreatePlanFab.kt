@@ -222,7 +222,7 @@ fun CreatePlanMenuItems(
             BounceInMenuItem(
                 visible = visible,
                 delayMs = 0,
-                label = "Create a Plan with Yocal",
+                label = "Create a Plan with Bo",
                 icon = Icons.Outlined.AutoAwesome,
                 outlined = true,
                 onClick = {

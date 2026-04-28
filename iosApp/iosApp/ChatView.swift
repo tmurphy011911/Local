@@ -231,9 +231,10 @@ struct ChatView: View {
                         ChatBridge.shared.sharePlan?()
                     },
                     onViewPlans: {
-                        ChatBridge.shared.clearSuccessState?()
-                    },
-                    onHome: {
+                        // Switch the native tab bar to Plans (index 2), clear
+                        // the success state in Kotlin, then dismiss the chat
+                        // sheet so the user lands on the Plans tab.
+                        TabBarBridge.shared.onTabSelected?(KotlinInt(integerLiteral: 2))
                         ChatBridge.shared.clearSuccessState?()
                         onDismiss()
                     }
@@ -260,7 +261,7 @@ struct ChatView: View {
                 }
                 .buttonStyle(.plain)
 
-                Text("ask yocal")
+                Text("Plan with Bo")
                     .font(F.display(22, .black))
                     .foregroundColor(C.ink)
 
@@ -288,7 +289,7 @@ struct ChatView: View {
         Button(action: onUpgrade) {
             HStack {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text("Build personalized and shareable plans with Yocal")
+                    Text("Build personalized and shareable plans with Bo")
                         .font(.system(size: 12, weight: .bold))
                         .foregroundColor(.white)
                     Text("Plans start at just $0.99/month")
@@ -333,14 +334,19 @@ struct ChatView: View {
     }
 
     private func aiMessageBubble(_ text: String) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 13, weight: .semibold))
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Bo")
+                .font(F.body(11, .bold))
                 .foregroundColor(C.coral)
-                .frame(width: 20)
-                .padding(.top, 3)
-
-            markdownText(text)
+                .padding(.leading, 28) // line up with text after the sparkle
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(C.coral)
+                    .frame(width: 20)
+                    .padding(.top, 3)
+                markdownText(text)
+            }
         }
     }
 
@@ -819,7 +825,6 @@ private struct PlanCelebrationOverlay: View {
     let days: [DaySnapshot]
     let onSharePlan: () -> Void
     let onViewPlans: () -> Void
-    let onHome: () -> Void
 
     @State private var checkScale: CGFloat = 0
     @State private var ringScale: CGFloat = 0.2
@@ -946,12 +951,6 @@ private struct PlanCelebrationOverlay: View {
                             )
                     }
 
-                    Button(action: onHome) {
-                        Text("Home")
-                            .font(F.body(13, .bold))
-                            .foregroundColor(.white.opacity(0.6))
-                    }
-                    .padding(.top, 4)
                 }
                 .offset(y: ctaOffset)
                 .opacity(ctaOpacity)

@@ -117,6 +117,181 @@ class PlansViewModel(
         }
     }
 
+    /** Toggle a slot's reservation-confirmed flag (creator-only, set via the per-stop overflow). */
+    fun setSlotReserved(planId: String, dayIndex: Int, slotId: String, reserved: Boolean) {
+        _uiState.update { state ->
+            fun updatePlans(plans: List<Plan>) = plans.map { plan ->
+                if (plan.id != planId) return@map plan
+                val updatedDays = plan.days.mapIndexed { i, day ->
+                    if (i != dayIndex) day
+                    else day.copy(slots = day.slots.map { s ->
+                        if (s.id == slotId) s.copy(
+                            reservationState = if (reserved) live.localapp.local.domain.model.ReservationState.MADE
+                                else live.localapp.local.domain.model.ReservationState.NONE,
+                        ) else s
+                    })
+                }
+                plan.copy(days = updatedDays)
+            }
+            state.copy(
+                upcomingPlans = updatePlans(state.upcomingPlans),
+                pastPlans = updatePlans(state.pastPlans),
+            )
+        }
+        viewModelScope.launch {
+            val allPlans = _uiState.value.upcomingPlans + _uiState.value.pastPlans
+            val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
+            planRepository.updatePlan(updatedPlan)
+        }
+    }
+
+    /**
+     * Save reservation details from the Reservation Details Sheet.
+     * Promotes the slot to ReservationState.MADE with party_size + reservation_time.
+     * Per spec §3.1.4 — if reservation_time differs from slot.time, [time] is updated
+     * to the new reservation time so the day re-sorts correctly. Caller is responsible
+     * for surfacing any overlap warning that results.
+     */
+    fun setReservationDetails(planId: String, dayIndex: Int, slotId: String, partySize: Int, reservationTime: String) {
+        mutateSlot(planId, dayIndex, slotId) { s ->
+            val newTime = if (reservationTime.isNotBlank() && reservationTime != s.time) reservationTime else s.time
+            s.copy(
+                reservationState = live.localapp.local.domain.model.ReservationState.MADE,
+                reservationPartySize = partySize,
+                reservationTime = reservationTime,
+                ticketState = live.localapp.local.domain.model.TicketState.NONE,
+                ticketCount = null,
+                time = newTime,
+            )
+        }
+    }
+
+    /** Mark a restaurant slot as `No reservations available` (State C). Triggers Swap flow at the UI layer. */
+    fun setReservationUnavailable(planId: String, dayIndex: Int, slotId: String) {
+        mutateSlot(planId, dayIndex, slotId) { s ->
+            s.copy(
+                reservationState = live.localapp.local.domain.model.ReservationState.UNAVAILABLE,
+                reservationPartySize = null,
+                reservationTime = null,
+            )
+        }
+    }
+
+    /** Clear reservation — return to State A. */
+    fun clearReservation(planId: String, dayIndex: Int, slotId: String) {
+        mutateSlot(planId, dayIndex, slotId) { s ->
+            s.copy(
+                reservationState = live.localapp.local.domain.model.ReservationState.NONE,
+                reservationPartySize = null,
+                reservationTime = null,
+            )
+        }
+    }
+
+    /** Save ticket details from the Ticket Details Sheet. State B (BOUGHT) with ticket_count. */
+    fun setTicketDetails(planId: String, dayIndex: Int, slotId: String, ticketCount: Int) {
+        mutateSlot(planId, dayIndex, slotId) { s ->
+            s.copy(
+                ticketState = live.localapp.local.domain.model.TicketState.BOUGHT,
+                ticketCount = ticketCount,
+                reservationState = live.localapp.local.domain.model.ReservationState.NONE,
+                reservationPartySize = null,
+                reservationTime = null,
+            )
+        }
+    }
+
+    /** Mark a ticketed slot as `No tickets available` (State C). Triggers Swap flow at the UI layer. */
+    fun setTicketsUnavailable(planId: String, dayIndex: Int, slotId: String) {
+        mutateSlot(planId, dayIndex, slotId) { s ->
+            s.copy(
+                ticketState = live.localapp.local.domain.model.TicketState.UNAVAILABLE,
+                ticketCount = null,
+            )
+        }
+    }
+
+    /** Clear tickets — return to State A. */
+    fun clearTickets(planId: String, dayIndex: Int, slotId: String) {
+        mutateSlot(planId, dayIndex, slotId) { s ->
+            s.copy(
+                ticketState = live.localapp.local.domain.model.TicketState.NONE,
+                ticketCount = null,
+            )
+        }
+    }
+
+    /** Apply a per-slot mutation, persist to the backend. Re-sorts the day by time
+     *  when the slot's `time` field changes (handles the reservation time-update cascade). */
+    private fun mutateSlot(
+        planId: String,
+        dayIndex: Int,
+        slotId: String,
+        block: (live.localapp.local.domain.model.PlanSlot) -> live.localapp.local.domain.model.PlanSlot,
+    ) {
+        _uiState.update { state ->
+            fun updatePlans(plans: List<Plan>) = plans.map { plan ->
+                if (plan.id != planId) return@map plan
+                val updatedDays = plan.days.mapIndexed { i, day ->
+                    if (i != dayIndex) day
+                    else {
+                        val updatedSlots = day.slots.map { if (it.id == slotId) block(it) else it }
+                            .sortedBy { parseSlotTimeMinutes(it.time) } // chronological — see [parseSlotTimeMinutes]
+                        day.copy(slots = updatedSlots)
+                    }
+                }
+                plan.copy(days = updatedDays)
+            }
+            state.copy(
+                upcomingPlans = updatePlans(state.upcomingPlans),
+                pastPlans = updatePlans(state.pastPlans),
+            )
+        }
+        viewModelScope.launch {
+            val allPlans = _uiState.value.upcomingPlans + _uiState.value.pastPlans
+            val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
+            planRepository.updatePlan(updatedPlan)
+        }
+    }
+
+    /**
+     * Swap an existing slot in place. Preserves position. For restaurants,
+     * the original time is kept (per spec §3.4 — diners want their reserved
+     * time slot). For events, the alternative event's actual start time is used.
+     */
+    fun swapSlot(
+        planId: String,
+        dayIndex: Int,
+        oldSlotId: String,
+        newSlot: live.localapp.local.domain.model.PlanSlot,
+    ) {
+        _uiState.update { state ->
+            fun updatePlans(plans: List<Plan>) = plans.map { plan ->
+                if (plan.id != planId) return@map plan
+                val updatedDays = plan.days.mapIndexed { i, day ->
+                    if (i != dayIndex) day
+                    else {
+                        val replaced = day.slots.map { existing ->
+                            if (existing.id != oldSlotId) existing
+                            else newSlot.copy(id = newSlot.id.ifBlank { existing.id })
+                        }
+                        day.copy(slots = replaced.sortedBy { parseSlotTimeMinutes(it.time) })
+                    }
+                }
+                plan.copy(days = updatedDays)
+            }
+            state.copy(
+                upcomingPlans = updatePlans(state.upcomingPlans),
+                pastPlans = updatePlans(state.pastPlans),
+            )
+        }
+        viewModelScope.launch {
+            val allPlans = _uiState.value.upcomingPlans + _uiState.value.pastPlans
+            val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
+            planRepository.updatePlan(updatedPlan)
+        }
+    }
+
     /** Add a slot to a specific day. */
     fun addSlotToDay(planId: String, dayIndex: Int, slot: live.localapp.local.domain.model.PlanSlot) {
         _uiState.update { state ->
@@ -312,4 +487,31 @@ class PlansViewModel(
             }
         }
     }
+}
+
+/**
+ * Parse a slot's `time` field (e.g. "7:00 PM", "8 PM", "19:00") into total
+ * minutes since midnight so day-sort comparisons are chronological. String
+ * comparison is wrong — "11:23 PM" sorts before "6:30 PM" alphabetically.
+ * Returns Int.MAX_VALUE for unparseable strings so they sink to the end.
+ */
+private fun parseSlotTimeMinutes(s: String): Int {
+    if (s.isBlank()) return Int.MAX_VALUE
+    val cleaned = s.trim().uppercase()
+    val isPm = cleaned.contains("PM")
+    val isAm = cleaned.contains("AM")
+    val withoutMeridiem = cleaned
+        .replace("PM", "")
+        .replace("AM", "")
+        .replace(".", "")
+        .trim()
+    val parts = withoutMeridiem.split(":")
+    val hour = parts.getOrNull(0)?.trim()?.toIntOrNull() ?: return Int.MAX_VALUE
+    val minute = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: 0
+    val h24 = when {
+        isPm && hour < 12 -> hour + 12
+        isAm && hour == 12 -> 0
+        else -> hour
+    }
+    return h24 * 60 + minute
 }

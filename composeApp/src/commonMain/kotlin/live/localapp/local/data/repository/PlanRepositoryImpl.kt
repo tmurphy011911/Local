@@ -15,6 +15,8 @@ import live.localapp.local.domain.model.PlanAttendee
 import live.localapp.local.domain.model.PlanDay
 import live.localapp.local.domain.model.PlanSlot
 import live.localapp.local.domain.model.PlanTravel
+import live.localapp.local.domain.model.ReservationState
+import live.localapp.local.domain.model.TicketState
 import live.localapp.local.domain.repository.PlanRepository
 import live.localapp.local.domain.repository.UserPreferencesRepository
 
@@ -65,6 +67,13 @@ private data class PlanSlotDto(
     @SerialName("source_url") val sourceUrl: String? = null,
     @SerialName("venue_website") val venueWebsite: String? = null,
     @SerialName("venue_category") val venueCategory: String? = null,
+    // V1 reservation/ticket state machine — see PlanSlot for details.
+    @SerialName("venue_reservable") val venueReservable: Boolean? = null,
+    @SerialName("reservation_state") val reservationState: String = "none",
+    @SerialName("reservation_party_size") val reservationPartySize: Int? = null,
+    @SerialName("reservation_time") val reservationTime: String? = null,
+    @SerialName("ticket_state") val ticketState: String = "none",
+    @SerialName("ticket_count") val ticketCount: Int? = null,
 )
 
 @Serializable
@@ -93,6 +102,12 @@ private fun PlanSlot.toDto() = PlanSlotDto(
     ticketUrl = ticketUrl, venueRating = venueRating, venueAddress = venueAddress,
     venueLat = venueLat, venueLng = venueLng, priceMin = priceMin, priceMax = priceMax,
     reservationUrl = reservationUrl, sourceUrl = sourceUrl, venueWebsite = venueWebsite, venueCategory = venueCategory,
+    venueReservable = venueReservable,
+    reservationState = reservationState.name.lowercase(),
+    reservationPartySize = reservationPartySize,
+    reservationTime = reservationTime,
+    ticketState = ticketState.name.lowercase(),
+    ticketCount = ticketCount,
 )
 
 private fun PlanDayDto.toDomain() = PlanDay(
@@ -124,7 +139,27 @@ private fun PlanSlotDto.toDomain() = PlanSlot(
     sourceUrl = sourceUrl,
     venueWebsite = venueWebsite,
     venueCategory = venueCategory,
+    venueReservable = venueReservable,
+    reservationState = parseReservationState(reservationState),
+    reservationPartySize = reservationPartySize,
+    reservationTime = reservationTime,
+    ticketState = parseTicketState(ticketState),
+    ticketCount = ticketCount,
 )
+
+private fun parseReservationState(s: String): ReservationState =
+    when (s.lowercase()) {
+        "made" -> ReservationState.MADE
+        "unavailable" -> ReservationState.UNAVAILABLE
+        else -> ReservationState.NONE
+    }
+
+private fun parseTicketState(s: String): TicketState =
+    when (s.lowercase()) {
+        "bought" -> TicketState.BOUGHT
+        "unavailable" -> TicketState.UNAVAILABLE
+        else -> TicketState.NONE
+    }
 
 private fun PlanDto.toDomain(): Plan {
     val dateDisplay = buildDateDisplay(days)

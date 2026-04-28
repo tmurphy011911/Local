@@ -1,5 +1,9 @@
 package live.localapp.local.ui.navigation
 
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.scaleIn
@@ -167,6 +171,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     val isLoggedIn = userPrefsRepo.getLocalUserId() != null
     var showLocationSheet by remember { mutableStateOf(false) }
     var showCreatePlanMenu by remember { mutableStateOf(false) }
+    var showManualPlanSheet by remember { mutableStateOf(false) }
 
     // Home lobby tutorial — shown once on very first app open
     val homeTutorialSettings = remember { com.russhwolf.settings.Settings() }
@@ -353,9 +358,25 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         if (userId != null) {
             chatVm.setCurrentLocation(homeState.userLat ?: 42.3601, homeState.userLng ?: -71.0589, homeState.locationName)
             if (hasNativeTabBar) {
-                openChatSheet {}
+                // iOS path: snapshot the pending message before opening the sheet,
+                // then fire it once the SwiftUI ChatView is ready. Without this
+                // dispatch the message gets stranded — the LaunchedEffect that
+                // handles pendings on Android only runs in the Compose chat block,
+                // which iOS skips.
+                val pending = pendingChatMessage
+                pendingChatMessage = null
+                openChatSheet {
+                    if (!pending.isNullOrBlank()) {
+                        scope.launch {
+                            // Tiny delay so the chat UI has a tick to bind to state.
+                            delay(300)
+                            chatVm.sendMessage(pending)
+                        }
+                    }
+                }
             } else {
                 showChat = true
+                chatOpenCount++
             }
         } else {
             showLoginPrompt = true
@@ -431,6 +452,11 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 }
                             },
                             onConciergeClick = { openChatOrLogin() },
+                            onConciergeSend = { text ->
+                                if (text.isNotBlank()) pendingChatMessage = text
+                                chatOpenCount++
+                                openChatOrLogin()
+                            },
                             onProfileClick = { selectedTab = Tab.PROFILE },
                             onLocationClick = { showLocationSheet = true },
                             onFavorite = { event ->
@@ -549,6 +575,15 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             onNewPlan = { showCreatePlanMenu = true },
                             onPlanClick = { plan, bounds ->
                                 if (hasNativeHeroTransition) {
+                                    val sharePlanLink: () -> Unit = {
+                                        scope.launch {
+                                            val token = planRepo.getShareToken(plan.id) ?: plan.id
+                                            val totalStops = plan.days.sumOf { it.slots.size }
+                                            val venueNames = plan.days.flatMap { d -> d.slots.map { it.name } }.take(3).joinToString(", ")
+                                            val text = "${plan.title} — ${plan.city} · $totalStops stops · $venueNames"
+                                            presentShareSheet(text, "https://localapp.live/p/$token")
+                                        }
+                                    }
                                     showNativePlanDetail(
                                         plan = plan,
                                         cardX = bounds.left / density,
@@ -556,27 +591,195 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                         cardW = bounds.width / density,
                                         cardH = bounds.height / density,
                                         onDismissed = {},
-                                        onShare = {
-                                            scope.launch {
-                                                val token = planRepo.getShareToken(plan.id) ?: plan.id
-                                                val totalStops = plan.days.sumOf { it.slots.size }
-                                                val venueNames = plan.days.flatMap { d -> d.slots.map { it.name } }.take(3).joinToString(", ")
-                                                val text = "${plan.title} — ${plan.city} · $totalStops stops · $venueNames"
-                                                presentShareSheet(text, "https://localapp.live/p/$token")
-                                            }
-                                        },
+                                        onShare = sharePlanLink,
                                         onEditPlan = {
-                                            pendingChatMessage = "Edit my plan: ${plan.title}"
-                                            chatOpenCount++
-                                            openChatOrLogin()
+                                            // Per-plan Bo chat (titled with the plan name) instead of
+                                            // the main Bo chat — gives Bo full plan context + plan-edit tools.
+                                            live.localapp.local.platform.openPlanChatSheet(
+                                                plan = plan,
+                                                prePopulatedMessage = "I'd like to make changes to my plan",
+                                                onDismiss = {},
+                                            )
                                         },
                                         onEditDay = { dayLabel ->
-                                            pendingChatMessage = "Change $dayLabel of ${plan.title}"
-                                            chatOpenCount++
-                                            openChatOrLogin()
+                                            live.localapp.local.platform.openPlanChatSheet(
+                                                plan = plan,
+                                                prePopulatedMessage = "@Bo I'd like to change $dayLabel",
+                                                onDismiss = {},
+                                            )
                                         },
                                         onSetGroupSize = { size ->
                                             plansVm.setGroupSize(plan.id, size)
+                                            live.localapp.local.platform.pushNativePlanState(plan.copy(groupSize = size))
+                                        },
+                                        onChangeName = { newName ->
+                                            plansVm.setPlanName(plan.id, newName)
+                                            live.localapp.local.platform.pushNativePlanState(plan.copy(title = newName))
+                                        },
+                                        onDeletePlan = {
+                                            plansVm.deletePlan(plan.id)
+                                        },
+                                        onAddDay = {
+                                            plansVm.addDayToPlan(plan.id)
+                                        },
+                                        onAddEvent = { dayIdx ->
+                                            // Per spec: + Add event opens the per-plan Bo chat with
+                                            // a prompt that names the day. Bo has plan context + edit tools.
+                                            val dayLabel = plan.days.getOrNull(dayIdx)?.label ?: "this day"
+                                            live.localapp.local.platform.openPlanChatSheet(
+                                                plan = plan,
+                                                prePopulatedMessage = "Add an event to $dayLabel",
+                                                onDismiss = {},
+                                            )
+                                        },
+                                        onSetSlotReserved = { dayIdx, slotId, reserved ->
+                                            plansVm.setSlotReserved(plan.id, dayIdx, slotId, reserved)
+                                        },
+                                        onSaveReservationDetails = { dayIdx, slotId, partySize, time ->
+                                            plansVm.setReservationDetails(plan.id, dayIdx, slotId, partySize, time)
+                                            // Push state so the SwiftUI side rerenders with the new badge / time.
+                                            val refreshed = (plansVm.uiState.value.upcomingPlans + plansVm.uiState.value.pastPlans)
+                                                .find { it.id == plan.id } ?: plan
+                                            live.localapp.local.platform.pushNativePlanState(refreshed)
+                                        },
+                                        onReservationUnavailable = { dayIdx, slotId ->
+                                            plansVm.setReservationUnavailable(plan.id, dayIdx, slotId)
+                                            val refreshed = (plansVm.uiState.value.upcomingPlans + plansVm.uiState.value.pastPlans)
+                                                .find { it.id == plan.id } ?: plan
+                                            live.localapp.local.platform.pushNativePlanState(refreshed)
+                                        },
+                                        onClearReservation = { dayIdx, slotId ->
+                                            plansVm.clearReservation(plan.id, dayIdx, slotId)
+                                            val refreshed = (plansVm.uiState.value.upcomingPlans + plansVm.uiState.value.pastPlans)
+                                                .find { it.id == plan.id } ?: plan
+                                            live.localapp.local.platform.pushNativePlanState(refreshed)
+                                        },
+                                        onSaveTicketDetails = { dayIdx, slotId, count ->
+                                            plansVm.setTicketDetails(plan.id, dayIdx, slotId, count)
+                                            val refreshed = (plansVm.uiState.value.upcomingPlans + plansVm.uiState.value.pastPlans)
+                                                .find { it.id == plan.id } ?: plan
+                                            live.localapp.local.platform.pushNativePlanState(refreshed)
+                                        },
+                                        onTicketsUnavailable = { dayIdx, slotId ->
+                                            plansVm.setTicketsUnavailable(plan.id, dayIdx, slotId)
+                                            val refreshed = (plansVm.uiState.value.upcomingPlans + plansVm.uiState.value.pastPlans)
+                                                .find { it.id == plan.id } ?: plan
+                                            live.localapp.local.platform.pushNativePlanState(refreshed)
+                                        },
+                                        onClearTickets = { dayIdx, slotId ->
+                                            plansVm.clearTickets(plan.id, dayIdx, slotId)
+                                            val refreshed = (plansVm.uiState.value.upcomingPlans + plansVm.uiState.value.pastPlans)
+                                                .find { it.id == plan.id } ?: plan
+                                            live.localapp.local.platform.pushNativePlanState(refreshed)
+                                        },
+                                        onReplaceSlot = { _, _, venueName ->
+                                            // Per-plan Bo chat — Bo can call update_plan with full context.
+                                            live.localapp.local.platform.openPlanChatSheet(
+                                                plan = plan,
+                                                prePopulatedMessage = "@Bo please replace $venueName",
+                                                onDismiss = {},
+                                            )
+                                        },
+                                        onRemoveSlot = { dayIdx, slotId ->
+                                            plansVm.removeSlotFromPlan(plan.id, dayIdx, slotId)
+                                        },
+                                        onInvite = sharePlanLink,
+                                        onChangeRsvp = { _ ->
+                                            // RSVP backend is not wired yet — placeholder hook.
+                                            // TODO: PlansViewModel.setOwnRsvp(planId, status).
+                                        },
+                                        onRemoveAttendee = { _ ->
+                                            // TODO: PlansViewModel.removeAttendee(planId, attendeeId).
+                                        },
+                                        onRequestSwapAlternatives = { dayIdx, slotId ->
+                                            scope.launch {
+                                                val swapService: live.localapp.local.domain.service.PlanSwapService = koin.get()
+                                                val current = (plansVm.uiState.value.upcomingPlans + plansVm.uiState.value.pastPlans)
+                                                    .find { it.id == plan.id } ?: plan
+                                                val targetSlot = current.days.getOrNull(dayIdx)?.slots?.find { it.id == slotId }
+                                                val alternatives = if (targetSlot != null) {
+                                                    swapService.fetchAlternatives(targetSlot, current)
+                                                } else emptyList()
+                                                val json = kotlinx.serialization.json.buildJsonArray {
+                                                    alternatives.forEach { alt ->
+                                                        add(kotlinx.serialization.json.buildJsonObject {
+                                                            put("kind", kotlinx.serialization.json.JsonPrimitive(alt.kind.name.lowercase()))
+                                                            put("sourceId", kotlinx.serialization.json.JsonPrimitive(alt.sourceId))
+                                                            put("name", kotlinx.serialization.json.JsonPrimitive(alt.name))
+                                                            put("category", kotlinx.serialization.json.JsonPrimitive(alt.category))
+                                                            put("neighborhood", kotlinx.serialization.json.JsonPrimitive(alt.neighborhood))
+                                                            put("rating", kotlinx.serialization.json.JsonPrimitive(alt.rating))
+                                                            put("imageUrl", kotlinx.serialization.json.JsonPrimitive(alt.imageUrl))
+                                                            put("lat", kotlinx.serialization.json.JsonPrimitive(alt.lat))
+                                                            put("lng", kotlinx.serialization.json.JsonPrimitive(alt.lng))
+                                                            put("ticketUrl", kotlinx.serialization.json.JsonPrimitive(alt.ticketUrl))
+                                                            put("sourceUrl", kotlinx.serialization.json.JsonPrimitive(alt.sourceUrl))
+                                                            put("reservationUrl", kotlinx.serialization.json.JsonPrimitive(alt.reservationUrl))
+                                                            put("venueWebsite", kotlinx.serialization.json.JsonPrimitive(alt.venueWebsite))
+                                                            put("venueAddress", kotlinx.serialization.json.JsonPrimitive(alt.venueAddress))
+                                                            put("priceMin", kotlinx.serialization.json.JsonPrimitive(alt.priceMin))
+                                                            put("priceMax", kotlinx.serialization.json.JsonPrimitive(alt.priceMax))
+                                                            put("isFree", kotlinx.serialization.json.JsonPrimitive(alt.isFree))
+                                                            put("eventStartAt", kotlinx.serialization.json.JsonPrimitive(alt.eventStartAt))
+                                                            put("eventTime", kotlinx.serialization.json.JsonPrimitive(alt.eventTime))
+                                                        })
+                                                    }
+                                                }.toString()
+                                                live.localapp.local.platform.pushSwapAlternatives(json)
+                                            }
+                                        },
+                                        onSwapInAlternative = { dayIdx, oldSlotId, altJson ->
+                                            // Decode the alternative + build a new PlanSlot. Restaurants
+                                            // keep the OLD slot's time (per spec §3.4), events use the new event's time.
+                                            try {
+                                                val alt = kotlinx.serialization.json.Json.parseToJsonElement(altJson).jsonObject
+                                                val current = (plansVm.uiState.value.upcomingPlans + plansVm.uiState.value.pastPlans)
+                                                    .find { it.id == plan.id } ?: plan
+                                                val oldSlot = current.days.getOrNull(dayIdx)?.slots?.find { it.id == oldSlotId }
+                                                val kind = alt["kind"]?.jsonPrimitive?.contentOrNull
+                                                val newName = alt["name"]?.jsonPrimitive?.contentOrNull ?: ""
+                                                val newTime = if (kind == "event") {
+                                                    (alt["eventTime"]?.jsonPrimitive?.contentOrNull ?: oldSlot?.time ?: "")
+                                                } else {
+                                                    oldSlot?.time ?: ""
+                                                }
+                                                val newSlot = live.localapp.local.domain.model.PlanSlot(
+                                                    id = "swap_${kotlin.random.Random.nextLong().toString(36)}",
+                                                    time = newTime,
+                                                    emoji = oldSlot?.emoji ?: "",
+                                                    name = newName,
+                                                    detail = alt["neighborhood"]?.jsonPrimitive?.contentOrNull ?: "",
+                                                    price = "",
+                                                    isFree = alt["isFree"]?.jsonPrimitive?.contentOrNull?.toBoolean() == true,
+                                                    eventId = if (kind == "event") alt["sourceId"]?.jsonPrimitive?.contentOrNull else null,
+                                                    isCustom = false,
+                                                    imageUrl = alt["imageUrl"]?.jsonPrimitive?.contentOrNull,
+                                                    ticketUrl = alt["ticketUrl"]?.jsonPrimitive?.contentOrNull,
+                                                    venueRating = alt["rating"]?.jsonPrimitive?.doubleOrNull,
+                                                    venueAddress = alt["venueAddress"]?.jsonPrimitive?.contentOrNull,
+                                                    venueLat = alt["lat"]?.jsonPrimitive?.doubleOrNull,
+                                                    venueLng = alt["lng"]?.jsonPrimitive?.doubleOrNull,
+                                                    priceMin = alt["priceMin"]?.jsonPrimitive?.doubleOrNull,
+                                                    priceMax = alt["priceMax"]?.jsonPrimitive?.doubleOrNull,
+                                                    reservationUrl = alt["reservationUrl"]?.jsonPrimitive?.contentOrNull,
+                                                    sourceUrl = alt["sourceUrl"]?.jsonPrimitive?.contentOrNull,
+                                                    venueWebsite = alt["venueWebsite"]?.jsonPrimitive?.contentOrNull,
+                                                    venueCategory = alt["category"]?.jsonPrimitive?.contentOrNull,
+                                                )
+                                                plansVm.swapSlot(plan.id, dayIdx, oldSlotId, newSlot)
+                                                val refreshed = (plansVm.uiState.value.upcomingPlans + plansVm.uiState.value.pastPlans)
+                                                    .find { it.id == plan.id } ?: plan
+                                                live.localapp.local.platform.pushNativePlanState(refreshed)
+                                            } catch (e: Throwable) {
+                                                println("Phase 5 swap decode error: ${e.message}")
+                                            }
+                                        },
+                                        onSeeMoreSwapOptions = { _, _, venueName ->
+                                            live.localapp.local.platform.openPlanChatSheet(
+                                                plan = plan,
+                                                prePopulatedMessage = "@Bo I want to replace $venueName with something else — show me more options",
+                                                onDismiss = {},
+                                            )
                                         },
                                     )
                                 } else {
@@ -678,8 +881,37 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 visible = showCreatePlanMenu,
                 onDismiss = { showCreatePlanMenu = false },
                 onYocal = { openChatOrLogin() },
-                onManual = { /* TODO: manual plan flow */ },
+                onManual = {
+                    if (userPrefsRepo.getLocalUserId() != null) {
+                        showManualPlanSheet = true
+                    } else {
+                        showLoginPrompt = true
+                    }
+                },
             )
+
+            if (showManualPlanSheet) {
+                val manualPremiumGate = remember { live.localapp.local.ui.chat.PremiumGate() }
+                live.localapp.local.ui.plans.ManualPlanSheet(
+                    onDismiss = { showManualPlanSheet = false },
+                    chatVm = chatVm,
+                    eventRepo = eventRepo,
+                    userLat = homeState.userLat,
+                    userLng = homeState.userLng,
+                    canSavePlan = { manualPremiumGate.canCreatePlan(live.localapp.local.ui.chat.PlanSource.MANUAL) },
+                    onPaywallRequired = {
+                        manualPremiumGate.hasSeenPaywall = true
+                        pendingShowPaywall = true
+                        showChat = true
+                        chatOpenCount++
+                    },
+                    onPlanSavedOpenChat = {
+                        manualPremiumGate.recordPlanCreated(live.localapp.local.ui.chat.PlanSource.MANUAL)
+                        // Open the chat sheet so the celebration overlay surfaces.
+                        openChatOrLogin()
+                    },
+                )
+            }
 
         // Venue detail — slide up / slide down transition
         AnimatedVisibility(
@@ -736,7 +968,6 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     PlanDetailScreen(
                         plan = plan,
                         isCreator = isCreator,
-                        onOpenChat = { showPlanChat = true },
                         onBack = { selectedPlan = null },
                         onShare = {
                             scope.launch {
@@ -748,11 +979,13 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             }
                         },
                         onEditPlan = {
-                            planChatPrefill = "@yocal I'd like to edit this plan."
-                            showPlanChat = true
+                            // Per Plan Detail spec V1: Edit Plan opens the main Yocal chat
+                            // with a pre-filled prompt that names the plan.
+                            pendingChatMessage = "I'd like to make changes to my plan: ${plan.title}"
+                            openChatOrLogin()
                         },
                         onEditDay = { dayLabel ->
-                            planChatPrefill = "@yocal I'd like to change $dayLabel."
+                            planChatPrefill = "@Bo I'd like to change $dayLabel."
                             showPlanChat = true
                         },
                         onSetGroupSize = { size ->
@@ -794,6 +1027,24 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         onDeletePlan = {
                             plansVm.deletePlan(plan.id)
                             selectedPlan = null
+                        },
+                        onSetSlotReserved = { dayIdx, slotId, reserved ->
+                            plansVm.setSlotReserved(plan.id, dayIdx, slotId, reserved)
+                            val updatedDays = plan.days.mapIndexed { i, d ->
+                                if (i != dayIdx) d
+                                else d.copy(slots = d.slots.map { s ->
+                                    if (s.id == slotId) s.copy(
+                                        reservationState = if (reserved) live.localapp.local.domain.model.ReservationState.MADE
+                                            else live.localapp.local.domain.model.ReservationState.NONE,
+                                    ) else s
+                                })
+                            }
+                            selectedPlan = plan.copy(days = updatedDays)
+                        },
+                        onReplaceSlot = { _, slot ->
+                            // Per spec: per-stop "Replace this stop" opens Yocal with a replacement prompt.
+                            pendingChatMessage = "Please replace ${slot.name} in my plan: ${plan.title}"
+                            openChatOrLogin()
                         },
                         userLat = homeState.userLat,
                         userLng = homeState.userLng,

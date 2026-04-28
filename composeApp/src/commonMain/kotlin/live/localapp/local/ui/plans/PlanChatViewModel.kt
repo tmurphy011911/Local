@@ -110,7 +110,10 @@ class PlanChatViewModel(
                     senderName = m.senderName,
                     text = m.message,
                     isYocal = m.isYocal,
-                    isCurrentUser = m.userId == currentUserId,
+                    // Bo replies are credited to the triggering user's userId for
+                    // RLS simplicity, so userId-only matching mis-classifies Bo's
+                    // historical messages as "mine" on reload. Exclude isYocal.
+                    isCurrentUser = m.userId == currentUserId && !m.isYocal,
                     createdAt = m.createdAt,
                     reactions = reactionsByMessage[m.id] ?: emptyMap(),
                 )
@@ -145,15 +148,12 @@ class PlanChatViewModel(
                 _uiState.update { it.copy(messages = it.messages + msg) }
             }
 
-            // If the user tagged @yocal, route to Claude (respecting edit permissions)
-            if (mentionsYocal(trimmed)) {
-                handleYocalMention(trimmed)
-            }
+            // V1: per-plan chat is Bo-only. Every user message routes to Claude
+            // (respecting edit permissions). The legacy @Bo / @yocal mention check
+            // was removed — this surface isn't a group chat anymore.
+            handleYocalMention(trimmed)
         }
     }
-
-    private fun mentionsYocal(text: String): Boolean =
-        text.contains("@yocal", ignoreCase = true)
 
     /** Route to Claude if the current user is allowed to edit, else post a private hint. */
     private suspend fun handleYocalMention(userText: String) {
@@ -166,7 +166,7 @@ class PlanChatViewModel(
             val localMsg = PlanChatMessageUi(
                 id = "local_${kotlin.random.Random.nextLong().toString(36)}",
                 userId = "yocal",
-                senderName = "Yocal",
+                senderName = "Bo",
                 text = hint,
                 isYocal = true,
                 isCurrentUser = false,
@@ -254,6 +254,9 @@ class PlanChatViewModel(
                 if (toolCalls.isEmpty()) {
                     if (text.isNotBlank()) {
                         postYocalMessage(text)
+                    } else {
+                        // Defensive: never leave the user hanging with a silent end-of-turn.
+                        postYocalMessage("Hmm — I'm not sure what to change. Can you give me a bit more detail?")
                     }
                     _uiState.update { it.copy(isYocalTyping = false, streamingText = "") }
                     return
@@ -280,7 +283,11 @@ class PlanChatViewModel(
 
             // If we exhaust rounds without a terminal, just post whatever streaming text we got
             val tail = _uiState.value.streamingText
-            if (tail.isNotBlank()) postYocalMessage(tail)
+            if (tail.isNotBlank()) {
+                postYocalMessage(tail)
+            } else {
+                postYocalMessage("Took me a few tries and I didn't quite land it — want to try again with a bit more detail?")
+            }
         } catch (e: Throwable) {
             println("PlanChatVM.runYocalToolLoop error: ${e.message}")
             postYocalMessage("Hmm, I hit an error. Try again?")
@@ -294,8 +301,8 @@ class PlanChatViewModel(
         val userId = currentUserId ?: return
         val record = chatRepo.sendMessage(
             planId = plan.id,
-            userId = userId,  // Yocal messages credited to the triggering user for RLS simplicity
-            senderName = "Yocal",
+            userId = userId,  // Bo messages credited to the triggering user for RLS simplicity
+            senderName = "Bo",
             message = text,
             isYocal = true,
         )
@@ -303,7 +310,7 @@ class PlanChatViewModel(
             val msg = PlanChatMessageUi(
                 id = record.id,
                 userId = record.userId,
-                senderName = "Yocal",
+                senderName = "Bo",
                 text = record.message,
                 isYocal = true,
                 isCurrentUser = false,
@@ -428,6 +435,16 @@ class PlanChatViewModel(
             plan = updatedPlan
             _uiState.update { it.copy(pendingConfirmation = null) }
             postYocalMessage("Done! I've updated the plan.")
+
+            // Push the updated plan into the native Plan Detail view so the
+            // user sees the change without reopening, then signal the chat
+            // sheet to auto-dismiss with a success state.
+            try {
+                live.localapp.local.platform.pushNativePlanState(updatedPlan)
+            } catch (_: Throwable) {}
+            try {
+                live.localapp.local.platform.signalPlanEditApplied()
+            } catch (_: Throwable) {}
         }
     }
 
@@ -573,13 +590,13 @@ class PlanChatViewModel(
         }
 
         return """
-You are Yocal, an AI assistant helping a group edit an existing plan.
+You are Bo, an AI assistant helping a group edit an existing plan.
 Today is $today.
 
 $planContext
 
 GUIDELINES:
-- You are responding to a group chat message where someone tagged @yocal.
+- You are responding to a group chat message where someone tagged @Bo (or the legacy @yocal).
 - Your job: suggest a concrete change to the plan.
 - Use search_events / search_venues / get_event_details tools to find alternatives.
 - When ready, call `update_plan` with the full updated slot list for the target day.

@@ -31,28 +31,37 @@ class PlanDetailTransitionController {
         window.addSubview(dim)
         self.dimView = dim
 
-        // Create the Compose PlanDetailScreen via a helper MainViewController
-        let composeVC = PlanDetailViewControllerKt.PlanDetailViewController(
-            planJson: planJson,
+        // Decode plan JSON; bail with a no-op transition if it's malformed.
+        guard let plan = PlanDetailPlan.decode(from: planJson) else {
+            print("PlanDetailTransitionController: failed to decode planJson")
+            cleanup()
+            onDismissed()
+            return
+        }
+        let isCreator = (plan.creatorId != nil) && plan.creatorId == plan.currentUserId
+
+        let view = PlanDetailView(
+            initialPlan: plan,
+            isCreator: isCreator,
+            currentUserId: plan.currentUserId,
             onBack: { [weak self] in
                 self?.dismiss()
-            },
-            onShare: { [weak self] in
-                self?.onShare?()
             }
         )
-        composeVC.view.frame = window.bounds
-        composeVC.view.transform = cardTransform(cardFrame: cardFrame, windowBounds: window.bounds)
-        composeVC.view.layer.cornerRadius = 20
-        composeVC.view.layer.masksToBounds = true
-        composeVC.view.alpha = 0
+        let hostVC = UIHostingController(rootView: view)
+        hostVC.view.backgroundColor = .clear
+        hostVC.view.frame = window.bounds
+        hostVC.view.transform = cardTransform(cardFrame: cardFrame, windowBounds: window.bounds)
+        hostVC.view.layer.cornerRadius = 20
+        hostVC.view.layer.masksToBounds = true
+        hostVC.view.alpha = 0
 
-        window.addSubview(composeVC.view)
-        self.hostingController = composeVC
+        window.addSubview(hostVC.view)
+        self.hostingController = hostVC
 
         // Fade in quickly, then spring to fullscreen
         UIView.animate(withDuration: 0.1) {
-            composeVC.view.alpha = 1
+            hostVC.view.alpha = 1
         }
 
         UIView.animate(
@@ -62,8 +71,8 @@ class PlanDetailTransitionController {
             initialSpringVelocity: 0.5,
             options: [.curveEaseInOut, .allowUserInteraction],
             animations: {
-                composeVC.view.transform = .identity
-                composeVC.view.layer.cornerRadius = 0
+                hostVC.view.transform = .identity
+                hostVC.view.layer.cornerRadius = 0
                 dim.alpha = 0.5
             },
             completion: nil

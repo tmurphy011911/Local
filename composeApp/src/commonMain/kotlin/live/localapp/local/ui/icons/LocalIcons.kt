@@ -476,7 +476,6 @@ object LocalIcon {
         val blob1 = useAnimation(trigger, durationMillis = 500, delayMillis = 0,   easing = EaseOutFast)
         val blob2 = useAnimation(trigger, durationMillis = 500, delayMillis = 100, easing = EaseOutFast)
         val blob3 = useAnimation(trigger, durationMillis = 500, delayMillis = 200, easing = EaseOutFast)
-        val blob4 = useAnimation(trigger, durationMillis = 500, delayMillis = 300, easing = EaseOutFast)
         val brush = useAnimation(trigger, durationMillis = 700, easing = Standard)
         val brushDx = if (trigger == 0) 0f else lerp(-12f, 0f, brush)
         val brushDy = if (trigger == 0) 0f else lerp(8f, 0f, brush)
@@ -508,9 +507,6 @@ object LocalIcon {
                 scale(pulse(blob3), pulse(blob3), pivot = Offset(70f, 36f)) {
                     drawCircle(LocalColors.sun, radius = 5f, center = Offset(70f, 36f))
                     drawCircle(LocalColors.ink, radius = 5f, center = Offset(70f, 36f), style = Stroke(width = 2f))
-                }
-                scale(pulse(blob4), pulse(blob4), pivot = Offset(34f, 56f)) {
-                    drawCircle(LocalColors.ink, radius = 4f, center = Offset(34f, 56f))
                 }
 
                 translate(left = brushDx, top = brushDy) {

@@ -200,7 +200,7 @@ fun ChatScreen(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        "Build personalized and shareable plans with Yocal",
+                        "Build personalized and shareable plans with Bo",
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color.White),
                     )
                     Text(

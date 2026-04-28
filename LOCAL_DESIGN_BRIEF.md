@@ -11,7 +11,7 @@ from the actual app codebase, not aspirational.
 **Local** (localapp.live) is an event-and-place discovery app for cities, primarily
 Boston for launch, expanding to other US metros. It surfaces every event happening
 nearby — concerts, theatre, library readings, food pop-ups, sports games, kids
-classes — in one place. **Yocal**, the in-app AI companion, plans personalized
+classes — in one place. **Bo**, the in-app AI companion, plans personalized
 itineraries by chatting with users. The product replaces three behaviors: googling
 "things to do this weekend," asking the group chat, and building shared spreadsheets
 for trips.
@@ -151,7 +151,7 @@ Italic is reserved for the **accent word** in tutorial/hero headlines. Always co
 |---|---|---|---|---|
 | Logo | Fraunces | 900 | 28 | "local" wordmark |
 | Greeting Big | Fraunces | 900 | 24 | Home greeting, hero |
-| AI Title | Fraunces | 700 | 20 | Yocal modal title |
+| AI Title | Fraunces | 700 | 20 | Bo modal title |
 | Section Title | Fraunces | 700 | 18 | Carousel headers |
 | Earn Pts | Fraunces | 900 | 15 | Points value |
 | Plan/Event Title | Fraunces | 700 | 13 | Card titles |
@@ -292,10 +292,10 @@ All sheets use `ModalBottomSheet` with:
 - Top corners rounded 24dp (large radius for sheet feel)
 - Skip-partial expansion (always full-height)
 
-### Yocal chat bubble
+### Bo chat bubble
 
 - User: coral right-aligned bubble, white text, 18dp radius (top-right tighter)
-- Yocal: snow/white left-aligned bubble, ink text, 18dp radius (top-left tighter)
+- Bo: snow/white left-aligned bubble, ink text, 18dp radius (top-left tighter)
 - Plan card output: full-width white card with day-tabs header
 
 ### Plan card (multi-day)
@@ -331,9 +331,9 @@ For visual mockups, refer to actual screens. Each has its own composition rules:
 - AppHeader → tier hero (huge points counter on Ink-near-black gradient) → streak
   → earn-points action list → settings list.
 
-### Yocal chat (modal sheet)
+### Bo chat (modal sheet)
 
-- Header: "Yocal" Fraunces Bold + close X
+- Header: "Bo" Fraunces Bold + close X
 - Message stream
 - Bottom: text input (12dp radius) + Send button
 
@@ -348,15 +348,15 @@ For visual mockups, refer to actual screens. Each has its own composition rules:
 
 - Ink-near-black background (`#1A1523`)
 - Coral L app-icon mark
-- Headline: "Yocal Premium" — italic accent: "Plan together, effortlessly"
+- Headline: "Bo Premium" — italic accent: "Plan together, effortlessly"
 - Benefit rows with coral-tinted icon boxes
 - Two pricing cards (Annual + Monthly), Coral selected state
 - Primary CTA: "Start Local Pro" (coral gradient)
 - Secondary: "Not Now" (white at 60% opacity)
 
-### Tutorials (Home + Yocal)
+### Tutorials (Home + Bo)
 
-- Snow background, 5-step pager (Home) / 4-step pager (Yocal)
+- Snow background, 5-step pager (Home) / 4-step pager (Bo)
 - 240–260dp gradient placeholder for the GIF/illustration
 - Headline (Fraunces Black 26) + italic accent word in Coral
 - Subtext (Nunito SemiBold 15, Ink2)
@@ -413,16 +413,16 @@ play. Spec for each:
 | Step | Theme | Suggested motion |
 |---|---|---|
 | 1 — Welcome to Local | "Search → result" | Search bar with cursor typing "fun things to do…", then a list of 3 event cards stacks in. Coral. |
-| 2 — Meet Yocal | "AI replies" | Chat bubble appears with a typing dot indicator, then a plan card slides in. Sage accent for Yocal bubble. |
+| 2 — Meet Bo | "AI replies" | Chat bubble appears with a typing dot indicator, then a plan card slides in. Sage accent for Bo bubble. |
 | 3 — Plans without spreadsheets | "Spreadsheet → plan" | An ugly grid spreadsheet dissolves into a clean plan card. Sun → Coral transition. |
 | 4 — Built for you, by you | "Personalization" | Generic tile grid (gray) tiles flip and re-color into Coral/Sage/Sun preference tiles. |
 | 5 — Show up, level up | "Points → reward" | Points counter ticks up, a Ticketmaster-style ticket icon flips in at the end. Sun accent. |
 
-#### Yocal tutorial (4 steps)
+#### Bo tutorial (4 steps)
 
 | Step | Theme | Suggested motion |
 |---|---|---|
-| 1 — Tell Yocal what you're planning | "Type a prompt" | Text typing in chat input ("date night this Friday"), send button pulses. |
+| 1 — Tell Bo what you're planning | "Type a prompt" | Text typing in chat input ("date night this Friday"), send button pulses. |
 | 2 — Get a personalized plan | "Plan card builds" | A plan card composes itself: image fades in → title → time → next slot. |
 | 3 — Share with your group | "Tap to share" | Plan card duplicates and slides toward 3 avatar circles. |
 | 4 — Book and go instantly | "Reserve / get directions" | Three tappable buttons (reserve, ticket, map) animate in a row. |
@@ -457,8 +457,8 @@ play. Spec for each:
 | Color/type/shape tokens | `composeApp/src/commonMain/kotlin/live/localapp/local/ui/theme/AppTheme.kt` |
 | LocalIcons (17 custom icons) | `composeApp/src/commonMain/kotlin/live/localapp/local/ui/icons/LocalIcons.kt` |
 | Home tutorial composable | `composeApp/src/commonMain/kotlin/live/localapp/local/ui/home/HomeTutorial.kt` |
-| Yocal tutorial (Compose, Android) | `composeApp/src/commonMain/kotlin/live/localapp/local/ui/chat/YocalTutorial.kt` |
-| Yocal tutorial (SwiftUI, iOS) | `iosApp/iosApp/YocalTutorialView.swift` |
+| Bo tutorial (Compose, Android) | `composeApp/src/commonMain/kotlin/live/localapp/local/ui/chat/BoTutorial.kt` |
+| Bo tutorial (SwiftUI, iOS) | `iosApp/iosApp/BoTutorialView.swift` |
 | Paywall (iOS) | `iosApp/iosApp/PaywallView.swift` |
 | Paywall (Compose) | `composeApp/src/commonMain/kotlin/live/localapp/local/ui/chat/PremiumPaywall.kt` |
 | App header | `composeApp/src/commonMain/kotlin/live/localapp/local/ui/common/AppHeader.kt` |

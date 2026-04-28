@@ -51,6 +51,14 @@ import androidx.compose.material.icons.outlined.FavoriteBorder
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
@@ -135,7 +143,7 @@ private fun String.toTitleCase(): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onProfileClick: () -> Unit = {}, onLocationClick: () -> Unit = {}, onFavorite: ((Event) -> Unit)? = null, showUpdateBanner: Boolean = false, onDismissUpdateBanner: () -> Unit = {}) {
+fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onConciergeSend: (String) -> Unit = { onConciergeClick() }, onProfileClick: () -> Unit = {}, onLocationClick: () -> Unit = {}, onFavorite: ((Event) -> Unit)? = null, showUpdateBanner: Boolean = false, onDismissUpdateBanner: () -> Unit = {}) {
     val state by viewModel.uiState.collectAsState()
     var seeAllSection by remember { mutableStateOf<CarouselSection?>(null) }
     var previouslyLoading by remember { mutableStateOf(true) }
@@ -210,7 +218,7 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                     .padding(bottom = 80.dp),
             ) {
                 item { GreetingSection(state) }
-                item { AiConciergeCard(onClick = onConciergeClick) }
+                item { AiConciergeCard(prompts = state.yocalPrompts, onSend = onConciergeSend) }
 
                 // "Your Events This Week" album carousel
                 if (state.savedThisWeek.isNotEmpty()) {
@@ -1312,28 +1320,47 @@ private fun GreetingSection(state: HomeUiState) {
 // ── AI Concierge Card ──
 
 @Composable
-private fun AiConciergeCard(onClick: () -> Unit = {}) {
-    val interactionSource = remember { MutableInteractionSource() }
-    val isPressed by interactionSource.collectIsPressedAsState()
-    val offsetY by animateFloatAsState(
-        targetValue = if (isPressed) 5f else 0f,
-        animationSpec = tween(80),
-    )
+private fun AiConciergeCard(
+    prompts: List<String> = emptyList(),
+    onSend: (String) -> Unit = {},
+) {
     val haptic = LocalHapticFeedback.current
+
+    // Shuffle once so cycling/random selection mixes venues (the edge function
+    // returns 4–6 prompts per venue grouped together, which would otherwise
+    // surface 5 Fenway prompts in a row before moving on to Symphony Hall).
+    val activePrompts = remember(prompts) {
+        val source = if (prompts.isNotEmpty()) prompts else FALLBACK_YOCAL_PROMPTS
+        source.shuffled()
+    }
+    // Pick ONE random prompt for the lifetime of this composition. Re-rolls
+    // when the composable re-enters composition (tab switch, far scroll-out).
+    val displayPrompt = remember(activePrompts) { activePrompts.random() }
+
+    var input by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
+    var focused by remember { mutableStateOf(false) }
+    val focusRequester = remember { FocusRequester() }
+
+    val performSend: () -> Unit = {
+        val effective = if (input.text.isBlank()) displayPrompt else input.text
+        if (effective.isNotBlank()) {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            onSend(effective)
+        }
+    }
 
     Box(
         modifier = Modifier
             .padding(horizontal = 20.dp)
             .padding(top = 14.dp, bottom = 10.dp)
-            .fillMaxWidth()
-            .graphicsLayer { translationY = offsetY * density },
+            .fillMaxWidth(),
     ) {
         // Shadow layer — contained within the box (no overflow)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .matchParentSize()
-                .offset(y = if (!isPressed) 5.dp else 1.dp)
+                .offset(y = 5.dp)
                 .background(AppColors.CoralDk, RoundedCornerShape(20.dp)),
         )
 
@@ -1341,38 +1368,34 @@ private fun AiConciergeCard(onClick: () -> Unit = {}) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
+                .clip(RoundedCornerShape(20.dp))
                 .background(AppColors.Coral, RoundedCornerShape(20.dp))
                 .border(2.dp, AppColors.CoralDk, RoundedCornerShape(20.dp))
-                .clip(RoundedCornerShape(20.dp))
-                .clickable(
-                    interactionSource = interactionSource,
-                    indication = null,
-                    onClick = {
-                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onClick()
-                    },
-                )
-                .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 0.dp),
-        ) {
-            // Decorative shine circle
-            Box(
-                modifier = Modifier
-                    .size(130.dp)
-                    .offset(x = 60.dp, y = (-48).dp)
-                    .align(Alignment.TopEnd)
-                    .background(
-                        AppColors.White.copy(alpha = 0.13f),
-                        CircleShape,
-                    ),
-            )
-
-            Column {
-                // Title
-                Row {
-                    Text(
-                        "Tell me what you're ",
-                        style = AppType.AiTitle,
+                .drawBehind {
+                    // Decorative shine — drawn as paint, not a layout child, so it
+                    // doesn't force the card's minimum height to the circle's size.
+                    val r = 65.dp.toPx()
+                    drawCircle(
+                        color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.13f),
+                        radius = r,
+                        center = androidx.compose.ui.geometry.Offset(
+                            x = size.width - 5.dp.toPx(),
+                            y = 17.dp.toPx(),
+                        ),
                     )
+                }
+                .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 14.dp),
+        ) {
+            Column {
+                // Title — tap focuses the input.
+                Row(
+                    modifier = Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = { focusRequester.requestFocus() },
+                    ),
+                ) {
+                    Text("Tell me what you're ", style = AppType.AiTitle)
                     Text(
                         "planning",
                         style = AppType.AiTitle.copy(fontStyle = FontStyle.Italic),
@@ -1394,23 +1417,64 @@ private fun AiConciergeCard(onClick: () -> Unit = {}) {
                             AppColors.White.copy(alpha = 0.35f),
                             AppShapes.AiInput,
                         )
-                        .padding(horizontal = 12.dp, vertical = 10.dp),
+                        .padding(horizontal = 12.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(
-                        "e.g. \"fun Saturday for two...\"",
-                        modifier = Modifier.weight(1f),
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 13.sp,
-                            color = AppColors.White.copy(alpha = 0.68f),
-                        ),
-                    )
+                    Box(modifier = Modifier.weight(1f)) {
+                        androidx.compose.foundation.text.BasicTextField(
+                            value = input,
+                            onValueChange = { input = it },
+                            textStyle = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp,
+                                color = AppColors.White,
+                            ),
+                            cursorBrush = SolidColor(AppColors.White),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(onSend = { performSend() }),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .focusRequester(focusRequester)
+                                .onFocusChanged { state ->
+                                    val gainedFocus = state.isFocused && !focused
+                                    focused = state.isFocused
+                                    if (gainedFocus && input.text.isEmpty()) {
+                                        // Pre-fill with the prompt that was on screen, with the
+                                        // entire range selected so a single delete press wipes
+                                        // it (matches placeholder convention) and typing replaces it.
+                                        input = androidx.compose.ui.text.input.TextFieldValue(
+                                            text = displayPrompt,
+                                            selection = androidx.compose.ui.text.TextRange(0, displayPrompt.length),
+                                        )
+                                    }
+                                },
+                        )
+                        // Typewriter overlay shown only while empty + unfocused.
+                        // The typewriter component types once and holds (no auto-cycle).
+                        if (input.text.isEmpty() && !focused) {
+                            TypewriterPlaceholder(
+                                fullText = displayPrompt,
+                                style = TextStyle(
+                                    fontFamily = AppFonts.Body,
+                                    fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp,
+                                    color = AppColors.White.copy(alpha = 0.85f),
+                                ),
+                                cursorColor = AppColors.White,
+                            )
+                        }
+                    }
                     Box(
                         modifier = Modifier
                             .size(28.dp)
-                            .background(AppColors.White, CircleShape),
+                            .background(AppColors.White, CircleShape)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                                onClick = { performSend() },
+                            ),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(Icons.Outlined.Send, contentDescription = "Send", modifier = Modifier.size(14.dp), tint = AppColors.Coral)

@@ -1497,9 +1497,25 @@ class ChatViewModel(
     private fun removeDuplicateSlots(days: List<ItineraryDay>): List<ItineraryDay> {
         val seenEventIds = mutableSetOf<String>()
         val seenNames = mutableSetOf<String>()
+        // Diagnostic: log the input plan so we can see what Claude actually
+        // produced before any dedup runs. Helps catch cases where Claude
+        // emits the same slots on every day of a multi-day plan.
+        days.forEachIndexed { i, day ->
+            println("removeDuplicateSlots[in]: day $i '${day.label}' slots=${day.slots.map { "${it.name}|eid=${it.eventId}" }}")
+        }
         return days.map { day ->
             val kept = day.slots.filter { slot ->
-                val nameKey = slot.name.trim().lowercase()
+                // Normalize: lowercase, strip punctuation/whitespace so
+                // "Toro" / "toro" / "Toro - South End" / "Toro Boston" all
+                // collapse to the same key for dedup purposes.
+                val nameKey = slot.name
+                    .trim()
+                    .lowercase()
+                    .substringBefore(" - ")
+                    .substringBefore(" – ")
+                    .substringBefore(", ")
+                    .filter { it.isLetterOrDigit() || it == ' ' }
+                    .trim()
                 val eventId = slot.eventId
                 when {
                     eventId != null && eventId in seenEventIds -> {
@@ -1507,7 +1523,7 @@ class ChatViewModel(
                         false
                     }
                     nameKey.isNotBlank() && nameKey in seenNames -> {
-                        println("removeDuplicateSlots: dropping duplicate venue '${slot.name}' from '${day.label}'")
+                        println("removeDuplicateSlots: dropping duplicate venue '${slot.name}' (key='$nameKey') from '${day.label}'")
                         false
                     }
                     else -> {
@@ -1790,7 +1806,7 @@ Weight these but still surprise them occasionally.
         } ?: ""
 
         return """
-You are Yocal, an AI assistant inside a local events and dining app. Talk naturally — be warm, opinionated, and helpful, just like you would in any conversation. Keep responses concise since this is a mobile chat.
+You are Bo, an AI assistant inside a local events and dining app called Local. Talk naturally — be warm, opinionated, and helpful, just like you would in any conversation. Keep responses concise since this is a mobile chat. If a user calls you "Yocal", just continue — that was the previous name; you go by Bo now.
 
 Today: $todayDate ($dayOfWeek)
 Current time: $currentTimeLabel (user's local time)
@@ -1812,6 +1828,7 @@ HOW TO HELP:
 - CRITICAL: Once the user confirms they want a plan ("yes", "sure", "full night plan", "build it", "let's do it", "no thanks" to extras, etc.) and you have enough info (main activity + attendee count), your VERY NEXT message MUST be a present_plan tool call — even for a single-stop plan. NEVER describe a plan in plain text. NEVER write phrases like "There's your plan!", "Here's your plan", "I've added X to your plans", or "Grab dinner at X, then Y at 8pm" — that renders as chat text and the user sees no plan card, which means no plan was actually saved. Single-stop plans (just the concert, just the show, just the dinner) STILL go through present_plan with one slot — there is no minimum stop count. If your reply is going to confirm or describe a plan in any way, STOP, drop the text, and call present_plan instead. A plain-text description or confirmation of a plan is a BUG.
 - IMPORTANT: In present_plan slots, ALWAYS use event_id when a specific event exists (concerts, shows, workshops, tours, exhibitions, games). Only use venue_name for restaurants, bars, and cafes where there is no specific event — just a dining/drinks recommendation. If a concert is at The Sinclair, use the event_id from search_events, NOT venue_name "The Sinclair". The event_id ensures the event title, ticket URL, and source URL are preserved.
 - ALWAYS gather the number of people attending before presenting a plan. You can infer from context: "date night" = 2, "double date" = 4, "just me" / solo = 1, "family" = ask how many, "friends" = ask how many. If unclear, ask "How many people will be joining?" before calling present_plan. Include the attendee_count in the present_plan call — this is required. Tailor recommendations to group size (e.g. larger groups need venues with more seating, reservations become more important).
+- HONOR USER-STATED COMMITMENTS (critical): If the user mentions an existing plan, ticket, reservation, or commitment ("we already have Red Sox tickets Thursday", "I'm seeing a show Friday at 8", "we have a 7pm dinner res Saturday"), that commitment MUST appear as a slot on the matching day in the plan you build — never silently ignore it or schedule competing activities at the same time. Steps: (1) call search_events with the team/artist/event name AND start_date/end_date set to the day they mentioned; (2) if you find a matching event, use its event_id in the slot; (3) if no DB match, include a venue_name slot with the user's stated detail (e.g. venue_name="Red Sox @ Fenway Park", note="(your existing plans)") so it still appears on that day's card. Build the rest of the day around that fixed slot — pre-game dinner before, drinks after, etc. — and respect the time conflict.
 - DO NOT ASSUME FOOD OR DRINKS. Never auto-add a dinner, brunch, coffee, bar, or cocktail stop unless the user has signaled they want food/drinks. "Date night" alone does NOT imply dinner. "Things to do Saturday" does NOT imply brunch. If the user hasn't mentioned eating/drinking, ask once before building the plan: "Want me to include a meal or a drink stop, or just activities?" Only skip the question when food/drink is explicitly in the request ("dinner and a show", "brunch plans", "where should we eat", "bar crawl", "coffee then a museum", etc.).
 - When chatting or answering questions, just respond naturally. No special formatting needed.
 - When the user wants to modify an existing plan (swap something, add something, change a slot, try something different), you MUST search for alternatives and then call update_plan. NEVER respond with just text when a plan exists and the user is asking to change it. Search for what they want, find the best match (or use recommend_and_save_venue), and call update_plan with the full slot list for that day — keeping unchanged slots (use their existing event_id/venue_name) and replacing the modified one. The CURRENT PLAN section below has event_ids and venue names you need to preserve unchanged slots.
@@ -1830,6 +1847,8 @@ GUIDELINES:
 - DATES & DAYS-OF-WEEK: The Calendar above is authoritative. Before stating "Thursday May 15" or similar, find "May15=..." in the calendar and use that day. NEVER guess the weekday for a date — always look it up in the calendar reference. If you can't find a date in the calendar, do not include it.
 - NEXT/THIS WEEK: "This Friday" or just "Friday" = the nearest upcoming Friday (within 7 days from today). "Next Friday" means the Friday of the following week — 7 days AFTER this Friday. If today is already Friday, "this Friday" = today. Do not change the date you committed to across turns — once you state a date, stick with it unless the user asks to change it.
 - NO DUPLICATES (critical): Never place the same venue or event in more than one slot, ever — not on the same day, not across days. If Island Creek Raw Bar appears on Day 1, it cannot appear on Day 2 or Day 3. Before writing each slot, mentally scan every earlier slot in every earlier day and confirm the venue is different. The system will strip duplicates automatically but plans come out shorter than intended when that happens — so just pick a different place the first time.
+- MULTI-DAY PLANS — DO NOT REPEAT (critical): When building a plan with multiple days, EVERY day must have its own distinct events and venues. Never copy Day 1's slots into Day 2/3/4 to "fill space." If you genuinely cannot find enough distinct, time-appropriate, date-appropriate options for a given day, that day should have FEWER slots — even just one — rather than recycled slots from another day. A 4-day plan where every day has the same restaurant and event is a BUG; it's better to give the user a 1-day plan and explain you didn't have enough distinct coverage for the others.
+- PER-DAY DATE FILTERING (critical): When building a multi-day plan, call search_events SEPARATELY for each day's date — pass start_date and end_date set to that specific calendar date (e.g. start_date="2026-05-13", end_date="2026-05-13" for Day 1). Never put an event on a day where its start_at doesn't match. If a Courtney Barnett show is on May 14 only, it can ONLY appear on the Day 2 slot whose date is May 14 — not on May 13, 15, or 16.
 - TIME-OF-DAY FIT: Match the venue to the slot time. Morning (before 11am) = coffee shops, bakeries, brunch spots, breakfast diners — NEVER oyster bars, steakhouses, cocktail lounges, or raw bars. Lunch (11am-2pm) = casual restaurants, sandwich shops, cafes. Dinner (5pm+) = full-service restaurants, raw bars, steakhouses. A 9am oyster recommendation is always wrong.
 - EVENT DATE MUST MATCH SLOT DAY: If you place an event on Day 2 ("Friday, May 15"), that event's start_at must fall on May 15. Never put a May 16 event on a May 15 slot just because the timing works. If no event matches the day's date, use a venue_name (restaurant/bar) instead.
 - Use exact start times from search results. For flexible/anytime events, pick reasonable times (10am-9pm).
@@ -1957,6 +1976,69 @@ $currentPlanContext
     }
 
     fun isPlanSuperseded(messageId: String): Boolean = messageId in supersededPlanIds
+
+    /** Save a plan that was built via the manual ManualPlanSheet (not Bo) and
+     *  show the celebration overlay. Mirrors the Bo-side approve flow but skips
+     *  the chat conversation. The premium gate is checked at the call site. */
+    fun saveAndCelebrateManualPlan(
+        title: String,
+        days: List<ItineraryDay>,
+        attendeeCount: Int,
+    ) {
+        viewModelScope.launch {
+            try {
+                val plan = live.localapp.local.domain.model.Plan(
+                    id = generateId(),
+                    title = title.ifBlank { "My Plan" },
+                    city = _uiState.value.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "Boston",
+                    days = days.map { day ->
+                        live.localapp.local.domain.model.PlanDay(
+                            label = day.label,
+                            shortName = day.shortName,
+                            slots = day.slots.map { s ->
+                                live.localapp.local.domain.model.PlanSlot(
+                                    id = s.id, time = s.time, emoji = s.emoji, name = s.name,
+                                    detail = s.detail, price = s.price, isFree = s.isFree,
+                                    eventId = s.eventId, isCustom = s.isCustom, imageUrl = s.imageUrl,
+                                    ticketUrl = s.ticketUrl, venueRating = s.venueRating,
+                                    venueAddress = s.venueAddress, venueLat = s.venueLat, venueLng = s.venueLng,
+                                    priceMin = s.priceMin, priceMax = s.priceMax,
+                                    reservationUrl = s.reservationUrl, sourceUrl = s.sourceUrl,
+                                    venueWebsite = s.venueWebsite, venueCategory = s.venueCategory,
+                                )
+                            },
+                            travel = day.travel.map { live.localapp.local.domain.model.PlanTravel(it.mode, it.mins) },
+                        )
+                    },
+                    attendees = buildList {
+                        add(live.localapp.local.domain.model.PlanAttendee(id = "self", name = "You", initials = "Y", confirmed = true, avatarColor = 0xFFFF6B6B))
+                        val count = attendeeCount.coerceAtLeast(1)
+                        if (count > 1) {
+                            repeat(count - 1) { i ->
+                                add(live.localapp.local.domain.model.PlanAttendee(id = "guest_$i", name = "+1", initials = "+1", confirmed = false, avatarColor = 0xFFAB83A1))
+                            }
+                        }
+                    },
+                    createdAt = "",
+                    dateDisplay = "",
+                    groupSize = if (attendeeCount > 1) attendeeCount else null,
+                )
+                planRepo.savePlan(plan)
+                val userState = cityToState(_uiState.value.userPreferences?.city ?: "boston")
+                badgeService.recordAction(live.localapp.local.domain.model.BadgeAction.PLAN_CREATED, userState)
+            } catch (e: Throwable) {
+                println("Failed to save manual plan: ${e.message}")
+            }
+            _uiState.update {
+                it.copy(
+                    days = days,
+                    planTitle = title.ifBlank { "My Plan" },
+                    planAttendeeCount = attendeeCount.coerceAtLeast(1),
+                    showPlanSuccess = true,
+                )
+            }
+        }
+    }
 }
 
 fun dayColor(index: Int): Long {

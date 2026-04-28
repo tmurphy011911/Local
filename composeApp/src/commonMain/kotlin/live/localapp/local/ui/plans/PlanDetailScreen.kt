@@ -29,6 +29,8 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Delete
@@ -61,6 +63,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -109,9 +112,10 @@ fun PlanDetailScreen(
     onAddDay: () -> Unit = {},
     onRemoveDay: (dayIndex: Int) -> Unit = {},
     onDeletePlan: () -> Unit = {},
+    onSetSlotReserved: (dayIndex: Int, slotId: String, reserved: Boolean) -> Unit = { _, _, _ -> },
+    onReplaceSlot: (dayIndex: Int, slot: PlanSlot) -> Unit = { _, _ -> },
     userLat: Double? = null,
     userLng: Double? = null,
-    onOpenChat: () -> Unit = {},
 ) {
     // Only the creator can edit — attendees always see a read-only plan.
     // The previous attendeesCanEdit escape hatch was removed; the creator
@@ -138,6 +142,8 @@ fun PlanDetailScreen(
                 onBack = onBack,
                 onShare = onShare,
                 onEditName = { showEditNameDialog = true },
+                onEditPlan = onEditPlan,
+                onDeletePlan = { confirmDeletePlan = true },
             )
 
             // Body — paper sheet with rounded top corners that overlaps the hero by 12dp
@@ -150,10 +156,8 @@ fun PlanDetailScreen(
                     .verticalScroll(rememberScrollState())
                     .padding(top = 16.dp, bottom = if (isShared) 100.dp else 110.dp),
             ) {
-                // Read-only / past banners
-                if (readOnly && !past && !isShared) {
-                    ReadOnlyBanner(onRequestChange = onOpenChat)
-                }
+                // Past plan banner. The ReadOnlyBanner that pointed non-creators
+                // to the group chat was removed alongside chat for V1.
                 if (past) {
                     PastPlanBanner(dateRange = plan.dateDisplay)
                 }
@@ -173,30 +177,86 @@ fun PlanDetailScreen(
                 }
                 Spacer(Modifier.height(12.dp))
 
-                // Settings strip (Open / Locked plan) has been removed — the
-                // plan is always creator-editable only, and attendees are always
-                // read-only, so the toggle no longer has meaning.
+                // V1 caps from spec: max 7 days, max 8 stops per day.
+                val maxDaysReached = plan.days.size >= 7
+                val canAddDay = isCreator && !past && !isShared && !maxDaysReached
 
-                // Day tabs
-                if (plan.days.isNotEmpty()) {
+                // Multi-day = >1 day AND >1 day actually has stops. Spec §7.5 says
+                // a multi-day plan auto-demotes to single-day UI when only one day
+                // has stops.
+                val daysWithStops = plan.days.count { it.slots.isNotEmpty() }
+                val isMultiDay = plan.days.size > 1 && daysWithStops > 1
+
+                // Default selected day: first day with stops, else day 0.
+                LaunchedEffect(plan.days) {
+                    if (plan.days.isNotEmpty() && plan.days[selectedDayIndex.coerceAtMost(plan.days.lastIndex)].slots.isEmpty()) {
+                        val firstWithStops = plan.days.indexOfFirst { it.slots.isNotEmpty() }
+                        if (firstWithStops >= 0) selectedDayIndex = firstWithStops
+                    }
+                }
+
+                if (isMultiDay) {
+                    // Multi-day: day strip with + Add chip.
                     DayTabStrip(
                         days = plan.days,
                         activeIndex = selectedDayIndex.coerceAtMost(plan.days.lastIndex),
                         onSelect = { selectedDayIndex = it },
                         onAddDay = onAddDay,
-                        canAdd = isCreator && !past && !isShared && plan.days.size < 10,
+                        canAdd = canAddDay,
                         compact = plan.days.size >= 6,
                     )
+                } else if (canAddDay && plan.days.isNotEmpty()) {
+                    // Single-day: stop-count + inline "+ Add day" row, per spec §2.5.
+                    val totalStops = plan.days.sumOf { it.slots.size }
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "$totalStops ${if (totalStops == 1) "stop" else "stops"}",
+                            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = V5Ink),
+                        )
+                        Spacer(Modifier.weight(1f))
+                        Row(
+                            modifier = Modifier
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClick = onAddDay,
+                                )
+                                .padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Outlined.Add, contentDescription = null, tint = V5Coral, modifier = Modifier.size(15.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                "Add day",
+                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = V5Coral),
+                            )
+                        }
+                    }
                 }
 
-                // Day body
-                val activeDay = plan.days.getOrNull(selectedDayIndex.coerceAtMost(plan.days.lastIndex))
+                // Day body. When single-day-effective, render the day with the
+                // stops (or day 0 if all empty). When multi-day, render the
+                // user-selected day.
+                val effectiveDayIndex = if (isMultiDay) {
+                    selectedDayIndex.coerceAtMost(plan.days.lastIndex)
+                } else {
+                    val firstWithStops = plan.days.indexOfFirst { it.slots.isNotEmpty() }
+                    if (firstWithStops >= 0) firstWithStops else 0
+                }
+                val activeDay = plan.days.getOrNull(effectiveDayIndex)
                 if (activeDay != null) {
+                    val maxStopsReached = activeDay.slots.size >= 8
+                    val canAddSlot = !readOnly && !past && !maxStopsReached
                     Column(modifier = Modifier.padding(horizontal = 16.dp)) {
                         if (activeDay.slots.isEmpty()) {
                             DayEmptyState(
                                 readOnly = readOnly || past,
-                                onAddEvent = { addEventDayIndex = selectedDayIndex },
+                                onAddEvent = { addEventDayIndex = effectiveDayIndex },
                             )
                         } else {
                             activeDay.slots.forEachIndexed { i, slot ->
@@ -205,12 +265,15 @@ fun PlanDetailScreen(
                                     readOnly = readOnly || past,
                                     onRemove = {
                                         val totalBefore = plan.days.sumOf { d -> d.slots.size }
-                                        onRemoveSlot(selectedDayIndex, slot.id)
+                                        onRemoveSlot(effectiveDayIndex, slot.id)
                                         when {
                                             totalBefore <= 1 -> confirmDeletePlan = true
-                                            activeDay.slots.size <= 1 -> emptyDayIndexToConfirm = selectedDayIndex
+                                            activeDay.slots.size <= 1 -> emptyDayIndexToConfirm = effectiveDayIndex
                                         }
                                     },
+                                    onMarkReserved = { onSetSlotReserved(effectiveDayIndex, slot.id, true) },
+                                    onMarkNotReserved = { onSetSlotReserved(effectiveDayIndex, slot.id, false) },
+                                    onReplace = { onReplaceSlot(effectiveDayIndex, slot) },
                                 )
                                 if (i < activeDay.slots.lastIndex) {
                                     activeDay.travel.getOrNull(i)?.let { t ->
@@ -218,9 +281,17 @@ fun PlanDetailScreen(
                                     } ?: Spacer(Modifier.height(10.dp))
                                 }
                             }
-                            if (!readOnly && !past) {
+                            if (canAddSlot) {
                                 Spacer(Modifier.height(10.dp))
-                                AddEventButton(onClick = { addEventDayIndex = selectedDayIndex })
+                                AddEventButton(onClick = { addEventDayIndex = effectiveDayIndex })
+                            } else if (maxStopsReached && !readOnly && !past) {
+                                Spacer(Modifier.height(10.dp))
+                                Text(
+                                    "Day full — max 8 stops.",
+                                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Normal, fontSize = 11.sp, color = V5Ink4),
+                                    modifier = Modifier.fillMaxWidth(),
+                                    textAlign = TextAlign.Center,
+                                )
                             }
                         }
                     }
@@ -249,18 +320,8 @@ fun PlanDetailScreen(
             }
         }
 
-        // Chat peek bar — dark, floats above the home indicator. Not shown on shared-invite preview.
-        if (!isShared && !past) {
-            ChatPeekBar(
-                unread = plan.attendees.count { !it.confirmed }.coerceAtLeast(0),
-                preview = if (isCreator) "Send a message to the group, or tag @yocal to make changes" else "Tap to see the group chat",
-                onClick = onOpenChat,
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .windowInsetsPadding(WindowInsets.navigationBars)
-                    .padding(horizontal = 12.dp, vertical = 12.dp),
-            )
-        }
+        // Group chat removed for V1 (per Plan Detail spec, April 27, 2026).
+        // PlanChatViewModel + bridge code remains in place for re-enable later.
 
         // Accept Invite bottom CTA for shared preview
         if (isShared) {
@@ -289,9 +350,9 @@ fun PlanDetailScreen(
             }
         }
 
-        // Dialogs
+        // Sheets
         if (showEditNameDialog) {
-            EditPlanNameDialog(
+            EditPlanNameSheet(
                 currentName = plan.title,
                 onDismiss = { showEditNameDialog = false },
                 onSave = { newName ->
@@ -330,8 +391,8 @@ fun PlanDetailScreen(
             ConfirmModal(
                 icon = Icons.Outlined.Delete,
                 title = "Delete this plan?",
-                body = "Everyone invited loses access. This can't be undone.",
-                confirmLabel = "Delete plan",
+                body = "This will permanently remove '${plan.title}' for everyone going. This action cannot be undone.",
+                confirmLabel = "Delete",
                 onConfirm = {
                     onDeletePlan()
                     confirmDeletePlan = false
@@ -366,6 +427,8 @@ private fun PlanHero(
     onBack: () -> Unit,
     onShare: () -> Unit,
     onEditName: () -> Unit,
+    onEditPlan: () -> Unit = {},
+    onDeletePlan: () -> Unit = {},
 ) {
     val totalStops = plan.days.sumOf { it.slots.size }
     Box(
@@ -409,6 +472,36 @@ private fun PlanHero(
             Spacer(Modifier.weight(1f))
             GlassIconButton(onClick = onShare) {
                 Icon(Icons.Outlined.IosShare, contentDescription = "Share", tint = Color.White, modifier = Modifier.size(15.dp))
+            }
+            if (isCreator) {
+                Spacer(Modifier.width(8.dp))
+                var menuOpen by remember { mutableStateOf(false) }
+                Box {
+                    GlassIconButton(onClick = { menuOpen = true }) {
+                        Icon(Icons.Outlined.MoreHoriz, contentDescription = "More", tint = Color.White, modifier = Modifier.size(16.dp))
+                    }
+                    androidx.compose.material3.DropdownMenu(
+                        expanded = menuOpen,
+                        onDismissRequest = { menuOpen = false },
+                        containerColor = Color.White,
+                    ) {
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("Edit Plan", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Ink)) },
+                            leadingIcon = { Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = V5Coral, modifier = Modifier.size(18.dp)) },
+                            onClick = { menuOpen = false; onEditPlan() },
+                        )
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("Change Plan Name", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Ink)) },
+                            leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null, tint = V5Ink2, modifier = Modifier.size(18.dp)) },
+                            onClick = { menuOpen = false; onEditName() },
+                        )
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("Delete Plan", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Coral)) },
+                            leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null, tint = V5Coral, modifier = Modifier.size(18.dp)) },
+                            onClick = { menuOpen = false; onDeletePlan() },
+                        )
+                    }
+                }
             }
         }
 
@@ -736,115 +829,7 @@ private fun GroupSizeChip(value: Int, onClick: () -> Unit) {
     }
 }
 
-// ─── Settings strip ──────────────────────────────────────────────────
-
-@Composable
-private fun SettingsStrip(allowEdit: Boolean, onToggle: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color.White)
-            .border(1.dp, V5Line, RoundedCornerShape(14.dp))
-            .padding(horizontal = 14.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .clip(RoundedCornerShape(10.dp))
-                .background(V5LineSoft),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                if (allowEdit) Icons.Outlined.LockOpen else Icons.Outlined.Lock,
-                contentDescription = null,
-                tint = V5Ink2,
-                modifier = Modifier.size(15.dp),
-            )
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                if (allowEdit) "Open plan" else "Locked plan",
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = V5Ink),
-            )
-            Text(
-                if (allowEdit) "Anyone in the group can add stops" else "Only you can change the plan",
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Normal, fontSize = 11.sp, color = V5Ink3),
-            )
-        }
-        V5Toggle(on = allowEdit, onChange = onToggle)
-    }
-}
-
-@Composable
-private fun V5Toggle(on: Boolean, onChange: (Boolean) -> Unit) {
-    Box(
-        modifier = Modifier
-            .size(width = 44.dp, height = 26.dp)
-            .clip(RoundedCornerShape(13.dp))
-            .background(if (on) V5Coral else V5Line)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-            ) { onChange(!on) },
-    ) {
-        Box(
-            modifier = Modifier
-                .align(if (on) Alignment.CenterEnd else Alignment.CenterStart)
-                .padding(horizontal = 3.dp)
-                .size(20.dp)
-                .clip(CircleShape)
-                .background(Color.White),
-        )
-    }
-}
-
 // ─── Banners ────────────────────────────────────────────────────────
-
-@Composable
-private fun ReadOnlyBanner(onRequestChange: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 0.dp)
-            .padding(bottom = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(V5Shade)
-                .border(1.dp, V5Line, RoundedCornerShape(12.dp))
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Outlined.Lock, contentDescription = null, tint = V5Ink3, modifier = Modifier.size(15.dp))
-            Spacer(Modifier.width(10.dp))
-            Row(modifier = Modifier.weight(1f)) {
-                Text(
-                    "View only. ",
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = V5Ink),
-                )
-                Text(
-                    "Only the planner can edit.",
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Normal, fontSize = 12.sp, color = V5Ink2),
-                )
-            }
-            Text(
-                "Request change",
-                modifier = Modifier.clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onRequestChange,
-                ),
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = V5Coral),
-            )
-        }
-    }
-}
 
 @Composable
 private fun PastPlanBanner(dateRange: String) {
@@ -1004,12 +989,12 @@ private fun DayEmptyState(readOnly: Boolean, onAddEvent: () -> Unit) {
         }
         Spacer(Modifier.height(10.dp))
         Text(
-            "Nothing planned yet",
+            "Your plan is empty",
             style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = V5Ink, letterSpacing = (-0.2).sp),
         )
         Spacer(Modifier.height(4.dp))
         Text(
-            if (readOnly) "Wait for the planner to add something — or ask in chat." else "Add your first stop, or try @yocal in the group chat for ideas.",
+            if (readOnly) "The planner hasn't added anything yet." else "Build with Bo, or add a stop yourself.",
             style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Normal, fontSize = 12.sp, color = V5Ink3, textAlign = TextAlign.Center, lineHeight = 16.sp),
             modifier = Modifier.padding(horizontal = 24.dp),
         )
@@ -1060,7 +1045,14 @@ private fun AddEventButton(onClick: () -> Unit) {
 // ─── Slot card + transit row ─────────────────────────────────────────
 
 @Composable
-private fun V5SlotCard(slot: PlanSlot, readOnly: Boolean, onRemove: () -> Unit) {
+private fun V5SlotCard(
+    slot: PlanSlot,
+    readOnly: Boolean,
+    onRemove: () -> Unit,
+    onMarkReserved: () -> Unit = {},
+    onMarkNotReserved: () -> Unit = {},
+    onReplace: () -> Unit = {},
+) {
     val uriHandler = LocalUriHandler.current
     var showDirectionsSheet by remember { mutableStateOf(false) }
     if (showDirectionsSheet && slot.venueLat != null && slot.venueLng != null) {
@@ -1109,25 +1101,67 @@ private fun V5SlotCard(slot: PlanSlot, readOnly: Boolean, onRemove: () -> Unit) 
                         Icon(Icons.Outlined.Check, contentDescription = null, tint = V5Green, modifier = Modifier.size(10.dp))
                         Spacer(Modifier.width(2.dp))
                         Text(
-                            "RESERVED",
+                            "RESERVATION CONFIRMED",
                             style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 9.sp, color = V5Green, letterSpacing = 0.4.sp),
                         )
                     }
                 }
                 Spacer(Modifier.weight(1f))
                 if (!readOnly) {
-                    Box(
-                        modifier = Modifier
-                            .size(22.dp)
-                            .clip(CircleShape)
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                                onClick = onRemove,
-                            ),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(Icons.Outlined.Close, contentDescription = "Remove", tint = V5Ink4, modifier = Modifier.size(14.dp))
+                    var menuOpen by remember { mutableStateOf(false) }
+                    Box {
+                        Box(
+                            modifier = Modifier
+                                .size(22.dp)
+                                .clip(CircleShape)
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                    onClick = { menuOpen = true },
+                                ),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(Icons.Outlined.MoreHoriz, contentDescription = "More", tint = V5Ink4, modifier = Modifier.size(16.dp))
+                        }
+                        androidx.compose.material3.DropdownMenu(
+                            expanded = menuOpen,
+                            onDismissRequest = { menuOpen = false },
+                            containerColor = Color.White,
+                        ) {
+                            // Reservation actions for restaurant-like slots
+                            if (isRestaurantSlot(slot)) {
+                                if (slot.isReserved) {
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("Mark as not booked", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Ink)) },
+                                        leadingIcon = { Icon(Icons.Outlined.Close, contentDescription = null, tint = V5Ink2, modifier = Modifier.size(18.dp)) },
+                                        onClick = { menuOpen = false; onMarkNotReserved() },
+                                    )
+                                } else {
+                                    androidx.compose.material3.DropdownMenuItem(
+                                        text = { Text("I have a reservation", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Ink)) },
+                                        leadingIcon = { Icon(Icons.Outlined.Check, contentDescription = null, tint = V5Green, modifier = Modifier.size(18.dp)) },
+                                        onClick = { menuOpen = false; onMarkReserved() },
+                                    )
+                                }
+                            }
+                            if (slot.venueLat != null && slot.venueLng != null) {
+                                androidx.compose.material3.DropdownMenuItem(
+                                    text = { Text("Get directions", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Ink)) },
+                                    leadingIcon = { Icon(Icons.Outlined.Place, contentDescription = null, tint = V5Ink2, modifier = Modifier.size(18.dp)) },
+                                    onClick = { menuOpen = false; showDirectionsSheet = true },
+                                )
+                            }
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("Replace this stop", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Ink)) },
+                                leadingIcon = { Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = V5Coral, modifier = Modifier.size(18.dp)) },
+                                onClick = { menuOpen = false; onReplace() },
+                            )
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("Remove from plan", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Coral)) },
+                                leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null, tint = V5Coral, modifier = Modifier.size(18.dp)) },
+                                onClick = { menuOpen = false; onRemove() },
+                            )
+                        }
                     }
                 }
             }
@@ -1178,20 +1212,27 @@ private fun V5SlotCard(slot: PlanSlot, readOnly: Boolean, onRemove: () -> Unit) 
                 }
             }
             Spacer(Modifier.height(6.dp))
-            SlotCtas(slot, onDirections = { showDirectionsSheet = true })
+            SlotCtas(slot, readOnly = readOnly, onDirections = { showDirectionsSheet = true })
         }
     }
 }
 
-private fun slotKind(slot: PlanSlot): String {
-    val restaurantCategories = listOf("restaurant", "bar", "brewery", "winery", "cafe", "bistro", "pub", "tavern", "grill", "steakhouse", "pizzeria", "bakery", "diner")
+private val RESTAURANT_CATEGORIES = listOf(
+    "restaurant", "bar", "brewery", "winery", "cafe", "bistro", "pub", "tavern",
+    "grill", "steakhouse", "pizzeria", "bakery", "diner",
+)
+
+private fun isRestaurantSlot(slot: PlanSlot): Boolean {
     val cat = slot.venueCategory?.lowercase() ?: ""
     val nameLower = slot.name.lowercase()
-    val isRestaurant = slot.eventId == null && (
-        restaurantCategories.any { cat.contains(it) } ||
-            restaurantCategories.any { nameLower.contains(it) }
+    return slot.eventId == null && (
+        RESTAURANT_CATEGORIES.any { cat.contains(it) } ||
+            RESTAURANT_CATEGORIES.any { nameLower.contains(it) }
         )
-    if (isRestaurant) return inferMealType(slot.time).ifBlank { "Dining" }
+}
+
+private fun slotKind(slot: PlanSlot): String {
+    if (isRestaurantSlot(slot)) return inferMealType(slot.time).ifBlank { "Dining" }
     if (slot.venueCategory != null) return slot.venueCategory.replaceFirstChar { it.uppercase() }
     return ""
 }
@@ -1227,57 +1268,6 @@ private fun TransitRow(mode: String, mins: Int) {
     }
 }
 
-// ─── Chat peek bar ──────────────────────────────────────────────────
-
-@Composable
-private fun ChatPeekBar(
-    unread: Int,
-    preview: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .heightIn(min = 58.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .background(V5Ink)
-            .clickable(onClick = onClick)
-            .padding(start = 14.dp, end = 18.dp, top = 10.dp, bottom = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                "GROUP CHAT",
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = Color.White.copy(alpha = 0.5f), letterSpacing = 0.5.sp),
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                preview,
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Medium, fontSize = 13.sp, color = Color.White),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        if (unread > 0) {
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(11.dp))
-                    .background(V5Coral)
-                    .padding(horizontal = 7.dp, vertical = 2.dp)
-                    .heightIn(min = 22.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "$unread",
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = Color.White),
-                )
-            }
-            Spacer(Modifier.width(8.dp))
-        }
-        Text("\u25B4", style = TextStyle(fontSize = 12.sp, color = Color.White.copy(alpha = 0.7f)))
-    }
-}
 
 // ─── Confirm modal ──────────────────────────────────────────────────
 
@@ -1412,121 +1402,192 @@ private fun StepperButton(enabled: Boolean, onClick: () -> Unit, icon: ImageVect
 
 // ─── Edit plan name dialog (reused, restyled) ──────────────────────
 
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-private fun EditPlanNameDialog(currentName: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+private fun EditPlanNameSheet(currentName: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
     var nameInput by remember { mutableStateOf(currentName) }
     var error by remember { mutableStateOf<String?>(null) }
-    androidx.compose.material3.AlertDialog(
+    val sheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val charLimit = 60
+    val trimmed = nameInput.trim()
+    val canSave = trimmed.isNotEmpty() && trimmed != currentName.trim() && trimmed.length <= charLimit
+    androidx.compose.material3.ModalBottomSheet(
         onDismissRequest = onDismiss,
-        shape = RoundedCornerShape(20.dp),
+        sheetState = sheetState,
         containerColor = Color.White,
-        title = {
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp)
+                .padding(bottom = 24.dp),
+        ) {
             Text(
-                "Rename plan",
+                "Change plan name",
                 style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = V5Ink),
             )
-        },
-        text = {
-            Column {
-                androidx.compose.foundation.text.BasicTextField(
-                    value = nameInput,
-                    onValueChange = { nameInput = it; error = null },
-                    textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = V5Ink),
-                    cursorBrush = androidx.compose.ui.graphics.SolidColor(V5Coral),
-                    singleLine = true,
-                    decorationBox = { inner ->
-                        Box(
-                            Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(V5Shade)
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
-                        ) {
-                            if (nameInput.isEmpty()) {
-                                Text(
-                                    "Plan name",
-                                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Normal, fontSize = 15.sp, color = V5Ink4),
-                                )
-                            }
-                            inner()
+            Spacer(Modifier.height(14.dp))
+            androidx.compose.foundation.text.BasicTextField(
+                value = nameInput,
+                onValueChange = {
+                    nameInput = it.take(charLimit)
+                    error = null
+                },
+                textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = V5Ink),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(V5Coral),
+                singleLine = true,
+                decorationBox = { inner ->
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(V5Shade)
+                            .padding(horizontal = 14.dp, vertical = 14.dp),
+                    ) {
+                        if (nameInput.isEmpty()) {
+                            Text(
+                                "Plan name",
+                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Normal, fontSize = 15.sp, color = V5Ink4),
+                            )
                         }
-                    },
-                )
+                        inner()
+                    }
+                },
+            )
+            Spacer(Modifier.height(6.dp))
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 if (error != null) {
-                    Spacer(Modifier.height(6.dp))
                     Text(
                         error!!,
+                        modifier = Modifier.weight(1f),
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = V5Coral),
+                    )
+                } else {
+                    Spacer(Modifier.weight(1f))
+                }
+                Text(
+                    "${nameInput.length}/$charLimit",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Normal, fontSize = 11.sp, color = V5Ink4),
+                )
+            }
+            Spacer(Modifier.height(20.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(V5Shade)
+                        .clickable(onClick = onDismiss)
+                        .padding(vertical = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Cancel",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = V5Ink2),
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(if (canSave) V5Coral else V5Coral.copy(alpha = 0.4f))
+                        .clickable(enabled = canSave) {
+                            val validationError = live.localapp.local.ProfanityFilter.validate(trimmed)
+                            if (validationError != null) {
+                                error = validationError
+                            } else {
+                                onSave(trimmed)
+                            }
+                        }
+                        .padding(vertical = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Save",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 14.sp, color = Color.White),
                     )
                 }
             }
-        },
-        confirmButton = {
-            androidx.compose.material3.TextButton(onClick = {
-                val trimmed = nameInput.trim()
-                val validationError = live.localapp.local.ProfanityFilter.validate(trimmed)
-                if (validationError != null) {
-                    error = validationError
-                } else {
-                    onSave(trimmed)
-                }
-            }) {
-                Text("Save", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, color = V5Coral))
-            }
-        },
-        dismissButton = {
-            androidx.compose.material3.TextButton(onClick = onDismiss) {
-                Text("Cancel", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, color = V5Ink3))
-            }
-        },
-    )
+        }
+    }
 }
 
-// ─── Slot CTAs (kept from original — Directions + secondary link) ──
+// ─── Slot CTA chip ──────────────────────────────────────────────────
+//
+// V1 reservation flow per Plan Detail spec (April 27, 2026):
+//   - Restaurant + State A (no reservation): "Make reservation" → OpenTable.
+//   - Restaurant + State B (reserved): "View booking" → OpenTable for venue.
+//   - Non-restaurant w/ ticket URL: "Tickets" → ticket URL.
+//   - Anything with coords: "Directions" → DirectionsSheet.
 
 @Composable
-private fun SlotCtas(slot: PlanSlot, onDirections: () -> Unit) {
+private fun SlotCtas(slot: PlanSlot, readOnly: Boolean, onDirections: () -> Unit) {
     val uriHandler = LocalUriHandler.current
     val hasLocation = slot.venueLat != null && slot.venueLng != null
+    val isRestaurant = isRestaurantSlot(slot)
 
-    val reservationCategories = listOf("restaurant", "bar", "brewery", "winery", "cafe", "bistro", "pub", "tavern", "grill", "steakhouse", "pizzeria", "bakery", "diner")
-    val cat = slot.venueCategory?.lowercase() ?: ""
-    val needsReservation = slot.reservationUrl != null || reservationCategories.any { cat.contains(it) }
-
-    val resolvedReserveUrl = slot.reservationUrl?.let { url ->
-        val today = kotlin.time.Clock.System.now().toString().take(10)
-        if (url.contains("opentable")) "${url}?dateTime=${today}T19:00&covers=2&partySize=2" else url
-    } ?: slot.venueWebsite ?: "https://www.google.com/search?q=${slot.name.replace(" ", "+")}+reservations"
-
-    val secondaryCta: Pair<String, String> = when {
-        needsReservation -> "Reserve" to resolvedReserveUrl
-        slot.ticketUrl != null -> "Tickets" to slot.ticketUrl!!
-        slot.sourceUrl != null -> "Info" to slot.sourceUrl!!
-        slot.venueWebsite != null -> "Website" to slot.venueWebsite!!
-        else -> "Info" to "https://www.google.com/search?q=${slot.name.replace(" ", "+")}"
+    val openTableUrl: String = run {
+        // V1: no affiliate ID, just deep-link to OpenTable's search for the venue.
+        // If the slot already has a reservation URL on it, prefer that.
+        slot.reservationUrl?.takeIf { it.isNotBlank() }
+            ?: "https://www.opentable.com/s?term=${slot.name.replace(" ", "+")}+${slot.venueAddress?.substringAfter(",")?.trim()?.substringBefore(",")?.replace(" ", "+") ?: ""}"
     }
 
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        if (hasLocation) {
-            Text(
-                "Directions",
-                modifier = Modifier.clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        when {
+            // View booking remains available on past/read-only plans for confirmed reservations.
+            isRestaurant && slot.isReserved -> {
+                ActionChip(
+                    label = "View booking",
+                    icon = Icons.Outlined.Check,
+                    onClick = { uriHandler.openUri(openTableUrl) },
+                )
+            }
+            // Per spec §9: past plans show no "Make reservation" chip.
+            isRestaurant && !readOnly -> {
+                ActionChip(
+                    label = "Make reservation",
+                    icon = Icons.Outlined.Place,
+                    onClick = { uriHandler.openUri(openTableUrl) },
+                )
+            }
+            slot.ticketUrl != null -> {
+                ActionChip(
+                    label = "Tickets",
+                    icon = Icons.Outlined.AutoAwesome,
+                    onClick = { uriHandler.openUri(slot.ticketUrl!!) },
+                )
+            }
+            hasLocation -> {
+                ActionChip(
+                    label = "Directions",
+                    icon = Icons.Outlined.Place,
                     onClick = onDirections,
-                ),
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = V5Coral),
-            )
-            Text("  ·  ", style = TextStyle(fontSize = 12.sp, color = V5Line))
+                )
+            }
         }
-        val (label, url) = secondaryCta
-        Text(
-            label,
-            modifier = Modifier.clickable(
+    }
+}
+
+@Composable
+private fun ActionChip(label: String, icon: ImageVector, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .border(1.dp, V5Line, RoundedCornerShape(20.dp))
+            .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-            ) { uriHandler.openUri(url) },
-            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = V5Coral),
+                onClick = onClick,
+            )
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = V5Ink2, modifier = Modifier.size(13.dp))
+        Spacer(Modifier.width(5.dp))
+        Text(
+            label,
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = V5Ink2),
         )
     }
 }

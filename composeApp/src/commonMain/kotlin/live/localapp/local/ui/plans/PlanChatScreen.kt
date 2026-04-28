@@ -107,7 +107,7 @@ fun PlanChatScreen(
                     maxLines = 1,
                 )
                 Text(
-                    "Tag @yocal to make changes",
+                    "Tag @Bo to make changes",
                     style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
                 )
             }
@@ -129,7 +129,7 @@ fun PlanChatScreen(
             if (state.messages.isEmpty() && !state.isLoading) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        "No messages yet. Say hi or tag @yocal to edit.",
+                        "No messages yet. Say hi or tag @Bo to edit.",
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Ink3),
                     )
                 }
@@ -235,7 +235,7 @@ fun PlanChatScreen(
                     decorationBox = { inner ->
                         if (input.isEmpty()) {
                             Text(
-                                "Message or tag @yocal...",
+                                "Message or tag @Bo...",
                                 style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Pebble),
                             )
                         }
@@ -294,7 +294,7 @@ private fun MessageRow(
             ) {
                 if (!msg.isCurrentUser) {
                     Text(
-                        if (msg.isYocal) "Yocal" else msg.senderName,
+                        if (msg.isYocal) "Bo" else msg.senderName,
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = if (msg.isYocal) AppColors.Coral else AppColors.Ink3),
                         modifier = Modifier.padding(start = 2.dp, bottom = 3.dp),
                     )

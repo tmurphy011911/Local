@@ -66,8 +66,39 @@ actual fun showNativePlanDetail(
     onEditPlan: () -> Unit,
     onEditDay: (String) -> Unit,
     onSetGroupSize: (Int) -> Unit,
+    onChangeName: (String) -> Unit,
+    onDeletePlan: () -> Unit,
+    onAddDay: () -> Unit,
+    onAddEvent: (Int) -> Unit,
+    onSetSlotReserved: (Int, String, Boolean) -> Unit,
+    onSaveReservationDetails: (Int, String, Int, String) -> Unit,
+    onReservationUnavailable: (Int, String) -> Unit,
+    onClearReservation: (Int, String) -> Unit,
+    onSaveTicketDetails: (Int, String, Int) -> Unit,
+    onTicketsUnavailable: (Int, String) -> Unit,
+    onClearTickets: (Int, String) -> Unit,
+    onReplaceSlot: (Int, String, String) -> Unit,
+    onRemoveSlot: (Int, String) -> Unit,
+    onInvite: () -> Unit,
+    onChangeRsvp: (String) -> Unit,
+    onRemoveAttendee: (String) -> Unit,
+    onRequestSwapAlternatives: (Int, String) -> Unit,
+    onSwapInAlternative: (Int, String, String) -> Unit,
+    onSeeMoreSwapOptions: (Int, String, String) -> Unit,
 ) {
-    // No-op on Android
+    // No-op on Android — Compose PlanDetailScreen renders inline.
+}
+
+actual fun pushNativePlanState(plan: live.localapp.local.domain.model.Plan) {
+    // No-op on Android — Compose state flows directly through the ViewModel.
+}
+
+actual fun pushSwapAlternatives(json: String) {
+    // No-op on Android.
+}
+
+actual fun signalPlanEditApplied() {
+    // No-op on Android — handled inline by Compose state flows.
 }
 
 actual fun showNativeVenueDetail(

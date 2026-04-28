@@ -60,6 +60,10 @@ data class HomeUiState(
     // the Current Location row in the settings sheet can show the true GPS city
     // without getting mixed up with the manual address name.
     val gpsLocationName: String = "",
+    // Location-specific search prompts for the Home typewriter. Fetched once
+    // per location from the yocal-prompts edge function. Empty until loaded;
+    // the card falls back to FALLBACK_YOCAL_PROMPTS in the meantime.
+    val yocalPrompts: List<String> = emptyList(),
 )
 
 enum class LocationMode { CURRENT_LOCATION, MANUAL }
@@ -86,7 +90,37 @@ class HomeViewModel(
     private val eventRepository: EventRepository,
     private val badgeService: BadgeService,
     private val venueRepo: VenueRepository,
+    private val yocalPromptsRepository: live.localapp.local.domain.repository.YocalPromptsRepository,
 ) : ViewModel() {
+
+    private var lastYocalPromptsGrid: String? = null
+    private var yocalPromptsFetchJob: kotlinx.coroutines.Job? = null
+
+    /** Fetch typewriter prompts for the user's grid (rounded 0.1°). Cached per
+     *  grid in-memory; the edge function caches per grid for 24h. Retries with
+     *  backoff so a single 502 doesn't leave the home card on the fallback for
+     *  the whole session. Falls through silently — UI degrades to hardcoded. */
+    private fun fetchYocalPromptsIfNeeded(lat: Double?, lng: Double?) {
+        if (lat == null || lng == null) return
+        val grid = "${kotlin.math.round(lat * 10) / 10},${kotlin.math.round(lng * 10) / 10}"
+        if (grid == lastYocalPromptsGrid && _uiState.value.yocalPrompts.isNotEmpty()) return
+        yocalPromptsFetchJob?.cancel()
+        yocalPromptsFetchJob = viewModelScope.launch {
+            val backoffs = listOf(0L, 3000L, 8000L, 20000L)
+            for ((i, delayMs) in backoffs.withIndex()) {
+                if (delayMs > 0) kotlinx.coroutines.delay(delayMs)
+                val prompts = try { yocalPromptsRepository.getPrompts(lat, lng) } catch (_: Throwable) { emptyList() }
+                if (prompts.isNotEmpty()) {
+                    lastYocalPromptsGrid = grid
+                    _uiState.update { it.copy(yocalPrompts = prompts) }
+                    return@launch
+                }
+                if (i == backoffs.lastIndex) {
+                    println("[YocalPrompts] gave up after ${backoffs.size} attempts — falling back to hardcoded")
+                }
+            }
+        }
+    }
 
     private val _uiState = MutableStateFlow(HomeUiState())
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
@@ -149,6 +183,9 @@ class HomeViewModel(
             }
             // Load carousels once, with prefs already set
             loadCarousels()
+            // Prime typewriter prompts for the current location.
+            val s = _uiState.value
+            fetchYocalPromptsIfNeeded(s.userLat ?: 42.3601, s.userLng ?: -71.0589)
         }
     }
 
@@ -163,6 +200,7 @@ class HomeViewModel(
             _uiState.update { it.copy(userLat = lat, userLng = lng, locationName = locName, isUnsupportedState = !isLocationInSupportedState(lat, lng)) }
             carouselRepository.invalidateAll()
             loadCarousels()
+            fetchYocalPromptsIfNeeded(lat, lng)
             // Fire-and-forget reverse geocode to populate the GPS-specific city name
             // shown in Location Settings. Coarse-rounded key avoids re-fetching on
             // every tiny GPS tick.
@@ -239,6 +277,10 @@ class HomeViewModel(
         }
         carouselRepository.invalidateAll()
         loadCarousels()
+        // Wipe stale prompts and refetch for the new metro.
+        _uiState.update { it.copy(yocalPrompts = emptyList()) }
+        lastYocalPromptsGrid = null
+        fetchYocalPromptsIfNeeded(lat, lng)
         saveLocationPrefs()
     }
 

@@ -49,7 +49,7 @@ private data class TutorialStep(
 
 private val tutorialSteps = listOf(
     TutorialStep(
-        headline = "Tell Yocal what you're",
+        headline = "Tell Bo what you're",
         styledWord = "planning",
         subtext = "Date night? Visitors in town? Weekend with the crew? Just say the word.",
         gifPlaceholderEmoji = "1",

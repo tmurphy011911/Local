@@ -51,7 +51,9 @@ val appModule = module {
     single<ExploreRepository> { HttpExploreRepository() }
     single { BadgeService(get(), get()) }
     single { ClaudeApiService() }
-    single { HomeViewModel(get(), get(), get(), get(), get(), get()) }
+    single { live.localapp.local.domain.service.PlanSwapService(get(), get()) }
+    single<live.localapp.local.domain.repository.YocalPromptsRepository> { live.localapp.local.data.repository.HttpYocalPromptsRepository() }
+    single { HomeViewModel(get(), get(), get(), get(), get(), get(), get()) }
     single { ChatViewModel(get(), get(), get(), get(), get(), get(), get()) }
     single { PlacesViewModel(get(), get(), get(), get()) }
     single { PlansViewModel(get(), get(), get(), get(), get()) }

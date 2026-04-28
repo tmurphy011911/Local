@@ -430,7 +430,7 @@ struct ComposeView: UIViewControllerRepresentable {
                 guard let windowScene = UIApplication.shared.connectedScenes
                     .compactMap({ $0 as? UIWindowScene }).first,
                     let rootVC = windowScene.windows.first(where: { $0.isKeyWindow })?.rootViewController else {
-                    onPurchased?(KotlinBoolean(value: false))
+                    onPurchased(KotlinBoolean(value: false))
                     return
                 }
                 // Present on the topmost VC so this works even if another
@@ -442,7 +442,7 @@ struct ComposeView: UIViewControllerRepresentable {
                 var paywallVC: UIViewController?
                 let paywallView = PaywallView(onDismiss: { didPurchase in
                     paywallVC?.dismiss(animated: true) {
-                        onPurchased?(KotlinBoolean(value: didPurchase))
+                        onPurchased(KotlinBoolean(value: didPurchase))
                     }
                 })
                 let vc = UIHostingController(rootView: paywallView)

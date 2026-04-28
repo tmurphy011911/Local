@@ -78,6 +78,7 @@ struct PlanChatView: View {
     @State private var inputText: String = ""
     @FocusState private var inputFocused: Bool
     @State private var pickerForMessageId: String? = nil
+    @State private var showEditAppliedSuccess: Bool = false
     let planTitle: String
     let prePopulated: String?
     let onDismiss: () -> Void
@@ -127,13 +128,50 @@ struct PlanChatView: View {
             inputBar
         }
         .background(PC.snow)
+        .overlay {
+            if showEditAppliedSuccess {
+                editAppliedOverlay
+                    .transition(.opacity.combined(with: .scale(scale: 0.9)))
+            }
+        }
         .onAppear {
             PlanChatBridge.shared.onStateUpdate = { snapshot in
                 state.update(from: snapshot)
             }
+            PlanChatBridge.shared.onPlanEditApplied = {
+                DispatchQueue.main.async {
+                    withAnimation(.easeOut(duration: 0.25)) {
+                        showEditAppliedSuccess = true
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.1) {
+                        onDismiss()
+                    }
+                }
+            }
             if let pre = prePopulated, !pre.isEmpty {
                 inputText = pre
             }
+        }
+    }
+
+    // MARK: Success overlay (Bo applied edit → auto-dismiss)
+
+    private var editAppliedOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.25).ignoresSafeArea()
+            VStack(spacing: 12) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 44, weight: .bold))
+                    .foregroundColor(PC.coral)
+                Text("Plan updated")
+                    .font(PF.display(20, .black))
+                    .foregroundColor(PC.ink)
+            }
+            .padding(.horizontal, 28)
+            .padding(.vertical, 22)
+            .background(Color.white)
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .shadow(color: .black.opacity(0.15), radius: 20, y: 8)
         }
     }
 
@@ -147,7 +185,7 @@ struct PlanChatView: View {
                         .font(PF.display(17, .black))
                         .foregroundColor(PC.ink)
                         .lineLimit(1)
-                    Text("Tag @yocal to make changes")
+                    Text("Editing with Bo")
                         .font(PF.body(11, .semibold))
                         .foregroundColor(PC.ink3)
                 }
@@ -174,7 +212,7 @@ struct PlanChatView: View {
     private var emptyState: some View {
         HStack {
             Spacer()
-            Text("No messages yet. Say hi or tag @yocal to edit.")
+            Text("Ask Bo to make changes — replace a stop, swap times, add an event.")
                 .font(PF.body(13, .semibold))
                 .foregroundColor(PC.ink3)
                 .multilineTextAlignment(.center)
@@ -185,84 +223,114 @@ struct PlanChatView: View {
 
     // MARK: Message row
 
+    /// Per-plan chat is now Bo-only. Style matches the main Bo chat (ChatView):
+    ///   - User messages: mist pill on the right
+    ///   - Bo messages: sparkle icon + "Bo" label + inline text on the left (no bubble)
+    /// Reactions are still supported for human messages, but Bo doesn't get reactions.
     @ViewBuilder
     private func messageRow(_ msg: PlanChatMessageSnapshot) -> some View {
         HStack(alignment: .top, spacing: 0) {
             if msg.isCurrentUser {
+                Spacer(minLength: 60)
+                userMessage(msg)
+            } else if msg.isYocal {
+                boMessage(msg)
                 Spacer(minLength: 40)
-                messageBubble(msg: msg)
             } else {
-                avatar(msg: msg)
-                    .padding(.trailing, 8)
-                messageBubble(msg: msg)
+                // Other human user (rare in V1 — group chat is killed) keeps the
+                // avatar + bubble pattern so it doesn't look like Bo.
+                otherHumanMessage(msg)
                 Spacer(minLength: 40)
             }
         }
     }
 
-    @ViewBuilder
-    private func messageBubble(msg: PlanChatMessageSnapshot) -> some View {
-        VStack(alignment: msg.isCurrentUser ? .trailing : .leading, spacing: 3) {
-            if !msg.isCurrentUser {
-                Text(msg.isYocal ? "Yocal" : msg.senderName)
-                    .font(PF.body(11, .bold))
-                    .foregroundColor(msg.isYocal ? PC.coral : PC.ink3)
-                    .padding(.leading, 2)
-            }
+    private func userMessage(_ msg: PlanChatMessageSnapshot) -> some View {
+        Text(msg.text)
+            .font(PF.body(15, .semibold))
+            .foregroundColor(PC.ink)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(PC.mist)
+            .clipShape(RoundedRectangle(cornerRadius: 18))
+            .frame(maxWidth: 280, alignment: .trailing)
+    }
 
-            let bg: Color = msg.isCurrentUser ? PC.coral : (msg.isYocal ? PC.yocalBg : .white)
-            let fg: Color = msg.isCurrentUser ? .white : PC.ink
-            let shape = BubbleShape(isUser: msg.isCurrentUser)
-
-            Text(msg.text)
-                .font(PF.body(14, .semibold))
-                .foregroundColor(fg)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 10)
-                .background(bg)
-                .overlay(
-                    shape.stroke(msg.isYocal ? PC.coral.opacity(0.3) : Color.clear, lineWidth: msg.isYocal ? 1 : 0)
-                )
-                .clipShape(shape)
-                .fixedSize(horizontal: false, vertical: true)
-                .onLongPressGesture {
-                    let impact = UIImpactFeedbackGenerator(style: .light)
-                    impact.impactOccurred()
-                    pickerForMessageId = pickerForMessageId == msg.id ? nil : msg.id
-                }
-
-            if pickerForMessageId == msg.id {
-                emojiPicker(messageId: msg.id)
-            }
-
-            if !msg.reactions.isEmpty {
-                HStack(spacing: 4) {
-                    ForEach(msg.reactions, id: \.emoji) { r in
-                        Button(action: {
-                            PlanChatBridge.shared.toggleReaction?(msg.id, r.emoji)
-                        }) {
-                            HStack(spacing: 2) {
-                                Text(r.emoji)
-                                    .font(.system(size: 11))
-                                Text("\(r.count)")
-                                    .font(PF.body(11, .bold))
-                                    .foregroundColor(r.reactedByMe ? PC.coral : PC.ink)
-                            }
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(r.reactedByMe ? PC.coral.opacity(0.1) : Color.white)
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(r.reactedByMe ? PC.coral : PC.pebble, lineWidth: 1)
-                            )
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
+    private func boMessage(_ msg: PlanChatMessageSnapshot) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Bo")
+                .font(PF.body(11, .bold))
+                .foregroundColor(PC.coral)
+                .padding(.leading, 28) // line up with text after the sparkle
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(PC.coral)
+                    .frame(width: 20)
+                    .padding(.top, 3)
+                Text(msg.text)
+                    .font(PF.body(15, .semibold))
+                    .foregroundColor(PC.ink)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .frame(maxWidth: 280, alignment: msg.isCurrentUser ? .trailing : .leading)
+        .frame(maxWidth: 280, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func otherHumanMessage(_ msg: PlanChatMessageSnapshot) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            avatar(msg: msg)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(msg.senderName)
+                    .font(PF.body(11, .bold))
+                    .foregroundColor(PC.ink3)
+                    .padding(.leading, 2)
+                Text(msg.text)
+                    .font(PF.body(14, .semibold))
+                    .foregroundColor(PC.ink)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(Color.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 18))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .onLongPressGesture {
+                        let impact = UIImpactFeedbackGenerator(style: .light)
+                        impact.impactOccurred()
+                        pickerForMessageId = pickerForMessageId == msg.id ? nil : msg.id
+                    }
+                if pickerForMessageId == msg.id { emojiPicker(messageId: msg.id) }
+                if !msg.reactions.isEmpty { reactionsRow(msg) }
+            }
+        }
+        .frame(maxWidth: 280, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func reactionsRow(_ msg: PlanChatMessageSnapshot) -> some View {
+        HStack(spacing: 4) {
+            ForEach(msg.reactions, id: \.emoji) { r in
+                Button(action: {
+                    PlanChatBridge.shared.toggleReaction?(msg.id, r.emoji)
+                }) {
+                    HStack(spacing: 2) {
+                        Text(r.emoji).font(.system(size: 11))
+                        Text("\(r.count)")
+                            .font(PF.body(11, .bold))
+                            .foregroundColor(r.reactedByMe ? PC.coral : PC.ink)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(r.reactedByMe ? PC.coral.opacity(0.1) : Color.white)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(r.reactedByMe ? PC.coral : PC.pebble, lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .buttonStyle(.plain)
+            }
+        }
     }
 
     @ViewBuilder
@@ -310,33 +378,28 @@ struct PlanChatView: View {
     // MARK: Yocal typing
 
     private var yocalTypingRow: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundColor(PC.coral)
-                .frame(width: 28, height: 28)
-                .background(PC.coral.opacity(0.15))
-                .clipShape(Circle())
-            if !state.streamingText.isEmpty {
-                Text(state.streamingText)
-                    .font(PF.body(14, .semibold))
-                    .foregroundColor(PC.ink)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(PC.yocalBg)
-                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(PC.coral.opacity(0.3), lineWidth: 1))
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
-            } else {
-                Text("Thinking…")
-                    .font(PF.body(14, .semibold))
-                    .foregroundColor(PC.ink3)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 10)
-                    .background(PC.yocalBg)
-                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(PC.coral.opacity(0.3), lineWidth: 1))
-                    .clipShape(RoundedRectangle(cornerRadius: 16))
+        // Match the finalized boMessage style so the row doesn't visually
+        // "switch" from bubble → no-bubble when the stream completes.
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Bo")
+                    .font(PF.body(11, .bold))
+                    .foregroundColor(PC.coral)
+                    .padding(.leading, 28)
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(PC.coral)
+                        .frame(width: 20)
+                        .padding(.top, 3)
+                    Text(state.streamingText.isEmpty ? "Thinking…" : state.streamingText)
+                        .font(PF.body(15, .semibold))
+                        .foregroundColor(state.streamingText.isEmpty ? PC.ink3 : PC.ink)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            Spacer()
+            .frame(maxWidth: 280, alignment: .leading)
+            Spacer(minLength: 40)
         }
     }
 
@@ -380,7 +443,7 @@ struct PlanChatView: View {
         VStack(spacing: 0) {
             Divider().background(PC.pebble)
             HStack(alignment: .bottom, spacing: 8) {
-                TextField("Message or tag @yocal...", text: $inputText, axis: .vertical)
+                TextField("Message Bo...", text: $inputText, axis: .vertical)
                     .focused($inputFocused)
                     .lineLimit(1...4)
                     .font(PF.body(14, .semibold))
