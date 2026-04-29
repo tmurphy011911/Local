@@ -153,8 +153,8 @@ fun ManualPlanSheet(
     var step by remember { mutableStateOf(0) }
     var addingForDayIndex by remember { mutableStateOf<Int?>(null) }
 
-    // Total step count for the progress tracker: title+dates, party, plus one per day in range.
-    val totalSteps = 2 + dayEntries.size.coerceAtLeast(1)
+    // 3 total: (1) title + dates, (2) party size, (3) build all days at once.
+    val totalSteps = 3
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -246,48 +246,38 @@ fun ManualPlanSheet(
                     onChange = { partySize = it },
                     onContinue = { step = 2 },
                 )
-                else -> {
-                    val dayIdx = step - 2
-                    if (dayIdx in dayEntries.indices) {
-                        val entry = dayEntries[dayIdx]
-                        StepDay(
-                            entry = entry,
-                            dayNumber = dayIdx + 1,
-                            isLastDay = dayIdx == dayEntries.lastIndex,
-                            onAddEvent = { addingForDayIndex = dayIdx },
-                            onRemoveEvent = { i ->
-                                dayEntries[dayIdx] = entry.copy(
-                                    events = entry.events.toMutableList().also { it.removeAt(i) },
-                                )
-                            },
-                            onSkipToggle = {
-                                dayEntries[dayIdx] = entry.copy(skipped = !entry.skipped)
-                            },
-                            onContinue = {
-                                if (dayIdx == dayEntries.lastIndex) {
-                                    if (!canSavePlan()) {
-                                        onDismiss()
-                                        onPaywallRequired()
-                                        return@StepDay
-                                    }
-                                    val itinerary = dayEntries.map { d ->
-                                        ItineraryDay(
-                                            label = fullLabel(d.date),
-                                            shortName = shortLabel(d.date),
-                                            slots = d.events.toSlots(d.date),
-                                        )
-                                    }
-                                    val title = planTitle.ifBlank { "My Plan" }
-                                    chatVm.saveAndCelebrateManualPlan(title, itinerary, partySize)
-                                    onDismiss()
-                                    onPlanSavedOpenChat()
-                                } else {
-                                    step += 1
-                                }
-                            },
+                else -> StepBuildAllDays(
+                    days = dayEntries,
+                    onAddEventForDay = { addingForDayIndex = it },
+                    onRemoveEvent = { dayIdx, evIdx ->
+                        val d = dayEntries[dayIdx]
+                        dayEntries[dayIdx] = d.copy(
+                            events = d.events.toMutableList().also { it.removeAt(evIdx) },
                         )
-                    }
-                }
+                    },
+                    onSkipToggle = { dayIdx ->
+                        val d = dayEntries[dayIdx]
+                        dayEntries[dayIdx] = d.copy(skipped = !d.skipped)
+                    },
+                    onSave = {
+                        if (!canSavePlan()) {
+                            onDismiss()
+                            onPaywallRequired()
+                            return@StepBuildAllDays
+                        }
+                        val itinerary = dayEntries.map { d ->
+                            ItineraryDay(
+                                label = fullLabel(d.date),
+                                shortName = shortLabel(d.date),
+                                slots = d.events.toSlots(d.date),
+                            )
+                        }
+                        val title = planTitle.ifBlank { "My Plan" }
+                        chatVm.saveAndCelebrateManualPlan(title, itinerary, partySize)
+                        onDismiss()
+                        onPlanSavedOpenChat()
+                    },
+                )
             }
         }
     }
@@ -540,29 +530,92 @@ private fun StepperButton(
 }
 
 @Composable
-private fun StepDay(
+private fun StepBuildAllDays(
+    days: List<DayEntry>,
+    onAddEventForDay: (Int) -> Unit,
+    onRemoveEvent: (dayIdx: Int, eventIdx: Int) -> Unit,
+    onSkipToggle: (Int) -> Unit,
+    onSave: () -> Unit,
+) {
+    // Save is enabled when every day either has at least one event or is
+    // explicitly skipped. Prevents accidentally saving a plan with empty
+    // middle days.
+    val canSave = days.all { it.events.isNotEmpty() || it.skipped }
+        && days.any { it.events.isNotEmpty() }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Text(
+            "Build your plan",
+            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = AppColors.Ink),
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            if (days.size > 1) "Add events to each day, or skip days you're not planning."
+            else "Add events to your day.",
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Ink3),
+        )
+
+        Spacer(Modifier.height(16.dp))
+
+        Column(
+            modifier = Modifier.weight(1f).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
+        ) {
+            days.forEachIndexed { idx, entry ->
+                DaySection(
+                    entry = entry,
+                    dayNumber = idx + 1,
+                    showDayNumber = days.size > 1,
+                    onAddEvent = { onAddEventForDay(idx) },
+                    onRemoveEvent = { evIdx -> onRemoveEvent(idx, evIdx) },
+                    onSkipToggle = { onSkipToggle(idx) },
+                )
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        PrimaryActionButton(
+            label = "Save Plan",
+            enabled = canSave,
+            onClick = onSave,
+        )
+        Spacer(Modifier.height(20.dp))
+    }
+}
+
+@Composable
+private fun DaySection(
     entry: DayEntry,
     dayNumber: Int,
-    isLastDay: Boolean,
+    showDayNumber: Boolean,
     onAddEvent: () -> Unit,
     onRemoveEvent: (Int) -> Unit,
     onSkipToggle: () -> Unit,
-    onContinue: () -> Unit,
 ) {
-    val canContinue = entry.events.isNotEmpty() || entry.skipped
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(modifier = Modifier.weight(1f)) {
+                if (showDayNumber) {
+                    Text(
+                        "Day $dayNumber",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
+                    )
+                    Spacer(Modifier.height(2.dp))
+                }
+                Text(
+                    fullLabel(entry.date),
+                    style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AppColors.Ink),
+                )
+            }
+            Text(
+                if (entry.skipped) "Add events" else "Skip",
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Coral),
+                modifier = Modifier.clickable(onClick = onSkipToggle).padding(8.dp),
+            )
+        }
 
-    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Text(
-            "Day $dayNumber",
-            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Ink3),
-        )
-        Spacer(Modifier.height(2.dp))
-        Text(
-            fullLabel(entry.date),
-            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = AppColors.Ink),
-        )
-
-        Spacer(Modifier.height(20.dp))
+        Spacer(Modifier.height(10.dp))
 
         if (entry.skipped) {
             Box(
@@ -570,66 +623,36 @@ private fun StepDay(
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(14.dp))
                     .background(AppColors.Ink.copy(alpha = 0.04f))
-                    .padding(vertical = 24.dp, horizontal = 16.dp),
+                    .padding(vertical = 18.dp, horizontal = 16.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
                     "Skipped",
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink3),
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Ink3),
                 )
             }
         } else {
             entry.events.forEachIndexed { i, e ->
-                EventListRow(
-                    event = e,
-                    onRemove = { onRemoveEvent(i) },
-                )
+                EventListRow(event = e, onRemove = { onRemoveEvent(i) })
                 Spacer(Modifier.height(8.dp))
             }
-            // + Add an event
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(14.dp))
                     .border(BorderStrokeDashed(), RoundedCornerShape(14.dp))
                     .clickable(onClick = onAddEvent)
-                    .padding(vertical = 16.dp, horizontal = 16.dp),
+                    .padding(vertical = 14.dp, horizontal = 16.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(
-                    Icons.Outlined.Add,
-                    contentDescription = null,
-                    tint = AppColors.Coral,
-                    modifier = Modifier.size(20.dp),
-                )
+                Icon(Icons.Outlined.Add, contentDescription = null, tint = AppColors.Coral, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
                 Text(
                     if (entry.events.isEmpty()) "Add an event" else "Add another event",
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Coral),
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = AppColors.Coral),
                 )
             }
         }
-
-        Spacer(Modifier.height(12.dp))
-
-        Box(
-            modifier = Modifier.fillMaxWidth().clickable(onClick = onSkipToggle).padding(8.dp),
-            contentAlignment = Alignment.Center,
-        ) {
-            Text(
-                if (entry.skipped) "Add events to this day" else "Skip this day",
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Ink3),
-            )
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        PrimaryActionButton(
-            label = if (isLastDay) "Save Plan" else "Continue to Day ${dayNumber + 1}",
-            enabled = canContinue,
-            onClick = onContinue,
-        )
-        Spacer(Modifier.height(20.dp))
     }
 }
 
