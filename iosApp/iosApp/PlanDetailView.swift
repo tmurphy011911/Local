@@ -236,8 +236,10 @@ struct PlanDetailView: View {
                     }
                 },
                 onMarkUnavailable: {
-                    PlanDetailBridge.shared.onReservationUnavailable?(KotlinInt(int: Int32(dayIdx)), slot.id)
                     activeStopSheet = nil
+                    PlanDetailBridge.shared.onSwapForUnavailable?(
+                        KotlinInt(int: Int32(dayIdx)), slot.id, slot.name, "reservation"
+                    )
                 },
                 onChooseDetails: {
                     activeStopSheet = nil
@@ -276,8 +278,10 @@ struct PlanDetailView: View {
                     }
                 },
                 onMarkUnavailable: {
-                    PlanDetailBridge.shared.onTicketsUnavailable?(KotlinInt(int: Int32(dayIdx)), slot.id)
                     activeStopSheet = nil
+                    PlanDetailBridge.shared.onSwapForUnavailable?(
+                        KotlinInt(int: Int32(dayIdx)), slot.id, slot.name, "ticket"
+                    )
                 },
                 onChooseDetails: {
                     activeStopSheet = nil
@@ -1416,16 +1420,11 @@ private struct StopCard: View {
                 ) {
                     onOpenSheet(.reservationDetails(slot: slot, dayIdx: dayIdx, isEditing: true))
                 }
-            case .unavailable:
-                stateBadge(
-                    label: "No reservations available",
-                    systemIcon: "exclamationmark.octagon",
-                    color: Color(red: 0.85, green: 0.40, blue: 0.20),
-                    enabled: !readOnly
-                ) {
-                    onOpenSheet(.swap(slot: slot, dayIdx: dayIdx))
-                }
-            case .none:
+            case .unavailable, .none:
+                // The "unavailable" state is no longer surfaced as a badge — tapping
+                // "No reservations available" jumps straight to Bo. Existing rows
+                // marked .unavailable from older saves render as if .none so the
+                // user can re-engage them.
                 if (slot.venueReservable ?? true) {
                     chip(label: "Reservation", systemIcon: "fork.knife") {
                         onOpenSheet(.reservation(slot: slot, dayIdx: dayIdx))
@@ -1448,16 +1447,9 @@ private struct StopCard: View {
                 ) {
                     onOpenSheet(.ticketDetails(slot: slot, dayIdx: dayIdx, isEditing: true))
                 }
-            case .unavailable:
-                stateBadge(
-                    label: "No tickets available",
-                    systemIcon: "exclamationmark.octagon",
-                    color: Color(red: 0.85, green: 0.40, blue: 0.20),
-                    enabled: !readOnly
-                ) {
-                    onOpenSheet(.swap(slot: slot, dayIdx: dayIdx))
-                }
-            case .none:
+            case .unavailable, .none:
+                // Same treatment as restaurants: no .unavailable badge — the
+                // tap path goes through Bo. Legacy rows fall through to the chip.
                 chip(label: "Tickets", systemIcon: "ticket") {
                     onOpenSheet(.tickets(slot: slot, dayIdx: dayIdx))
                 }

@@ -127,6 +127,7 @@ expect fun showNativePlanDetail(
     onRequestSwapAlternatives: (Int, String) -> Unit = { _, _ -> },
     onSwapInAlternative: (Int, String, String) -> Unit = { _, _, _ -> },
     onSeeMoreSwapOptions: (Int, String, String) -> Unit = { _, _, _ -> },
+    onSwapForUnavailable: (Int, String, String, String) -> Unit = { _, _, _, _ -> },
 )
 
 /** Push updated plan state to a presented native plan detail view. No-op on Android. */

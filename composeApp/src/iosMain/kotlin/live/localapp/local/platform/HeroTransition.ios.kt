@@ -283,6 +283,7 @@ actual fun showNativePlanDetail(
     onRequestSwapAlternatives: (Int, String) -> Unit,
     onSwapInAlternative: (Int, String, String) -> Unit,
     onSeeMoreSwapOptions: (Int, String, String) -> Unit,
+    onSwapForUnavailable: (Int, String, String, String) -> Unit,
 ) {
     PlanDetailBridge.onDismissed = onDismissed
     PlanDetailBridge.onShare = onShare
@@ -303,6 +304,7 @@ actual fun showNativePlanDetail(
     PlanDetailBridge.onRequestSwapAlternatives = onRequestSwapAlternatives
     PlanDetailBridge.onSwapInAlternative = onSwapInAlternative
     PlanDetailBridge.onSeeMoreSwapOptions = onSeeMoreSwapOptions
+    PlanDetailBridge.onSwapForUnavailable = onSwapForUnavailable
     PlanDetailBridge.onReplaceSlot = onReplaceSlot
     PlanDetailBridge.onRemoveSlot = onRemoveSlot
     PlanDetailBridge.onInvite = onInvite

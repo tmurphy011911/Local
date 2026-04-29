@@ -820,6 +820,18 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                                 onDismiss = {},
                                             )
                                         },
+                                        onSwapForUnavailable = { _, _, venueName, kind ->
+                                            // Tapping "No reservations available" / "No tickets available"
+                                            // in the stop sheet jumps straight to Bo with a swap prompt
+                                            // instead of marking the slot unavailable. Keeps the user in
+                                            // motion: one tap, Bo proposes alternatives.
+                                            val noun = if (kind == "ticket") "tickets" else "reservations"
+                                            live.localapp.local.platform.openPlanChatSheet(
+                                                plan = plan,
+                                                prePopulatedMessage = "Can you swap out $venueName as there are no $noun available?",
+                                                onDismiss = {},
+                                            )
+                                        },
                                     )
                                 } else {
                                     selectedPlan = plan

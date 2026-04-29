@@ -77,6 +77,9 @@ object PlanDetailBridge {
     var onSwapInAlternative: ((Int, String, String) -> Unit)? = null
     /** "See more options" — opens the per-plan Bo chat with a swap prompt. Params: dayIdx, slotId, venueName. */
     var onSeeMoreSwapOptions: ((Int, String, String) -> Unit)? = null
+    /** "No reservations / tickets available" — opens Bo with a swap prompt naming the venue
+     *  and the unavailability reason. Params: dayIdx, slotId, venueName, kind ("reservation" or "ticket"). */
+    var onSwapForUnavailable: ((Int, String, String, String) -> Unit)? = null
 
     // ── Attendee actions ───────────────────────────────────────────────
     /** Tapped Invite. */
