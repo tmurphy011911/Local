@@ -135,9 +135,22 @@ private val minorWords = setOf("vs", "vs.", "and", "the", "of", "in", "at", "to"
 
 private fun String.toTitleCase(): String {
     if (isBlank()) return this
-    return lowercase().split(" ").mapIndexed { i, word ->
-        if (i > 0 && word in minorWords) word
-        else word.replaceFirstChar { it.uppercase() }
+    return split(" ").mapIndexed { i, word ->
+        // Strip punctuation so "U.S.A." and "AM-PM" still register as acronyms.
+        val letters = word.filter { it.isLetter() }
+        when {
+            // Short all-caps token = acronym → preserve as-is. Catches MIT, NHL,
+            // USA, NBA, MLB, WNBA, AAPI, etc. Limit to length 5 so we don't
+            // accidentally preserve all-caps screaming titles like "FREE PIZZA".
+            letters.length in 2..5 && letters.all { it.isUpperCase() } -> word
+            // Already mixed case (has both upper and lower) → preserve. Catches
+            // "iPhone", "MacBook", "TikTok", brand names.
+            word.any { it.isUpperCase() } && word.any { it.isLowerCase() } -> word
+            // Minor word in a non-leading position → lowercase.
+            i > 0 && word.lowercase() in minorWords -> word.lowercase()
+            // Default: capitalize first letter, lowercase the rest.
+            else -> word.lowercase().replaceFirstChar { it.uppercase() }
+        }
     }.joinToString(" ")
 }
 
