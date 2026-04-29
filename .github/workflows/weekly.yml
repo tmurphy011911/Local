@@ -30,8 +30,11 @@ jobs:
         run: node run_crawls.js
 
   classify-events:
+    # Wait for BOTH event sources to finish loading: the long crawl + the
+    # parallel municipal-feed sync. Otherwise municipal events miss the
+    # Claude classification pass and land with raw/wrong categories.
     runs-on: ubuntu-latest
-    needs: crawl-venues
+    needs: [crawl-venues, sync-municipal-feeds]
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
