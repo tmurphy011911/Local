@@ -262,7 +262,16 @@ class PlanChatViewModel(
                     return
                 }
 
-                // Non-terminal tools → execute + continue loop
+                // Non-terminal tools → execute + continue loop. Persist any text
+                // Bo produced this round as a real chat message FIRST, otherwise
+                // it only lives in streamingText and gets overwritten by the next
+                // round's TextDelta events — leaving the user with just the final
+                // confirmation message and no record of Bo's reasoning.
+                if (text.isNotBlank()) {
+                    postYocalMessage(text)
+                    _uiState.update { it.copy(streamingText = "") }
+                }
+
                 val assistantBlocks = claudeApi.buildAssistantContentBlocks(response)
                 yocalHistory.add(ClaudeMessage.blocks("assistant", assistantBlocks))
 
