@@ -379,7 +379,10 @@ private fun StepTitleAndDates(
         onRangeChange(s, e)
     }
 
-    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+    // No verticalScroll on this column — DateRangePicker contains its own
+    // LazyColumn, which crashes with "infinity maximum height" if its parent
+    // is scrollable. The picker itself handles month-list scrolling.
+    Column(modifier = Modifier.fillMaxSize()) {
         Text(
             "Name your plan",
             style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = AppColors.Ink),
@@ -402,7 +405,7 @@ private fun StepTitleAndDates(
 
         DateRangePicker(
             state = pickerState,
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier.fillMaxWidth().weight(1f),
             showModeToggle = false,
             title = null,
             headline = null,
