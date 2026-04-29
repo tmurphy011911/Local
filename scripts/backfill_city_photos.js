@@ -11,12 +11,10 @@
  *   SUPABASE_SERVICE_KEY=ey... GOOGLE_PLACES_API_KEY=AI... node backfill_city_photos.js
  */
 
-const SUPABASE_URL = "https://blifubxslaucshmlphdc.supabase.co";
-const SUPABASE_KEY = process.env.SUPABASE_SERVICE_KEY;
-const GOOGLE_KEY = process.env.GOOGLE_PLACES_API_KEY;
+const { getSecrets, SUPABASE_URL: SUPA_URL } = require("./lib/secrets");
 
-if (!SUPABASE_KEY) { console.error("SUPABASE_SERVICE_KEY required"); process.exit(1); }
-if (!GOOGLE_KEY) { console.error("GOOGLE_PLACES_API_KEY required"); process.exit(1); }
+const SUPABASE_URL = SUPA_URL;
+let SUPABASE_KEY, GOOGLE_KEY;
 
 async function supabaseGet(table, query) {
   const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?${query}`, {
@@ -63,6 +61,17 @@ async function searchCityPhoto(cityName, state) {
 }
 
 async function main() {
+  // Pull GOOGLE_PLACES_API_KEY from the Supabase `secrets` table the same
+  // way ticketmaster_sync.js / eventbrite_sync.js do. SUPABASE_SERVICE_KEY
+  // bootstraps; the helper falls back to env vars if the DB fetch fails.
+  const secrets = await getSecrets(["GOOGLE_PLACES_API_KEY"]);
+  SUPABASE_KEY = secrets.SUPABASE_SERVICE_KEY;
+  GOOGLE_KEY = secrets.GOOGLE_PLACES_API_KEY || process.env.GOOGLE_PLACES_API_KEY;
+  if (!GOOGLE_KEY) {
+    console.error("Missing GOOGLE_PLACES_API_KEY (not in Supabase secrets table or env vars)");
+    process.exit(1);
+  }
+
   console.log("Backfilling city photos...");
 
   // Get all unique cities from events
