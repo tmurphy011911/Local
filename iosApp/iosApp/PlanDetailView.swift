@@ -800,7 +800,8 @@ struct PlanDetailView: View {
             if total <= 1 { return nil }                                // solo
             let unconfirmed = max(0, total - confirmed)
             if unconfirmed == 0 { return "\(total) confirmed" }         // all in
-            return "\(unconfirmed) unconfirmed"
+            let noun = unconfirmed == 1 ? "person" : "people"
+            return "\(unconfirmed) \(noun) unconfirmed"
         }()
         return Button {
             PlanDetailBridge.shared.onShare?()

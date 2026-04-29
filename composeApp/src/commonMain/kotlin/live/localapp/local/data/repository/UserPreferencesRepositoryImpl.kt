@@ -47,6 +47,9 @@ class UserPreferencesRepositoryImpl(
     override fun isOnboardingComplete(): Boolean =
         settings.getBoolean(KEY_ONBOARDING_COMPLETE, false)
 
+    override fun getLocalFirstName(): String? =
+        settings.getStringOrNull(KEY_FIRST_NAME)?.takeIf { it.isNotBlank() }
+
     override suspend fun savePreferences(prefs: UserPreferences): String {
         val existingId = getLocalUserId()
 
@@ -93,6 +96,8 @@ class UserPreferencesRepositoryImpl(
         settings.putBoolean(KEY_ONBOARDING_COMPLETE, true)
         prefs.userLat?.let { settings.putDouble(KEY_USER_LAT, it) }
         prefs.userLng?.let { settings.putDouble(KEY_USER_LNG, it) }
+        prefs.firstName?.takeIf { it.isNotBlank() }?.let { settings.putString(KEY_FIRST_NAME, it) }
+            ?: settings.remove(KEY_FIRST_NAME)
 
         return result
     }
@@ -125,7 +130,10 @@ class UserPreferencesRepositoryImpl(
                 manualLocationName = dto.manualLocationName,
                 manualLat = dto.manualLat,
                 manualLng = dto.manualLng,
-            )
+            ).also { prefs ->
+                prefs.firstName?.takeIf { it.isNotBlank() }?.let { settings.putString(KEY_FIRST_NAME, it) }
+                    ?: settings.remove(KEY_FIRST_NAME)
+            }
         } catch (_: Exception) {
             null
         }
@@ -154,6 +162,7 @@ class UserPreferencesRepositoryImpl(
             settings.putBoolean(KEY_ONBOARDING_COMPLETE, true)
             dto.userLat?.let { settings.putDouble(KEY_USER_LAT, it) }
             dto.userLng?.let { settings.putDouble(KEY_USER_LNG, it) }
+            dto.firstName?.takeIf { it.isNotBlank() }?.let { settings.putString(KEY_FIRST_NAME, it) }
             userId
         } catch (_: Exception) {
             null
@@ -189,6 +198,7 @@ class UserPreferencesRepositoryImpl(
             settings.putBoolean(KEY_ONBOARDING_COMPLETE, true)
             dto.userLat?.let { settings.putDouble(KEY_USER_LAT, it) }
             dto.userLng?.let { settings.putDouble(KEY_USER_LNG, it) }
+            dto.firstName?.takeIf { it.isNotBlank() }?.let { settings.putString(KEY_FIRST_NAME, it) }
             authUserId
         } catch (_: Exception) {
             null
@@ -238,6 +248,8 @@ class UserPreferencesRepositoryImpl(
         settings.putBoolean(KEY_ONBOARDING_COMPLETE, true)
         prefs.userLat?.let { settings.putDouble(KEY_USER_LAT, it) }
         prefs.userLng?.let { settings.putDouble(KEY_USER_LNG, it) }
+        prefs.firstName?.takeIf { it.isNotBlank() }?.let { settings.putString(KEY_FIRST_NAME, it) }
+            ?: settings.remove(KEY_FIRST_NAME)
 
         return id
     }
@@ -247,6 +259,7 @@ class UserPreferencesRepositoryImpl(
         settings.remove(KEY_ONBOARDING_COMPLETE)
         settings.remove(KEY_USER_LAT)
         settings.remove(KEY_USER_LNG)
+        settings.remove(KEY_FIRST_NAME)
     }
 
     /** Record an app open and return the updated streak count. Max +1 per calendar day. */
@@ -285,5 +298,6 @@ class UserPreferencesRepositoryImpl(
         private const val KEY_USER_LNG = "user_lng"
         private const val KEY_LAST_OPEN_DATE = "streak_last_open"
         private const val KEY_STREAK_DAYS = "streak_days"
+        private const val KEY_FIRST_NAME = "first_name"
     }
 }

@@ -341,7 +341,10 @@ fun PlanDetailScreen(
             val subtext = when {
                 totalGoing <= 1 -> null
                 unconfirmed == 0 -> "$totalGoing confirmed"
-                else -> "$unconfirmed unconfirmed"
+                else -> {
+                    val noun = if (unconfirmed == 1) "person" else "people"
+                    "$unconfirmed $noun unconfirmed"
+                }
             }
             Box(
                 modifier = Modifier

@@ -1376,7 +1376,8 @@ class ChatViewModel(
                         )
                     },
                     attendees = buildList {
-                        add(PlanAttendee(id = "self", name = "You", initials = "Y", confirmed = true, avatarColor = 0xFFFF6B6B))
+                        val initial = userPrefsRepo.getLocalFirstName()?.firstOrNull()?.uppercase() ?: "Y"
+                        add(PlanAttendee(id = "self", name = "You", initials = initial, confirmed = true, avatarColor = 0xFFFF6B6B))
                         val count = state.planAttendeeCount.coerceAtLeast(1)
                         if (count > 1) {
                             repeat(count - 1) { i ->
@@ -2116,7 +2117,8 @@ $currentPlanContext
                         )
                     },
                     attendees = buildList {
-                        add(live.localapp.local.domain.model.PlanAttendee(id = "self", name = "You", initials = "Y", confirmed = true, avatarColor = 0xFFFF6B6B))
+                        val initial = userPrefsRepo.getLocalFirstName()?.firstOrNull()?.uppercase() ?: "Y"
+                        add(live.localapp.local.domain.model.PlanAttendee(id = "self", name = "You", initials = initial, confirmed = true, avatarColor = 0xFFFF6B6B))
                         val count = attendeeCount.coerceAtLeast(1)
                         if (count > 1) {
                             repeat(count - 1) { i ->

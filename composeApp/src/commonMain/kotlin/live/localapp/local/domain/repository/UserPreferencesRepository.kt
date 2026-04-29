@@ -28,6 +28,9 @@ interface UserPreferencesRepository {
     fun getLocalUserId(): String?
     fun isOnboardingComplete(): Boolean
 
+    /** Cached first name from local storage. Null if user hasn't entered one. */
+    fun getLocalFirstName(): String?
+
     /** Save preferences to Supabase and cache user ID locally. */
     suspend fun savePreferences(prefs: UserPreferences): String
 

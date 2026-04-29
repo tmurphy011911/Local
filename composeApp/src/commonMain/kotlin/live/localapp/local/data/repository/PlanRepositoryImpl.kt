@@ -164,7 +164,7 @@ private fun parseTicketState(s: String): TicketState =
         else -> TicketState.NONE
     }
 
-private fun PlanDto.toDomain(): Plan {
+private fun PlanDto.toDomain(creatorFirstName: String? = null): Plan {
     // Strip trailing "phantom" days — empty days with a fallback shortName
     // like "Day 2" (no real weekday) that crept in via earlier ingestion
     // bugs. Without this, single-day plans render as "TUE – Day 2 / 2 days"
@@ -176,6 +176,7 @@ private fun PlanDto.toDomain(): Plan {
             day.shortName.all { it.isDigit() })
     }.ifEmpty { days } // never strip ALL days — keep at least one
     val dateDisplay = buildDateDisplay(trimmedDays)
+    val creatorInitial = creatorFirstName?.firstOrNull()?.uppercase() ?: "Y"
     return Plan(
         id = id,
         title = name,
@@ -185,7 +186,7 @@ private fun PlanDto.toDomain(): Plan {
             PlanAttendee(
                 id = userId,
                 name = "You",
-                initials = "Y",
+                initials = creatorInitial,
                 confirmed = true,
                 avatarColor = 0xFFFF6B6B,
             ),
@@ -236,7 +237,8 @@ class PlanRepositoryImpl(
             println("PlanRepository.getPlans: raw=${raw.take(500)}")
             val dtos = result.decodeList<PlanDto>()
             println("PlanRepository.getPlans: decoded ${dtos.size} plans")
-            val plansBare = dtos.map { it.toDomain() }
+            val firstName = userPrefsRepo.getLocalFirstName()
+            val plansBare = dtos.map { it.toDomain(firstName) }
             // One batched query into plan_attendees to hydrate the real
             // attendee list for every plan, instead of the dummy "You-only"
             // list PlanDto.toDomain() returns. Counts + the View Attendees
@@ -502,13 +504,22 @@ class PlanRepositoryImpl(
         val confirmed: Boolean = false,
     )
 
-    private fun PlanAttendeeRow.toDomain(): live.localapp.local.domain.model.PlanAttendee {
+    private fun PlanAttendeeRow.toDomain(currentUserFirstName: String? = null): live.localapp.local.domain.model.PlanAttendee {
         val displayName = name?.takeIf { it.isNotBlank() } ?: "Guest"
-        val initials = displayName.split(" ", "-")
+        val rowInitials = displayName.split(" ", "-")
             .filter { it.isNotBlank() }
             .take(2)
             .joinToString("") { it.first().uppercase() }
             .ifBlank { "?" }
+        // For the creator row, the DB stores name="You" — that yields "Y" as
+        // initials. If the user has set a first name on their profile, prefer
+        // its first letter instead (e.g. "T" for Tom). Falls back to "Y" if
+        // no name is set.
+        val initials = if (isCreator) {
+            currentUserFirstName?.firstOrNull()?.uppercase() ?: "Y"
+        } else {
+            rowInitials
+        }
         // Color buckets — pseudo-randomized by hashing the user id so each
         // attendee gets a stable color across renders.
         val palette = longArrayOf(0xFFFF6B6B, 0xFFAB83A1, 0xFF4FB3A0, 0xFFE8A24E, 0xFF6B8FD4, 0xFFA56BD4)
@@ -525,10 +536,11 @@ class PlanRepositoryImpl(
 
     override suspend fun loadAttendees(planId: String): List<live.localapp.local.domain.model.PlanAttendee> {
         return try {
+            val firstName = userPrefsRepo.getLocalFirstName()
             supabaseClient.from("plan_attendees")
                 .select { filter { eq("plan_id", planId) } }
                 .decodeList<PlanAttendeeRow>()
-                .map { it.toDomain() }
+                .map { it.toDomain(firstName) }
         } catch (e: Throwable) {
             println("PlanRepository.loadAttendees($planId) failed: ${e.message}")
             emptyList()
@@ -540,11 +552,12 @@ class PlanRepositoryImpl(
     ): Map<String, List<live.localapp.local.domain.model.PlanAttendee>> {
         if (planIds.isEmpty()) return emptyMap()
         return try {
+            val firstName = userPrefsRepo.getLocalFirstName()
             val rows = supabaseClient.from("plan_attendees")
                 .select { filter { isIn("plan_id", planIds) } }
                 .decodeList<PlanAttendeeRow>()
             rows.groupBy { it.planId }
-                .mapValues { (_, list) -> list.map { it.toDomain() } }
+                .mapValues { (_, list) -> list.map { it.toDomain(firstName) } }
         } catch (e: Throwable) {
             println("PlanRepository.loadAttendeesBatch(${planIds.size}) failed: ${e.message}")
             emptyMap()
