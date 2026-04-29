@@ -606,6 +606,16 @@ function normalizeEvent(event, venue) {
   const description = event.description ? decodeXmlEntities(event.description).trim() : null;
   const sourceId = `crawl-${venueCity}-${Buffer.from(title + event.start_date + venue.name).toString("base64url").slice(0, 40)}`;
 
+  // True when the upstream source provided a real time component (HH:MM
+  // in start_date that isn't 00:00). False when the crawler only had a
+  // date or explicitly emitted T00:00:00 as a "no time" sentinel. The app
+  // uses this flag to display "Time TBD" instead of "12 AM" and to let
+  // Bo pick a sensible time when slotting these events.
+  const startStr = typeof event.start_date === "string" ? event.start_date : "";
+  const hasTimePart = /T\d{2}:\d{2}/.test(startStr);
+  const isExplicitMidnight = /T00:00:00/.test(startStr);
+  const startHasTime = hasTimePart && !isExplicitMidnight;
+
   return {
     title,
     description: description || null,
@@ -613,6 +623,7 @@ function normalizeEvent(event, venue) {
     subcategory: VENUE_TO_SUBCATEGORY[venue.category] || null,
     start_at: tagEasternTime(event.start_date),
     end_at: tagEasternTime(event.end_date),
+    time_known: startHasTime,
     is_free: event.is_free || false,
     price_min: event.price_min ?? null,
     price_max: event.price_max ?? null,
@@ -853,11 +864,14 @@ function extractNpsParkCode(url) {
 }
 
 function parseNpsDateTime(dateStr, timeStr) {
-  // dateStr = "2026-04-20", timeStr = "11:00 AM" → ISO string
+  // dateStr = "2026-04-20", timeStr = "11:00 AM" → ISO string with time.
+  // When `timeStr` is missing/unparseable, return the bare date (no T
+  // component) so downstream normalization can flag time_known=false
+  // instead of silently defaulting to midnight.
   if (!dateStr) return null;
-  if (!timeStr) return `${dateStr}T00:00:00`;
+  if (!timeStr) return dateStr;
   const m = timeStr.match(/(\d{1,2}):(\d{2})\s*(AM|PM)/i);
-  if (!m) return `${dateStr}T00:00:00`;
+  if (!m) return dateStr;
   let hour = parseInt(m[1], 10);
   const min = m[2];
   const ampm = m[3].toUpperCase();

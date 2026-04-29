@@ -55,7 +55,7 @@ class EventRepositoryImpl(
     override suspend fun getEventsByIds(ids: List<String>): List<Event> {
         if (ids.isEmpty()) return emptyList()
         // Supabase `isIn` has practical limits; paginate in chunks of 100.
-        return ids.chunked(100).flatMap { chunk ->
+        val raw = ids.chunked(100).flatMap { chunk ->
             supabaseClient.from("events")
                 .select {
                     filter { isIn("id", chunk) }
@@ -63,6 +63,11 @@ class EventRepositoryImpl(
                 .decodeList<EventDto>()
                 .map { it.toDomain() }
         }
+        // Same hydration pass searchEvents runs — fills in missing event
+        // imageUrl from the matching venue's photo_url. Without this, plan
+        // slots built from getEventsByIds end up with blank image tiles even
+        // when the venue has a perfectly good Google Places photo on file.
+        return hydrateVenueImages(raw)
     }
 
     override suspend fun getEventsByCategory(city: String, category: String): List<Event> {

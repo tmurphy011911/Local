@@ -32,6 +32,9 @@ data class EventDto(
     @SerialName("source_url") val sourceUrl: String? = null,
     val city: String,
     @SerialName("venue_description") val venueDescription: String? = null,
+    // True when start_at is a real source-provided time; false when start_at
+    // was inferred from a date-only crawl source (defaulted to midnight).
+    @SerialName("time_known") val timeKnown: Boolean = true,
 )
 
 fun EventDto.toDomain(): Event = Event(
@@ -58,4 +61,5 @@ fun EventDto.toDomain(): Event = Event(
     source = source,
     sourceUrl = sourceUrl,
     venueDescription = venueDescription,
+    timeKnown = timeKnown,
 )

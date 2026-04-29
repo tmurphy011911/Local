@@ -25,6 +25,10 @@ struct EventDetailData {
     let source: String?
     var showDirections: Bool = false
     var isFavorited: Bool = false
+    /// True when `startAt` is a real source-provided time. False when the
+    /// crawler had only a date and defaulted to midnight Eastern. UI shows
+    /// "Time TBD" instead of "12:00 AM" for false rows.
+    var timeKnown: Bool = true
 
     var ctaUrl: String? { ticketUrl ?? sourceUrl }
     var hasLocation: Bool { venueLat != 0 && venueLng != 0 }
@@ -433,12 +437,22 @@ struct EventDetailView: View {
                 Spacer().frame(height: 10)
             }
 
-            // Date — show for all events including recurring (next occurrence)
+            // Date — show for all events including recurring (next occurrence).
+            // Date-only events (timeKnown=false) get a "Time TBD" suffix
+            // instead of the misleading "12:00 AM" the formatter would emit.
             if let startAt = event.startAt {
+                let baseText = isRecurring ? "Next: \(formatDate(startAt))" : formatDate(startAt)
+                let displayText: String = {
+                    guard !event.timeKnown else { return baseText }
+                    // Strip any time component the formatter appended (e.g.,
+                    // "May 1, 2026 · 12:00 AM" → "May 1, 2026 · Time TBD").
+                    let datePart = baseText.split(separator: "\u{00B7}").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? baseText
+                    return "\(datePart) \u{00B7} Time TBD"
+                }()
                 infoRow(
                     systemName: "calendar",
                     iconColor: AppColor.coral,
-                    text: isRecurring ? "Next: \(formatDate(startAt))" : formatDate(startAt)
+                    text: displayText
                 )
                 Spacer().frame(height: 10)
             }

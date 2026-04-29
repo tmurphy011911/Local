@@ -31,6 +31,12 @@ data class Event(
     val sourceUrl: String? = null,
     val distanceMiles: Double? = null,
     val venueDescription: String? = null,
+    /**
+     * True when `startAt` is a real source-provided time. False when the
+     * crawler had only a date and defaulted to midnight Eastern. UI should
+     * render "Time TBD" / "All day" rather than "12 AM" for false rows.
+     */
+    val timeKnown: Boolean = true,
 ) {
     val priceDisplay: String
         get() = when {
@@ -69,7 +75,16 @@ data class Event(
                     hour > 12 -> hour - 12
                     else -> hour
                 }
-                val time = if (minute == 0) "$displayHour$amPm" else "$displayHour:${minute.toString().padStart(2, '0')}$amPm"
+                // Date-only events (timeKnown=false) display "TBD" instead of
+                // the misleading "12am" the formatter would produce. Catches
+                // both new ingestions (flag set) and legacy midnight rows.
+                val time = if (!timeKnown || (hour == 0 && minute == 0)) {
+                    "TBD"
+                } else if (minute == 0) {
+                    "$displayHour$amPm"
+                } else {
+                    "$displayHour:${minute.toString().padStart(2, '0')}$amPm"
+                }
 
                 // Calculate day difference using epoch days
                 val eventDate = local.date

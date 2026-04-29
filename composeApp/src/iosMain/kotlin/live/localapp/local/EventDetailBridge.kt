@@ -23,6 +23,7 @@ object EventDetailBridge {
         source: String?,
         cardX: Float, cardY: Float, cardW: Float, cardH: Float, cardImageUrl: String?,
         isFavorited: Boolean,
+        timeKnown: Boolean,
     ) -> Unit)? = null
 
     /** Swift sets this. Compose calls it to dismiss the native detail screen. */
