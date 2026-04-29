@@ -100,6 +100,7 @@ import live.localapp.local.ui.detail.EventDetailScreen
 import live.localapp.local.ui.home.isLocationInSupportedState
 import live.localapp.local.ui.home.toCardData
 import live.localapp.local.ui.common.AppHeader
+import live.localapp.local.ui.common.localCardSurface
 import live.localapp.local.ui.theme.AppColors
 import org.koin.mp.KoinPlatform
 import live.localapp.local.ui.theme.AppFonts
@@ -653,14 +654,13 @@ private fun SavedVenuesCarousel(
 private fun SavedVenueAlbumCard(vm: VenueWithMeta, onClick: (Rect) -> Unit, onFavoriteToggle: () -> Unit = {}) {
     val v = vm.venue
     var cardBounds by remember { mutableStateOf(Rect.Zero) }
-    val cardShape = RoundedCornerShape(16.dp)
 
     Box(
         modifier = Modifier
             .width(156.dp)
-            .height(190.dp)
+            .height(194.dp)
             .onGloballyPositioned { cardBounds = it.boundsInRoot() }
-            .clip(cardShape)
+            .localCardSurface(cornerRadius = 16.dp)
             .pressable(onClick = { onClick(cardBounds) }),
     ) {
         // Full-card image or gradient background
@@ -1677,17 +1677,12 @@ private fun SavedAlbumEventCard(
     onClick: () -> Unit,
     onUnfavorite: () -> Unit,
 ) {
-    val cardShape = RoundedCornerShape(16.dp)
     Box(
         modifier = Modifier
             .width(156.dp)
-            .height(190.dp)
-            .clip(cardShape)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onClick,
-            ),
+            .height(194.dp)
+            .localCardSurface(cornerRadius = 16.dp)
+            .pressable(onClick = onClick),
     ) {
         // Full-bleed image or category gradient fallback
         if (!event.imageUrl.isNullOrBlank()) {

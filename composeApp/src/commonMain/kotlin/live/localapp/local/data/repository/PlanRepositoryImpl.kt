@@ -59,6 +59,7 @@ private data class PlanSlotDto(
     @SerialName("ticket_url") val ticketUrl: String? = null,
     @SerialName("venue_rating") val venueRating: Double? = null,
     @SerialName("venue_address") val venueAddress: String? = null,
+    @SerialName("venue_name") val venueName: String? = null,
     @SerialName("venue_lat") val venueLat: Double? = null,
     @SerialName("venue_lng") val venueLng: Double? = null,
     @SerialName("price_min") val priceMin: Double? = null,
@@ -100,6 +101,7 @@ private fun PlanSlot.toDto() = PlanSlotDto(
     id = id, time = time, emoji = emoji, name = name, detail = detail, price = price,
     isFree = isFree, eventId = eventId, isCustom = isCustom, imageUrl = imageUrl,
     ticketUrl = ticketUrl, venueRating = venueRating, venueAddress = venueAddress,
+    venueName = venueName,
     venueLat = venueLat, venueLng = venueLng, priceMin = priceMin, priceMax = priceMax,
     reservationUrl = reservationUrl, sourceUrl = sourceUrl, venueWebsite = venueWebsite, venueCategory = venueCategory,
     venueReservable = venueReservable,
@@ -131,6 +133,7 @@ private fun PlanSlotDto.toDomain() = PlanSlot(
     ticketUrl = ticketUrl,
     venueRating = venueRating,
     venueAddress = venueAddress,
+    venueName = venueName,
     venueLat = venueLat,
     venueLng = venueLng,
     priceMin = priceMin,
@@ -162,12 +165,22 @@ private fun parseTicketState(s: String): TicketState =
     }
 
 private fun PlanDto.toDomain(): Plan {
-    val dateDisplay = buildDateDisplay(days)
+    // Strip trailing "phantom" days — empty days with a fallback shortName
+    // like "Day 2" (no real weekday) that crept in via earlier ingestion
+    // bugs. Without this, single-day plans render as "TUE – Day 2 / 2 days"
+    // on the Plans tab hero because buildDateDisplay joins first + last
+    // shortName, and the day count uses the raw days.size.
+    val trimmedDays = days.dropLastWhile { day ->
+        day.slots.isEmpty() && (day.shortName.isBlank() ||
+            day.shortName.startsWith("Day ", ignoreCase = true) ||
+            day.shortName.all { it.isDigit() })
+    }.ifEmpty { days } // never strip ALL days — keep at least one
+    val dateDisplay = buildDateDisplay(trimmedDays)
     return Plan(
         id = id,
         title = name,
         city = city,
-        days = days.map { it.toDomain() },
+        days = trimmedDays.map { it.toDomain() },
         attendees = listOf(
             PlanAttendee(
                 id = userId,
@@ -223,10 +236,19 @@ class PlanRepositoryImpl(
             println("PlanRepository.getPlans: raw=${raw.take(500)}")
             val dtos = result.decodeList<PlanDto>()
             println("PlanRepository.getPlans: decoded ${dtos.size} plans")
-            val plans = dtos.map { dto ->
-                val plan = dto.toDomain()
-                val confirmed = try { getConfirmedCount(plan.id) } catch (_: Throwable) { 1 }
-                plan.copy(confirmedCount = confirmed)
+            val plansBare = dtos.map { it.toDomain() }
+            // One batched query into plan_attendees to hydrate the real
+            // attendee list for every plan, instead of the dummy "You-only"
+            // list PlanDto.toDomain() returns. Counts + the View Attendees
+            // sheet stay in sync with actual RSVPs from this point on.
+            val attendeesByPlan = loadAttendeesBatch(plansBare.map { it.id })
+            val plans = plansBare.map { plan ->
+                val real = attendeesByPlan[plan.id]
+                val confirmed = real?.count { it.confirmed } ?: 1
+                plan.copy(
+                    attendees = real?.takeIf { it.isNotEmpty() } ?: plan.attendees,
+                    confirmedCount = confirmed,
+                )
             }
             plans
         } catch (e: Throwable) {
@@ -468,6 +490,64 @@ class PlanRepositoryImpl(
             )
         } catch (_: Throwable) {
             // Likely UNIQUE violation if already exists — that's fine
+        }
+    }
+
+    @Serializable
+    private data class PlanAttendeeRow(
+        @SerialName("plan_id") val planId: String,
+        @SerialName("user_id") val userId: String? = null,
+        val name: String? = null,
+        @SerialName("is_creator") val isCreator: Boolean = false,
+        val confirmed: Boolean = false,
+    )
+
+    private fun PlanAttendeeRow.toDomain(): live.localapp.local.domain.model.PlanAttendee {
+        val displayName = name?.takeIf { it.isNotBlank() } ?: "Guest"
+        val initials = displayName.split(" ", "-")
+            .filter { it.isNotBlank() }
+            .take(2)
+            .joinToString("") { it.first().uppercase() }
+            .ifBlank { "?" }
+        // Color buckets — pseudo-randomized by hashing the user id so each
+        // attendee gets a stable color across renders.
+        val palette = longArrayOf(0xFFFF6B6B, 0xFFAB83A1, 0xFF4FB3A0, 0xFFE8A24E, 0xFF6B8FD4, 0xFFA56BD4)
+        val hash = (userId ?: displayName).hashCode()
+        val color = palette[((hash % palette.size) + palette.size) % palette.size]
+        return live.localapp.local.domain.model.PlanAttendee(
+            id = userId ?: "guest_${hash.toString(16)}",
+            name = if (isCreator) "You" else displayName,
+            initials = initials,
+            confirmed = confirmed,
+            avatarColor = color,
+        )
+    }
+
+    override suspend fun loadAttendees(planId: String): List<live.localapp.local.domain.model.PlanAttendee> {
+        return try {
+            supabaseClient.from("plan_attendees")
+                .select { filter { eq("plan_id", planId) } }
+                .decodeList<PlanAttendeeRow>()
+                .map { it.toDomain() }
+        } catch (e: Throwable) {
+            println("PlanRepository.loadAttendees($planId) failed: ${e.message}")
+            emptyList()
+        }
+    }
+
+    override suspend fun loadAttendeesBatch(
+        planIds: List<String>,
+    ): Map<String, List<live.localapp.local.domain.model.PlanAttendee>> {
+        if (planIds.isEmpty()) return emptyMap()
+        return try {
+            val rows = supabaseClient.from("plan_attendees")
+                .select { filter { isIn("plan_id", planIds) } }
+                .decodeList<PlanAttendeeRow>()
+            rows.groupBy { it.planId }
+                .mapValues { (_, list) -> list.map { it.toDomain() } }
+        } catch (e: Throwable) {
+            println("PlanRepository.loadAttendeesBatch(${planIds.size}) failed: ${e.message}")
+            emptyMap()
         }
     }
 }

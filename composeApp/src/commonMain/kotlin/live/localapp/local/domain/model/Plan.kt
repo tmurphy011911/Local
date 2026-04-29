@@ -49,6 +49,7 @@ data class PlanSlot(
     val ticketUrl: String? = null,
     val venueRating: Double? = null,
     val venueAddress: String? = null,
+    val venueName: String? = null,
     val venueLat: Double? = null,
     val venueLng: Double? = null,
     val priceMin: Double? = null,

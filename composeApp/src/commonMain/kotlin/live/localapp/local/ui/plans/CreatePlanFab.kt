@@ -225,6 +225,7 @@ fun CreatePlanMenuItems(
                 label = "Create a Plan with Bo",
                 icon = Icons.Outlined.AutoAwesome,
                 outlined = true,
+                useBoCharacter = true,
                 onClick = {
                     onYocal()
                     onDismiss()
@@ -242,6 +243,7 @@ private fun BounceInMenuItem(
     icon: ImageVector,
     onClick: () -> Unit,
     outlined: Boolean = false,
+    useBoCharacter: Boolean = false,
 ) {
     val scale = remember { Animatable(0.6f) }
     val translateY = remember { Animatable(28f) }
@@ -295,18 +297,30 @@ private fun BounceInMenuItem(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .background(AppColors.CoralLt, CircleShape),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                icon,
-                contentDescription = null,
-                tint = AppColors.Coral,
-                modifier = Modifier.size(18.dp),
+        if (useBoCharacter) {
+            // The "Create a Plan with Bo" menu item shows the actual Bo
+            // character instead of a sparkle icon — gives Bo a recognizable
+            // entry point and replaces the generic AutoAwesome glyph.
+            live.localapp.local.ui.character.Bo(
+                size = 32.dp,
+                showSparkles = false,
+                showShadow = false,
+                modifier = Modifier.size(32.dp),
             )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(32.dp)
+                    .background(AppColors.CoralLt, CircleShape),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    tint = AppColors.Coral,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
         }
         Spacer(Modifier.width(10.dp))
         Text(

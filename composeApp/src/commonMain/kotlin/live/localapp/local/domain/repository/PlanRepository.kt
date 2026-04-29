@@ -1,6 +1,7 @@
 package live.localapp.local.domain.repository
 
 import live.localapp.local.domain.model.Plan
+import live.localapp.local.domain.model.PlanAttendee
 
 interface PlanRepository {
     suspend fun getPlans(): List<Plan>
@@ -16,6 +17,21 @@ interface PlanRepository {
     suspend fun updateAttendeesCanEdit(planId: String, canEdit: Boolean)
     suspend fun getConfirmedCount(planId: String): Int
     suspend fun insertCreatorAttendee(planId: String)
+
+    /**
+     * Load all rows from `plan_attendees` for a single plan and map them
+     * to domain [PlanAttendee] objects. Used to hydrate `Plan.attendees`
+     * on plan-detail open so the "X unconfirmed" subtext + Attendee Sheet
+     * reflect real RSVPs instead of just the creator stub.
+     */
+    suspend fun loadAttendees(planId: String): List<PlanAttendee>
+
+    /**
+     * Batch version — load attendees for many plans at once. Used by the
+     * Plans tab to hydrate counts in a single query instead of N round
+     * trips. Returns a map from planId → attendees.
+     */
+    suspend fun loadAttendeesBatch(planIds: List<String>): Map<String, List<PlanAttendee>>
 }
 
 data class AcceptInviteResult(
