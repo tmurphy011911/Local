@@ -944,6 +944,10 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         // Open the chat sheet so the celebration overlay surfaces.
                         openChatOrLogin()
                     },
+                    onPlanWithBo = {
+                        // User abandoned manual flow — open Bo fresh.
+                        openChatOrLogin()
+                    },
                 )
             }
 

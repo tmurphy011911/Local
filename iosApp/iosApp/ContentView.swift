@@ -35,6 +35,10 @@ struct ComposeView: UIViewControllerRepresentable {
         // Wire RevenueCat subscription bridge
         setupRevenueCatBridge()
 
+        // Wire native time picker + Apple Maps autocomplete bridges
+        NativeTimePickerBridgeSetup.register()
+        PlacesAutocompleteBridgeSetup.register()
+
         return vc
     }
 

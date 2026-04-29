@@ -5,11 +5,9 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,26 +18,35 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.KeyboardArrowLeft
+import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Remove
+import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.Search
+import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -49,84 +56,288 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.mutableStateMapOf
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.datetime.DatePeriod
+import kotlinx.datetime.Instant
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.plus
 import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.repository.EventRepository
+import live.localapp.local.platform.PlaceSuggestion
+import live.localapp.local.platform.rememberNativeTimePicker
+import live.localapp.local.platform.rememberPlacesAutocomplete
+import live.localapp.local.ui.character.Bo
 import live.localapp.local.ui.chat.ChatViewModel
 import live.localapp.local.ui.chat.ItineraryDay
 import live.localapp.local.ui.chat.ItinerarySlot
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 
-// Internal state holders — scoped to the sheet's lifetime.
+private val MONTHS = listOf("January","February","March","April","May","June","July","August","September","October","November","December")
+private val WEEKDAYS = listOf("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")
 
-internal data class ManualEvent(
-    val title: String,
-    val startTime: String,
-    val endTime: String,
-    val location: String,
-    val description: String,
-)
-
-internal data class DayPlan(
-    val date: LocalDate,
-    val selectedEventIds: Set<String> = emptySet(),
-    val manualEvents: List<ManualEvent> = emptyList(),
-    val wantBreakfast: Boolean = false,
-    val wantLunch: Boolean = false,
-    val wantDinner: Boolean = false,
-)
-
-private val MONTH_NAMES = listOf(
-    "January","February","March","April","May","June",
-    "July","August","September","October","November","December",
-)
-private val WEEKDAY_NAMES = listOf("Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")
-
-private fun today(): LocalDate = kotlin.time.Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
+private fun today(): LocalDate =
+    kotlin.time.Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
 
 private fun fullLabel(d: LocalDate): String =
-    "${WEEKDAY_NAMES[d.dayOfWeek.ordinal]}, ${MONTH_NAMES[d.monthNumber - 1]} ${d.dayOfMonth}"
+    "${WEEKDAYS[d.dayOfWeek.ordinal]}, ${MONTHS[d.monthNumber - 1]} ${d.dayOfMonth}"
 
 private fun shortLabel(d: LocalDate): String =
-    WEEKDAY_NAMES[d.dayOfWeek.ordinal].take(3)
+    WEEKDAYS[d.dayOfWeek.ordinal].take(3)
 
 private fun rangeDates(start: LocalDate, end: LocalDate): List<LocalDate> {
-    val days = mutableListOf<LocalDate>()
+    val out = mutableListOf<LocalDate>()
     var cur = start
-    while (cur <= end) {
-        days += cur
-        cur = cur.plus(DatePeriod(days = 1))
-    }
-    return days
+    while (cur <= end) { out += cur; cur = cur.plus(DatePeriod(days = 1)) }
+    return out
 }
 
-private fun rangeDisplay(start: LocalDate, end: LocalDate): String {
-    if (start == end) return "${MONTH_NAMES[start.monthNumber - 1]} ${start.dayOfMonth}"
-    val sm = MONTH_NAMES[start.monthNumber - 1]
-    val em = MONTH_NAMES[end.monthNumber - 1]
-    return if (sm == em) "$sm ${start.dayOfMonth}–${end.dayOfMonth}"
-    else "$sm ${start.dayOfMonth} – $em ${end.dayOfMonth}"
+private fun millisToLocalDate(millis: Long): LocalDate =
+    Instant.fromEpochMilliseconds(millis).toLocalDateTime(TimeZone.UTC).date
+
+private fun isoDate(d: LocalDate): String =
+    "${d.year}-${d.monthNumber.toString().padStart(2,'0')}-${d.dayOfMonth.toString().padStart(2,'0')}"
+
+private fun formatTime(hour: Int, minute: Int): String {
+    val h12 = when {
+        hour == 0 -> 12
+        hour > 12 -> hour - 12
+        else -> hour
+    }
+    val ampm = if (hour >= 12) "PM" else "AM"
+    val mm = minute.toString().padStart(2, '0')
+    return if (minute == 0) "$h12 $ampm" else "$h12:$mm $ampm"
+}
+
+private data class ManualEventEntry(
+    val title: String,
+    val startTime: String,                 // display string e.g. "7:30 PM"
+    val startHour: Int,
+    val startMinute: Int,
+    val locationName: String,
+    val locationAddress: String,
+    val lat: Double?,
+    val lng: Double?,
+    val sourceEventId: String? = null,     // non-null when picked from search results
+)
+
+private data class DayEntry(
+    val date: LocalDate,
+    val events: List<ManualEventEntry> = emptyList(),
+    val skipped: Boolean = false,
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun ManualPlanSheet(
+    onDismiss: () -> Unit,
+    chatVm: ChatViewModel,
+    eventRepo: EventRepository,
+    userLat: Double? = null,
+    userLng: Double? = null,
+    onPlanSavedOpenChat: () -> Unit = {},
+    canSavePlan: () -> Boolean = { true },
+    onPaywallRequired: () -> Unit = {},
+    onPlanWithBo: () -> Unit = {},
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    var planTitle by remember { mutableStateOf("") }
+    var startDate by remember { mutableStateOf<LocalDate?>(null) }
+    var endDate by remember { mutableStateOf<LocalDate?>(null) }
+    var partySize by remember { mutableStateOf(2) }
+    val dayEntries = remember { mutableStateListOf<DayEntry>() }
+    var step by remember { mutableStateOf(0) }
+    var addingForDayIndex by remember { mutableStateOf<Int?>(null) }
+
+    // Total step count for the progress tracker: title+dates, party, plus one per day in range.
+    val totalSteps = 2 + dayEntries.size.coerceAtLeast(1)
+
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState,
+        containerColor = Color.White,
+        dragHandle = null,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .imePadding()
+                .padding(horizontal = 20.dp, vertical = 16.dp),
+        ) {
+            // Header: back/X, progress tracker, "Plan with Bo" link
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(AppColors.Ink.copy(alpha = 0.05f))
+                        .clickable {
+                            if (step == 0) onDismiss()
+                            else step -= 1
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        if (step == 0) Icons.Outlined.Close else Icons.Outlined.KeyboardArrowLeft,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = AppColors.Ink,
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                ProgressTracker(step = step + 1, total = totalSteps, modifier = Modifier.weight(1f))
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        onDismiss()
+                        onPlanWithBo()
+                    }
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.End,
+            ) {
+                Bo(size = 18.dp, showSparkles = false, showShadow = false)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "I'd rather plan with Bo",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        color = AppColors.Coral,
+                    ),
+                )
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            when {
+                step == 0 -> StepTitleAndDates(
+                    title = planTitle,
+                    onTitleChange = { planTitle = it },
+                    startDate = startDate,
+                    endDate = endDate,
+                    onRangeChange = { s, e ->
+                        startDate = s
+                        endDate = e
+                    },
+                    onContinue = {
+                        val s = startDate ?: return@StepTitleAndDates
+                        val e = endDate ?: return@StepTitleAndDates
+                        val dates = rangeDates(s, e)
+                        dayEntries.clear()
+                        dayEntries.addAll(dates.map { d ->
+                            DayEntry(date = d)
+                        })
+                        step = 1
+                    },
+                )
+                step == 1 -> StepPartySize(
+                    partySize = partySize,
+                    onChange = { partySize = it },
+                    onContinue = { step = 2 },
+                )
+                else -> {
+                    val dayIdx = step - 2
+                    if (dayIdx in dayEntries.indices) {
+                        val entry = dayEntries[dayIdx]
+                        StepDay(
+                            entry = entry,
+                            dayNumber = dayIdx + 1,
+                            isLastDay = dayIdx == dayEntries.lastIndex,
+                            onAddEvent = { addingForDayIndex = dayIdx },
+                            onRemoveEvent = { i ->
+                                dayEntries[dayIdx] = entry.copy(
+                                    events = entry.events.toMutableList().also { it.removeAt(i) },
+                                )
+                            },
+                            onSkipToggle = {
+                                dayEntries[dayIdx] = entry.copy(skipped = !entry.skipped)
+                            },
+                            onContinue = {
+                                if (dayIdx == dayEntries.lastIndex) {
+                                    if (!canSavePlan()) {
+                                        onDismiss()
+                                        onPaywallRequired()
+                                        return@StepDay
+                                    }
+                                    val itinerary = dayEntries.map { d ->
+                                        ItineraryDay(
+                                            label = fullLabel(d.date),
+                                            shortName = shortLabel(d.date),
+                                            slots = d.events.toSlots(d.date),
+                                        )
+                                    }
+                                    val title = planTitle.ifBlank { "My Plan" }
+                                    chatVm.saveAndCelebrateManualPlan(title, itinerary, partySize)
+                                    onDismiss()
+                                    onPlanSavedOpenChat()
+                                } else {
+                                    step += 1
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    val addingIndex = addingForDayIndex
+    if (addingIndex != null && addingIndex in dayEntries.indices) {
+        AddEventSheet(
+            forDate = dayEntries[addingIndex].date,
+            eventRepo = eventRepo,
+            userLat = userLat,
+            userLng = userLng,
+            onDismiss = { addingForDayIndex = null },
+            onSave = { event ->
+                val d = dayEntries[addingIndex]
+                dayEntries[addingIndex] = d.copy(
+                    events = d.events + event,
+                    skipped = false,
+                )
+                addingForDayIndex = null
+            },
+        )
+    }
+}
+
+private fun List<ManualEventEntry>.toSlots(date: LocalDate): List<ItinerarySlot> {
+    val sorted = sortedBy { it.startHour * 60 + it.startMinute }
+    return sorted.mapIndexed { i, e ->
+        ItinerarySlot(
+            id = e.sourceEventId?.let { "event_$it" } ?: "manual_${date}_$i",
+            time = e.startTime,
+            emoji = "📍",
+            name = e.title,
+            detail = e.locationName.ifBlank { e.locationAddress },
+            price = "",
+            isFree = true,
+            eventId = e.sourceEventId,
+            isCustom = e.sourceEventId == null,
+            venueAddress = e.locationAddress.ifBlank { null },
+            venueLat = e.lat,
+            venueLng = e.lng,
+        )
+    }
 }
 
 @Composable
 private fun ProgressTracker(step: Int, total: Int, modifier: Modifier = Modifier) {
-    Row(
-        modifier = modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
-    ) {
+    Row(modifier = modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(5.dp)) {
         repeat(total) { i ->
-            val target = when {
-                i < step - 1 -> 1f
-                i == step - 1 -> 1f
-                else -> 0f
-            }
+            val target = if (i <= step - 1) 1f else 0f
             val fill by animateFloatAsState(targetValue = target, animationSpec = tween(450))
             Box(
                 modifier = Modifier
@@ -149,26 +360,378 @@ private fun ProgressTracker(step: Int, total: Int, modifier: Modifier = Modifier
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ManualPlanSheet(
-    onDismiss: () -> Unit,
-    chatVm: ChatViewModel,
+private fun StepTitleAndDates(
+    title: String,
+    onTitleChange: (String) -> Unit,
+    startDate: LocalDate?,
+    endDate: LocalDate?,
+    onRangeChange: (LocalDate?, LocalDate?) -> Unit,
+    onContinue: () -> Unit,
+) {
+    val pickerState = rememberDateRangePickerState(
+        initialSelectedStartDateMillis = startDate?.let { isoToMillis(it) },
+        initialSelectedEndDateMillis = endDate?.let { isoToMillis(it) },
+    )
+
+    LaunchedEffect(pickerState.selectedStartDateMillis, pickerState.selectedEndDateMillis) {
+        val s = pickerState.selectedStartDateMillis?.let { millisToLocalDate(it) }
+        val e = pickerState.selectedEndDateMillis?.let { millisToLocalDate(it) }
+        onRangeChange(s, e)
+    }
+
+    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Text(
+            "Name your plan",
+            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = AppColors.Ink),
+        )
+        Spacer(Modifier.height(12.dp))
+        InputBar(
+            value = title,
+            onValueChange = onTitleChange,
+            placeholder = "e.g. Date Night in Boston",
+            leadingIcon = null,
+        )
+
+        Spacer(Modifier.height(20.dp))
+
+        Text(
+            "When is it?",
+            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = AppColors.Ink),
+        )
+        Spacer(Modifier.height(8.dp))
+
+        DateRangePicker(
+            state = pickerState,
+            modifier = Modifier.fillMaxWidth(),
+            showModeToggle = false,
+            title = null,
+            headline = null,
+        )
+
+        Spacer(Modifier.height(16.dp))
+
+        val canContinue = title.isNotBlank() && startDate != null && endDate != null
+        PrimaryActionButton(label = "Continue", enabled = canContinue, onClick = onContinue)
+        Spacer(Modifier.height(20.dp))
+    }
+}
+
+private fun isoToMillis(d: LocalDate): Long {
+    // Treat the date as UTC midnight; this matches what DateRangePicker emits.
+    val components = listOf(
+        d.year, d.monthNumber.toString().padStart(2, '0'), d.dayOfMonth.toString().padStart(2, '0'),
+    ).joinToString("-")
+    return Instant.parse("${components}T00:00:00Z").toEpochMilliseconds()
+}
+
+@Composable
+private fun StepPartySize(
+    partySize: Int,
+    onChange: (Int) -> Unit,
+    onContinue: () -> Unit,
+) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        Text(
+            "How many people?",
+            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = AppColors.Ink),
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Including you.",
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Ink3),
+        )
+
+        Spacer(Modifier.height(28.dp))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            StepperButton(icon = Icons.Outlined.Remove, enabled = partySize > 1) {
+                onChange((partySize - 1).coerceAtLeast(1))
+            }
+            Spacer(Modifier.width(20.dp))
+            Text(
+                partySize.toString(),
+                style = TextStyle(
+                    fontFamily = AppFonts.Heading,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 56.sp,
+                    color = AppColors.Ink,
+                ),
+                modifier = Modifier.width(80.dp),
+            )
+            Spacer(Modifier.width(20.dp))
+            StepperButton(icon = Icons.Outlined.Add, enabled = partySize < 10) {
+                onChange((partySize + 1).coerceAtMost(10))
+            }
+        }
+
+        Spacer(Modifier.height(40.dp))
+
+        PrimaryActionButton(label = "Continue", enabled = true, onClick = onContinue)
+    }
+}
+
+@Composable
+private fun StepperButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .size(56.dp)
+            .clip(CircleShape)
+            .background(if (enabled) AppColors.Coral.copy(alpha = 0.12f) else AppColors.Ink.copy(alpha = 0.05f))
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon, contentDescription = null,
+            tint = if (enabled) AppColors.Coral else AppColors.Ink.copy(alpha = 0.3f),
+            modifier = Modifier.size(28.dp),
+        )
+    }
+}
+
+@Composable
+private fun StepDay(
+    entry: DayEntry,
+    dayNumber: Int,
+    isLastDay: Boolean,
+    onAddEvent: () -> Unit,
+    onRemoveEvent: (Int) -> Unit,
+    onSkipToggle: () -> Unit,
+    onContinue: () -> Unit,
+) {
+    val canContinue = entry.events.isNotEmpty() || entry.skipped
+
+    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+        Text(
+            "Day $dayNumber",
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Ink3),
+        )
+        Spacer(Modifier.height(2.dp))
+        Text(
+            fullLabel(entry.date),
+            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = AppColors.Ink),
+        )
+
+        Spacer(Modifier.height(20.dp))
+
+        if (entry.skipped) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(AppColors.Ink.copy(alpha = 0.04f))
+                    .padding(vertical = 24.dp, horizontal = 16.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "Skipped",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink3),
+                )
+            }
+        } else {
+            entry.events.forEachIndexed { i, e ->
+                EventListRow(
+                    event = e,
+                    onRemove = { onRemoveEvent(i) },
+                )
+                Spacer(Modifier.height(8.dp))
+            }
+            // + Add an event
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .border(BorderStrokeDashed(), RoundedCornerShape(14.dp))
+                    .clickable(onClick = onAddEvent)
+                    .padding(vertical = 16.dp, horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Outlined.Add,
+                    contentDescription = null,
+                    tint = AppColors.Coral,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    if (entry.events.isEmpty()) "Add an event" else "Add another event",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Coral),
+                )
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        Box(
+            modifier = Modifier.fillMaxWidth().clickable(onClick = onSkipToggle).padding(8.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                if (entry.skipped) "Add events to this day" else "Skip this day",
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Ink3),
+            )
+        }
+
+        Spacer(Modifier.height(16.dp))
+
+        PrimaryActionButton(
+            label = if (isLastDay) "Save Plan" else "Continue to Day ${dayNumber + 1}",
+            enabled = canContinue,
+            onClick = onContinue,
+        )
+        Spacer(Modifier.height(20.dp))
+    }
+}
+
+@Composable
+private fun EventListRow(event: ManualEventEntry, onRemove: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.White)
+            .border(1.dp, AppColors.Ink.copy(alpha = 0.1f), RoundedCornerShape(14.dp))
+            .padding(vertical = 12.dp, horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                event.startTime.ifBlank { "—" },
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = AppColors.Coral),
+            )
+            Spacer(Modifier.height(2.dp))
+            Text(
+                event.title,
+                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = AppColors.Ink),
+            )
+            if (event.locationName.isNotBlank()) {
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    event.locationName,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
+                )
+            }
+        }
+        Box(
+            modifier = Modifier
+                .size(28.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onRemove),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Outlined.Close, contentDescription = "Remove", tint = AppColors.Ink3, modifier = Modifier.size(16.dp))
+        }
+    }
+}
+
+@Composable
+private fun PrimaryActionButton(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(52.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(if (enabled) AppColors.Coral else AppColors.Coral.copy(alpha = 0.4f))
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, color = Color.White),
+        )
+    }
+}
+
+@Composable
+private fun InputBar(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    leadingIcon: androidx.compose.ui.graphics.vector.ImageVector?,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(12.dp))
+            .border(1.dp, AppColors.Ink.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+            .padding(horizontal = 14.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (leadingIcon != null) {
+            Icon(leadingIcon, contentDescription = null, tint = AppColors.Ink3, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(10.dp))
+        }
+        Box(modifier = Modifier.weight(1f)) {
+            if (value.isBlank()) {
+                Text(
+                    placeholder,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink3),
+                )
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                singleLine = true,
+                textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink),
+                cursorBrush = androidx.compose.ui.graphics.SolidColor(AppColors.Coral),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun BorderStrokeDashed(): androidx.compose.foundation.BorderStroke =
+    androidx.compose.foundation.BorderStroke(width = 1.dp, color = AppColors.Coral.copy(alpha = 0.5f))
+
+// ─── Add-event sheet ──────────────────────────────────────────────────────
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun AddEventSheet(
+    forDate: LocalDate,
     eventRepo: EventRepository,
-    userLat: Double? = null,
-    userLng: Double? = null,
-    onPlanSavedOpenChat: () -> Unit = {},
-    canSavePlan: () -> Boolean = { true },
-    onPaywallRequired: () -> Unit = {},
+    userLat: Double?,
+    userLng: Double?,
+    onDismiss: () -> Unit,
+    onSave: (ManualEventEntry) -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    val timePicker = rememberNativeTimePicker()
+    val placesAutocomplete = rememberPlacesAutocomplete()
 
-    var currentStep by remember { mutableStateOf(1) }
-    var startDate by remember { mutableStateOf(today()) }
-    var endDate by remember { mutableStateOf(today()) }
-    var partySize by remember { mutableStateOf(1) }
-    var dayPlans by remember { mutableStateOf(listOf(DayPlan(today()))) }
-    // Shared cache of every Event we've fetched so selection → slot conversion
-    // at save time is a simple lookup by ID.
-    val eventCache = remember { mutableStateMapOf<String, Event>() }
+    var eventQuery by remember { mutableStateOf("") }
+    var eventResults by remember { mutableStateOf<List<Event>>(emptyList()) }
+    var pickedTitle by remember { mutableStateOf<String?>(null) }
+    var pickedSourceEventId by remember { mutableStateOf<String?>(null) }
+    var eventSearchJob by remember { mutableStateOf<Job?>(null) }
+
+    var locationQuery by remember { mutableStateOf("") }
+    var locationSuggestions by remember { mutableStateOf<List<PlaceSuggestion>>(emptyList()) }
+    var pickedLocationName by remember { mutableStateOf<String?>(null) }
+    var pickedLocationAddress by remember { mutableStateOf<String?>(null) }
+    var pickedLocationLat by remember { mutableStateOf<Double?>(null) }
+    var pickedLocationLng by remember { mutableStateOf<Double?>(null) }
+    var locationJob by remember { mutableStateOf<Job?>(null) }
+
+    var startHour by remember { mutableStateOf<Int?>(null) }
+    var startMinute by remember { mutableStateOf<Int?>(null) }
+
+    val canSave by remember {
+        derivedStateOf {
+            !pickedTitle.isNullOrBlank()
+                && !pickedLocationName.isNullOrBlank()
+                && startHour != null
+        }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -182,921 +745,290 @@ fun ManualPlanSheet(
                 .imePadding()
                 .padding(horizontal = 20.dp, vertical = 16.dp),
         ) {
-            // Header: back arrow (or X on step 1) + tracker
+            // Header
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
                         .size(36.dp)
                         .clip(CircleShape)
                         .background(AppColors.Ink.copy(alpha = 0.05f))
-                        .clickable {
-                            if (currentStep == 1) onDismiss()
-                            else currentStep -= 1
-                        },
+                        .clickable(onClick = onDismiss),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Icon(
-                        if (currentStep == 1) Icons.Outlined.Close else Icons.Outlined.KeyboardArrowLeft,
-                        contentDescription = null,
-                        modifier = Modifier.size(20.dp),
-                        tint = AppColors.Ink,
-                    )
+                    Icon(Icons.Outlined.Close, contentDescription = null, modifier = Modifier.size(20.dp), tint = AppColors.Ink)
                 }
                 Spacer(Modifier.width(12.dp))
-                ProgressTracker(step = currentStep, total = 3, modifier = Modifier.weight(1f))
+                Text(
+                    "Add an event",
+                    style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = AppColors.Ink),
+                )
             }
 
-            Spacer(Modifier.height(18.dp))
+            Spacer(Modifier.height(20.dp))
 
-            when (currentStep) {
-                1 -> Step1DatesParty(
-                    startDate = startDate,
-                    endDate = endDate,
-                    partySize = partySize,
-                    onStartDateChange = {
-                        startDate = it
-                        if (endDate < it) endDate = it
-                    },
-                    onEndDateChange = { endDate = it },
-                    onPartySizeChange = { partySize = it.coerceIn(1, 20) },
-                    onNext = {
-                        val dates = rangeDates(startDate, endDate)
-                        dayPlans = dates.map { d ->
-                            dayPlans.firstOrNull { it.date == d } ?: DayPlan(d)
-                        }
-                        currentStep = 2
-                    },
+            Column(modifier = Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                // Event name
+                Text(
+                    "Event",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
                 )
-                2 -> Step2EventsPerDay(
-                    dayPlans = dayPlans,
-                    onDayPlansChange = { dayPlans = it },
-                    eventRepo = eventRepo,
-                    eventCache = eventCache,
-                    userLat = userLat,
-                    userLng = userLng,
-                    onNext = { currentStep = 3 },
-                )
-                3 -> Step3Review(
-                    dayPlans = dayPlans,
-                    partySize = partySize,
-                    startDate = startDate,
-                    endDate = endDate,
-                    onSave = {
-                        if (!canSavePlan()) {
-                            onDismiss()
-                            onPaywallRequired()
-                            return@Step3Review
+                Spacer(Modifier.height(6.dp))
+                InputBar(
+                    value = eventQuery,
+                    onValueChange = {
+                        eventQuery = it
+                        pickedTitle = null
+                        pickedSourceEventId = null
+                        eventSearchJob?.cancel()
+                        eventSearchJob = if (it.length >= 3) {
+                            scope.launch {
+                                delay(220)
+                                val results = runCatching {
+                                    eventRepo.searchEvents(
+                                        keyword = it,
+                                        userLat = userLat,
+                                        userLng = userLng,
+                                        radiusMiles = 50.0,
+                                        limit = 5,
+                                        startDate = isoDate(forDate),
+                                        endDate = isoDate(forDate),
+                                    )
+                                }.getOrNull().orEmpty()
+                                eventResults = results
+                            }
+                        } else {
+                            eventResults = emptyList()
+                            null
                         }
-                        val itinerary = dayPlans.map { dp ->
-                            ItineraryDay(
-                                label = fullLabel(dp.date),
-                                shortName = shortLabel(dp.date),
-                                slots = buildSlotsForDay(dp, eventCache),
+                    },
+                    placeholder = "Search or type a new event",
+                    leadingIcon = Icons.Outlined.Search,
+                )
+                if (pickedTitle != null) {
+                    Spacer(Modifier.height(6.dp))
+                    SelectionChip(label = "Selected: ${pickedTitle}") {
+                        pickedTitle = null
+                        pickedSourceEventId = null
+                    }
+                } else if (eventQuery.length >= 3) {
+                    Spacer(Modifier.height(6.dp))
+                    eventResults.forEach { ev ->
+                        SuggestionRow(
+                            primary = ev.title,
+                            secondary = listOfNotNull(ev.venueName, ev.dateDisplay).joinToString(" · "),
+                        ) {
+                            pickedTitle = ev.title
+                            pickedSourceEventId = ev.id
+                            eventQuery = ev.title
+                            eventResults = emptyList()
+                            // If the event has a venue, prefill the location bar.
+                            if (!ev.venueName.isNullOrBlank()) {
+                                locationQuery = ev.venueName ?: ""
+                                pickedLocationName = ev.venueName
+                                pickedLocationAddress = ev.venueAddress ?: ""
+                                pickedLocationLat = ev.venueLat
+                                pickedLocationLng = ev.venueLng
+                            }
+                        }
+                    }
+                    SuggestionRow(
+                        primary = "+ Add new event \"$eventQuery\"",
+                        secondary = "Use what you typed as the event name",
+                        accent = true,
+                    ) {
+                        pickedTitle = eventQuery
+                        pickedSourceEventId = null
+                        eventResults = emptyList()
+                    }
+                }
+
+                Spacer(Modifier.height(18.dp))
+
+                // Location
+                Text(
+                    "Location",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
+                )
+                Spacer(Modifier.height(6.dp))
+                InputBar(
+                    value = locationQuery,
+                    onValueChange = {
+                        locationQuery = it
+                        pickedLocationName = null
+                        pickedLocationAddress = null
+                        pickedLocationLat = null
+                        pickedLocationLng = null
+                        locationJob?.cancel()
+                        locationJob = if (it.length >= 3) {
+                            scope.launch {
+                                delay(220)
+                                locationSuggestions = placesAutocomplete.query(it, userLat, userLng)
+                            }
+                        } else {
+                            locationSuggestions = emptyList()
+                            null
+                        }
+                    },
+                    placeholder = "Search a venue or address",
+                    leadingIcon = Icons.Outlined.Place,
+                )
+                if (pickedLocationName != null) {
+                    Spacer(Modifier.height(6.dp))
+                    SelectionChip(label = "Selected: ${pickedLocationName}") {
+                        pickedLocationName = null
+                        pickedLocationAddress = null
+                        pickedLocationLat = null
+                        pickedLocationLng = null
+                    }
+                } else if (locationQuery.length >= 3) {
+                    Spacer(Modifier.height(6.dp))
+                    locationSuggestions.forEach { s ->
+                        SuggestionRow(primary = s.primaryText, secondary = s.secondaryText) {
+                            scope.launch {
+                                val details = placesAutocomplete.resolve(s)
+                                pickedLocationName = details?.name ?: s.primaryText
+                                pickedLocationAddress = details?.formattedAddress
+                                    ?: listOf(s.primaryText, s.secondaryText).filter { it.isNotBlank() }.joinToString(", ")
+                                pickedLocationLat = details?.lat
+                                pickedLocationLng = details?.lng
+                                locationQuery = pickedLocationName ?: ""
+                                locationSuggestions = emptyList()
+                            }
+                        }
+                    }
+                }
+
+                Spacer(Modifier.height(18.dp))
+
+                // Start time
+                Text(
+                    "Start time",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
+                )
+                Spacer(Modifier.height(6.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .border(1.dp, AppColors.Ink.copy(alpha = 0.12f), RoundedCornerShape(12.dp))
+                        .clickable {
+                            timePicker.show(
+                                initialHour = startHour ?: 19,
+                                initialMinute = startMinute ?: 0,
+                                onPicked = { h, m ->
+                                    startHour = h
+                                    startMinute = m
+                                },
+                                onCancelled = {},
                             )
                         }
-                        val title = "Plan for ${rangeDisplay(startDate, endDate)}"
-                        chatVm.saveAndCelebrateManualPlan(title, itinerary, partySize)
-                        onDismiss()
-                        onPlanSavedOpenChat()
-                    },
-                )
-            }
-        }
-    }
-}
-
-private fun buildSlotsForDay(dp: DayPlan, eventCache: Map<String, Event>): List<ItinerarySlot> {
-    val slots = mutableListOf<ItinerarySlot>()
-    dp.selectedEventIds.forEach { id ->
-        val e = eventCache[id] ?: return@forEach
-        slots += ItinerarySlot(
-            id = "event_${e.id}",
-            time = formatTimeFromStartAt(e.startAt),
-            emoji = categoryEmoji(e.category),
-            name = e.title,
-            detail = e.venueName ?: e.description ?: "",
-            price = e.priceDisplay,
-            isFree = e.isFree,
-            eventId = e.id,
-            imageUrl = e.imageUrl,
-            ticketUrl = e.ticketUrl,
-            venueAddress = e.venueAddress,
-            venueLat = e.venueLat,
-            venueLng = e.venueLng,
-            priceMin = e.priceMin,
-            priceMax = e.priceMax,
-            sourceUrl = e.sourceUrl,
-            venueCategory = e.category,
-        )
-    }
-    dp.manualEvents.forEachIndexed { i, me ->
-        slots += ItinerarySlot(
-            id = "manual_${dp.date}_$i",
-            time = me.startTime,
-            emoji = "📝",
-            name = me.title,
-            detail = me.description.ifBlank { me.location },
-            price = "",
-            isFree = true,
-            isCustom = true,
-            venueAddress = me.location.ifBlank { null },
-        )
-    }
-    return slots
-}
-
-private fun categoryEmoji(cat: String?): String = when (cat?.lowercase()) {
-    "music" -> "🎵"
-    "food" -> "🍽"
-    "arts" -> "🎨"
-    "sports" -> "🏟"
-    "outdoors" -> "🌲"
-    "nightlife" -> "🌃"
-    else -> "📍"
-}
-
-// Extract a human-friendly time from an ISO-8601 startAt string like
-// "2026-05-03T19:30:00". Falls back to empty when the format is unexpected.
-private fun formatTimeFromStartAt(startAt: String?): String {
-    if (startAt.isNullOrBlank()) return ""
-    val tPart = startAt.substringAfter('T', "")
-    if (tPart.isBlank()) return ""
-    val hh = tPart.substringBefore(':').toIntOrNull() ?: return ""
-    val mm = tPart.substringAfter(':').substringBefore(':').toIntOrNull() ?: return ""
-    val ampm = if (hh >= 12) "PM" else "AM"
-    val h12 = when {
-        hh == 0 -> 12
-        hh > 12 -> hh - 12
-        else -> hh
-    }
-    return if (mm == 0) "$h12 $ampm" else "$h12:${mm.toString().padStart(2, '0')} $ampm"
-}
-
-@Composable
-private fun Step1DatesParty(
-    startDate: LocalDate,
-    endDate: LocalDate,
-    partySize: Int,
-    onStartDateChange: (LocalDate) -> Unit,
-    onEndDateChange: (LocalDate) -> Unit,
-    onPartySizeChange: (Int) -> Unit,
-    onNext: () -> Unit,
-) {
-    val next30 = remember {
-        val base = today()
-        (0 until 30).map { base.plus(DatePeriod(days = it)) }
-    }
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        Text(
-            "When is your plan?",
-            style = TextStyle(
-                fontFamily = AppFonts.Heading,
-                fontWeight = FontWeight.Bold,
-                fontSize = 22.sp,
-                color = AppColors.Ink,
-            ),
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "Pick a start and end date",
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = FontWeight.Medium,
-                fontSize = 14.sp,
-                color = AppColors.Ink3,
-            ),
-        )
-        Spacer(Modifier.height(16.dp))
-
-        Text(
-            "Start date",
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 13.sp,
-                color = AppColors.Ink,
-            ),
-        )
-        Spacer(Modifier.height(8.dp))
-        DateChipRow(dates = next30, selected = startDate, onSelect = onStartDateChange)
-
-        Spacer(Modifier.height(20.dp))
-        Text(
-            "End date",
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 13.sp,
-                color = AppColors.Ink,
-            ),
-        )
-        Spacer(Modifier.height(8.dp))
-        DateChipRow(
-            dates = next30.filter { it >= startDate },
-            selected = endDate,
-            onSelect = onEndDateChange,
-        )
-
-        Spacer(Modifier.height(28.dp))
-        Text(
-            "How many people?",
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 13.sp,
-                color = AppColors.Ink,
-            ),
-        )
-        Spacer(Modifier.height(8.dp))
-        PartySizeStepper(value = partySize, onChange = onPartySizeChange)
-
-        Spacer(Modifier.weight(1f))
-        PrimaryButton(label = "Next", onClick = onNext)
-        Spacer(Modifier.height(12.dp))
-    }
-}
-
-@Composable
-private fun DateChipRow(
-    dates: List<LocalDate>,
-    selected: LocalDate,
-    onSelect: (LocalDate) -> Unit,
-) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState()),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        dates.forEach { d ->
-            val isSel = d == selected
-            Column(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(if (isSel) AppColors.Coral else AppColors.Ink.copy(alpha = 0.05f))
-                    .clickable { onSelect(d) }
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-            ) {
-                Text(
-                    shortLabel(d).uppercase(),
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 10.sp,
-                        color = if (isSel) Color.White else AppColors.Ink3,
-                    ),
-                )
-                Text(
-                    d.dayOfMonth.toString(),
-                    style = TextStyle(
-                        fontFamily = AppFonts.Heading,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 17.sp,
-                        color = if (isSel) Color.White else AppColors.Ink,
-                    ),
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun PartySizeStepper(value: Int, onChange: (Int) -> Unit) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(16.dp))
-            .background(AppColors.Ink.copy(alpha = 0.05f))
-            .padding(horizontal = 8.dp, vertical = 6.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        StepButton(Icons.Outlined.Remove) { onChange(value - 1) }
-        Spacer(Modifier.width(18.dp))
-        Text(
-            value.toString(),
-            style = TextStyle(
-                fontFamily = AppFonts.Heading,
-                fontWeight = FontWeight.Bold,
-                fontSize = 20.sp,
-                color = AppColors.Ink,
-            ),
-        )
-        Spacer(Modifier.width(18.dp))
-        StepButton(Icons.Outlined.Add) { onChange(value + 1) }
-    }
-}
-
-@Composable
-private fun StepButton(icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
-    Box(
-        modifier = Modifier
-            .size(32.dp)
-            .clip(CircleShape)
-            .background(Color.White)
-            .clickable(onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(icon, contentDescription = null, modifier = Modifier.size(16.dp), tint = AppColors.Ink)
-    }
-}
-
-@Composable
-private fun PrimaryButton(label: String, onClick: () -> Unit, enabled: Boolean = true) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(52.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(if (enabled) AppColors.Coral else AppColors.Ink.copy(alpha = 0.1f))
-            .clickable(enabled = enabled, onClick = onClick),
-        contentAlignment = Alignment.Center,
-    ) {
-        Text(
-            label,
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 16.sp,
-                color = Color.White,
-            ),
-        )
-    }
-}
-
-@Composable
-private fun Step2EventsPerDay(
-    dayPlans: List<DayPlan>,
-    onDayPlansChange: (List<DayPlan>) -> Unit,
-    eventRepo: EventRepository,
-    eventCache: androidx.compose.runtime.snapshots.SnapshotStateMap<String, Event>,
-    userLat: Double?,
-    userLng: Double?,
-    onNext: () -> Unit,
-) {
-    var activeIdx by remember { mutableStateOf(0) }
-    var showAddManual by remember { mutableStateOf(false) }
-    val active = dayPlans.getOrNull(activeIdx) ?: return
-    val updateActive: (DayPlan) -> Unit = { updated ->
-        onDayPlansChange(dayPlans.mapIndexed { i, d -> if (i == activeIdx) updated else d })
-    }
-
-    // Events for the active day — fetched once per date, cached in a
-    // parent-owned SnapshotStateMap so selection survives day-switching.
-    var dayEvents by remember(active.date) { mutableStateOf<List<Event>>(emptyList()) }
-    var isLoadingEvents by remember(active.date) { mutableStateOf(true) }
-    LaunchedEffect(active.date) {
-        isLoadingEvents = true
-        val isoDate = active.date.toString()
-        val results = try {
-            eventRepo.searchEvents(
-                startDate = isoDate,
-                endDate = isoDate,
-                limit = 50,
-                userLat = userLat,
-                userLng = userLng,
-                radiusMiles = 25.0,
-            )
-        } catch (_: Throwable) {
-            emptyList()
-        }
-        results.forEach { eventCache[it.id] = it }
-        dayEvents = results
-        isLoadingEvents = false
-    }
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        Text(
-            "Plan each day",
-            style = TextStyle(
-                fontFamily = AppFonts.Heading,
-                fontWeight = FontWeight.Bold,
-                fontSize = 22.sp,
-                color = AppColors.Ink,
-            ),
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            fullLabel(active.date),
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = FontWeight.Medium,
-                fontSize = 14.sp,
-                color = AppColors.Ink3,
-            ),
-        )
-        Spacer(Modifier.height(12.dp))
-
-        if (dayPlans.size > 1) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                dayPlans.forEachIndexed { i, dp ->
-                    val isSel = i == activeIdx
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(if (isSel) AppColors.Coral else AppColors.Ink.copy(alpha = 0.05f))
-                            .clickable { activeIdx = i }
-                            .padding(horizontal = 14.dp, vertical = 8.dp),
-                    ) {
-                        Text(
-                            "Day ${i + 1}",
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 13.sp,
-                                color = if (isSel) Color.White else AppColors.Ink,
-                            ),
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.height(16.dp))
-        }
-
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            item {
-                SectionLabel("Events this day (${dayEvents.size})")
-                Spacer(Modifier.height(8.dp))
-            }
-            if (isLoadingEvents) {
-                item {
+                        .padding(horizontal = 14.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Outlined.Schedule, contentDescription = null, tint = AppColors.Ink3, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(10.dp))
+                    val display = if (startHour != null) formatTime(startHour!!, startMinute ?: 0) else "Pick a start time"
                     Text(
-                        "Loading…",
+                        display,
                         style = TextStyle(
                             fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 13.sp,
-                            color = AppColors.Ink3,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 14.sp,
+                            color = if (startHour != null) AppColors.Ink else AppColors.Ink3,
                         ),
                     )
                 }
-            } else if (dayEvents.isEmpty()) {
-                item {
-                    Text(
-                        "No nearby events found. Add a manual event below.",
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 13.sp,
-                            color = AppColors.Ink3,
-                        ),
-                    )
-                }
-            } else {
-                items(dayEvents, key = { it.id }) { event ->
-                    val selected = event.id in active.selectedEventIds
-                    EventPickRow(
-                        event = event,
-                        selected = selected,
-                        onToggle = {
-                            val ids = if (selected) active.selectedEventIds - event.id
-                            else active.selectedEventIds + event.id
-                            updateActive(active.copy(selectedEventIds = ids))
-                        },
-                    )
-                }
             }
-            item {
-                Spacer(Modifier.height(20.dp))
-                SectionLabel("Find me a meal")
-                Spacer(Modifier.height(8.dp))
-            }
-            item {
-                MealCheckboxRow(
-                    breakfast = active.wantBreakfast,
-                    lunch = active.wantLunch,
-                    dinner = active.wantDinner,
-                    onBreakfast = { updateActive(active.copy(wantBreakfast = it)) },
-                    onLunch = { updateActive(active.copy(wantLunch = it)) },
-                    onDinner = { updateActive(active.copy(wantDinner = it)) },
-                )
-                Spacer(Modifier.height(20.dp))
-            }
-            item {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    SectionLabel("Your own event")
-                    Spacer(Modifier.weight(1f))
-                    Box(
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(AppColors.CoralLt)
-                            .clickable { showAddManual = !showAddManual }
-                            .padding(6.dp),
-                    ) {
-                        Icon(
-                            if (showAddManual) Icons.Outlined.Close else Icons.Outlined.Add,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                            tint = AppColors.Coral,
-                        )
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-            }
-            if (showAddManual) {
-                item {
-                    ManualEventForm(
-                        onSave = { me ->
-                            updateActive(active.copy(manualEvents = active.manualEvents + me))
-                            showAddManual = false
-                        },
-                    )
-                    Spacer(Modifier.height(12.dp))
-                }
-            }
-            items(active.manualEvents) { me ->
-                ManualEventRow(
-                    event = me,
-                    onRemove = {
-                        updateActive(active.copy(manualEvents = active.manualEvents - me))
-                    },
-                )
-            }
-        }
 
-        val canAdvance = activeIdx == dayPlans.lastIndex
-        PrimaryButton(
-            label = if (canAdvance) "Review Plan" else "Next Day",
-            onClick = {
-                if (canAdvance) onNext()
-                else activeIdx += 1
-            },
-        )
-        Spacer(Modifier.height(12.dp))
+            Spacer(Modifier.height(12.dp))
+            PrimaryActionButton(
+                label = "Save event",
+                enabled = canSave,
+                onClick = {
+                    val title = pickedTitle ?: return@PrimaryActionButton
+                    val name = pickedLocationName ?: return@PrimaryActionButton
+                    val h = startHour ?: return@PrimaryActionButton
+                    val m = startMinute ?: 0
+                    onSave(
+                        ManualEventEntry(
+                            title = title,
+                            startTime = formatTime(h, m),
+                            startHour = h,
+                            startMinute = m,
+                            locationName = name,
+                            locationAddress = pickedLocationAddress ?: "",
+                            lat = pickedLocationLat,
+                            lng = pickedLocationLng,
+                            sourceEventId = pickedSourceEventId,
+                        )
+                    )
+                },
+            )
+            Spacer(Modifier.height(12.dp))
+        }
     }
 }
 
 @Composable
-private fun EventPickRow(
-    event: Event,
-    selected: Boolean,
-    onToggle: () -> Unit,
+private fun SuggestionRow(
+    primary: String,
+    secondary: String,
+    accent: Boolean = false,
+    onClick: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color.White)
-            .border(
-                1.dp,
-                if (selected) AppColors.Coral else AppColors.Ink.copy(alpha = 0.08f),
-                RoundedCornerShape(14.dp),
-            )
-            .clickable(onClick = onToggle)
-            .padding(12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                event.title,
-                maxLines = 2,
-                style = TextStyle(
-                    fontFamily = AppFonts.Heading,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp,
-                    color = AppColors.Ink,
-                ),
-            )
-            Spacer(Modifier.height(3.dp))
-            val timeStr = formatTimeFromStartAt(event.startAt)
-            val subtitle = buildString {
-                if (timeStr.isNotBlank()) append(timeStr)
-                event.venueName?.let {
-                    if (isNotEmpty()) append(" • ")
-                    append(it)
-                }
-                if (event.priceDisplay.isNotBlank()) {
-                    if (isNotEmpty()) append(" • ")
-                    append(event.priceDisplay)
-                }
-            }
-            if (subtitle.isNotBlank()) {
-                Text(
-                    subtitle,
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 12.sp,
-                        color = AppColors.Ink3,
-                    ),
-                )
-            }
-        }
-        Spacer(Modifier.width(10.dp))
-        Box(
-            modifier = Modifier
-                .size(32.dp)
-                .clip(CircleShape)
-                .background(if (selected) AppColors.Coral else AppColors.CoralLt),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                if (selected) Icons.Outlined.Check else Icons.Outlined.Add,
-                contentDescription = if (selected) "Added" else "Add",
-                modifier = Modifier.size(16.dp),
-                tint = if (selected) Color.White else AppColors.Coral,
-            )
-        }
-    }
-}
-
-@Composable
-private fun SectionLabel(label: String) {
-    Text(
-        label,
-        style = TextStyle(
-            fontFamily = AppFonts.Body,
-            fontWeight = FontWeight.SemiBold,
-            fontSize = 13.sp,
-            color = AppColors.Ink,
-        ),
-    )
-}
-
-@Composable
-private fun MealCheckboxRow(
-    breakfast: Boolean,
-    lunch: Boolean,
-    dinner: Boolean,
-    onBreakfast: (Boolean) -> Unit,
-    onLunch: (Boolean) -> Unit,
-    onDinner: (Boolean) -> Unit,
-) {
-    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        MealChip("Breakfast", breakfast, onBreakfast)
-        MealChip("Lunch", lunch, onLunch)
-        MealChip("Dinner", dinner, onDinner)
-    }
-}
-
-@Composable
-private fun MealChip(label: String, selected: Boolean, onToggle: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(12.dp))
-            .background(if (selected) AppColors.Coral else AppColors.Ink.copy(alpha = 0.05f))
-            .clickable { onToggle(!selected) }
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
             .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (selected) {
-            Icon(
-                Icons.Outlined.Check,
-                contentDescription = null,
-                modifier = Modifier.size(14.dp),
-                tint = Color.White,
-            )
-            Spacer(Modifier.width(6.dp))
-        }
-        Text(
-            label,
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = FontWeight.Bold,
-                fontSize = 13.sp,
-                color = if (selected) Color.White else AppColors.Ink,
-            ),
-        )
-    }
-}
-
-@Composable
-private fun ManualEventForm(onSave: (ManualEvent) -> Unit) {
-    var title by remember { mutableStateOf("") }
-    var startTime by remember { mutableStateOf("") }
-    var endTime by remember { mutableStateOf("") }
-    var location by remember { mutableStateOf("") }
-    var description by remember { mutableStateOf("") }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(AppColors.Ink.copy(alpha = 0.04f))
-            .padding(14.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        FormField(label = "Title", value = title, onChange = { title = it })
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Box(modifier = Modifier.weight(1f)) {
-                FormField(label = "Start time", value = startTime, onChange = { startTime = it }, placeholder = "7:00 PM")
-            }
-            Box(modifier = Modifier.weight(1f)) {
-                FormField(label = "End time", value = endTime, onChange = { endTime = it }, placeholder = "9:00 PM")
-            }
-        }
-        FormField(label = "Location", value = location, onChange = { location = it })
-        FormField(label = "Description (optional)", value = description, onChange = { description = it })
-        Spacer(Modifier.height(4.dp))
-        PrimaryButton(
-            label = "Add to day",
-            enabled = title.isNotBlank() && startTime.isNotBlank(),
-            onClick = {
-                onSave(
-                    ManualEvent(
-                        title = title.trim(),
-                        startTime = startTime.trim(),
-                        endTime = endTime.trim(),
-                        location = location.trim(),
-                        description = description.trim(),
-                    ),
-                )
-            },
-        )
-    }
-}
-
-@Composable
-private fun FormField(
-    label: String,
-    value: String,
-    onChange: (String) -> Unit,
-    placeholder: String = "",
-) {
-    Column {
-        Text(
-            label,
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 11.sp,
-                color = AppColors.Ink3,
-            ),
-        )
-        Spacer(Modifier.height(4.dp))
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
-                .background(Color.White)
-                .border(1.dp, AppColors.Ink.copy(alpha = 0.08f), RoundedCornerShape(10.dp))
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-        ) {
-            BasicTextField(
-                value = value,
-                onValueChange = onChange,
-                singleLine = true,
-                textStyle = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.Medium,
-                    fontSize = 14.sp,
-                    color = AppColors.Ink,
-                ),
-                decorationBox = { inner ->
-                    if (value.isEmpty() && placeholder.isNotBlank()) {
-                        Text(
-                            placeholder,
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.Medium,
-                                fontSize = 14.sp,
-                                color = AppColors.Ink3,
-                            ),
-                        )
-                    }
-                    inner()
-                },
-            )
-        }
-    }
-}
-
-@Composable
-private fun ManualEventRow(event: ManualEvent, onRemove: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color.White)
-            .border(1.dp, AppColors.Ink.copy(alpha = 0.08f), RoundedCornerShape(14.dp))
-            .padding(14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                event.title,
+                primary,
                 style = TextStyle(
-                    fontFamily = AppFonts.Heading,
+                    fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp,
-                    color = AppColors.Ink,
+                    fontSize = 14.sp,
+                    color = if (accent) AppColors.Coral else AppColors.Ink,
                 ),
             )
-            Spacer(Modifier.height(2.dp))
-            val sub = buildString {
-                if (event.startTime.isNotBlank()) append(event.startTime)
-                if (event.endTime.isNotBlank()) append(" – ${event.endTime}")
-                if (event.location.isNotBlank()) {
-                    if (isNotEmpty()) append(" • ")
-                    append(event.location)
-                }
-            }
-            if (sub.isNotBlank()) {
+            if (secondary.isNotBlank()) {
+                Spacer(Modifier.height(2.dp))
                 Text(
-                    sub,
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Medium,
-                        fontSize = 12.sp,
-                        color = AppColors.Ink3,
-                    ),
+                    secondary,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
                 )
             }
-        }
-        Box(
-            modifier = Modifier
-                .size(28.dp)
-                .clip(CircleShape)
-                .background(AppColors.Ink.copy(alpha = 0.05f))
-                .clickable(onClick = onRemove),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(
-                Icons.Outlined.Close,
-                contentDescription = "Remove",
-                modifier = Modifier.size(14.dp),
-                tint = AppColors.Ink3,
-            )
         }
     }
 }
 
 @Composable
-private fun Step3Review(
-    dayPlans: List<DayPlan>,
-    partySize: Int,
-    startDate: LocalDate,
-    endDate: LocalDate,
-    onSave: () -> Unit,
-) {
-    Column(modifier = Modifier.fillMaxSize()) {
+private fun SelectionChip(label: String, onClear: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(AppColors.Coral.copy(alpha = 0.12f))
+            .padding(start = 12.dp, end = 6.dp, top = 6.dp, bottom = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Outlined.Check, contentDescription = null, tint = AppColors.Coral, modifier = Modifier.size(14.dp))
+        Spacer(Modifier.width(6.dp))
         Text(
-            "Review your plan",
-            style = TextStyle(
-                fontFamily = AppFonts.Heading,
-                fontWeight = FontWeight.Bold,
-                fontSize = 22.sp,
-                color = AppColors.Ink,
-            ),
+            label,
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Coral),
         )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            "${rangeDisplay(startDate, endDate)} • $partySize ${if (partySize == 1) "person" else "people"}",
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = FontWeight.Medium,
-                fontSize = 14.sp,
-                color = AppColors.Ink3,
-            ),
-        )
-        Spacer(Modifier.height(16.dp))
-
-        LazyColumn(
-            modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(14.dp),
+        Spacer(Modifier.width(6.dp))
+        Box(
+            modifier = Modifier
+                .size(22.dp)
+                .clip(CircleShape)
+                .clickable(onClick = onClear),
+            contentAlignment = Alignment.Center,
         ) {
-            items(dayPlans) { dp ->
-                val mealCount = listOf(dp.wantBreakfast, dp.wantLunch, dp.wantDinner).count { it }
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(AppColors.Ink.copy(alpha = 0.04f))
-                        .padding(14.dp),
-                ) {
-                    Text(
-                        fullLabel(dp.date),
-                        style = TextStyle(
-                            fontFamily = AppFonts.Heading,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 15.sp,
-                            color = AppColors.Ink,
-                        ),
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        "${dp.selectedEventIds.size + dp.manualEvents.size} event(s), $mealCount meal slot(s)",
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 13.sp,
-                            color = AppColors.Ink3,
-                        ),
-                    )
-                }
-            }
+            Icon(Icons.Outlined.Close, contentDescription = "Clear", tint = AppColors.Coral, modifier = Modifier.size(12.dp))
         }
-
-        PrimaryButton(label = "Save Plan", onClick = onSave)
-        Spacer(Modifier.height(12.dp))
     }
 }
