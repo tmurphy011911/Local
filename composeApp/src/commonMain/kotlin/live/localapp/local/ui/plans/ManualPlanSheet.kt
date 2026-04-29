@@ -32,12 +32,10 @@ import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Remove
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Search
-import androidx.compose.material3.DateRangePicker
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
-import androidx.compose.material3.rememberDateRangePickerState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -68,6 +66,7 @@ import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.repository.EventRepository
 import live.localapp.local.platform.PlaceSuggestion
+import live.localapp.local.platform.rememberNativeDateRangePicker
 import live.localapp.local.platform.rememberNativeTimePicker
 import live.localapp.local.platform.rememberPlacesAutocomplete
 import live.localapp.local.ui.character.Bo
@@ -358,7 +357,6 @@ private fun ProgressTracker(step: Int, total: Int, modifier: Modifier = Modifier
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun StepTitleAndDates(
     title: String,
@@ -368,21 +366,9 @@ private fun StepTitleAndDates(
     onRangeChange: (LocalDate?, LocalDate?) -> Unit,
     onContinue: () -> Unit,
 ) {
-    val pickerState = rememberDateRangePickerState(
-        initialSelectedStartDateMillis = startDate?.let { isoToMillis(it) },
-        initialSelectedEndDateMillis = endDate?.let { isoToMillis(it) },
-    )
+    val datePicker = rememberNativeDateRangePicker()
 
-    LaunchedEffect(pickerState.selectedStartDateMillis, pickerState.selectedEndDateMillis) {
-        val s = pickerState.selectedStartDateMillis?.let { millisToLocalDate(it) }
-        val e = pickerState.selectedEndDateMillis?.let { millisToLocalDate(it) }
-        onRangeChange(s, e)
-    }
-
-    // No verticalScroll on this column — DateRangePicker contains its own
-    // LazyColumn, which crashes with "infinity maximum height" if its parent
-    // is scrollable. The picker itself handles month-list scrolling.
-    Column(modifier = Modifier.fillMaxSize()) {
+    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Text(
             "Name your plan",
             style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = AppColors.Ink),
@@ -401,17 +387,71 @@ private fun StepTitleAndDates(
             "When is it?",
             style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = AppColors.Ink),
         )
-        Spacer(Modifier.height(8.dp))
+        Spacer(Modifier.height(10.dp))
 
-        DateRangePicker(
-            state = pickerState,
-            modifier = Modifier.fillMaxWidth().weight(1f),
-            showModeToggle = false,
-            title = null,
-            headline = null,
-        )
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .border(1.dp, AppColors.Ink.copy(alpha = 0.12f), RoundedCornerShape(14.dp))
+                .clickable {
+                    datePicker.show(
+                        initialStartMillis = startDate?.let { isoToMillis(it) },
+                        initialEndMillis = endDate?.let { isoToMillis(it) },
+                        onPicked = { sMillis, eMillis ->
+                            val s = millisToLocalDate(sMillis)
+                            val e = millisToLocalDate(eMillis)
+                            onRangeChange(s, e)
+                        },
+                        onCancelled = {},
+                    )
+                }
+                .padding(horizontal = 16.dp, vertical = 16.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "Start",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    startDate?.let { fullLabel(it) } ?: "Tap to pick",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Heading,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = if (startDate != null) AppColors.Ink else AppColors.Ink3,
+                    ),
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            Box(
+                modifier = Modifier
+                    .height(36.dp)
+                    .width(1.dp)
+                    .background(AppColors.Ink.copy(alpha = 0.1f)),
+            )
+            Spacer(Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    "End",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    endDate?.let { fullLabel(it) } ?: "Tap to pick",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Heading,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = if (endDate != null) AppColors.Ink else AppColors.Ink3,
+                    ),
+                )
+            }
+        }
 
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(24.dp))
 
         val canContinue = title.isNotBlank() && startDate != null && endDate != null
         PrimaryActionButton(label = "Continue", enabled = canContinue, onClick = onContinue)
