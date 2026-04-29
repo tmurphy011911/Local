@@ -12,9 +12,9 @@ enum NativeTimePickerBridgeSetup {
                     initialHour: Int(truncating: initialHour),
                     initialMinute: Int(truncating: initialMinute),
                     onPicked: { h, m in
-                        onPicked(KotlinInt(int: Int32(h)), KotlinInt(int: Int32(m)))
+                        _ = onPicked(KotlinInt(int: Int32(h)), KotlinInt(int: Int32(m)))
                     },
-                    onCancelled: { onCancelled() }
+                    onCancelled: { _ = onCancelled() }
                 )
             }
         }

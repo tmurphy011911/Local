@@ -19,12 +19,21 @@ final class PlacesAutocompleteBridgeSetup: NSObject {
     static func register() {
         PlacesAutocompleteBridge.shared.query = { input, latBoxed, lngBoxed, onResultJson in
             DispatchQueue.main.async {
-                shared.runQuery(input: input as String, lat: latBoxed?.doubleValue, lng: lngBoxed?.doubleValue, onResult: onResultJson)
+                shared.runQuery(
+                    input: input as String,
+                    lat: latBoxed?.doubleValue,
+                    lng: lngBoxed?.doubleValue,
+                    onResult: { result in _ = onResultJson(result) }
+                )
             }
         }
         PlacesAutocompleteBridge.shared.resolve = { id, primary, secondary, onResultJson in
             DispatchQueue.main.async {
-                shared.runResolve(primary: primary as String, secondary: secondary as String, onResult: onResultJson)
+                shared.runResolve(
+                    primary: primary as String,
+                    secondary: secondary as String,
+                    onResult: { result in _ = onResultJson(result) }
+                )
             }
         }
     }
