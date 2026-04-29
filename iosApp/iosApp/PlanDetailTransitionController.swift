@@ -8,33 +8,20 @@ class PlanDetailTransitionController {
     static let shared = PlanDetailTransitionController()
 
     // MARK: - State
-    private var hostingController: UIViewController?
-    private var dimView: UIView?
-    private var originalFrame: CGRect = .zero
+    private weak var hostingController: UIViewController?
     private var onDismissed: (() -> Void)?
     private var onShare: (() -> Void)?
+    private var sheetDismissDelegate: PlanDetailSheetDelegate?
 
     // MARK: - Present
 
     func present(planJson: String, cardFrame: CGRect, in window: UIWindow, onDismissed: @escaping () -> Void, onShare: @escaping () -> Void) {
-        cleanup()
-
-        self.originalFrame = cardFrame
         self.onDismissed = onDismissed
         self.onShare = onShare
 
-        // Dim overlay
-        let dim = UIView(frame: window.bounds)
-        dim.backgroundColor = .black
-        dim.alpha = 0
-        dim.isUserInteractionEnabled = true
-        window.addSubview(dim)
-        self.dimView = dim
-
-        // Decode plan JSON; bail with a no-op transition if it's malformed.
+        // Decode plan JSON; bail with a no-op presentation if it's malformed.
         guard let plan = PlanDetailPlan.decode(from: planJson) else {
             print("PlanDetailTransitionController: failed to decode planJson")
-            cleanup()
             onDismissed()
             return
         }
@@ -49,79 +36,64 @@ class PlanDetailTransitionController {
             }
         )
         let hostVC = UIHostingController(rootView: view)
-        hostVC.view.backgroundColor = .clear
-        hostVC.view.frame = window.bounds
-        hostVC.view.transform = cardTransform(cardFrame: cardFrame, windowBounds: window.bounds)
-        hostVC.view.layer.cornerRadius = 20
-        hostVC.view.layer.masksToBounds = true
-        hostVC.view.alpha = 0
-
-        window.addSubview(hostVC.view)
-        self.hostingController = hostVC
-
-        // Fade in quickly, then spring to fullscreen
-        UIView.animate(withDuration: 0.1) {
-            hostVC.view.alpha = 1
+        hostVC.modalPresentationStyle = .pageSheet
+        if let sheet = hostVC.sheetPresentationController {
+            sheet.detents = [.large()]
+            sheet.prefersGrabberVisible = true
+            sheet.preferredCornerRadius = 20
         }
 
-        UIView.animate(
-            withDuration: 0.45,
-            delay: 0,
-            usingSpringWithDamping: 0.85,
-            initialSpringVelocity: 0.5,
-            options: [.curveEaseInOut, .allowUserInteraction],
-            animations: {
-                hostVC.view.transform = .identity
-                hostVC.view.layer.cornerRadius = 0
-                dim.alpha = 0.5
-            },
-            completion: nil
-        )
+        // Detect swipe-to-dismiss so we still fire onDismissed.
+        let delegate = PlanDetailSheetDelegate { [weak self] in
+            self?.handleDidDismiss()
+        }
+        hostVC.presentationController?.delegate = delegate
+        self.sheetDismissDelegate = delegate
+        self.hostingController = hostVC
+
+        guard let topVC = topViewController(in: window) else {
+            onDismissed()
+            return
+        }
+        topVC.present(hostVC, animated: true)
     }
 
     // MARK: - Dismiss
 
     func dismiss() {
-        guard let vc = hostingController,
-              let window = vc.view.superview else {
+        guard let vc = hostingController else {
             onDismissed?()
             return
         }
-
-        // Simple slide-down + fade dismiss (avoids content stretching)
-        UIView.animate(
-            withDuration: 0.3,
-            delay: 0,
-            usingSpringWithDamping: 0.9,
-            initialSpringVelocity: 0.3,
-            options: [.curveEaseInOut],
-            animations: { [self] in
-                vc.view.transform = CGAffineTransform(translationX: 0, y: window.bounds.height * 0.4)
-                vc.view.alpha = 0
-                dimView?.alpha = 0
-            },
-            completion: { [self] _ in
-                cleanup()
-                onDismissed?()
-            }
-        )
+        vc.dismiss(animated: true) { [weak self] in
+            self?.handleDidDismiss()
+        }
     }
 
     // MARK: - Helpers
 
-    private func cardTransform(cardFrame: CGRect, windowBounds: CGRect) -> CGAffineTransform {
-        let scaleX = cardFrame.width / windowBounds.width
-        let scaleY = cardFrame.height / windowBounds.height
-        let translateX = cardFrame.midX - windowBounds.midX
-        let translateY = cardFrame.midY - windowBounds.midY
-        return CGAffineTransform(translationX: translateX, y: translateY)
-            .scaledBy(x: scaleX, y: scaleY)
+    private func handleDidDismiss() {
+        let cb = onDismissed
+        onDismissed = nil
+        onShare = nil
+        hostingController = nil
+        sheetDismissDelegate = nil
+        cb?()
     }
 
-    private func cleanup() {
-        hostingController?.view.removeFromSuperview()
-        hostingController = nil
-        dimView?.removeFromSuperview()
-        dimView = nil
+    private func topViewController(in window: UIWindow) -> UIViewController? {
+        var top = window.rootViewController
+        while let presented = top?.presentedViewController {
+            top = presented
+        }
+        return top
+    }
+}
+
+private class PlanDetailSheetDelegate: NSObject, UIAdaptivePresentationControllerDelegate {
+    let onDismiss: () -> Void
+    init(onDismiss: @escaping () -> Void) { self.onDismiss = onDismiss }
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        onDismiss()
     }
 }

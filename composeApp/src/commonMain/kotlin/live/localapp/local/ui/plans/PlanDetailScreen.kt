@@ -54,7 +54,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -73,6 +76,9 @@ import live.localapp.local.domain.model.Plan
 import live.localapp.local.domain.model.PlanAttendee
 import live.localapp.local.domain.model.PlanDay
 import live.localapp.local.domain.model.PlanSlot
+import live.localapp.local.platform.MapHeroStop
+import live.localapp.local.platform.MapHeroTotals
+import live.localapp.local.platform.PlanMapHero
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 
@@ -134,16 +140,24 @@ fun PlanDetailScreen(
 
     Box(modifier = Modifier.fillMaxSize().background(V5Paper)) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Hero — 200dp cover with title + meta
+            // Hero — 250dp map (or gradient fallback) with floating title card
             PlanHero(
                 plan = plan,
                 coverImageUrl = firstImageUrl,
                 isCreator = isCreator,
+                selectedDayIndex = selectedDayIndex,
+                onSelectDay = { selectedDayIndex = it },
                 onBack = onBack,
                 onShare = onShare,
                 onEditName = { showEditNameDialog = true },
                 onEditPlan = onEditPlan,
                 onDeletePlan = { confirmDeletePlan = true },
+                // The Android AttendeeCard is already visible inline above the
+                // fold, so "View Attendees" doesn't open a sheet — the card is
+                // the canonical view. Reserved for a future ModalBottomSheet
+                // mirroring the iOS AttendeeSheet if we want full parity.
+                onViewAttendees = {},
+                onEditAttendees = { showGroupSizeSheet = true },
             )
 
             // Body — paper sheet with rounded top corners that overlaps the hero by 12dp
@@ -162,20 +176,10 @@ fun PlanDetailScreen(
                     PastPlanBanner(dateRange = plan.dateDisplay)
                 }
 
-                // Attendee card
-                Box(modifier = Modifier.padding(horizontal = 16.dp, vertical = 0.dp)) {
-                    AttendeeCard(
-                        attendees = plan.attendees,
-                        groupSize = plan.groupSize ?: plan.attendees.size.coerceAtLeast(1),
-                        creatorId = plan.creatorId,
-                        onOpenGroupSize = if (isCreator && !past) {
-                            { showGroupSizeSheet = true }
-                        } else null,
-                        onInvite = onShare,
-                        onShare = onShare,
-                    )
-                }
-                Spacer(Modifier.height(12.dp))
+                // Old AttendeeCard ("X of Y going" + Invite pill) removed —
+                // replaced by the persistent Share Plan CTA pinned to the
+                // bottom of the screen, plus the menu's View Attendees /
+                // Edit # of Attendees actions.
 
                 // V1 caps from spec: max 7 days, max 8 stops per day.
                 val maxDaysReached = plan.days.size >= 7
@@ -323,6 +327,88 @@ fun PlanDetailScreen(
         // Group chat removed for V1 (per Plan Detail spec, April 27, 2026).
         // PlanChatViewModel + bridge code remains in place for re-enable later.
 
+        // Persistent Share Plan CTA — shown when this is the user's own plan
+        // (not a shared preview). Subtext adapts to RSVP state per spec:
+        //   • solo (groupSize == 1): no subtext
+        //   • only creator confirmed: "Only you have confirmed — X total"
+        //   • partial confirmation: "X of Y confirmed"
+        //   • all confirmed: "X confirmed"
+        if (!isShared) {
+            val totalGoing = (plan.groupSize ?: plan.attendees.size.coerceAtLeast(1))
+                .coerceAtLeast(1)
+            val confirmedGoing = plan.attendees.count { it.confirmed }.coerceAtLeast(0)
+            val unconfirmed = (totalGoing - confirmedGoing).coerceAtLeast(0)
+            val subtext = when {
+                totalGoing <= 1 -> null
+                unconfirmed == 0 -> "$totalGoing confirmed"
+                else -> "$unconfirmed unconfirmed"
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(Color.Transparent, V5Paper, V5Paper)))
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+            ) {
+                // Match the event-detail primary button styling: solid coral
+                // fill, 2dp coralDk border, flat coralDk drop-shadow at y=4
+                // (radius=0). Stacked "block" depth, consistent across primary
+                // CTAs in the app.
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .offset(y = (-4).dp)
+                        .drawBehind {
+                            val r = 14.dp.toPx()
+                            drawRoundRect(
+                                color = V5CoralDk.copy(alpha = 0.4f),
+                                topLeft = androidx.compose.ui.geometry.Offset(0f, 4.dp.toPx()),
+                                size = size,
+                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(r, r),
+                            )
+                        }
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(V5Coral)
+                        .border(2.dp, V5CoralDk, RoundedCornerShape(14.dp))
+                        .clickable(onClick = onShare)
+                        .padding(vertical = 14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            Icons.Outlined.IosShare,
+                            contentDescription = null,
+                            tint = Color.White,
+                            modifier = Modifier.size(15.dp),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "Share Plan",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 16.sp,
+                                color = Color.White,
+                            ),
+                        )
+                    }
+                    if (subtext != null) {
+                        Spacer(Modifier.height(2.dp))
+                        Text(
+                            subtext,
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 11.sp,
+                                color = Color.White.copy(alpha = 0.85f),
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+
         // Accept Invite bottom CTA for shared preview
         if (isShared) {
             Box(
@@ -424,41 +510,99 @@ private fun PlanHero(
     plan: Plan,
     coverImageUrl: String?,
     isCreator: Boolean,
+    selectedDayIndex: Int,
+    onSelectDay: (Int) -> Unit = {},
     onBack: () -> Unit,
     onShare: () -> Unit,
     onEditName: () -> Unit,
     onEditPlan: () -> Unit = {},
     onDeletePlan: () -> Unit = {},
+    onViewAttendees: () -> Unit = {},
+    onEditAttendees: () -> Unit = {},
 ) {
-    val totalStops = plan.days.sumOf { it.slots.size }
+    val planInitial = plan.title.firstOrNull()?.uppercaseChar()?.toString() ?: "L"
+
+    // Day-aware computations — the hero updates as the day strip changes.
+    val day = plan.days.getOrNull(selectedDayIndex)
+    val dayStops = day?.slots?.size ?: 0
+    val geocoded: List<MapHeroStop> = day?.slots
+        ?.mapNotNull { slot ->
+            val lat = slot.venueLat
+            val lng = slot.venueLng
+            if (lat != null && lng != null) MapHeroStop(lat, lng, slot.name) else null
+        }
+        ?: emptyList()
+
+    var routeTotals by remember { mutableStateOf<MapHeroTotals?>(null) }
+    LaunchedEffect(selectedDayIndex) { routeTotals = null }
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(200.dp)
-            .background(Color(0xFF201C19)),
+            .height(250.dp)
+            // Coral diagonal gradient as the base layer — visible only when
+            // PlanMapHero declines to render and there's no cover image.
+            .background(
+                Brush.linearGradient(
+                    colors = listOf(
+                        Color(0xFFFF6B6B),
+                        Color(0xFFE84540),
+                        Color(0xFF8C2E33),
+                    ),
+                ),
+            ),
     ) {
-        if (coverImageUrl != null) {
-            AsyncImage(
-                model = coverImageUrl,
-                contentDescription = null,
-                contentScale = ContentScale.Crop,
-                modifier = Modifier.fillMaxSize(),
-            )
+        // 1) Try the platform map hero. Returns true on Android when we have
+        //    coords; iOS always returns false (handled by SwiftUI separately).
+        val mapRendered = PlanMapHero(
+            stops = geocoded,
+            modifier = Modifier.fillMaxSize(),
+            onTotalsChanged = { totals -> routeTotals = totals },
+        )
+
+        // 2) When the map didn't render, fall back to the cover image or the
+        //    faded plan-initial pattern over the coral gradient.
+        if (!mapRendered) {
+            if (coverImageUrl != null) {
+                AsyncImage(
+                    model = coverImageUrl,
+                    contentDescription = null,
+                    contentScale = ContentScale.Crop,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            } else {
+                Text(
+                    text = planInitial,
+                    style = TextStyle(
+                        fontFamily = AppFonts.Heading,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 86.sp,
+                        color = Color.White.copy(alpha = 0.18f),
+                    ),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(end = 18.dp, top = 8.dp),
+                )
+            }
         }
+
+        // 3) Soft top-only gradient — keeps back/share/menu buttons readable
+        //    on the map without darkening the route area in the middle.
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .background(
                     Brush.verticalGradient(
                         colorStops = arrayOf(
-                            0f to Color.Black.copy(alpha = 0.4f),
-                            0.4f to Color.Black.copy(alpha = 0.1f),
-                            1f to Color.Black.copy(alpha = 0.75f),
+                            0f to Color.Black.copy(alpha = 0.30f),
+                            0.30f to Color.Black.copy(alpha = 0.08f),
+                            0.55f to Color.Transparent,
                         ),
                     ),
                 ),
         )
 
+        // 4) Top toolbar.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -486,12 +630,22 @@ private fun PlanHero(
                         containerColor = Color.White,
                     ) {
                         androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("View Attendees", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Ink)) },
+                            leadingIcon = { Icon(Icons.Outlined.Place, contentDescription = null, tint = V5Ink2, modifier = Modifier.size(18.dp)) },
+                            onClick = { menuOpen = false; onViewAttendees() },
+                        )
+                        androidx.compose.material3.DropdownMenuItem(
+                            text = { Text("Edit # of Attendees", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Ink)) },
+                            leadingIcon = { Icon(Icons.Outlined.Add, contentDescription = null, tint = V5Ink2, modifier = Modifier.size(18.dp)) },
+                            onClick = { menuOpen = false; onEditAttendees() },
+                        )
+                        androidx.compose.material3.DropdownMenuItem(
                             text = { Text("Edit Plan", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Ink)) },
                             leadingIcon = { Icon(Icons.Outlined.AutoAwesome, contentDescription = null, tint = V5Coral, modifier = Modifier.size(18.dp)) },
                             onClick = { menuOpen = false; onEditPlan() },
                         )
                         androidx.compose.material3.DropdownMenuItem(
-                            text = { Text("Change Plan Name", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Ink)) },
+                            text = { Text("Rename Plan", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Ink)) },
                             leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null, tint = V5Ink2, modifier = Modifier.size(18.dp)) },
                             onClick = { menuOpen = false; onEditName() },
                         )
@@ -505,64 +659,165 @@ private fun PlanHero(
             }
         }
 
-        // Meta + title
-        Column(
+        // 5) Floating white title card pinned to the bottom of the hero.
+        //    Horizontal swipes on the card switch days.
+        Box(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 18.dp, end = 18.dp, bottom = 16.dp),
+                .fillMaxWidth()
+                .padding(horizontal = 14.dp, vertical = 14.dp),
         ) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    plan.dateDisplay.ifBlank { plan.city },
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = Color.White.copy(alpha = 0.85f), letterSpacing = 1.5.sp),
-                )
-                if (totalStops > 0) {
-                    Text(
-                        "  ·  $totalStops ${if (totalStops == 1) "stop" else "stops"}",
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = Color.White.copy(alpha = 0.65f), letterSpacing = 1.5.sp),
-                    )
-                }
-                val dayCount = plan.days.size
-                if (dayCount > 0) {
-                    Text(
-                        "  ·  $dayCount ${if (dayCount == 1) "day" else "days"}",
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = Color.White.copy(alpha = 0.65f), letterSpacing = 1.5.sp),
-                    )
-                }
-            }
-            Spacer(Modifier.height(4.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(
-                    plan.title,
-                    style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 30.sp, color = Color.White, letterSpacing = (-0.6).sp, lineHeight = 32.sp),
-                    modifier = Modifier.weight(1f, fill = false),
-                )
-                if (isCreator) {
-                    Spacer(Modifier.width(8.dp))
-                    Box(
-                        modifier = Modifier
-                            .size(30.dp)
-                            .clip(CircleShape)
-                            .background(Color.White.copy(alpha = 0.2f))
-                            .clickable(onClick = onEditName),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(Icons.Outlined.Edit, contentDescription = "Edit name", tint = Color.White, modifier = Modifier.size(14.dp))
-                    }
-                }
-            }
-            val plannedBy = when {
-                isCreator -> "you"
-                !plan.creatorName.isNullOrBlank() -> plan.creatorName
-                else -> "the planner"
-            }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "Planned by $plannedBy",
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = Color.White.copy(alpha = 0.7f)),
+            FloatingTitleCard(
+                plan = plan,
+                day = day,
+                dayStops = dayStops,
+                routeTotals = routeTotals,
+                selectedDayIndex = selectedDayIndex,
+                onSwipeDay = onSelectDay,
             )
         }
     }
+}
+
+@Composable
+private fun FloatingTitleCard(
+    plan: Plan,
+    day: PlanDay?,
+    dayStops: Int,
+    routeTotals: MapHeroTotals?,
+    selectedDayIndex: Int,
+    onSwipeDay: (Int) -> Unit,
+) {
+    val titleHeader = headerTitleLabel(plan)
+    val dateLabel = headerDateLabel(plan, day)
+    val metrics = headerMetricsLabel(dayStops, routeTotals)
+    val totalDays = plan.days.size
+    Box(modifier = Modifier.fillMaxWidth()) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color.White)
+                .border(
+                    width = 0.5.dp,
+                    color = V5Line,
+                    shape = RoundedCornerShape(14.dp),
+                )
+                // Horizontal swipe switches days. Accumulates drag deltas via
+                // detectHorizontalDragGestures and commits at gesture end if
+                // total displacement exceeds the 50px threshold.
+                .pointerInput(totalDays, selectedDayIndex) {
+                    if (totalDays <= 1) return@pointerInput
+                    var totalDx = 0f
+                    detectHorizontalDragGestures(
+                        onDragStart = { totalDx = 0f },
+                        onDragEnd = {
+                            val thresholdPx = 50.dp.toPx()
+                            if (totalDx <= -thresholdPx) {
+                                onSwipeDay((selectedDayIndex + 1).coerceAtMost(totalDays - 1))
+                            } else if (totalDx >= thresholdPx) {
+                                onSwipeDay((selectedDayIndex - 1).coerceAtLeast(0))
+                            }
+                            totalDx = 0f
+                        },
+                        onDragCancel = { totalDx = 0f },
+                        onHorizontalDrag = { _, dx -> totalDx += dx },
+                    )
+                }
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+        ) {
+            if (titleHeader.isNotBlank()) {
+                Text(
+                    titleHeader.uppercase(),
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 10.sp,
+                        color = V5Coral,
+                        letterSpacing = 0.8.sp,
+                    ),
+                )
+            }
+            if (dateLabel.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    dateLabel,
+                    style = TextStyle(
+                        fontFamily = AppFonts.Heading,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 22.sp,
+                        color = V5Ink,
+                        lineHeight = 26.sp,
+                    ),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (metrics.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    metrics,
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 11.sp,
+                        color = V5Ink3,
+                    ),
+                )
+            }
+        }
+        // (Stop-count badge removed — the metrics line already shows it.)
+    }
+}
+
+private fun headerTitleLabel(plan: Plan): String {
+    // Strip "Family Trip: May 13-16" → "Family Trip" so the all-caps header
+    // line doesn't duplicate the date range shown below it.
+    val raw = plan.title
+    val colon = raw.indexOf(':')
+    return if (colon >= 0) raw.substring(0, colon).trim() else raw
+}
+
+private fun headerDateLabel(plan: Plan, day: PlanDay?): String {
+    val raw = day?.label
+    if (!raw.isNullOrBlank()) return shortDayLabel(raw)
+    return plan.dateDisplay
+}
+
+private fun shortDayLabel(raw: String): String {
+    // "Saturday, May 16" → "Sat, May 16". Single-token labels pass through.
+    val parts = raw.split(",", limit = 2)
+    return if (parts.size == 2) {
+        val short = parts[0].trim().take(3)
+        "$short, ${parts[1].trim()}"
+    } else raw
+}
+
+private fun headerMetricsLabel(dayStops: Int, totals: MapHeroTotals?): String {
+    val parts = mutableListOf<String>()
+    if (dayStops > 0) parts += "$dayStops ${if (dayStops == 1) "stop" else "stops"}"
+    if (totals != null) {
+        if (totals.miles > 0.0) parts += formatMiles(totals.miles)
+        if (totals.minutes > 0) parts += "~${formatTravelMinutes(totals.minutes)} ${totals.dominantMode}"
+    }
+    return parts.joinToString(separator = " · ")
+}
+
+private fun formatTravelMinutes(mins: Int): String {
+    if (mins >= 60) {
+        val hr = mins / 60
+        val rem = mins % 60
+        return if (rem == 0) "$hr hr" else "$hr hr $rem min"
+    }
+    return "$mins min"
+}
+
+// KMP commonMain has no printf formatter, so do tenths manually.
+private fun formatMiles(value: Double): String {
+    val rounded = (value * 10).toLong()
+    val intPart = rounded / 10
+    val frac = (rounded - intPart * 10).let { if (it < 0) -it else it }
+    return "$intPart.$frac mi"
 }
 
 @Composable
@@ -878,55 +1133,101 @@ private fun DayTabStrip(
     canAdd: Boolean,
     compact: Boolean,
 ) {
-    val tabWidth = if (compact) 56.dp else 64.dp
-    val tabHeight = if (compact) 58.dp else 66.dp
-    Row(
+    // Trim trailing "phantom" days — days with 0 stops AND no day-of-week
+    // label. These come from upstream code adding orphan placeholder days;
+    // rendering them is confusing because they look like real future days.
+    // A trailing empty day with a real label (e.g. "Sun, May 17") is kept.
+    val trimmed = days.dropLastWhile { day ->
+        day.slots.isEmpty() && shortDayOfWeekKt(day).isEmpty()
+    }
+    val visibleDays = if (trimmed.isNotEmpty()) trimmed else days
+
+    val totalCells = visibleDays.size + (if (canAdd) 1 else 0)
+    val fitsWithoutScroll = totalCells <= 4
+
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 6.dp)
-            .padding(bottom = 14.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(horizontal = 14.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.White)
+            .border(0.5.dp, V5Line, RoundedCornerShape(14.dp)),
     ) {
-        days.forEachIndexed { i, day ->
-            DayTab(
-                day = day,
-                active = i == activeIndex,
-                compact = compact,
-                width = tabWidth,
-                height = tabHeight,
-                onClick = { onSelect(i) },
-            )
-        }
-        if (canAdd) {
-            Column(
-                modifier = Modifier
-                    .size(width = tabWidth, height = tabHeight)
-                    .clip(RoundedCornerShape(14.dp))
-                    .border(1.5.dp, V5Coral, RoundedCornerShape(14.dp))
-                    .clickable(onClick = onAddDay),
-                verticalArrangement = Arrangement.Center,
-                horizontalAlignment = Alignment.CenterHorizontally,
+        if (fitsWithoutScroll) {
+            // Equal-width cells filling the card.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.Outlined.Add, contentDescription = "Add day", tint = V5Coral, modifier = Modifier.size(if (compact) 14.dp else 16.dp))
-                Spacer(Modifier.height(3.dp))
-                Text(
-                    "ADD DAY",
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = V5Coral, letterSpacing = 0.3.sp),
-                )
+                visibleDays.forEachIndexed { i, day ->
+                    DayCell(
+                        day = day,
+                        active = i == activeIndex,
+                        onClick = { onSelect(i) },
+                        modifier = Modifier.weight(1f),
+                    )
+                    val isLast = i == visibleDays.lastIndex && !canAdd
+                    if (!isLast) {
+                        Box(
+                            modifier = Modifier
+                                .width(0.5.dp)
+                                .height(60.dp)
+                                .background(V5Line),
+                        )
+                    }
+                }
+                if (canAdd) {
+                    AddDayCell(onClick = onAddDay, modifier = Modifier.weight(1f))
+                }
+            }
+        } else {
+            // >4 cells — fixed minimum width and horizontal scroll.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                visibleDays.forEachIndexed { i, day ->
+                    DayCell(
+                        day = day,
+                        active = i == activeIndex,
+                        onClick = { onSelect(i) },
+                        modifier = Modifier.width(78.dp),
+                    )
+                    val isLast = i == visibleDays.lastIndex && !canAdd
+                    if (!isLast) {
+                        Box(
+                            modifier = Modifier
+                                .width(0.5.dp)
+                                .height(60.dp)
+                                .background(V5Line),
+                        )
+                    }
+                }
+                if (canAdd) {
+                    AddDayCell(onClick = onAddDay, modifier = Modifier.width(78.dp))
+                }
             }
         }
     }
 }
 
+// Day-of-week extractor used by both DayCell rendering and the phantom-day
+// trim filter. Returns "" when no real DOW label is available.
+private fun shortDayOfWeekKt(day: PlanDay): String {
+    val parts = day.label.replace("Today ", "").replace("Tomorrow ", "").split(",").map { it.trim() }
+    val first = parts.firstOrNull() ?: day.shortName
+    if (first.isBlank() || first.all { it.isDigit() }) return ""
+    return first.take(3).uppercase()
+}
+
 @Composable
-private fun DayTab(
+private fun DayCell(
     day: PlanDay,
     active: Boolean,
-    compact: Boolean,
-    width: androidx.compose.ui.unit.Dp,
-    height: androidx.compose.ui.unit.Dp,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     // Parse day.label "Friday, Nov 8" → dow = "FRI", date = "8"
     val parts = day.label.replace("Today ", "").replace("Tomorrow ", "").split(",").map { it.trim() }
@@ -934,34 +1235,61 @@ private fun DayTab(
     val datePart = parts.getOrNull(1)?.split(" ")?.lastOrNull() ?: ""
 
     val textColor = if (active) Color.White else V5Ink
-    val subColor = if (active) Color.White.copy(alpha = 0.75f) else V5Ink3
+    val subColor = if (active) Color.White.copy(alpha = 0.85f) else V5Ink3
+    val activeBackground = Brush.verticalGradient(
+        colors = listOf(V5Coral, V5CoralDk),
+    )
     Column(
-        modifier = Modifier
-            .size(width, height)
-            .clip(RoundedCornerShape(14.dp))
-            .background(if (active) V5Coral else Color.White)
-            .then(if (active) Modifier else Modifier.border(1.dp, V5Line, RoundedCornerShape(14.dp)))
+        modifier = modifier
+            .padding(horizontal = 4.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .then(
+                if (active) Modifier.background(activeBackground) else Modifier
+            )
             .clickable(onClick = onClick)
-            .padding(4.dp),
+            .padding(vertical = 12.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
             dow,
-            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = subColor, letterSpacing = 0.6.sp),
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 9.sp, color = subColor, letterSpacing = 0.8.sp),
         )
-        Spacer(Modifier.height(3.dp))
+        Spacer(Modifier.height(4.dp))
         Text(
             datePart.ifBlank { "·" },
-            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = if (compact) 22.sp else 26.sp, color = textColor, letterSpacing = (-0.6).sp),
+            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 22.sp, color = textColor, letterSpacing = (-0.4).sp),
         )
-        if (!compact) {
-            Spacer(Modifier.height(3.dp))
-            Text(
-                if (day.slots.isEmpty()) "—" else "${day.slots.size} stops",
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Medium, fontSize = 9.sp, color = subColor),
-            )
-        }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            if (day.slots.isEmpty()) "—" else "${day.slots.size} ${if (day.slots.size == 1) "stop" else "stops"}",
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, color = subColor),
+        )
+    }
+}
+
+@Composable
+private fun AddDayCell(onClick: () -> Unit, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .padding(horizontal = 4.dp, vertical = 4.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            Icons.Outlined.Add,
+            contentDescription = "Add day",
+            tint = V5Coral,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "ADD",
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 9.sp, color = V5Coral, letterSpacing = 0.8.sp),
+        )
     }
 }
 

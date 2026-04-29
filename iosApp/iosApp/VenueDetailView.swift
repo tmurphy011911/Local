@@ -389,8 +389,11 @@ struct VenueDetailView: View {
                 Spacer().frame(height: 16)
             }
 
-            // Directions link
-            if venue.hasLocation {
+            // Directions link — hidden when this venue page was opened from
+            // a Bo plan slot. The plan detail page already has its own
+            // Directions chip per stop, so showing it here too is redundant
+            // and visually heavy.
+            if venue.hasLocation && !VenueDetailTransitionController.fromPlanContext {
                 Button(action: {
                     withAnimation(.easeInOut(duration: 0.2)) { mapsExpanded.toggle() }
                 }) {
@@ -424,8 +427,10 @@ struct VenueDetailView: View {
                 Spacer().frame(height: 16)
             }
 
-            // Upcoming Events — compact list with date filter
-            if isLoadingEvents {
+            // Upcoming Events — hidden when accessed from a Bo plan slot.
+            // The plan slot itself is already an event/venue selection;
+            // showing other upcoming events here is noise in that context.
+            if !VenueDetailTransitionController.fromPlanContext, isLoadingEvents {
                 Spacer().frame(height: 8)
 
                 Text("Upcoming Events")
@@ -435,7 +440,7 @@ struct VenueDetailView: View {
                 Spacer().frame(height: 12)
 
                 eventSkeleton()
-            } else if !liveEvents.isEmpty {
+            } else if !liveEvents.isEmpty && !VenueDetailTransitionController.fromPlanContext {
                 Spacer().frame(height: 8)
 
                 Text("Upcoming Events")
@@ -477,7 +482,7 @@ struct VenueDetailView: View {
                         }
                     }
                 }
-            } else {
+            } else if !VenueDetailTransitionController.fromPlanContext {
                 Spacer().frame(height: 8)
 
                 Text("Upcoming Events")
@@ -689,7 +694,8 @@ struct VenueDetailView: View {
                 event.category ?? "", event.subcategory,
                 nil,
                 0, 0, 0, 0, event.imageUrl,
-                KotlinBoolean(value: false)
+                KotlinBoolean(value: false),
+                KotlinBoolean(value: true)
             )
         }
     }
@@ -776,7 +782,8 @@ struct VenueDetailView: View {
                 event.category ?? "", event.subcategory,
                 nil,
                 0, 0, 0, 0, event.imageUrl,
-                KotlinBoolean(value: false)
+                KotlinBoolean(value: false),
+                KotlinBoolean(value: true)
             )
         }
     }

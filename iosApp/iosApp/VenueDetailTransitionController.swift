@@ -5,6 +5,13 @@ import SwiftUI
 class VenueDetailTransitionController {
     static let shared = VenueDetailTransitionController()
 
+    /// When true, the venue detail view hides the Get Directions link and the
+    /// Upcoming Events section. Set to true by the chat-card slot tap path
+    /// (`ChatView` → `ChatBridge.onVenueTap`) so a venue opened from inside
+    /// a Bo-built plan reads as "this is part of your plan", not as a
+    /// generic venue lookup. Reset to false on dismiss.
+    static var fromPlanContext: Bool = false
+
     // MARK: - State
     private var hostingController: UIViewController?
     private var dimView: UIView?
@@ -132,6 +139,10 @@ class VenueDetailTransitionController {
     // MARK: - Dismiss
 
     func dismiss() {
+        // Reset the from-plan flag so the next non-plan venue open shows
+        // Get Directions + Upcoming Events normally.
+        Self.fromPlanContext = false
+
         guard let hosting = hostingController,
               let window = hosting.view.superview else {
             onDismissed?()

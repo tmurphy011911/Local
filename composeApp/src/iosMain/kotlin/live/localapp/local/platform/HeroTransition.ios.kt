@@ -249,6 +249,7 @@ actual fun showNativeEventDetail(
         cardX, cardY, cardW, cardH,
         cardImageUrl,
         isFavorited,
+        event.timeKnown,
     )
 }
 
@@ -366,6 +367,7 @@ actual fun showNativePlanDetail(
                                 put("ticketUrl", kotlinx.serialization.json.JsonPrimitive(slot.ticketUrl))
                                 put("venueRating", kotlinx.serialization.json.JsonPrimitive(slot.venueRating))
                                 put("venueAddress", kotlinx.serialization.json.JsonPrimitive(slot.venueAddress))
+                                put("venueName", kotlinx.serialization.json.JsonPrimitive(slot.venueName))
                                 put("venueLat", kotlinx.serialization.json.JsonPrimitive(slot.venueLat))
                                 put("venueLng", kotlinx.serialization.json.JsonPrimitive(slot.venueLng))
                                 put("venueCategory", kotlinx.serialization.json.JsonPrimitive(slot.venueCategory))
@@ -456,6 +458,7 @@ private fun serializePlanToJson(plan: live.localapp.local.domain.model.Plan): St
                                 put("ticketUrl", kotlinx.serialization.json.JsonPrimitive(slot.ticketUrl))
                                 put("venueRating", kotlinx.serialization.json.JsonPrimitive(slot.venueRating))
                                 put("venueAddress", kotlinx.serialization.json.JsonPrimitive(slot.venueAddress))
+                                put("venueName", kotlinx.serialization.json.JsonPrimitive(slot.venueName))
                                 put("venueLat", kotlinx.serialization.json.JsonPrimitive(slot.venueLat))
                                 put("venueLng", kotlinx.serialization.json.JsonPrimitive(slot.venueLng))
                                 put("venueCategory", kotlinx.serialization.json.JsonPrimitive(slot.venueCategory))

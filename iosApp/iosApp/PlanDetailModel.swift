@@ -66,6 +66,7 @@ struct PlanDetailSlot: Decodable, Equatable {
     let ticketUrl: String?
     let venueRating: Double?
     let venueAddress: String?
+    let venueName: String?
     let venueLat: Double?
     let venueLng: Double?
     let venueCategory: String?
@@ -86,7 +87,7 @@ struct PlanDetailSlot: Decodable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case id, time, emoji, name, detail, price, isFree, isReserved
         case imageUrl, ticketUrl, venueRating, venueAddress, venueLat, venueLng
-        case venueCategory, venueWebsite, sourceUrl, reservationUrl, eventId
+        case venueCategory, venueWebsite, sourceUrl, reservationUrl, eventId, venueName
         case venueReservable, reservationState, reservationPartySize, reservationTime
         case ticketState, ticketCount
     }
@@ -104,6 +105,7 @@ struct PlanDetailSlot: Decodable, Equatable {
         ticketUrl = try? c.decode(String?.self, forKey: .ticketUrl) ?? nil
         venueRating = try? c.decode(Double?.self, forKey: .venueRating) ?? nil
         venueAddress = try? c.decode(String?.self, forKey: .venueAddress) ?? nil
+        venueName = try? c.decode(String?.self, forKey: .venueName) ?? nil
         venueLat = try? c.decode(Double?.self, forKey: .venueLat) ?? nil
         venueLng = try? c.decode(Double?.self, forKey: .venueLng) ?? nil
         venueCategory = try? c.decode(String?.self, forKey: .venueCategory) ?? nil
@@ -145,15 +147,41 @@ struct PlanDetailSlot: Decodable, Equatable {
     /// Backwards-compat alias used by existing callers.
     var isRestaurant: Bool { stopType == .restaurant }
 
-    /// Pretty subtitle: "{Kind} · {Neighborhood}".
+    /// Subtitle line shown under the slot title. Per latest spec:
+    ///  • Restaurants keep cuisine/category text — useful context
+    ///    ("Mediterranean seafood", "Italian", "Cocktail bar")
+    ///  • All other stop types drop the raw category (e.g. "Historic_site"
+    ///    reads as a leaked DB enum) and instead show the venue address;
+    ///    if no address is available, the venue/place name is the fallback
     var subtitle: String {
+        if stopType == .restaurant {
+            var parts: [String] = []
+            if let cat = venueCategory, !cat.isEmpty {
+                let pretty = cat.replacingOccurrences(of: "_", with: " ")
+                parts.append(pretty.prefix(1).uppercased() + pretty.dropFirst())
+            }
+            if let addr = venueAddress, !addr.isEmpty {
+                let neighborhood = addr.split(separator: ",").first.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
+                if !neighborhood.isEmpty { parts.append(neighborhood) }
+            }
+            return parts.joined(separator: " · ")
+        }
+        // Non-restaurant: show "{Venue Name} · {Address}" beneath the event
+        // title. Skip the venue name when it's the same as the slot title
+        // (for venue-stops where slot.name IS the venue) to avoid duplicating.
         var parts: [String] = []
-        if let cat = venueCategory, !cat.isEmpty {
-            parts.append(cat.prefix(1).uppercased() + cat.dropFirst())
+        if let v = venueName, !v.isEmpty,
+           v.compare(name, options: .caseInsensitive) != .orderedSame {
+            parts.append(v)
         }
         if let addr = venueAddress, !addr.isEmpty {
-            let neighborhood = addr.split(separator: ",").first.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
-            if !neighborhood.isEmpty { parts.append(neighborhood) }
+            parts.append(addr)
+        }
+        // Fallback: if neither venueName-distinct nor address is available,
+        // surface the venue name as a single line even if it duplicates the
+        // title — better one redundant line than nothing useful.
+        if parts.isEmpty, let v = venueName, !v.isEmpty {
+            parts.append(v)
         }
         return parts.joined(separator: " · ")
     }

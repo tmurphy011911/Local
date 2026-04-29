@@ -1,4 +1,5 @@
 import SwiftUI
+import MapKit
 import ComposeApp
 
 // MARK: - Brand colors (mirror V5 palette in AppTheme.kt)
@@ -16,6 +17,17 @@ private let pdCoralSoft  = Color(red: 0.984, green: 0.894, blue: 0.882)
 private let pdGreen      = Color(red: 0.29, green: 0.635, blue: 0.478)
 private let pdSky        = Color(red: 0.357, green: 0.612, blue: 0.965)
 private let pdSkyLt      = Color(red: 0.922, green: 0.949, blue: 1.0)
+
+// MARK: - Fonts (mirror the app's display/body font system)
+// Fraunces = display (headlines). Nunito = body (UI text).
+private enum PDF {
+    static func display(_ size: CGFloat, _ weight: Font.Weight = .black) -> Font {
+        Font.custom("Fraunces", size: size).weight(weight)
+    }
+    static func body(_ size: CGFloat, _ weight: Font.Weight = .medium) -> Font {
+        Font.custom("Nunito", size: size).weight(weight)
+    }
+}
 
 // MARK: - Caps (mirror Plan Detail spec V1)
 private let kMaxDays = 7
@@ -36,6 +48,7 @@ struct PlanDetailView: View {
     @State private var showRenameSheet = false
     @State private var showDeleteConfirm = false
     @State private var showAttendeeSheet = false
+    @State private var showGroupSizeSheet = false
     @State private var menuOpen = false
     @State private var activeStopSheet: StopSheet?
     @State private var safariUrl: IdentifiableURL?
@@ -47,6 +60,9 @@ struct PlanDetailView: View {
     /// Most recent swap alternatives delivered by the bridge.
     @State private var swapAlternatives: [SwapAlternative] = []
     @State private var swapLoading: Bool = false
+    // Bubbled up from MapHeroView once MKDirections finishes — used by the
+    // floating title card to render "X stops · X mi · ~X min".
+    @State private var routeTotals: RouteTotals? = nil
 
     init(
         initialPlan: PlanDetailPlan,
@@ -63,20 +79,22 @@ struct PlanDetailView: View {
     }
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .bottom) {
             pdPaper.ignoresSafeArea()
             VStack(spacing: 0) {
                 hero
                 ScrollView {
                     VStack(spacing: 16) {
                         if plan.isPast { pastBanner }
-                        attendeeCard
+                        // Old AttendeeCard ("X of Y going" + Invite pill)
+                        // removed — replaced by the persistent Share Plan
+                        // CTA at the bottom + the menu's View Attendees /
+                        // Edit # of Attendees actions.
                         dayHeader
                         stopList
-                        if isCreator {
-                            deleteFooter
-                        }
-                        Spacer().frame(height: 32)
+                        // Bottom inset so the persistent Share CTA bar
+                        // doesn't cover the last stop / delete footer.
+                        Spacer().frame(height: 110)
                     }
                     .padding(.top, 8)
                 }
@@ -86,6 +104,16 @@ struct PlanDetailView: View {
                         .offset(y: -12)
                 )
             }
+
+            // Persistent Share Plan CTA pinned to the bottom of the screen.
+            shareCtaBar
+        }
+        .onChange(of: selectedDayIndex) { _, _ in
+            // Clear stale route metrics on day change. The new day's
+            // MapHeroView will repopulate via onTotalsChanged once
+            // MKDirections returns; otherwise totals stay nil and the
+            // title card's metrics line collapses gracefully.
+            routeTotals = nil
         }
         .sheet(isPresented: $showRenameSheet) {
             RenamePlanSheet(currentName: plan.title) { newName in
@@ -103,6 +131,25 @@ struct PlanDetailView: View {
             } onCancel: {
                 showRenameSheet = false
             }
+        }
+        .sheet(isPresented: $showGroupSizeSheet) {
+            GroupSizeSheet(
+                currentSize: max(plan.groupSize ?? plan.attendees.count, 1),
+                onSave: { newSize in
+                    showGroupSizeSheet = false
+                    PlanDetailBridge.shared.onSetGroupSize?(KotlinInt(int: Int32(newSize)))
+                    plan = PlanDetailPlan(
+                        id: plan.id, title: plan.title, city: plan.city,
+                        dateDisplay: plan.dateDisplay, isPast: plan.isPast,
+                        creatorId: plan.creatorId, creatorName: plan.creatorName,
+                        shareToken: plan.shareToken, groupSize: newSize,
+                        confirmedCount: plan.confirmedCount,
+                        currentUserId: plan.currentUserId,
+                        attendees: plan.attendees, days: plan.days
+                    )
+                },
+                onCancel: { showGroupSizeSheet = false }
+            )
         }
         .sheet(isPresented: $showAttendeeSheet) {
             AttendeeSheet(
@@ -350,28 +397,39 @@ struct PlanDetailView: View {
     // MARK: - Hero
 
     private var hero: some View {
-        let coverUrl = plan.days.flatMap { $0.slots }.first(where: { $0.imageUrl != nil })?.imageUrl
-        return ZStack(alignment: .bottomLeading) {
-            // Cover image (with dark fallback)
+        // Show a route map for the currently-selected day when at least 2 of
+        // its slots have geocoded coordinates. Otherwise fall back to a
+        // coral gradient hero so the plan never looks like a broken image.
+        let dayIdx = max(0, min(selectedDayIndex, plan.days.count - 1))
+        let dayGeocoded: [PlanDetailSlot] = plan.days.indices.contains(dayIdx)
+            ? plan.days[dayIdx].slots.filter { $0.venueLat != nil && $0.venueLng != nil }
+            : []
+
+        let day = plan.days.indices.contains(dayIdx) ? plan.days[dayIdx] : nil
+        let dayStops = day?.slots.count ?? 0
+        return ZStack(alignment: .bottom) {
             ZStack {
-                if let urlStr = coverUrl, let url = URL(string: urlStr) {
-                    AsyncImage(url: url) { image in
-                        image.resizable().scaledToFill()
-                    } placeholder: {
-                        Color(red: 0.12, green: 0.11, blue: 0.10)
+                if !dayGeocoded.isEmpty {
+                    MapHeroView(slots: dayGeocoded) { totals in
+                        // Coalesce updates so a stale day's metrics don't
+                        // flicker in after the user has switched away.
+                        routeTotals = totals
                     }
                 } else {
-                    Color(red: 0.12, green: 0.11, blue: 0.10)
+                    heroFallback
                 }
             }
-            .frame(height: 220)
+            .frame(height: 250)
+            .frame(maxWidth: .infinity)
             .clipped()
             .overlay(
+                // Soft top-only gradient — keeps the back / share / menu
+                // buttons readable on the map without darkening the route.
                 LinearGradient(
                     stops: [
-                        .init(color: Color.black.opacity(0.40), location: 0),
-                        .init(color: Color.black.opacity(0.10), location: 0.45),
-                        .init(color: Color.black.opacity(0.75), location: 1.0),
+                        .init(color: Color.black.opacity(0.30), location: 0),
+                        .init(color: Color.black.opacity(0.08), location: 0.30),
+                        .init(color: Color.black.opacity(0.0), location: 0.55),
                     ],
                     startPoint: .top, endPoint: .bottom
                 )
@@ -398,6 +456,17 @@ struct PlanDetailView: View {
                     if isCreator {
                         Menu {
                             Button {
+                                showAttendeeSheet = true
+                            } label: {
+                                Label("View Attendees", systemImage: "person.2")
+                            }
+                            Button {
+                                showGroupSizeSheet = true
+                            } label: {
+                                Label("Edit # of Attendees", systemImage: "person.crop.circle.badge.plus")
+                            }
+                            Divider()
+                            Button {
                                 PlanDetailBridge.shared.onEditPlan?()
                             } label: {
                                 Label("Edit Plan", systemImage: "sparkles")
@@ -405,7 +474,7 @@ struct PlanDetailView: View {
                             Button {
                                 showRenameSheet = true
                             } label: {
-                                Label("Change Plan Name", systemImage: "pencil")
+                                Label("Rename Plan", systemImage: "pencil")
                             }
                             Divider()
                             Button(role: .destructive) {
@@ -427,54 +496,170 @@ struct PlanDetailView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 6)
+                .padding(.top, 22)
                 Spacer()
             }
 
-            // Title block
-            VStack(alignment: .leading, spacing: 6) {
-                HStack(spacing: 6) {
-                    Text(plan.dateDisplay.isEmpty ? plan.city : plan.dateDisplay)
-                        .font(.system(size: 10, weight: .bold))
-                        .foregroundColor(.white.opacity(0.85))
-                        .tracking(1.5)
-                    if plan.totalStops > 0 {
-                        Text("·")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.white.opacity(0.55))
-                        Text("\(plan.totalStops) \(plan.totalStops == 1 ? "stop" : "stops")")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.white.opacity(0.65))
-                            .tracking(1.5)
-                    }
-                    if plan.days.count > 1 {
-                        Text("·")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.white.opacity(0.55))
-                        Text("\(plan.days.count) days")
-                            .font(.system(size: 10, weight: .bold))
-                            .foregroundColor(.white.opacity(0.65))
-                            .tracking(1.5)
-                    }
+            // Floating white title card overlapping the map's bottom.
+            titleCard(day: day, dayStops: dayStops)
+                .padding(.horizontal, 14)
+                .padding(.bottom, 14)
+        }
+        .frame(height: 250)
+    }
+
+    // MARK: - Title card (floats on the map's bottom edge)
+
+    private func titleCard(day: PlanDetailDay?, dayStops: Int) -> some View {
+        let dateLabel = headerDateLabel(day: day)
+        let metrics = headerMetricsLabel(dayStops: dayStops)
+        let titleHeader = headerTitleLabel()
+        return HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 4) {
+                // Line 1 — coral all-caps plan title (small label).
+                if !titleHeader.isEmpty {
+                    Text(titleHeader.uppercased())
+                        .font(.system(size: 10, weight: .heavy))
+                        .tracking(0.8)
+                        .foregroundColor(pdCoral)
                 }
-                Text(plan.title)
-                    .font(.system(size: 26, weight: .black))
-                    .foregroundColor(.white)
-                    .lineLimit(2)
-                if let creator = plan.creatorName, !creator.isEmpty, !isCreator {
-                    Text("Planned by \(creator)")
+                // Line 2 — current day's date in the display font.
+                if !dateLabel.isEmpty {
+                    Text(dateLabel)
+                        .font(PDF.display(22, .black))
+                        .foregroundColor(pdInk)
+                        .lineLimit(2)
+                }
+                // Line 3 — per-day stops + miles + travel time.
+                if !metrics.isEmpty {
+                    Text(metrics)
                         .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.65))
-                } else if isCreator {
-                    Text("Planned by you")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.65))
+                        .foregroundColor(pdInk3)
                 }
             }
-            .padding(.horizontal, 18)
-            .padding(.bottom, 18)
+            Spacer(minLength: 0)
         }
-        .frame(height: 220)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
+        .background(.white)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(pdLine, lineWidth: 0.5)
+        )
+        .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 3)
+        // Horizontal swipe on the title card switches days. Threshold of 50pt
+        // — anything less is treated as a tap. Wraps the day-index update in
+        // an animation so the map camera, title text, and metrics glide.
+        .contentShape(Rectangle())
+        .gesture(
+            DragGesture(minimumDistance: 20)
+                .onEnded { value in
+                    let dx = value.translation.width
+                    guard abs(dx) > 50, plan.days.count > 1 else { return }
+                    let newIndex: Int
+                    if dx < 0 {
+                        // Swiped left → next day
+                        newIndex = min(selectedDayIndex + 1, plan.days.count - 1)
+                    } else {
+                        // Swiped right → previous day
+                        newIndex = max(selectedDayIndex - 1, 0)
+                    }
+                    if newIndex != selectedDayIndex {
+                        withAnimation(.easeInOut(duration: 0.25)) {
+                            selectedDayIndex = newIndex
+                        }
+                    }
+                }
+        )
+        // (Stop-count badge removed — the metrics line already shows it.)
+    }
+
+    private func headerTitleLabel() -> String {
+        // Strip any "Family Trip: May 13-16" → "Family Trip" so the all-caps
+        // header line doesn't duplicate the date range that's already shown
+        // in the per-day date line below.
+        let raw = plan.title
+        if let colonRange = raw.range(of: ":") {
+            return String(raw[..<colonRange.lowerBound]).trimmingCharacters(in: .whitespaces)
+        }
+        return raw
+    }
+
+    private func headerDateLabel(day: PlanDetailDay?) -> String {
+        // Prefer the per-day label ("Saturday, May 16") shortened to
+        // "SAT, MAY 16". Falls back to the plan-level date display
+        // ("WED – SAT") when a single day isn't available.
+        if let raw = day?.label, !raw.isEmpty {
+            return shortDayLabel(raw)
+        }
+        return plan.dateDisplay
+    }
+
+    private func shortDayLabel(_ raw: String) -> String {
+        // raw examples: "Saturday, May 16" | "Sat, May 16" | "May 16"
+        // Output: "Sat, May 16" — keep month name as-is.
+        let parts = raw.split(separator: ",", maxSplits: 1, omittingEmptySubsequences: true)
+        if parts.count == 2 {
+            let dayName = parts[0].trimmingCharacters(in: .whitespaces)
+            let rest = parts[1].trimmingCharacters(in: .whitespaces)
+            let short = String(dayName.prefix(3))
+            return "\(short), \(rest)"
+        }
+        return raw
+    }
+
+    private func headerMetricsLabel(dayStops: Int) -> String {
+        var parts: [String] = []
+        if dayStops > 0 {
+            parts.append("\(dayStops) \(dayStops == 1 ? "stop" : "stops")")
+        }
+        if let r = routeTotals {
+            if r.miles > 0 {
+                parts.append(String(format: "%.1f mi", r.miles))
+            }
+            if r.minutes > 0 {
+                parts.append("~\(formatTravelMinutes(r.minutes)) \(r.dominantMode.lowerLabel)")
+            }
+        }
+        return parts.joined(separator: " · ")
+    }
+
+    private func formatTravelMinutes(_ mins: Int) -> String {
+        if mins >= 60 {
+            let hr = mins / 60
+            let rem = mins % 60
+            return rem == 0 ? "\(hr) hr" : "\(hr) hr \(rem) min"
+        }
+        return "\(mins) min"
+    }
+
+    private var heroFallback: some View {
+        let initial = String(plan.title.first.map(String.init) ?? "L").uppercased()
+        return ZStack {
+            LinearGradient(
+                colors: [
+                    Color(red: 1.00, green: 0.42, blue: 0.42),
+                    Color(red: 0.91, green: 0.26, blue: 0.24),
+                    Color(red: 0.55, green: 0.18, blue: 0.20),
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            // Soft circles to give the gradient some depth
+            Circle()
+                .fill(.white.opacity(0.10))
+                .frame(width: 220, height: 220)
+                .offset(x: 110, y: -70)
+            Circle()
+                .fill(.black.opacity(0.10))
+                .frame(width: 180, height: 180)
+                .offset(x: -90, y: 80)
+            Text(initial)
+                .font(.system(size: 86, weight: .black))
+                .foregroundColor(.white.opacity(0.18))
+                .offset(x: 80, y: -10)
+        }
     }
 
     private func glassButton<Content: View>(action: @escaping () -> Void, @ViewBuilder content: @escaping () -> Content) -> some View {
@@ -505,14 +690,14 @@ struct PlanDetailView: View {
             } label: {
                 HStack(spacing: -10) {
                     ForEach(Array(visibleAvatars.enumerated()), id: \.element.id) { idx, a in
-                        attendeeAvatar(a, size: 32)
+                        attendeeAvatar(a, size: 30)
                             .zIndex(Double(visibleAvatars.count - idx))
                     }
                     if overflow > 0 {
                         Text("+\(overflow)")
                             .font(.system(size: 11, weight: .black))
                             .foregroundColor(pdInk2)
-                            .frame(width: 32, height: 32)
+                            .frame(width: 30, height: 30)
                             .background(pdShade)
                             .clipShape(Circle())
                             .overlay(Circle().stroke(Color.white, lineWidth: 1.5))
@@ -531,7 +716,7 @@ struct PlanDetailView: View {
                         .font(.system(size: 15, weight: .black))
                         .foregroundColor(pdInk)
                     Text("going")
-                        .font(.system(size: 14, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .foregroundColor(pdInk3)
                 }
             }
@@ -544,12 +729,16 @@ struct PlanDetailView: View {
                 PlanDetailBridge.shared.onInvite?()
             }
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 14)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
         .background(Color.white)
-        .overlay(RoundedRectangle(cornerRadius: 999).stroke(pdLine, lineWidth: 1))
-        .clipShape(RoundedRectangle(cornerRadius: 999))
-        .padding(.horizontal, 16)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(pdLine, lineWidth: 0.5)
+        )
+        .shadow(color: .black.opacity(0.06), radius: 6, x: 0, y: 2)
+        .padding(.horizontal, 14)
     }
 
     // MARK: - Invite pill
@@ -602,6 +791,50 @@ struct PlanDetailView: View {
         }
     }
 
+    // MARK: - Share Plan CTA (persistent bottom bar)
+
+    private var shareCtaBar: some View {
+        let total = max(plan.groupSize ?? plan.attendees.count, 1)
+        let confirmed = max(plan.attendees.filter { $0.confirmed }.count, 0)
+        let subtext: String? = {
+            if total <= 1 { return nil }                                // solo
+            let unconfirmed = max(0, total - confirmed)
+            if unconfirmed == 0 { return "\(total) confirmed" }         // all in
+            return "\(unconfirmed) unconfirmed"
+        }()
+        return Button {
+            PlanDetailBridge.shared.onShare?()
+        } label: {
+            VStack(spacing: 2) {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.arrow.up")
+                        .font(.system(size: 15, weight: .heavy))
+                    Text("Share Plan")
+                        .font(.system(size: 16, weight: .heavy))
+                }
+                .foregroundColor(.white)
+                if let sub = subtext {
+                    Text(sub)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.9))
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+            // Match the event-detail primaryButton styling: solid coral fill,
+            // 2pt coralDk border overlay, flat coralDk drop-shadow at y=4
+            // (radius=0). Creates a stacked "block" depth instead of a soft
+            // gradient — consistent across primary CTAs in the app.
+            .background(pdCoral)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(pdCoralDk, lineWidth: 2))
+            .shadow(color: pdCoralDk.opacity(0.4), radius: 0, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 16)
+    }
+
     private func attendeeAvatar(_ a: PlanDetailAttendee, size: CGFloat) -> some View {
         let color = uiColor(forKotlinARGB: a.avatarColor)
         return Text(a.confirmed ? a.initials.prefix(1).uppercased() : "+")
@@ -618,85 +851,190 @@ struct PlanDetailView: View {
     @ViewBuilder
     private var dayHeader: some View {
         if plan.isEffectivelyMultiDay {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
-                    ForEach(Array(plan.days.enumerated()), id: \.offset) { idx, day in
-                        let isActive = idx == selectedDayIndex
-                        Button {
-                            selectedDayIndex = idx
-                        } label: {
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text("DAY \(idx + 1)")
-                                    .font(.system(size: 9, weight: .black))
-                                    .foregroundColor(isActive ? .white.opacity(0.65) : pdInk3)
-                                    .tracking(0.6)
-                                Text(extractDayNumeral(day) ?? day.shortName)
-                                    .font(.system(size: 22, weight: .black))
-                                    .foregroundColor(isActive ? .white : pdInk)
-                                Text("\(day.slots.count) \(day.slots.count == 1 ? "stop" : "stops")")
-                                    .font(.system(size: 10, weight: .semibold))
-                                    .foregroundColor(isActive ? .white.opacity(0.7) : pdInk3)
-                            }
-                            .frame(width: 64, alignment: .leading)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            .background(isActive ? pdInk : Color.white)
-                            .overlay(RoundedRectangle(cornerRadius: 14).stroke(pdLine, lineWidth: isActive ? 0 : 1))
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
-                        }
-                        .buttonStyle(.plain)
-                    }
-                    if isCreator && !plan.isPast && plan.days.count < kMaxDays {
-                        Button {
-                            PlanDetailBridge.shared.onAddDay?()
-                        } label: {
-                            VStack(spacing: 4) {
-                                Image(systemName: "plus")
-                                    .font(.system(size: 18, weight: .bold))
-                                    .foregroundColor(pdInk3)
-                                Text("ADD")
-                                    .font(.system(size: 9, weight: .black))
-                                    .foregroundColor(pdInk3)
-                                    .tracking(0.6)
-                            }
-                            .frame(width: 64)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 10)
-                            .frame(minHeight: 76) // match day-card height
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14)
-                                    .strokeBorder(
-                                        pdInk4,
-                                        style: StrokeStyle(lineWidth: 1.5, dash: [4, 3])
-                                    )
-                            )
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 16)
-            }
+            multiDayStrip
         } else {
-            HStack {
-                Text("\(plan.totalStops) \(plan.totalStops == 1 ? "stop" : "stops")")
-                    .font(.system(size: 18, weight: .black))
-                    .foregroundColor(pdInk)
-                Spacer()
-                if isCreator && !plan.isPast && plan.days.count < kMaxDays {
-                    Button {
-                        PlanDetailBridge.shared.onAddDay?()
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "plus").font(.system(size: 12, weight: .bold))
-                            Text("Add day").font(.system(size: 13, weight: .bold))
-                        }
-                        .foregroundColor(pdCoral)
-                    }
-                    .buttonStyle(.plain)
+            singleDayStrip
+        }
+    }
+
+    // Multi-day: single white card containing equally-spaced day cells.
+    // Active day fills with coral; inactive cells are flat ink on transparent.
+    // Cells fit within the screen when there are <=4 days; >4 enables scroll.
+    private var multiDayStrip: some View {
+        // Trim trailing orphan days — days with 0 stops and no real day-of-week
+        // label (e.g. just "5" or "6"). These come from upstream bugs where
+        // placeholder days slip into the plan; showing them in the strip is
+        // confusing because they look like real future days the user added.
+        // Keep a trailing empty day if it has a real date label (intentional
+        // user-added empty day waiting to be filled).
+        let visibleDays = trimTrailingPhantomDays(plan.days)
+        let canAdd = isCreator && !plan.isPast && visibleDays.count < kMaxDays
+        let cellCount = visibleDays.count + (canAdd ? 1 : 0)
+        let fitsWithoutScroll = cellCount <= 4
+
+        let row = HStack(spacing: 0) {
+            ForEach(Array(visibleDays.enumerated()), id: \.offset) { idx, day in
+                dayCell(idx: idx, day: day)
+                    .frame(maxWidth: .infinity)
+                if idx < visibleDays.count - 1 || canAdd {
+                    Rectangle()
+                        .fill(pdLine)
+                        .frame(width: 0.5)
+                        .padding(.vertical, 10)
                 }
             }
-            .padding(.horizontal, 16)
+            if canAdd {
+                addDayCell()
+                    .frame(maxWidth: .infinity)
+            }
         }
+
+        return Group {
+            if fitsWithoutScroll {
+                row
+            } else {
+                ScrollView(.horizontal, showsIndicators: false) { row.frame(minWidth: 360) }
+            }
+        }
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(pdLine, lineWidth: 0.5)
+        )
+        .shadow(color: .black.opacity(0.06), radius: 6, x: 0, y: 2)
+        .padding(.horizontal, 14)
+    }
+
+    private func dayCell(idx: Int, day: PlanDetailDay) -> some View {
+        let isActive = idx == selectedDayIndex
+        let dayName = shortDayOfWeek(day) // "THU" or "DAY 1" fallback
+        let numeral = extractDayNumeral(day) ?? day.shortName
+        let stopsLabel = "\(day.slots.count) \(day.slots.count == 1 ? "stop" : "stops")"
+        return Button {
+            withAnimation(.easeInOut(duration: 0.18)) { selectedDayIndex = idx }
+        } label: {
+            VStack(spacing: 4) {
+                Text(dayName)
+                    .font(.system(size: 9, weight: .heavy))
+                    .tracking(0.8)
+                    .foregroundColor(isActive ? .white.opacity(0.85) : pdInk3)
+                Text(numeral)
+                    .font(PDF.display(22, .black))
+                    .foregroundColor(isActive ? .white : pdInk)
+                Text(stopsLabel)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(isActive ? .white.opacity(0.85) : pdInk3)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(
+                Group {
+                    if isActive {
+                        LinearGradient(
+                            colors: [pdCoral, pdCoralDk],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    } else {
+                        Color.clear
+                    }
+                }
+            )
+            .clipShape(RoundedRectangle(cornerRadius: 10))
+            .padding(.horizontal, 4)
+            .padding(.vertical, 4)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func addDayCell() -> some View {
+        Button {
+            PlanDetailBridge.shared.onAddDay?()
+        } label: {
+            VStack(spacing: 4) {
+                Image(systemName: "plus")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(pdCoral)
+                Text("ADD")
+                    .font(.system(size: 9, weight: .heavy))
+                    .tracking(0.8)
+                    .foregroundColor(pdCoral)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .padding(.horizontal, 4)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// Drop trailing "phantom" days — days with 0 stops AND no proper
+    /// day-of-week label. These appear when upstream code adds orphan
+    /// placeholder days; rendering them confuses the user (they look like
+    /// extra future days). A trailing day WITH a real date label is kept
+    /// (the creator may have added it intentionally to fill in later).
+    private func trimTrailingPhantomDays(_ days: [PlanDetailDay]) -> [PlanDetailDay] {
+        var result = days
+        while let last = result.last,
+              last.slots.isEmpty,
+              shortDayOfWeek(last).isEmpty {
+            result.removeLast()
+        }
+        return result
+    }
+
+    private func shortDayOfWeek(_ day: PlanDetailDay) -> String {
+        // Try to derive from day.label ("Saturday, May 16") → "SAT".
+        // Falls back to "DAY N"-style ordinal.
+        let raw = day.label
+        if let comma = raw.firstIndex(of: ",") {
+            let firstWord = raw[..<comma].trimmingCharacters(in: .whitespaces)
+            if !firstWord.isEmpty {
+                return String(firstWord.prefix(3)).uppercased()
+            }
+        }
+        // Try shortName ("Sat") if it's a 3-letter weekday.
+        let trimmed = day.shortName.trimmingCharacters(in: .whitespaces)
+        if !trimmed.isEmpty && trimmed.count <= 4 {
+            return trimmed.prefix(3).uppercased()
+        }
+        return ""
+    }
+
+    // Single-day: white pill containing only "X stops", then "+ Add day"
+    // sits OUTSIDE the pill as a flat coral link — secondary, doesn't
+    // compete visually with the stops count.
+    private var singleDayStrip: some View {
+        HStack(spacing: 12) {
+            Text("\(plan.totalStops) \(plan.totalStops == 1 ? "stop" : "stops")")
+                .font(.system(size: 16, weight: .black))
+                .foregroundColor(pdInk)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 14)
+                .background(Color.white)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(pdLine, lineWidth: 0.5)
+                )
+                .shadow(color: .black.opacity(0.06), radius: 6, x: 0, y: 2)
+
+            Spacer()
+
+            if isCreator && !plan.isPast && plan.days.count < kMaxDays {
+                Button {
+                    PlanDetailBridge.shared.onAddDay?()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: "plus").font(.system(size: 12, weight: .bold))
+                        Text("Add day").font(.system(size: 13, weight: .bold))
+                    }
+                    .foregroundColor(pdCoral)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, 14)
     }
 
     // MARK: - Stop list
@@ -960,7 +1298,8 @@ private struct StopCard: View {
                 Text(slot.name)
                     .font(.system(size: 16, weight: .bold))
                     .foregroundColor(pdInk)
-                    .lineLimit(2)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
                 // Subtitle line: "Dinner · Back Bay · ★ 4.5" — rating inline per spec.
                 if !subtitleLine.isEmpty {
@@ -970,19 +1309,22 @@ private struct StopCard: View {
                         .lineLimit(1)
                 }
 
-                // Chip row: primary action chip + Directions + (Website on restaurants)
+                // CTA row — max 2 chips, Directions always present.
+                // Priority order for the *other* slot:
+                //   1. Reservation / Tickets / "More info" (state-driven primaryChip)
+                //   2. "Info" (was: "Website") — venueWebsite or sourceUrl
+                // If neither qualifies, Directions is the only chip.
                 FlowChips(spacing: 6) {
-                    primaryChip
+                    if hasPrimaryAction {
+                        primaryChip
+                    } else if let info = infoUrl {
+                        chip(label: "Info", systemIcon: "globe") {
+                            onOpenSafari(info)
+                        }
+                    }
                     if slot.venueLat != nil && slot.venueLng != nil {
                         chip(label: "Directions", systemIcon: "figure.walk") {
                             showDirections = true
-                        }
-                    }
-                    if slot.stopType == .restaurant,
-                       let website = slot.venueWebsite, !website.isEmpty,
-                       let url = URL(string: website) {
-                        chip(label: "Website", systemIcon: "globe") {
-                            onOpenSafari(url)
                         }
                     }
                 }
@@ -1024,6 +1366,33 @@ private struct StopCard: View {
             parts.append(String(format: "★ %.1f", rating))
         }
         return parts.joined(separator: " · ")
+    }
+
+    // True when the stop type produces an actionable primary chip
+    // (Reservation, Tickets, or "More info"). When false, the slot has no
+    // dedicated state-machine action and we fall back to a generic "Info"
+    // chip if a website/source URL is available.
+    private var hasPrimaryAction: Bool {
+        switch slot.stopType {
+        case .restaurant:
+            // Renders something useful for both reservable and non-reservable.
+            return true
+        case .ticketed:
+            return true
+        case .freeRsvp:
+            // Only "More info" — present iff there's a URL to open.
+            return (slot.sourceUrl ?? slot.ticketUrl)?.isEmpty == false
+        }
+    }
+
+    /// "Info" chip target — venueWebsite for non-restaurants (where it isn't
+    /// already covered by the primary chip), falling back to sourceUrl.
+    private var infoUrl: URL? {
+        let candidates = [slot.venueWebsite, slot.sourceUrl]
+        for raw in candidates {
+            if let r = raw, !r.isEmpty, let u = URL(string: r) { return u }
+        }
+        return nil
     }
 
     // MARK: - Primary chip / state badge (type + state driven)
@@ -1271,6 +1640,99 @@ private struct TransitRow: View {
 }
 
 // MARK: - Rename sheet
+
+private struct GroupSizeSheet: View {
+    let currentSize: Int
+    let onSave: (Int) -> Void
+    let onCancel: () -> Void
+
+    @State private var size: Int
+
+    init(currentSize: Int, onSave: @escaping (Int) -> Void, onCancel: @escaping () -> Void) {
+        self.currentSize = currentSize
+        self.onSave = onSave
+        self.onCancel = onCancel
+        _size = State(initialValue: max(1, currentSize))
+    }
+
+    private var canSave: Bool { size != currentSize && size >= 1 && size <= 500 }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("How many people?")
+                .font(.system(size: 20, weight: .black))
+                .foregroundColor(pdInk)
+            Text("Includes you. Update if your group changes.")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(pdInk3)
+
+            HStack(spacing: 16) {
+                Button {
+                    if size > 1 { size -= 1 }
+                } label: {
+                    Image(systemName: "minus")
+                        .font(.system(size: 18, weight: .heavy))
+                        .foregroundColor(size > 1 ? pdInk : pdInk4)
+                        .frame(width: 48, height: 48)
+                        .background(pdShade)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(size <= 1)
+
+                Text("\(size)")
+                    .font(.system(size: 44, weight: .black))
+                    .foregroundColor(pdInk)
+                    .frame(minWidth: 90)
+
+                Button {
+                    if size < 500 { size += 1 }
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 18, weight: .heavy))
+                        .foregroundColor(size < 500 ? pdInk : pdInk4)
+                        .frame(width: 48, height: 48)
+                        .background(pdShade)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .disabled(size >= 500)
+            }
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 8)
+
+            HStack(spacing: 10) {
+                Button {
+                    onCancel()
+                } label: {
+                    Text("Cancel")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundColor(pdInk2)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(pdShade)
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+                Button {
+                    onSave(size)
+                } label: {
+                    Text("Save")
+                        .font(.system(size: 14, weight: .black))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(canSave ? pdCoral : pdCoral.opacity(0.4))
+                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+                .buttonStyle(.plain)
+                .disabled(!canSave)
+            }
+        }
+        .padding(20)
+        .presentationDetents([.height(320)])
+    }
+}
 
 private struct RenamePlanSheet: View {
     let currentName: String
@@ -2039,5 +2501,213 @@ private struct RoundedCorner: Shape {
     func path(in rect: CGRect) -> Path {
         let path = UIBezierPath(roundedRect: rect, byRoundingCorners: corners, cornerRadii: CGSize(width: radius, height: radius))
         return Path(path.cgPath)
+    }
+}
+
+// MARK: - Map Hero (route preview for the currently-selected plan day)
+
+private struct MapLeg {
+    let midpoint: CLLocationCoordinate2D
+    let minutes: Int
+    let mode: LegMode
+    let meters: Double
+}
+
+struct RouteTotals: Equatable {
+    let miles: Double
+    let minutes: Int
+    let dominantMode: LegMode
+}
+
+enum LegMode {
+    case walking
+    case driving
+    var label: String {
+        switch self {
+        case .walking: return "WALK"
+        case .driving: return "DRIVE"
+        }
+    }
+    var lowerLabel: String {
+        switch self {
+        case .walking: return "walk"
+        case .driving: return "drive"
+        }
+    }
+}
+
+// Switch from walking to driving once the straight-line distance between
+// two stops exceeds this threshold. ~1 mile of walking is roughly the upper
+// edge of "I can walk that"; beyond it driving is the realistic mode and
+// quoting a 600-minute walk reads as a bug.
+private let kWalkDriveThresholdMeters: Double = 1_609.0  // 1.0 mi
+
+private struct MapHeroView: View {
+    let slots: [PlanDetailSlot]
+    var onTotalsChanged: (RouteTotals?) -> Void = { _ in }
+
+    @State private var legs: [MapLeg] = []
+    @State private var cameraPosition: MapCameraPosition = .automatic
+
+    private var coords: [CLLocationCoordinate2D] {
+        slots.compactMap { s in
+            guard let lat = s.venueLat, let lng = s.venueLng else { return nil }
+            return CLLocationCoordinate2D(latitude: lat, longitude: lng)
+        }
+    }
+
+    private var region: MKCoordinateRegion {
+        let lats = coords.map(\.latitude)
+        let lngs = coords.map(\.longitude)
+        guard let minLat = lats.min(), let maxLat = lats.max(),
+              let minLng = lngs.min(), let maxLng = lngs.max() else {
+            return MKCoordinateRegion(
+                center: CLLocationCoordinate2D(latitude: 42.36, longitude: -71.06),
+                span: MKCoordinateSpan(latitudeDelta: 0.05, longitudeDelta: 0.05)
+            )
+        }
+        // ~2.4× lat padding (taller span) so the route still has breathing
+        // room when the floating title card covers the bottom ~40% of the
+        // hero. Longitude only needs the standard 1.7× padding.
+        let span = MKCoordinateSpan(
+            latitudeDelta: max((maxLat - minLat) * 2.4, 0.020),
+            longitudeDelta: max((maxLng - minLng) * 1.7, 0.018)
+        )
+        // Bias the center southward so the bounding box falls into the
+        // upper portion of the visible map — keeps pins clear of the
+        // title card overlapping at the bottom.
+        let center = CLLocationCoordinate2D(
+            latitude: (minLat + maxLat) / 2 - span.latitudeDelta * 0.18,
+            longitude: (minLng + maxLng) / 2
+        )
+        return MKCoordinateRegion(center: center, span: span)
+    }
+
+    // Stable key for the .task — re-fetch when the underlying coords change.
+    private var coordsKey: String {
+        coords.map { String(format: "%.5f,%.5f", $0.latitude, $0.longitude) }.joined(separator: "|")
+    }
+
+    var body: some View {
+        Map(position: $cameraPosition, interactionModes: []) {
+            // Numbered coral pins — one per stop in the day.
+            ForEach(Array(coords.enumerated()), id: \.offset) { idx, coord in
+                Annotation("", coordinate: coord, anchor: .center) {
+                    NumberedPin(idx: idx + 1)
+                }
+            }
+            // Dashed route between consecutive stops.
+            if coords.count >= 2 {
+                MapPolyline(coordinates: coords)
+                    .stroke(
+                        pdCoral,
+                        style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: [6, 4])
+                    )
+            }
+            // Travel-time pill at each leg's midpoint — shows MIN WALK or
+            // MIN DRIVE depending on the leg's distance.
+            ForEach(Array(legs.enumerated()), id: \.offset) { _, leg in
+                Annotation("", coordinate: leg.midpoint, anchor: .center) {
+                    Text("\(leg.minutes) MIN \(leg.mode.label)")
+                        .font(.system(size: 9, weight: .heavy))
+                        .tracking(0.4)
+                        .foregroundColor(pdInk2)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 3)
+                        .background(.white)
+                        .clipShape(Capsule())
+                        .overlay(Capsule().stroke(pdLine, lineWidth: 0.5))
+                        .shadow(color: .black.opacity(0.18), radius: 2, x: 0, y: 1)
+                }
+            }
+        }
+        .mapStyle(.standard(pointsOfInterest: .excludingAll))
+        .task(id: coordsKey) {
+            await fetchLegs()
+        }
+        .onAppear {
+            cameraPosition = .region(region)
+        }
+        .onChange(of: coordsKey) { _, _ in
+            // Day strip change — re-fit the camera to the new day's stops.
+            withAnimation(.easeInOut(duration: 0.4)) {
+                cameraPosition = .region(region)
+            }
+        }
+    }
+
+    private func fetchLegs() async {
+        guard coords.count >= 2 else {
+            legs = []
+            onTotalsChanged(nil)
+            return
+        }
+        var newLegs: [MapLeg] = []
+        for i in 0..<(coords.count - 1) {
+            let a = coords[i]
+            let b = coords[i + 1]
+            let mid = CLLocationCoordinate2D(
+                latitude: (a.latitude + b.latitude) / 2,
+                longitude: (a.longitude + b.longitude) / 2
+            )
+            // Straight-line distance gates the transport choice. Anything
+            // beyond ~1 mi gets quoted as a drive; closer than that, walking.
+            let straightLineMeters = CLLocation(latitude: a.latitude, longitude: a.longitude)
+                .distance(from: CLLocation(latitude: b.latitude, longitude: b.longitude))
+            let mode: LegMode = straightLineMeters > kWalkDriveThresholdMeters ? .driving : .walking
+
+            let req = MKDirections.Request()
+            req.source = MKMapItem(placemark: MKPlacemark(coordinate: a))
+            req.destination = MKMapItem(placemark: MKPlacemark(coordinate: b))
+            req.transportType = mode == .driving ? .automobile : .walking
+            do {
+                let resp = try await MKDirections(request: req).calculate()
+                if let route = resp.routes.first {
+                    let mins = max(1, Int((route.expectedTravelTime / 60).rounded()))
+                    newLegs.append(MapLeg(midpoint: mid, minutes: mins, mode: mode, meters: route.distance))
+                    continue
+                }
+            } catch {
+                // MKDirections rate-limited or offline — fall through to
+                // a coarse straight-line estimate.
+            }
+            // Fallback pace: ~80 m/min walking, ~600 m/min driving (~22 mph
+            // average for short urban hops including stops/turns).
+            let pacePerMin = mode == .driving ? 600.0 : 80.0
+            let mins = max(1, Int((straightLineMeters / pacePerMin).rounded()))
+            newLegs.append(MapLeg(midpoint: mid, minutes: mins, mode: mode, meters: straightLineMeters))
+        }
+        let totalMeters = newLegs.reduce(0) { $0 + $1.meters }
+        let totalMinutes = newLegs.reduce(0) { $0 + $1.minutes }
+        // Dominant mode = the mode accounting for the most travel time. Single-
+        // mode plans (all walk or all drive) just use that. Mixed plans pick
+        // whichever consumes more minutes — that's the experience that
+        // dominates the user's mental model of the day.
+        let walkMinutes = newLegs.filter { $0.mode == .walking }.reduce(0) { $0 + $1.minutes }
+        let driveMinutes = newLegs.filter { $0.mode == .driving }.reduce(0) { $0 + $1.minutes }
+        let dominantMode: LegMode = driveMinutes > walkMinutes ? .driving : .walking
+        let totals = RouteTotals(miles: totalMeters / 1609.34, minutes: totalMinutes, dominantMode: dominantMode)
+        await MainActor.run {
+            legs = newLegs
+            onTotalsChanged(totals)
+        }
+    }
+}
+
+private struct NumberedPin: View {
+    let idx: Int
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(.white)
+                .frame(width: 28, height: 28)
+                .shadow(color: .black.opacity(0.22), radius: 2, x: 0, y: 1)
+            Circle()
+                .stroke(pdCoral, lineWidth: 2)
+                .frame(width: 28, height: 28)
+            Text("\(idx)")
+                .font(.system(size: 13, weight: .heavy))
+                .foregroundColor(pdCoral)
+        }
     }
 }

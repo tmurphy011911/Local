@@ -1,4 +1,5 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.util.Properties
 
 plugins {
     alias(libs.plugins.kotlinMultiplatform)
@@ -6,6 +7,17 @@ plugins {
     alias(libs.plugins.composeMultiplatform)
     alias(libs.plugins.composeCompiler)
     alias(libs.plugins.kotlinSerialization)
+}
+
+// Read MAPS_API_KEY from local.properties so the key never gets committed.
+// Add a line like `MAPS_API_KEY=AIza...` to local.properties (gitignored).
+// Used as a manifest placeholder for the Maps SDK and a BuildConfig field
+// for the Directions API client.
+val mapsApiKey: String = run {
+    val props = Properties()
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { props.load(it) }
+    props.getProperty("MAPS_API_KEY", "")
 }
 
 kotlin {
@@ -34,6 +46,10 @@ kotlin {
             implementation("com.google.android.gms:play-services-location:21.3.0")
             implementation("com.revenuecat.purchases:purchases:8.12.1")
             implementation("com.revenuecat.purchases:purchases-ui:8.12.1")
+            // Google Maps for the plan-detail map header (Android only —
+            // iOS uses MapKit via PlanDetailView.swift).
+            implementation("com.google.android.gms:play-services-maps:19.0.0")
+            implementation("com.google.maps.android:maps-compose:6.1.2")
         }
 
         commonMain.dependencies {
@@ -95,6 +111,13 @@ android {
         targetSdk = libs.versions.android.targetSdk.get().toInt()
         versionCode = 1
         versionName = "1.0"
+        // Used by AndroidManifest's <meta-data android:value="${MAPS_API_KEY}" />
+        // and read at runtime by the Directions API client.
+        manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
+        buildConfigField("String", "MAPS_API_KEY", "\"$mapsApiKey\"")
+    }
+    buildFeatures {
+        buildConfig = true
     }
     packaging {
         resources {
