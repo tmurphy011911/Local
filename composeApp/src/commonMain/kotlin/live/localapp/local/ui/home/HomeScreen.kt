@@ -1387,17 +1387,26 @@ private fun AiConciergeCard(
                 .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 14.dp),
         ) {
             Column {
-                // Title — tap focuses the input.
+                // Title — tap focuses the input. Bo character on the left so
+                // the entry point reads as Bo's surface, not a generic prompt.
                 Row(
                     modifier = Modifier.clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
                         onClick = { focusRequester.requestFocus() },
                     ),
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text("Tell me what you're ", style = AppType.AiTitle)
+                    live.localapp.local.ui.character.Bo(
+                        size = 32.dp,
+                        showSparkles = false,
+                        showShadow = false,
+                        modifier = Modifier.size(32.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Ask ", style = AppType.AiTitle)
                     Text(
-                        "planning",
+                        "Bo",
                         style = AppType.AiTitle.copy(fontStyle = FontStyle.Italic),
                     )
                 }

@@ -49,6 +49,12 @@ private data class TutorialStep(
 
 private val tutorialSteps = listOf(
     TutorialStep(
+        headline = "Meet",
+        styledWord = "Bo",
+        subtext = "Your local concierge. A friendly helper who turns your ideas into shareable plans in seconds.",
+        gifPlaceholderEmoji = "0",
+    ),
+    TutorialStep(
         headline = "Tell Bo what you're",
         styledWord = "planning",
         subtext = "Date night? Visitors in town? Weekend with the crew? Just say the word.",
@@ -79,10 +85,16 @@ private fun YocalStepIcon(page: Int, trigger: Int) {
     val size = 140.dp
     val mod = Modifier.size(size)
     when (page) {
-        0 -> LocalIcon.ForYou(size = size, trigger = trigger, modifier = mod)
-        1 -> LocalIcon.Events(size = size, trigger = trigger, modifier = mod)
-        2 -> LocalIcon.Other(size = size, trigger = trigger, modifier = mod)
-        3 -> LocalIcon.Tours(size = size, trigger = trigger, modifier = mod)
+        0 -> live.localapp.local.ui.character.Bo(
+            size = size,
+            expression = live.localapp.local.ui.character.BoExpression.Default,
+            trigger = trigger,
+            modifier = mod,
+        )
+        1 -> LocalIcon.ForYou(size = size, trigger = trigger, modifier = mod)
+        2 -> LocalIcon.Events(size = size, trigger = trigger, modifier = mod)
+        3 -> LocalIcon.Other(size = size, trigger = trigger, modifier = mod)
+        4 -> LocalIcon.Tours(size = size, trigger = trigger, modifier = mod)
         else -> LocalIcon.ForYou(size = size, trigger = trigger, modifier = mod)
     }
 }

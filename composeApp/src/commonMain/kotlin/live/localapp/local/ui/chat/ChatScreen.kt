@@ -383,11 +383,24 @@ private fun ChatHeader(onBack: (() -> Unit)? = null, onReset: (() -> Unit)? = nu
             Spacer(Modifier.width(8.dp))
         }
 
-        Text(
-            "ask yocal",
+        Row(
             modifier = Modifier.weight(1f),
-            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = AppColors.Ink),
-        )
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // Bo character anchors the "Plan with Bo" header — small,
+            // shadow/sparkles off so it sits cleanly inline with text.
+            live.localapp.local.ui.character.Bo(
+                size = 28.dp,
+                showSparkles = false,
+                showShadow = false,
+                modifier = Modifier.size(28.dp),
+            )
+            Spacer(Modifier.width(8.dp))
+            Text(
+                "Plan with Bo",
+                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = AppColors.Ink),
+            )
+        }
 
         if (onReset != null) {
             Text(

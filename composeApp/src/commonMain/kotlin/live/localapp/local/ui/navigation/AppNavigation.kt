@@ -191,9 +191,17 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     }
     val homeState by homeVm.uiState.collectAsState()
 
-    // Auto-fetch GPS location on launch if mode is "current" and permission granted
+    // Auto-fetch GPS location on launch if mode is "current".
+    //
+    // Gated on `userPreferences != null` to avoid the race where HomeVM's
+    // default state has locationMode=CURRENT_LOCATION before prefs load.
+    // Without this gate, a user who picked Manual Address during onboarding
+    // would still see the iOS native location prompt fire on first home
+    // render, because we'd be reading the default mode (CURRENT) before
+    // their saved "manual" preference arrived from the DB.
     live.localapp.local.platform.RequestLocationEffect(
-        active = homeState.locationMode == live.localapp.local.ui.home.LocationMode.CURRENT_LOCATION,
+        active = homeState.userPreferences != null &&
+            homeState.locationMode == live.localapp.local.ui.home.LocationMode.CURRENT_LOCATION,
         onLocation = { lat, lng ->
             homeVm.setUserLocation(lat, lng)
             homeVm.setHasLocationPermission(true)
@@ -584,6 +592,24 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                             presentShareSheet(text, "https://localapp.live/p/$token")
                                         }
                                     }
+                                    // Refresh attendees from plan_attendees right after
+                                    // opening detail. Sheet opens immediately with the
+                                    // current data; once the fetch returns, push the
+                                    // updated plan to the native sheet via the bridge so
+                                    // "X unconfirmed" and the View Attendees list reflect
+                                    // any RSVPs that landed since the Plans list was last
+                                    // loaded. Non-blocking so the sheet animation isn't
+                                    // delayed by the network round-trip.
+                                    scope.launch {
+                                        val freshAttendees = planRepo.loadAttendees(plan.id)
+                                        if (freshAttendees.isNotEmpty()) {
+                                            val refreshed = plan.copy(
+                                                attendees = freshAttendees,
+                                                confirmedCount = freshAttendees.count { it.confirmed },
+                                            )
+                                            live.localapp.local.platform.pushNativePlanState(refreshed)
+                                        }
+                                    }
                                     showNativePlanDetail(
                                         plan = plan,
                                         cardX = bounds.left / density,
@@ -803,8 +829,16 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             isLoggedIn = isLoggedIn,
                             locationName = homeState.locationName,
                             streakDays = homeState.streakDays,
-                            onBuildPlanFromEvent = { eventTitle ->
-                                pendingChatMessage = "Build a plan around $eventTitle"
+                            onBuildPlanFromEvent = { eventId, eventTitle ->
+                                // Embed the literal event ID so Bo treats this
+                                // as a "use this exact event_id, don't search
+                                // for similar" — otherwise Bo paraphrases the
+                                // title, search_events returns near-misses or
+                                // nothing, and Bo falls back to recommending
+                                // the venue instead of the event.
+                                pendingChatMessage =
+                                    "I'd like to build a plan around my saved event \"$eventTitle\" (event_id: evt:$eventId). " +
+                                    "Use this exact event_id in the present_plan slot — don't search for it again."
                                 chatOpenCount++
                                 openChatOrLogin()
                             },

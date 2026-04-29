@@ -412,6 +412,10 @@ val claudeTools: JsonArray = buildJsonArray {
                     putJsonObject("items") { put("type", "string") }
                     put("description", "2-3 short follow-up suggestions for the user")
                 }
+                putJsonObject("attendee_count") {
+                    put("type", "integer")
+                    put("description", "Updated number of people attending. Include this whenever the user changes the group size at any point in the conversation, even if no slots are changing on this turn.")
+                }
             }
             putJsonArray("required") {
                 add(JsonPrimitive("day_index"))

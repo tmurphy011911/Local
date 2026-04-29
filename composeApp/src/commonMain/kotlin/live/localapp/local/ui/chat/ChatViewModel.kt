@@ -94,6 +94,7 @@ data class ItinerarySlot(
     val ticketUrl: String? = null,
     val venueRating: Double? = null,
     val venueAddress: String? = null,
+    val venueName: String? = null,
     val venueLat: Double? = null,
     val venueLng: Double? = null,
     val priceMin: Double? = null,
@@ -137,6 +138,15 @@ data class ChatUiState(
     val currentDayIndex: Int = 0,
     val planTitle: String = "",
     val planAttendeeCount: Int = 1,
+    /**
+     * Set when the user enters chat from a saved-event "build a plan around X"
+     * tap. Tells Bo (via the system prompt) to use this exact event_id as the
+     * anchor slot in the plan they're about to build, without showing the
+     * messy "event_id: evt:abc" string in the visible user message.
+     * Cleared after the first turn so it doesn't bleed into unrelated chats.
+     */
+    val pendingAnchorEventId: String? = null,
+    val pendingAnchorEventTitle: String? = null,
     // Plan success overlay
     val showPlanSuccess: Boolean = false,
     // Server-side id of the plan that triggered the current success overlay,
@@ -300,6 +310,22 @@ class ChatViewModel(
         handleMessage(text.trim())
     }
 
+    /**
+     * Pin a saved event as the "anchor" for the next plan Bo builds. Set via
+     * the saved-event card tap path so Bo gets the literal event_id without
+     * polluting the user-visible chat with `evt:abc123…` ids. Injected into
+     * the system prompt for the next turn, then cleared so it doesn't bleed
+     * into unrelated conversations.
+     */
+    fun setPendingAnchorEvent(eventId: String, eventTitle: String) {
+        _uiState.update {
+            it.copy(
+                pendingAnchorEventId = eventId,
+                pendingAnchorEventTitle = eventTitle,
+            )
+        }
+    }
+
     fun onQuickReply(reply: QuickReply) {
         if (_uiState.value.isBusy) return
         when (reply.action) {
@@ -377,6 +403,7 @@ class ChatViewModel(
                         isCustom = false,
                         venueRating = venue?.googleRating,
                         venueAddress = venue?.address,
+                        venueName = venue?.name,
                         venueLat = venue?.latitude,
                         venueLng = venue?.longitude,
                         reservationUrl = venue?.reservationUrl,
@@ -393,13 +420,19 @@ class ChatViewModel(
                         return@mapNotNull null
                     }
 
-                    // ALWAYS derive the slot time from the DB event's start_at —
-                    // never trust Claude's ref.time for event-backed slots. Claude
-                    // routinely misreads the calendar or invents approximate times,
-                    // which manifests as wrong day/time on plan cards. The DB is
-                    // the source of truth; fall back to Claude's value only if the
-                    // event has no start_at at all.
-                    val time = event.startAt?.let { iso ->
+                    // Derive the slot time from the DB event's start_at —
+                    // Claude routinely misreads the calendar or invents approximate
+                    // times, so the DB is the source of truth.
+                    //
+                    // EXCEPTION: many events in the DB sit at exactly 00:00 local
+                    // time (midnight Eastern) because the ingestion pipeline parsed
+                    // a date-only source and defaulted to atStartOfDay(). For those,
+                    // prefer Bo's ref.time (which usually picks a sensible hour from
+                    // context like "afternoon walking tour"). The DST-aware UTC
+                    // pattern (04:00+00 in summer, 05:00+00 in winter) is the
+                    // signature of date-only events; we treat *any* exact midnight
+                    // local time as the same case.
+                    val parsedDisplay = event.startAt?.let { iso ->
                         try {
                             val instant = kotlinx.datetime.Instant.parse(iso)
                             val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
@@ -408,13 +441,36 @@ class ChatViewModel(
                             val amPm = if (hour < 12) "AM" else "PM"
                             val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
                             if (minute == 0) "$displayHour $amPm" else "$displayHour:${minute.toString().padStart(2, '0')} $amPm"
-                        } catch (_: Exception) { ref.time }
-                    } ?: ref.time
+                        } catch (_: Exception) { null }
+                    }
+                    // Date-only events (timeKnown=false in DB, or midnight ET as a
+                    // legacy heuristic) get Bo's ref.time when available — Bo picks
+                    // a context-appropriate hour. Time-known events always use the
+                    // DB value to prevent Claude from inventing wrong times.
+                    val isDateOnly = !event.timeKnown ||
+                        (parsedDisplay == "12 AM")
+                    val time = when {
+                        parsedDisplay == null -> ref.time
+                        isDateOnly && ref.time.isNotBlank() -> {
+                            println("buildPlanFromRefs: event '${event.title}' is date-only (timeKnown=${event.timeKnown}); using Bo's ref.time='${ref.time}' instead of DB '$parsedDisplay'")
+                            ref.time
+                        }
+                        else -> parsedDisplay
+                    }
 
-                    // Fall back to venue photo if event has no image
-                    val slotImage = event.imageUrl ?: event.venueName?.let { name ->
+                    // Fall back to venue photo if event has no image. Log the
+                    // resolved URL so missing-image bugs are easy to triage —
+                    // we can see whether (a) the event row had no image_url
+                    // in DB, (b) the venue lookup failed, or (c) the URL is
+                    // present but malformed/blocked from rendering.
+                    val venuePhoto = event.venueName?.let { name ->
                         try { venueRepo.searchByName(name)?.photoUrl } catch (_: Exception) { null }
                     }
+                    val slotImage = event.imageUrl ?: venuePhoto
+                    println("buildPlanFromRefs: slotImage for '${event.title}' " +
+                        "event.imageUrl=${event.imageUrl?.take(60) ?: "null"} " +
+                        "venuePhoto=${venuePhoto?.take(60) ?: "null"} " +
+                        "→ slotImage=${slotImage?.take(60) ?: "null"}")
 
                     // Look up venue website + category for events too
                     val eventVenue = event.venueName?.let { name ->
@@ -436,6 +492,7 @@ class ChatViewModel(
                         isCustom = false,
                         ticketUrl = event.ticketUrl,
                         venueAddress = event.venueAddress,
+                        venueName = event.venueName,
                         venueLat = event.venueLat,
                         venueLng = event.venueLng,
                         priceMin = event.priceMin,
@@ -611,10 +668,14 @@ class ChatViewModel(
             val dayIndex = input["day_index"]?.jsonPrimitive?.intOrNull ?: 0
             val label = input["label"]?.jsonPrimitive?.contentOrNull ?: ""
             val slots = input["slots"]?.jsonArray?.map { parsePlanSlot(it.jsonObject) } ?: emptyList()
+            // attendee_count may be passed when the user changes the group
+            // size mid-conversation. Optional; null means "no change."
+            val attendeeCount = input["attendee_count"]?.jsonPrimitive?.intOrNull
             return ParsedChatResponse(
                 type = ParsedResponseType.PLAN_UPDATE,
                 text = text,
                 dayIndex = dayIndex,
+                attendeeCount = attendeeCount,
                 days = listOf(live.localapp.local.data.remote.ParsedDay(label = label, events = slots)),
                 chips = chips,
             )
@@ -963,9 +1024,16 @@ class ChatViewModel(
                     val key = "${local.date}"
                     val h = local.hour
                     val m = local.minute
-                    val ampm = if (h < 12) "am" else "pm"
-                    val dh = if (h == 0) 12 else if (h > 12) h - 12 else h
-                    val timeStr = if (m == 0) "${dh}${ampm}" else "${dh}:${m.toString().padStart(2, '0')}${ampm}"
+                    // Date-only events (timeKnown=false) show "TBD" so Bo doesn't
+                    // mistake the midnight default for a real start time. Bo can
+                    // still slot them by passing its own ref.time in present_plan.
+                    val timeStr = if (!e.timeKnown) {
+                        "TBD"
+                    } else {
+                        val ampm = if (h < 12) "am" else "pm"
+                        val dh = if (h == 0) 12 else if (h > 12) h - 12 else h
+                        if (m == 0) "${dh}${ampm}" else "${dh}:${m.toString().padStart(2, '0')}${ampm}"
+                    }
                     Triple(key, label, timeStr)
                 } catch (_: Exception) {
                     Triple(e.startAt?.take(10) ?: "?", e.startAt?.take(10) ?: "?", "?")
@@ -1144,7 +1212,21 @@ class ChatViewModel(
                         }
                         // Dedup the whole plan so an update doesn't collide with
                         // a venue already present on another day.
-                        state.copy(days = removeDuplicateSlots(days), currentDayIndex = dayIndex)
+                        state.copy(
+                            days = removeDuplicateSlots(days),
+                            currentDayIndex = dayIndex,
+                            // Honor an attendee-count change passed with the
+                            // update (user said "actually make it 4 people").
+                            // Null = no change; keep prior count.
+                            planAttendeeCount = parsed.attendeeCount?.coerceAtLeast(1)
+                                ?: state.planAttendeeCount,
+                        )
+                    }
+                } else if (parsed.attendeeCount != null) {
+                    // Slots-only update with attendee_count and no day match
+                    // (or empty slots) — still apply the count change.
+                    _uiState.update { state ->
+                        state.copy(planAttendeeCount = parsed.attendeeCount.coerceAtLeast(1))
                     }
                 }
 
@@ -1412,10 +1494,10 @@ class ChatViewModel(
             return null
         }
 
-        // For flexible/always-on events, keep Claude's chosen time
-        // For fixed-time events, use the real event time
+        // For flexible/always-on/date-only events, keep Claude's chosen time.
+        // For fixed-time events, use the real event time.
         val isMidnightUtc = event.startAt?.contains("T00:00:00") == true
-        val isFlexible = event.category == "always_on" || event.startAt == null || isMidnightUtc
+        val isFlexible = event.category == "always_on" || event.startAt == null || isMidnightUtc || !event.timeKnown
         val realTime = if (isFlexible) {
             slot.time // Keep whatever time Claude picked — midnight UTC means no specific time
         } else {
@@ -1708,6 +1790,21 @@ class ChatViewModel(
     private fun buildSystemPrompt(): String {
         val state = _uiState.value
 
+        // Anchor-event context: when the user just tapped a saved event card
+        // ("build a plan around X"), the visible message stays clean and
+        // human ("I'd like to build a plan around 'X'"). The event_id is
+        // pinned here, in the system prompt, so Bo uses the exact id without
+        // surfacing it in the chat transcript.
+        val anchorContext = state.pendingAnchorEventId?.let { id ->
+            val title = state.pendingAnchorEventTitle ?: ""
+            """
+ANCHOR EVENT (use this as the centerpiece of the plan you're about to build):
+- event_id: evt:$id
+- title: "$title"
+- The user reached this chat by tapping their saved event. Use the literal event_id "$id" (no `evt:` prefix) in one of the present_plan slots — do NOT call search_events to find it again, do NOT substitute the venue. Build the rest of the day around this anchor (pre-event meal, post-event drinks, etc.) using your usual planning rules.
+            """.trimIndent()
+        } ?: ""
+
         val currentPlanContext = if (state.days.isNotEmpty()) {
             val dayDescriptions = state.days.mapIndexed { i, day ->
                 val approved = if (day.isApproved) " [APPROVED]" else ""
@@ -1816,6 +1913,7 @@ $next14Days
 
 DATE HANDLING RULES (strict):
 - When referencing a specific event from search_events results, quote its date and time EXACTLY as returned. Do not paraphrase ("next Saturday"), approximate ("around 7 PM"), or shift by a day — copy the values verbatim from the tool result.
+- TBD-TIME EVENTS: when a search_events result shows a time of "TBD", that means the database has the event's date but no source-confirmed start time (most often recurring activities, walking tours, mall walks, etc.). For these: in present_plan slots, pick a sensible time-of-day yourself based on the activity type ("9 AM", "11 AM", "2 PM", etc.) and pass it in the slot's `time` field — the system trusts your time when the DB time is TBD. Don't pass "TBD" as the slot time; pick a real one.
 - Never invent, infer, or guess an event date. If search_events didn't return a date, say so; don't fill one in.
 - When the user mentions a day by name ("Saturday"), resolve it against the NEXT 14 DAYS table above, not from memory.
 - "Tonight", "now", "right now", and "later today" mean AFTER Current time. Every slot in a same-day plan must start at least 30 minutes after Current time. If the user asks for a same-day plan and you can't find anything later tonight, tell them honestly rather than proposing a slot in the past. Default dinner/date times like "6:30 PM" are NOT acceptable if Current time is already past them.
@@ -1827,7 +1925,9 @@ HOW TO HELP:
 - When the user wants to plan something, search the database FIRST, then present a plan using the present_plan tool. Search broadly — make multiple search_events calls across different categories and date ranges to find everything relevant. The more you search, the better your recommendations. When offering to build a plan, mention that it's an easily shareable plan (e.g. "Want me to build you a shareable plan?" or "I can put together a plan you can share with your group").
 - CRITICAL: Once the user confirms they want a plan ("yes", "sure", "full night plan", "build it", "let's do it", "no thanks" to extras, etc.) and you have enough info (main activity + attendee count), your VERY NEXT message MUST be a present_plan tool call — even for a single-stop plan. NEVER describe a plan in plain text. NEVER write phrases like "There's your plan!", "Here's your plan", "I've added X to your plans", or "Grab dinner at X, then Y at 8pm" — that renders as chat text and the user sees no plan card, which means no plan was actually saved. Single-stop plans (just the concert, just the show, just the dinner) STILL go through present_plan with one slot — there is no minimum stop count. If your reply is going to confirm or describe a plan in any way, STOP, drop the text, and call present_plan instead. A plain-text description or confirmation of a plan is a BUG.
 - IMPORTANT: In present_plan slots, ALWAYS use event_id when a specific event exists (concerts, shows, workshops, tours, exhibitions, games). Only use venue_name for restaurants, bars, and cafes where there is no specific event — just a dining/drinks recommendation. If a concert is at The Sinclair, use the event_id from search_events, NOT venue_name "The Sinclair". The event_id ensures the event title, ticket URL, and source URL are preserved.
+- WHEN GIVEN A SPECIFIC EVENT_ID (critical): If the user message contains an explicit `evt:abc123` token (e.g. "build a plan around my saved event 'X' (event_id: evt:abc123)"), use that EXACT event_id verbatim in the present_plan slot — do NOT call search_events to find it again, do NOT substitute the venue. The user has already saved this exact event; replacing it with a different event or with venue_name "TD Garden" is a bug. Use `event_id: "abc123"` (strip the `evt:` prefix) directly in the slot. You can still build OTHER slots around this anchor (pre-game dinner, post-event drinks), but the anchor slot itself must be the literal event the user named.
 - ALWAYS gather the number of people attending before presenting a plan. You can infer from context: "date night" = 2, "double date" = 4, "just me" / solo = 1, "family" = ask how many, "friends" = ask how many. If unclear, ask "How many people will be joining?" before calling present_plan. Include the attendee_count in the present_plan call — this is required. Tailor recommendations to group size (e.g. larger groups need venues with more seating, reservations become more important).
+- ATTENDEE-COUNT PERSISTENCE (critical): The attendee_count is part of the plan and gets saved when the user taps Save. If the user states or changes the group size at ANY point — even after the plan card is already showing ("actually make it 4", "we picked up two more friends", "it'll just be me now") — you MUST reflect it. Two ways: (a) if you're already calling update_plan to change slots, include attendee_count in that same call; (b) if no slots are changing, still call update_plan with the current day_index, the existing day's slots unchanged, and the new attendee_count. NEVER respond in text alone to a group-size change — without an update_plan call the count won't be saved. Do this even when the count is the only thing changing.
 - HONOR USER-STATED COMMITMENTS (critical): If the user mentions an existing plan, ticket, reservation, or commitment ("we already have Red Sox tickets Thursday", "I'm seeing a show Friday at 8", "we have a 7pm dinner res Saturday"), that commitment MUST appear as a slot on the matching day in the plan you build — never silently ignore it or schedule competing activities at the same time. Steps: (1) call search_events with the team/artist/event name AND start_date/end_date set to the day they mentioned; (2) if you find a matching event, use its event_id in the slot; (3) if no DB match, include a venue_name slot with the user's stated detail (e.g. venue_name="Red Sox @ Fenway Park", note="(your existing plans)") so it still appears on that day's card. Build the rest of the day around that fixed slot — pre-game dinner before, drinks after, etc. — and respect the time conflict.
 - DO NOT ASSUME FOOD OR DRINKS. Never auto-add a dinner, brunch, coffee, bar, or cocktail stop unless the user has signaled they want food/drinks. "Date night" alone does NOT imply dinner. "Things to do Saturday" does NOT imply brunch. If the user hasn't mentioned eating/drinking, ask once before building the plan: "Want me to include a meal or a drink stop, or just activities?" Only skip the question when food/drink is explicitly in the request ("dinner and a show", "brunch plans", "where should we eat", "bar crawl", "coffee then a museum", etc.).
 - When chatting or answering questions, just respond naturally. No special formatting needed.
@@ -1859,11 +1959,16 @@ GUIDELINES:
 - If you know what and when, search and build immediately. Only ask about timing if it's truly ambiguous.
 - NEVER use emoji in your responses. No emoji at all — they don't render in this app.
 - Never mention the database, tools, search results, or implementation details to the user. Don't narrate your search process ("I notice the results show...", "Let me search for...", "The database has..."). Just act on the information and present results naturally.
+- NEVER reference "the database", "the system", "my data", "my records", "I don't have access", "real-time data", "in our system", "in the database", or any phrase that exposes how you look things up. The user does NOT know there's a search system underneath — to them, you just know things or you don't. Bad: "I don't have specific class details in the database right now, but the ICA offers a range of workshops..." Good: "I don't have specific upcoming class dates for the ICA, but they regularly run workshops — want me to suggest something else for tonight, or look into a different venue?" The difference: phrase the gap as "I don't have those details" not "the database doesn't have those details". You're a person who knows things, not a search engine.
+- NEVER expose schema or field names: never write tool field names like `venue_name`, `event_id`, `start_date`, `is_custom`, `attendee_count`, etc. in user-facing text. Never use snake_case identifiers like `cannoli_stop` or `north_end` in chat — write naturally ("a cannoli stop in the North End"). Phrases like "(venue_name from our search)", "(event_id ...)", "I'll set is_custom=true" are bugs. The user never sees the schema.
+- NO MARKDOWN FORMATTING: this chat does NOT render markdown. Do not use **bold**, *italics*, `code`, headings (#), bullet lists (- or *), or numbered lists. Asterisks and pound signs render as literal characters. When you want to present options, write them as plain prose sentences or short newline-separated lines without any leading symbols. Example — instead of "**Option 1: Boston Children's Museum** - Perfect for families", write "Option 1 — Boston Children's Museum: perfect for families." (em-dashes and colons are fine; markdown syntax is not).
 - Don't ask more than one clarifying question before building a plan. If the user gives you enough to work with, just build it.
 
 $prefsContext
 
 $tasteContext
+
+$anchorContext
 
 $currentPlanContext
         """.trimIndent()

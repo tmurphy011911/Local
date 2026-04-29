@@ -95,7 +95,7 @@ struct ComposeView: UIViewControllerRepresentable {
             isFree, priceDisplay, ticketUrl, sourceUrl,
             category, subcategory, source,
             cardX, cardY, cardW, cardH, cardImageUrl,
-            isFavorited in
+            isFavorited, timeKnown in
 
             DispatchQueue.main.async {
                 guard let window = composeVC.view.window ?? UIApplication.shared.connectedScenes
@@ -124,7 +124,8 @@ struct ComposeView: UIViewControllerRepresentable {
                     subcategory: subcategory,
                     source: source,
                     showDirections: detailBridge.showDirections,
-                    isFavorited: isFavorited.boolValue
+                    isFavorited: isFavorited.boolValue,
+                    timeKnown: timeKnown.boolValue
                 )
 
                 let cardFrame = CGRect(

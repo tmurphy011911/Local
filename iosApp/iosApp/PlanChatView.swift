@@ -263,18 +263,35 @@ struct PlanChatView: View {
                 .foregroundColor(PC.coral)
                 .padding(.leading, 28) // line up with text after the sparkle
             HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(PC.coral)
-                    .frame(width: 20)
-                    .padding(.top, 3)
-                Text(msg.text)
+                Image("BoTiny")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 20, height: 20)
+                    .padding(.top, 1)
+                renderMarkdown(msg.text)
                     .font(PF.body(15, .semibold))
                     .foregroundColor(PC.ink)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(maxWidth: 280, alignment: .leading)
+    }
+
+    /// Bo regularly emits **bold**, *italic*, and `[label](url)` markdown.
+    /// AttributedString(markdown:) parses inline syntax natively. We pass
+    /// `inlineOnlyPreservingWhitespace: true` so newlines aren't collapsed,
+    /// preserving Bo's multi-line responses. Falls back to plain text when
+    /// parsing fails (extremely rare).
+    private func renderMarkdown(_ text: String) -> Text {
+        if let attributed = try? AttributedString(
+            markdown: text,
+            options: AttributedString.MarkdownParsingOptions(
+                interpretedSyntax: .inlineOnlyPreservingWhitespace
+            )
+        ) {
+            return Text(attributed)
+        }
+        return Text(text)
     }
 
     @ViewBuilder
@@ -358,12 +375,10 @@ struct PlanChatView: View {
     @ViewBuilder
     private func avatar(msg: PlanChatMessageSnapshot) -> some View {
         if msg.isYocal {
-            Image(systemName: "sparkles")
-                .font(.system(size: 14, weight: .bold))
-                .foregroundColor(PC.coral)
+            Image("BoTiny")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
                 .frame(width: 28, height: 28)
-                .background(PC.coral.opacity(0.15))
-                .clipShape(Circle())
         } else {
             let first = msg.senderName.first.map { String($0).uppercased() } ?? "?"
             Text(first)
@@ -387,11 +402,11 @@ struct PlanChatView: View {
                     .foregroundColor(PC.coral)
                     .padding(.leading, 28)
                 HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "sparkles")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(PC.coral)
-                        .frame(width: 20)
-                        .padding(.top, 3)
+                    Image("BoTiny")
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 20, height: 20)
+                        .padding(.top, 1)
                     Text(state.streamingText.isEmpty ? "Thinking…" : state.streamingText)
                         .font(PF.body(15, .semibold))
                         .foregroundColor(state.streamingText.isEmpty ? PC.ink3 : PC.ink)

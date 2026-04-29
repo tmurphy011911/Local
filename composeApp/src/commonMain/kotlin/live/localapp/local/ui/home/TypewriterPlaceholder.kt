@@ -3,10 +3,12 @@ package live.localapp.local.ui.home
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -71,8 +73,23 @@ fun TypewriterPlaceholder(
         cursorAlpha.animateTo(0f, tween(durationMillis = 260))
     }
 
-    Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
-        Text(typed, style = style, maxLines = 1)
+    // Auto-scroll the row so the cursor (the *end* of what's been typed) is
+    // always pinned to the right side. When the prompt is longer than the
+    // input bar, the user sees the trailing characters of what's currently
+    // being typed instead of the head being chopped at the right edge.
+    val scrollState = rememberScrollState()
+    LaunchedEffect(typed) {
+        // Animate to maxValue each time a new character lands. maxValue
+        // updates after layout, so a single scrollTo is enough; we don't
+        // need a frame delay because horizontalScroll re-measures on the
+        // same recomposition pass.
+        scrollState.scrollTo(scrollState.maxValue)
+    }
+    Row(
+        modifier = modifier.horizontalScroll(scrollState, enabled = false),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(typed, style = style, maxLines = 1, softWrap = false)
         Box(
             modifier = Modifier
                 .width(2.dp)

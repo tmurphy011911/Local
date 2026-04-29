@@ -261,6 +261,10 @@ struct ChatView: View {
                 }
                 .buttonStyle(.plain)
 
+                Image("BoDefaultClean")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 30, height: 30)
                 Text("Plan with Bo")
                     .font(F.display(22, .black))
                     .foregroundColor(C.ink)
@@ -338,13 +342,13 @@ struct ChatView: View {
             Text("Bo")
                 .font(F.body(11, .bold))
                 .foregroundColor(C.coral)
-                .padding(.leading, 28) // line up with text after the sparkle
+                .padding(.leading, 28) // line up with text after the avatar
             HStack(alignment: .top, spacing: 8) {
-                Image(systemName: "sparkles")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(C.coral)
-                    .frame(width: 20)
-                    .padding(.top, 3)
+                Image("BoTiny")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 20, height: 20)
+                    .padding(.top, 1)
                 markdownText(text)
             }
         }
@@ -515,7 +519,11 @@ private struct MultiDayPlanCardView: View {
     let showSave: Bool
 
     @State private var dayIndex: Int = 0
-    @State private var slotPosition: [Int: Int] = [:]
+    // Track which slot is centered per day, by slot id (not index) so SwiftUI
+    // has a single source of identity. Mixing `.id(Int)` for scrollPosition
+    // with ForEach's `\.element.id` (String) caused the active-dot indicator
+    // to drift out of sync with the visually centered card.
+    @State private var slotId: [Int: String] = [:]
 
     // Clamp to handle the case where `days` shrinks (plan update) while
     // dayIndex still points at a now-missing trailing day.
@@ -525,7 +533,10 @@ private struct MultiDayPlanCardView: View {
     }
     private var day: DaySnapshot { days[safeDayIndex] }
     private var color: Color { dayColors[safeDayIndex % dayColors.count] }
-    private var activeSlot: Int { slotPosition[safeDayIndex] ?? 0 }
+    private var activeSlot: Int {
+        guard let id = slotId[safeDayIndex] else { return 0 }
+        return day.slots.firstIndex { $0.id == id } ?? 0
+    }
 
     var body: some View {
         if days.isEmpty {
@@ -658,20 +669,19 @@ private struct MultiDayPlanCardView: View {
     // MARK: Slot pager — paging scroll with peek, reports current slot
 
     private var slotPager: some View {
-        let binding = Binding<Int?>(
-            get: { slotPosition[safeDayIndex] ?? 0 },
-            set: { new in slotPosition[safeDayIndex] = new ?? 0 }
+        // Track scroll position by slot id (String) so SwiftUI uses one
+        // identity for both ForEach and scrollPosition — fixes drift between
+        // the centered card and the active-dot indicator. On day change the
+        // initial id is set in .onAppear / .onChange below.
+        let binding = Binding<String?>(
+            get: { slotId[safeDayIndex] ?? day.slots.first?.id },
+            set: { new in if let id = new { slotId[safeDayIndex] = id } }
         )
-        // Card width = container - 48 so the next card peeks 24pt on the right.
-        // Leading margin = 12, trailing = 36 so the last card snaps flush with no
-        // phantom peek. viewAligned snaps each card's leading edge to the 12pt
-        // content margin — never any left-side bleed.
         return ScrollView(.horizontal, showsIndicators: false) {
             LazyHStack(spacing: 12) {
-                ForEach(Array(day.slots.enumerated()), id: \.element.id) { idx, slot in
+                ForEach(day.slots, id: \.id) { slot in
                     SlotCardView(slot: slot, color: color)
                         .containerRelativeFrame(.horizontal) { width, _ in width - 48 }
-                        .id(idx)
                 }
             }
             .scrollTargetLayout()
@@ -680,6 +690,19 @@ private struct MultiDayPlanCardView: View {
         .contentMargins(.trailing, 36, for: .scrollContent)
         .scrollTargetBehavior(.viewAligned)
         .scrollPosition(id: binding)
+        .onAppear {
+            if slotId[safeDayIndex] == nil {
+                slotId[safeDayIndex] = day.slots.first?.id
+            }
+        }
+        .onChange(of: safeDayIndex) { _, newDay in
+            // When the user swipes to a new day, reset the scroll target
+            // to that day's first slot rather than carrying over a stale id
+            // from a different day's slot list.
+            if slotId[newDay] == nil {
+                slotId[newDay] = days[newDay].slots.first?.id
+            }
+        }
     }
 
     // MARK: Slot pagination dots
@@ -736,17 +759,28 @@ private struct SlotCardView: View {
                     AsyncImage(url: url) { phase in
                         switch phase {
                         case .success(let image):
-                            image.resizable().scaledToFill()
+                            image.resizable()
+                                .scaledToFill()
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        case .failure(_):
+                            slotImageFallback
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
                         default:
                             color.opacity(0.15)
+                                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                                .overlay(
+                                    ProgressView()
+                                        .progressViewStyle(.circular)
+                                        .tint(C.ink3)
+                                )
                         }
                     }
                 } else {
-                    color.opacity(0.15)
+                    slotImageFallback
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: 100)
             .frame(height: 100)
-            .frame(maxWidth: .infinity)
             .clipped()
 
             VStack(alignment: .leading, spacing: 3) {
@@ -782,8 +816,27 @@ private struct SlotCardView: View {
             if let eventId = slot.eventId {
                 ChatBridge.shared.onEventTap?(eventId, slot.imageUrl)
             } else {
+                // Mark the venue detail open as "coming from a plan slot"
+                // so it hides Get Directions + Upcoming Events. Reset on
+                // the venue detail's onDismissed.
+                VenueDetailTransitionController.fromPlanContext = true
                 ChatBridge.shared.onVenueTap?(slot.name)
             }
+        }
+    }
+
+    // Tinted gradient + map-pin glyph used when the slot has no imageUrl OR
+    // AsyncImage failed to load. Reads as intentional rather than broken.
+    private var slotImageFallback: some View {
+        ZStack {
+            LinearGradient(
+                colors: [color.opacity(0.18), color.opacity(0.30)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            Image(systemName: "mappin.and.ellipse")
+                .font(.system(size: 22, weight: .heavy))
+                .foregroundColor(color.opacity(0.55))
         }
     }
 }
@@ -796,11 +849,11 @@ private struct SearchingIndicatorView: View {
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "sparkles")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(C.coral)
-                .frame(width: 20)
-                .padding(.top, 3)
+            Image("BoTiny")
+                .resizable()
+                .aspectRatio(contentMode: .fit)
+                .frame(width: 20, height: 20)
+                .padding(.top, 1)
             Text(searchingPhrases[phraseIndex % searchingPhrases.count])
                 .font(F.body(14, .semibold))
                 .foregroundColor(C.ink3)

@@ -4,6 +4,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -85,7 +87,13 @@ private fun StepIcon(page: Int, trigger: Int) {
     val mod = Modifier.size(size)
     when (page) {
         0 -> LocalIcon.ForYou(size = size, trigger = trigger, modifier = mod)
-        1 -> LocalIcon.Experiences(size = size, trigger = trigger, modifier = mod)
+        // Page 1 is "Meet Bo" — render the actual Bo character.
+        1 -> live.localapp.local.ui.character.Bo(
+            size = size,
+            expression = live.localapp.local.ui.character.BoExpression.Default,
+            trigger = trigger,
+            modifier = mod,
+        )
         2 -> LocalIcon.Events(size = size, trigger = trigger, modifier = mod)
         3 -> LocalIcon.Other(size = size, trigger = trigger, modifier = mod)
         4 -> LocalIcon.Sports(size = size, trigger = trigger, modifier = mod)
@@ -211,7 +219,15 @@ fun HomeTutorial(cityName: String = "", onComplete: () -> Unit) {
                     .padding(bottom = 24.dp)
                     .clip(RoundedCornerShape(16.dp))
                     .background(if (isLastPage) AppColors.Coral else AppColors.Ink)
-                    .pressable(onClick = {
+                    // Use a plain clickable for the CTA — `pressable` was
+                    // dropping taps in this stack on iOS (gesture detector
+                    // not committing on quick taps). Plain clickable is
+                    // bullet-proof and the slight scale animation is
+                    // cosmetic in this context.
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) {
                         if (isLastPage) {
                             onComplete()
                         } else {
@@ -219,7 +235,7 @@ fun HomeTutorial(cityName: String = "", onComplete: () -> Unit) {
                                 pagerState.animateScrollToPage(pagerState.currentPage + 1)
                             }
                         }
-                    })
+                    }
                     .padding(vertical = 16.dp),
                 contentAlignment = Alignment.Center,
             ) {
