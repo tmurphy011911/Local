@@ -228,11 +228,19 @@ fun PlansScreen(
             }
 
             // Plans (if any) render first; the Saved Events and Saved Venues
-            // carousels below ALWAYS show (even when there are no plans yet).
-            // The plan-templates section was removed — we route users into Bo
-            // via the saved-event / saved-venue card taps instead.
+            // carousels below ALWAYS show. When there are no upcoming plans
+            // yet we render 3 Bo-branded plan templates (rotated each time
+            // the user returns to the tab — driven by templateRotationKey).
             if (state.isLoading && state.upcomingPlans.isEmpty() && state.savedEvents.isEmpty()) {
                 item { PlansSkeletonLoader() }
+            } else if (state.upcomingPlans.isEmpty()) {
+                item {
+                    PlanTemplates(
+                        rotationKey = state.templateRotationKey,
+                        onNewPlan = onNewPlan,
+                        onTemplateClick = onBuildPlanFromTemplate,
+                    )
+                }
             } else if (state.upcomingPlans.isNotEmpty()) {
                 // First plan — editorial hero card
                 val heroPlan = state.upcomingPlans.first()
@@ -1532,13 +1540,15 @@ private val PLAN_TEMPLATES = listOf(
 )
 
 @Composable
-private fun PlanTemplates(onNewPlan: () -> Unit, onTemplateClick: ((String) -> Unit)? = null) {
-    // Pick 3 templates at random on first composition. `remember(Unit)` gives
-    // a fresh selection per Plans-screen mount — when the user navigates
-    // away and comes back (or the empty state re-renders), they see a
-    // different rotation. Stable within a single composition so the order
-    // doesn't shuffle while the user is looking at it.
-    val templates = remember {
+private fun PlanTemplates(
+    rotationKey: Int,
+    onNewPlan: () -> Unit,
+    onTemplateClick: ((String) -> Unit)? = null,
+) {
+    // Pick 3 templates at random, keyed on rotationKey. The ViewModel bumps
+    // the key on every refresh() — including the OnAppResumeEffect on the
+    // Plans tab — so leaving and coming back yields a fresh rotation.
+    val templates = remember(rotationKey) {
         PLAN_TEMPLATES.shuffled().take(3)
     }
 

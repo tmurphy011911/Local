@@ -25,6 +25,7 @@ data class PlansUiState(
     val isRefreshing: Boolean = false,
     val savedEvents: List<Event> = emptyList(),
     val savedVenues: List<Venue> = emptyList(),
+    val templateRotationKey: Int = 0,
 )
 
 class PlansViewModel(
@@ -44,7 +45,12 @@ class PlansViewModel(
     }
 
     fun refresh() {
-        _uiState.update { it.copy(isRefreshing = true) }
+        _uiState.update {
+            it.copy(
+                isRefreshing = true,
+                templateRotationKey = it.templateRotationKey + 1,
+            )
+        }
         loadPlans()
         loadSavedItems()
     }
