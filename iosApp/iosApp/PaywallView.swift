@@ -14,7 +14,7 @@ struct PaywallView: View {
     /// close without purchasing — callers use it to decide whether to resume
     /// a pending plan save or drop it.
     let onDismiss: (_ didPurchase: Bool) -> Void
-    @State private var isAnnual = true
+    @State private var isAnnual = false
     @State private var monthlyPrice = "$6.99"
     @State private var annualPrice = "$49.99"
     @State private var introPrice: String? = "$0.99"
@@ -142,20 +142,20 @@ struct PaywallView: View {
     private var pricingToggle: some View {
         HStack(spacing: 10) {
             pricingCard(
-                label: "Annual",
-                price: annualPrice,
-                subtext: annualPerMonth,
-                badge: "Best value",
-                selected: isAnnual
-            ) { isAnnual = true }
-
-            pricingCard(
                 label: "Monthly",
                 price: displayMonthly,
                 subtext: displaySubtext,
                 badge: introPrice != nil ? "First month" : nil,
                 selected: !isAnnual
             ) { isAnnual = false }
+
+            pricingCard(
+                label: "Annual",
+                price: annualPrice,
+                subtext: annualPerMonth,
+                badge: "Best value",
+                selected: isAnnual
+            ) { isAnnual = true }
         }
     }
 

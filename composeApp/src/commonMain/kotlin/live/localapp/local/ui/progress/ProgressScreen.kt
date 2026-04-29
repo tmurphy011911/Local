@@ -86,7 +86,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.rememberCoroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import live.localapp.local.domain.model.ActionProgress
 import live.localapp.local.domain.model.BadgeAction
 import live.localapp.local.domain.model.StateProgress
@@ -2019,10 +2021,40 @@ private fun SubscriptionSection(onUpgrade: () -> Unit) {
 
 @Composable
 private fun NotificationPreferencesSection() {
-    val settings = remember { com.russhwolf.settings.Settings() }
-    var tickets by remember { mutableStateOf(settings.getBoolean("notif_tickets_local", true)) }
-    var reminders by remember { mutableStateOf(settings.getBoolean("notif_reminders_local", true)) }
-    var venues by remember { mutableStateOf(settings.getBoolean("notif_venues_local", true)) }
+    // Reads + writes the same UserPreferences fields as onboarding
+    // (notifTickets / notifNearby / notifVenues), so the toggles in profile
+    // actually drive what server-side jobs send. Maps to:
+    //   • Weekly Snapshot     → notifTickets
+    //   • Reminders           → notifNearby
+    //   • Saved Venue Updates → notifVenues
+    val koin = remember { org.koin.mp.KoinPlatform.getKoin() }
+    val repo = remember { koin.get<live.localapp.local.domain.repository.UserPreferencesRepository>() }
+    val scope = rememberCoroutineScope()
+
+    var prefs by remember { mutableStateOf<live.localapp.local.domain.repository.UserPreferences?>(null) }
+
+    LaunchedEffect(Unit) {
+        val uid = repo.getLocalUserId() ?: return@LaunchedEffect
+        prefs = repo.loadPreferences(uid)
+    }
+
+    val tickets = prefs?.notifTickets ?: true
+    val reminders = prefs?.notifNearby ?: true
+    val venues = prefs?.notifVenues ?: true
+
+    fun update(transform: (live.localapp.local.domain.repository.UserPreferences) -> live.localapp.local.domain.repository.UserPreferences) {
+        val current = prefs ?: return
+        val next = transform(current)
+        prefs = next
+        scope.launch {
+            try {
+                val uid = repo.getLocalUserId()
+                if (uid != null) repo.savePreferencesWithId(uid, next) else repo.savePreferences(next)
+            } catch (e: Throwable) {
+                println("NotificationPreferencesSection: save failed (${e.message})")
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -2036,15 +2068,15 @@ private fun NotificationPreferencesSection() {
         Spacer(Modifier.height(10.dp))
 
         NotifToggleRow("Weekly Snapshot", "Events you'll love this week", tickets) {
-            tickets = !tickets; settings.putBoolean("notif_tickets_local", tickets)
+            update { it.copy(notifTickets = !it.notifTickets) }
         }
         Spacer(Modifier.height(8.dp))
         NotifToggleRow("Reminders", "Nudges for upcoming plans", reminders) {
-            reminders = !reminders; settings.putBoolean("notif_reminders_local", reminders)
+            update { it.copy(notifNearby = !it.notifNearby) }
         }
         Spacer(Modifier.height(8.dp))
         NotifToggleRow("Saved Venue Updates", "New events at your favorites", venues) {
-            venues = !venues; settings.putBoolean("notif_venues_local", venues)
+            update { it.copy(notifVenues = !it.notifVenues) }
         }
     }
 }

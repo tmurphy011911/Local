@@ -169,10 +169,16 @@ class OnboardingViewModel(
 
     fun onSuccessComplete() {
         val s = _state.value
+        // Show personalization steps whenever there's *any* data for them,
+        // not just when there's a high count. Smaller cities (Waltham,
+        // Cambridge, etc.) often have <2 neighborhoods or <10 venues but
+        // we still want users to see the personalization flow — skipping
+        // straight to the push prompt undercuts the "look how local this
+        // is" narrative arc.
         val nextStep = when {
-            s.neighborhoods.size >= 2 -> OnboardingStep.NEIGHBOURHOODS
-            s.venues.size >= 10 -> OnboardingStep.VENUES
-            s.categoryCounts.size >= 5 -> OnboardingStep.CATEGORIES
+            s.neighborhoods.isNotEmpty() -> OnboardingStep.NEIGHBOURHOODS
+            s.venues.isNotEmpty() -> OnboardingStep.VENUES
+            s.categoryCounts.isNotEmpty() -> OnboardingStep.CATEGORIES
             else -> OnboardingStep.NOTIFICATIONS
         }
         _state.update { it.copy(currentStep = nextStep) }
@@ -181,8 +187,8 @@ class OnboardingViewModel(
     fun onNeighbourhoodsNext() {
         val s = _state.value
         val nextStep = when {
-            s.venues.size >= 10 -> OnboardingStep.VENUES
-            s.categoryCounts.size >= 5 -> OnboardingStep.CATEGORIES
+            s.venues.isNotEmpty() -> OnboardingStep.VENUES
+            s.categoryCounts.isNotEmpty() -> OnboardingStep.CATEGORIES
             else -> OnboardingStep.NOTIFICATIONS
         }
         _state.update { it.copy(currentStep = nextStep) }
@@ -190,7 +196,7 @@ class OnboardingViewModel(
 
     fun onVenuesNext() {
         val s = _state.value
-        val nextStep = if (s.categoryCounts.size >= 5) OnboardingStep.CATEGORIES else OnboardingStep.NOTIFICATIONS
+        val nextStep = if (s.categoryCounts.isNotEmpty()) OnboardingStep.CATEGORIES else OnboardingStep.NOTIFICATIONS
         _state.update { it.copy(currentStep = nextStep) }
     }
 
