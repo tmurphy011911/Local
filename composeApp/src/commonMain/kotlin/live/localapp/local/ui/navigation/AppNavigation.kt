@@ -646,7 +646,13 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                             plansVm.deletePlan(plan.id)
                                         },
                                         onAddDay = {
-                                            plansVm.addDayToPlan(plan.id)
+                                            // Same pattern as Add Event: open Bo with a prompt so
+                                            // Bo can search/build the new day with full context.
+                                            live.localapp.local.platform.openPlanChatSheet(
+                                                plan = plan,
+                                                prePopulatedMessage = "Add a day to this plan",
+                                                onDismiss = {},
+                                            )
                                         },
                                         onAddEvent = { dayIdx ->
                                             // Per spec: + Add event opens the per-plan Bo chat with
@@ -708,6 +714,13 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                         },
                                         onRemoveSlot = { dayIdx, slotId ->
                                             plansVm.removeSlotFromPlan(plan.id, dayIdx, slotId)
+                                            // Push the updated plan into the native PlanDetailView so
+                                            // the deleted slot disappears immediately. Without this,
+                                            // the native view keeps its original snapshot and the row
+                                            // sticks around until the sheet is dismissed and reopened.
+                                            val refreshed = (plansVm.uiState.value.upcomingPlans + plansVm.uiState.value.pastPlans)
+                                                .find { it.id == plan.id } ?: plan
+                                            live.localapp.local.platform.pushNativePlanState(refreshed)
                                         },
                                         onInvite = sharePlanLink,
                                         onChangeRsvp = { _ ->
@@ -1053,10 +1066,13 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             selectedPlan = plan.copy(days = updatedDays)
                         },
                         onAddDay = {
-                            plansVm.addDayToPlan(plan.id)
-                            val nextIndex = plan.days.size + 1
-                            val newDay = live.localapp.local.domain.model.PlanDay(label = "Day $nextIndex", shortName = "Day $nextIndex", slots = emptyList())
-                            selectedPlan = plan.copy(days = plan.days + newDay)
+                            // Open Bo with a prompt so the new day gets real context (date,
+                            // events, travel) instead of an empty placeholder.
+                            live.localapp.local.platform.openPlanChatSheet(
+                                plan = plan,
+                                prePopulatedMessage = "Add a day to this plan",
+                                onDismiss = {},
+                            )
                         },
                         onRemoveDay = { dayIdx ->
                             plansVm.removeDayFromPlan(plan.id, dayIdx)

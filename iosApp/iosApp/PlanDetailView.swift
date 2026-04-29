@@ -211,8 +211,12 @@ struct PlanDetailView: View {
             overlapSlotIds = detectOverlaps(in: plan)
         }
         .onDisappear {
-            PlanDetailBridge.shared.pushPlanState = nil
-            PlanDetailBridge.shared.onSwapAlternativesReady = nil
+            // NOTE: do NOT nil out pushPlanState / onSwapAlternativesReady here.
+            // onDisappear fires when a sheet is presented over this view (e.g.
+            // the per-plan Bo chat), and clearing the bridge would drop the
+            // push that arrives from Bo's update_plan confirmation, leaving the
+            // detail view stale when the user returns. The next onAppear of any
+            // PlanDetailView re-binds these handlers anyway.
             PlanDetailBridge.shared.onDismissed?()
         }
     }
