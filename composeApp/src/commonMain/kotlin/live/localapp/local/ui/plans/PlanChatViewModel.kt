@@ -655,13 +655,20 @@ GUIDELINES:
     private val webHttpClient = io.ktor.client.HttpClient()
 
     private suspend fun fetchBoWebBudget(): BoWebBudget? {
-        val userId = userPrefsRepo.getLocalUserId() ?: return null
+        val userId = userPrefsRepo.getLocalUserId()
+        if (userId == null) {
+            println("Bo[web-gate plan]: NULL userId — skipping fetch")
+            return null
+        }
         return try {
+            println("Bo[web-gate plan]: fetching for user=$userId")
             val res = webHttpClient.get("${live.localapp.local.Config.SUPABASE_URL}/functions/v1/bo-web-budget?user_id=$userId") {
                 header("Authorization", "Bearer ${live.localapp.local.Config.SUPABASE_ANON_KEY}")
             }
+            val body = res.bodyAsText()
+            println("Bo[web-gate plan]: status=${res.status.value} body=${body.take(300)}")
             if (res.status.value !in 200..299) return null
-            val obj = kotlinx.serialization.json.Json.parseToJsonElement(res.bodyAsText()).jsonObject
+            val obj = kotlinx.serialization.json.Json.parseToJsonElement(body).jsonObject
             BoWebBudget(
                 allowWebSearch = obj["allow_web_search"]?.jsonPrimitive?.booleanOrNull == true,
                 allowWebFetch = obj["allow_web_fetch"]?.jsonPrimitive?.booleanOrNull == true,
@@ -676,34 +683,49 @@ GUIDELINES:
     }
 
     private fun augmentSystemPromptWithBudget(systemPrompt: String, budget: BoWebBudget?): String {
-        if (budget == null) return systemPrompt
+        if (budget == null) {
+            println("Bo[web-gate plan]: NULL budget — web tools NOT included")
+            return systemPrompt
+        }
+        println("Bo[web-gate plan]: reason=${budget.reason} allowSearch=${budget.allowWebSearch}")
         val lines = buildString {
             appendLine()
-            appendLine("--- WEB SEARCH GATE ---")
+            appendLine("============================================")
+            appendLine("WEB SEARCH IS ${if (budget.allowWebSearch) "AVAILABLE" else "DISABLED"}")
+            appendLine("============================================")
             when (budget.reason) {
                 "ok" -> {
-                    appendLine("You have access to web_search and web_fetch tools as a fallback. PRIORITY ORDER:")
-                    appendLine("  1. ALWAYS try search_events / search_venues against our database first.")
-                    appendLine("  2. Use web_search ONLY when (a) DB returns 0 results, (b) the user asks something time-sensitive (open hours, weather, 'this weekend'), or (c) they reference a specific named event/venue not in DB.")
-                    appendLine("  3. Use web_fetch when the user shares a URL — fetch it directly instead of searching.")
-                    appendLine("Cap yourself to 3 web_search invocations per turn.")
+                    appendLine("You have web_search and web_fetch tools available right now.")
+                    appendLine("")
+                    appendLine("MANDATORY web_search use cases (do NOT respond from training data):")
+                    appendLine("  • Open hours, schedules of any specific business")
+                    appendLine("  • Weather for today/tomorrow/this weekend")
+                    appendLine("  • Current sports scores, recent news, anything 'this week' or 'tonight'")
+                    appendLine("  • Specific named event/venue/restaurant — when the user wants real, current info")
+                    appendLine("  • When search_events / search_venues returns 0 results")
+                    appendLine("")
+                    appendLine("CRITICAL: Do NOT say 'I don't have real-time data', 'I'd recommend checking weather.com',")
+                    appendLine("or anything similar. You DO have web_search. USE IT.")
+                    appendLine("")
+                    appendLine("Cap at 3 web_search invocations per turn. web_fetch when user pastes a URL.")
                 }
                 "not_live_state" -> {
-                    appendLine("USER IS IN A NON-LIVE STATE${budget.userState?.let { " ($it)" } ?: ""}. Web search is DISABLED.")
-                    appendLine("If the user asks anything that would require web lookup, respond:")
+                    appendLine("Web search is DISABLED — user is in ${budget.userState ?: "a non-live state"}.")
+                    appendLine("If the user asks anything requiring web lookup, respond exactly:")
                     appendLine("  \"Local is not yet live in your state. It is currently live in ${budget.liveStatesList}.\"")
                 }
                 "user_day_cap", "user_hour_cap" -> {
-                    appendLine("USER HIT DAILY/HOURLY WEB-SEARCH QUOTA. Web search is DISABLED for this turn.")
-                    appendLine("If they ask something requiring web search, respond: \"I've hit my lookup limit for now — try again later.\"")
+                    appendLine("Web search is DISABLED — user hit their quota.")
+                    appendLine("If they ask something requiring it, respond: \"I've hit my lookup limit for now — try again later.\"")
                 }
                 "monthly_cap" -> {
-                    appendLine("GLOBAL MONTHLY WEB-SEARCH BUDGET REACHED. Web search is DISABLED.")
+                    appendLine("Web search is DISABLED — global monthly budget reached.")
                 }
                 else -> {
-                    appendLine("Web search status: ${budget.reason}. Use database tools only.")
+                    appendLine("Web search disabled (${budget.reason}).")
                 }
             }
+            appendLine("============================================")
         }
         return systemPrompt + lines
     }

@@ -1149,13 +1149,19 @@ class ChatViewModel(
 
     /** GET /functions/v1/bo-web-budget — gate decision for this turn. */
     private suspend fun fetchBoWebBudget(): BoWebBudget? {
-        val userId = userPrefsRepo.getLocalUserId() ?: return null
+        val userId = userPrefsRepo.getLocalUserId()
+        if (userId == null) {
+            println("Bo[web-gate]: NULL userId — skipping fetch")
+            return null
+        }
         return try {
+            println("Bo[web-gate]: fetching for user=$userId")
             val res = httpClient.get("${Config.SUPABASE_URL}/functions/v1/bo-web-budget?user_id=$userId") {
                 header("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
             }
-            if (res.status.value !in 200..299) return null
             val body = res.bodyAsText()
+            println("Bo[web-gate]: status=${res.status.value} body=${body.take(300)}")
+            if (res.status.value !in 200..299) return null
             val obj = kotlinx.serialization.json.Json.parseToJsonElement(body).jsonObject
             BoWebBudget(
                 allowWebSearch = obj["allow_web_search"]?.jsonPrimitive?.booleanOrNull == true,
@@ -1165,43 +1171,59 @@ class ChatViewModel(
                 liveStatesList = obj["live_states_list"]?.jsonPrimitive?.contentOrNull ?: "",
             )
         } catch (e: Throwable) {
-            println("fetchBoWebBudget error: ${e.message}")
+            println("Bo[web-gate]: fetch error: ${e.message}")
             null
         }
     }
 
     /** Append per-turn budget context so Bo delivers the right blocked message. */
     private fun augmentSystemPromptWithBudget(systemPrompt: String, budget: BoWebBudget?): String {
-        if (budget == null) return systemPrompt
+        if (budget == null) {
+            println("Bo[web-gate]: NULL budget (fetch failed) — web tools NOT included")
+            return systemPrompt
+        }
+        println("Bo[web-gate]: reason=${budget.reason} allowSearch=${budget.allowWebSearch} allowFetch=${budget.allowWebFetch}")
         val lines = buildString {
             appendLine()
-            appendLine("--- WEB SEARCH GATE ---")
+            appendLine("============================================")
+            appendLine("WEB SEARCH IS ${if (budget.allowWebSearch) "AVAILABLE" else "DISABLED"}")
+            appendLine("============================================")
             when (budget.reason) {
                 "ok" -> {
-                    appendLine("You have access to web_search and web_fetch tools as a fallback. PRIORITY ORDER:")
-                    appendLine("  1. ALWAYS try search_events / search_venues against our database first.")
-                    appendLine("  2. Use web_search ONLY when (a) DB returns 0 results, (b) the user asks something time-sensitive (open hours, weather, 'this weekend'), or (c) they reference a specific named event/venue not in DB.")
-                    appendLine("  3. Use web_fetch when the user shares a URL — fetch it directly instead of searching.")
-                    appendLine("Cap yourself to 3 web_search invocations per turn. Don't web-search for trivial facts you already know (e.g. 'what's a brewery').")
+                    appendLine("You have TWO Anthropic-managed tools available right now: web_search and web_fetch.")
+                    appendLine("")
+                    appendLine("MANDATORY use cases — you MUST call web_search (no exceptions, do NOT respond from training data):")
+                    appendLine("  • Open hours, closing times, schedules of any specific business")
+                    appendLine("  • Today/tomorrow/this-weekend weather")
+                    appendLine("  • Current sports scores, recent news, anything 'this week' or 'tonight'")
+                    appendLine("  • Any specific named event/venue/restaurant where the user wants real, current info")
+                    appendLine("  • When search_events / search_venues returns 0 results")
+                    appendLine("")
+                    appendLine("CRITICAL: Do NOT say 'I don't have real-time data', 'I'd recommend checking weather.com', or anything")
+                    appendLine("similar. You DO have web_search. USE IT. If you've been told elsewhere not to admit lacking real-time")
+                    appendLine("info, that's because we now give you the tool — call it instead.")
+                    appendLine("")
+                    appendLine("Use web_fetch when the user pastes a URL. Cap yourself at 3 search invocations per turn.")
+                    appendLine("Always try database tools (search_events, search_venues) first when the question is about")
+                    appendLine("local events/venues we might already have indexed.")
                 }
                 "not_live_state" -> {
-                    appendLine("USER IS IN A NON-LIVE STATE${budget.userState?.let { " ($it)" } ?: ""}. Web search is DISABLED.")
-                    appendLine("If the user asks anything that would require web lookup or events outside our DB, respond:")
+                    appendLine("Web search is DISABLED — user is in ${budget.userState ?: "a non-live state"}.")
+                    appendLine("If the user asks anything requiring web lookup, respond exactly:")
                     appendLine("  \"Local is not yet live in your state. It is currently live in ${budget.liveStatesList}.\"")
-                    appendLine("Otherwise, continue helping with whatever you can do from the database.")
                 }
                 "user_day_cap", "user_hour_cap" -> {
-                    appendLine("USER HIT DAILY/HOURLY WEB-SEARCH QUOTA. Web search is DISABLED for this turn.")
-                    appendLine("If they ask something requiring web search, respond: \"I've hit my lookup limit for now — try again later.\" Otherwise, continue from the database.")
+                    appendLine("Web search is DISABLED — user hit their quota.")
+                    appendLine("If they ask something requiring it, respond: \"I've hit my lookup limit for now — try again later.\"")
                 }
                 "monthly_cap" -> {
-                    appendLine("GLOBAL MONTHLY WEB-SEARCH BUDGET REACHED. Web search is DISABLED.")
-                    appendLine("Respond as if you can only use database tools.")
+                    appendLine("Web search is DISABLED — global monthly budget reached.")
                 }
                 else -> {
-                    appendLine("Web search status: ${budget.reason}. Use database tools only.")
+                    appendLine("Web search disabled (${budget.reason}).")
                 }
             }
+            appendLine("============================================")
         }
         return systemPrompt + lines
     }
