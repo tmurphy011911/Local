@@ -48,10 +48,18 @@ data class PlanSlot(
     /**
      * True when Bo created this slot from a web_search finding (Phase 2).
      * The slot's [eventId] is the bo_web_events.id row, not events.id.
-     * UI shows a "Bo found this — verifying" badge until Phase 3's verifier
-     * promotes the row to events and clears this flag.
      */
     val isBoWeb: Boolean = false,
+    /**
+     * Phase 3.5: current state of the bo_web_events row this slot points at.
+     * Hydrated when the plan loads; one of: unverified | verifying | verified
+     * | rejected. Drives the slot's badge:
+     *   unverified/verifying → coral "BO FOUND THIS — VERIFYING"
+     *   verified             → no badge (promoted to events table)
+     *   rejected             → red warning + "I've verified this" override
+     * Null when isBoWeb=false (the field doesn't apply).
+     */
+    val boWebState: String? = null,
     val imageUrl: String? = null,
     val ticketUrl: String? = null,
     val venueRating: Double? = null,

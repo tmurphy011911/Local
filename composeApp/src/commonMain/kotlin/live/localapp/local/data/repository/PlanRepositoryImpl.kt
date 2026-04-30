@@ -56,6 +56,7 @@ private data class PlanSlotDto(
     @SerialName("event_id") val eventId: String? = null,
     @SerialName("is_custom") val isCustom: Boolean = false,
     @SerialName("is_bo_web") val isBoWeb: Boolean = false,
+    @SerialName("bo_web_state") val boWebState: String? = null,
     @SerialName("image_url") val imageUrl: String? = null,
     @SerialName("ticket_url") val ticketUrl: String? = null,
     @SerialName("venue_rating") val venueRating: Double? = null,
@@ -100,7 +101,8 @@ private data class PlanInsertDto(
 
 private fun PlanSlot.toDto() = PlanSlotDto(
     id = id, time = time, emoji = emoji, name = name, detail = detail, price = price,
-    isFree = isFree, eventId = eventId, isCustom = isCustom, isBoWeb = isBoWeb, imageUrl = imageUrl,
+    isFree = isFree, eventId = eventId, isCustom = isCustom, isBoWeb = isBoWeb,
+    boWebState = boWebState, imageUrl = imageUrl,
     ticketUrl = ticketUrl, venueRating = venueRating, venueAddress = venueAddress,
     venueName = venueName,
     venueLat = venueLat, venueLng = venueLng, priceMin = priceMin, priceMax = priceMax,
@@ -131,6 +133,7 @@ private fun PlanSlotDto.toDomain() = PlanSlot(
     eventId = eventId,
     isCustom = isCustom,
     isBoWeb = isBoWeb,
+    boWebState = boWebState,
     imageUrl = imageUrl,
     ticketUrl = ticketUrl,
     venueRating = venueRating,
@@ -246,12 +249,28 @@ class PlanRepositoryImpl(
             // list PlanDto.toDomain() returns. Counts + the View Attendees
             // sheet stay in sync with actual RSVPs from this point on.
             val attendeesByPlan = loadAttendeesBatch(plansBare.map { it.id })
+            // Phase 3.5: hydrate Bo-Web slot states. Collect all eventIds from
+            // slots flagged isBoWeb=true, batch-fetch their current state from
+            // bo_web_events, and stamp slot.boWebState. Drives the UI badge
+            // (verifying / verified / rejected).
+            val boWebIds = plansBare.flatMap { it.days.flatMap { d ->
+                d.slots.filter { it.isBoWeb && it.eventId != null }.mapNotNull { it.eventId }
+            } }.distinct()
+            val statesById = if (boWebIds.isNotEmpty()) loadBoWebStates(boWebIds) else emptyMap()
             val plans = plansBare.map { plan ->
                 val real = attendeesByPlan[plan.id]
                 val confirmed = real?.count { it.confirmed } ?: 1
+                val daysWithStates = plan.days.map { day ->
+                    day.copy(slots = day.slots.map { slot ->
+                        if (slot.isBoWeb && slot.eventId != null) {
+                            slot.copy(boWebState = statesById[slot.eventId] ?: slot.boWebState)
+                        } else slot
+                    })
+                }
                 plan.copy(
                     attendees = real?.takeIf { it.isNotEmpty() } ?: plan.attendees,
                     confirmedCount = confirmed,
+                    days = daysWithStates,
                 )
             }
             plans
@@ -534,6 +553,25 @@ class PlanRepositoryImpl(
             confirmed = confirmed,
             avatarColor = color,
         )
+    }
+
+    /**
+     * Batch-fetch state field for a set of bo_web_events ids. Used during plan
+     * load to drive the slot's "verifying / verified / rejected" badge.
+     */
+    private suspend fun loadBoWebStates(ids: List<String>): Map<String, String> {
+        if (ids.isEmpty()) return emptyMap()
+        return try {
+            @Serializable
+            data class Row(val id: String, val state: String)
+            supabaseClient.from("bo_web_events")
+                .select { filter { isIn("id", ids) } }
+                .decodeList<Row>()
+                .associate { it.id to it.state }
+        } catch (e: Throwable) {
+            println("PlanRepository.loadBoWebStates failed: ${e.message}")
+            emptyMap()
+        }
     }
 
     override suspend fun loadAttendees(planId: String): List<live.localapp.local.domain.model.PlanAttendee> {

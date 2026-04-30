@@ -63,6 +63,11 @@ struct PlanDetailView: View {
     // Bubbled up from MapHeroView once MKDirections finishes — used by the
     // floating title card to render "X stops · X mi · ~X min".
     @State private var routeTotals: RouteTotals? = nil
+    /// Phase 3.5: when the user taps a "BO COULDN'T VERIFY" badge, store the
+    /// slot here so the override modal can render. Tapping "I've verified
+    /// this" calls the override edge function and locally flips the badge.
+    @State private var boWebOverrideTarget: PlanDetailSlot? = nil
+    @State private var boWebLocallyVerified: Set<String> = []
 
     init(
         initialPlan: PlanDetailPlan,
@@ -186,6 +191,20 @@ struct PlanDetailView: View {
         }
         .sheet(item: $activeStopSheet) { target in
             stopSheetView(for: target)
+        }
+        .alert("Bo couldn't verify this", isPresented: Binding(
+            get: { boWebOverrideTarget != nil },
+            set: { if !$0 { boWebOverrideTarget = nil } }
+        )) {
+            Button("Cancel", role: .cancel) { boWebOverrideTarget = nil }
+            Button("I've verified it") {
+                if let target = boWebOverrideTarget, let id = target.eventId {
+                    overrideBoWebVerification(id: id, slotId: target.id)
+                }
+                boWebOverrideTarget = nil
+            }
+        } message: {
+            Text("Bo found this on the web but couldn't independently confirm it's real. If you've checked the source yourself and it's legit, tap \"I've verified it\" to clear the warning. The event still won't be added to other users' feeds.")
         }
         .onAppear {
             // Listen for state pushes from Kotlin while presented. Each push
@@ -335,6 +354,35 @@ struct PlanDetailView: View {
     }
 
     /// Decode the JSON list returned by Kotlin's PlanSwapService.
+    /// Phase 3.5: user override for a rejected Bo-Web slot. Calls the
+    /// override edge function (which bumps user_verified_count) and on
+    /// success adds the slot id to boWebLocallyVerified so the badge
+    /// disappears immediately. Failure is silent — the warning stays.
+    private func overrideBoWebVerification(id: String, slotId: String) {
+        guard let userId = currentUserId,
+              let supabaseURL = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_URL") as? String
+                  ?? URL(string: "https://blifubxslaucshmlphdc.supabase.co")?.absoluteString,
+              let url = URL(string: "\(supabaseURL)/functions/v1/override-bo-web-finding")
+        else { return }
+
+        let supabaseAnonKey = Bundle.main.object(forInfoDictionaryKey: "SUPABASE_ANON_KEY") as? String ?? ""
+
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(supabaseAnonKey)", forHTTPHeaderField: "Authorization")
+        let body: [String: Any] = ["user_id": userId, "id": id, "kind": "event"]
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+
+        URLSession.shared.dataTask(with: req) { _, response, _ in
+            DispatchQueue.main.async {
+                if (response as? HTTPURLResponse)?.statusCode == 200 {
+                    boWebLocallyVerified.insert(slotId)
+                }
+            }
+        }.resume()
+    }
+
     private func decodeSwapAlternatives(from json: String) -> [SwapAlternative] {
         guard let data = json.data(using: .utf8) else { return [] }
         let decoder = JSONDecoder()
@@ -1080,7 +1128,9 @@ struct PlanDetailView: View {
                             onRemove: {
                                 PlanDetailBridge.shared.onRemoveSlot?(KotlinInt(int: Int32(dayIdx)), slot.id)
                             },
-                            onOpenSafari: { url in safariUrl = IdentifiableURL(url: url) }
+                            onOpenSafari: { url in safariUrl = IdentifiableURL(url: url) },
+                            onTapBoWebOverride: { boWebOverrideTarget = slot },
+                            isLocallyVerified: boWebLocallyVerified.contains(slot.id)
                         )
                         if i < day.slots.count - 1, let travel = day.travel?[safe: i] {
                             TransitRow(mode: travel.mode, mins: Int(travel.mins))
@@ -1216,6 +1266,8 @@ private struct StopCard: View {
     let onReplace: () -> Void
     let onRemove: () -> Void
     let onOpenSafari: (URL) -> Void
+    let onTapBoWebOverride: () -> Void
+    let isLocallyVerified: Bool
 
     @Environment(\.openURL) private var openURL
     @State private var showDirections = false
@@ -1252,17 +1304,37 @@ private struct StopCard: View {
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(pdCoral)
                         .tracking(0.5)
-                    // Phase 2: Bo-Web slot — show "verifying" badge until the
-                    // verifier promotes the row. Tap behavior in Phase 3.
+                    // Phase 3.5: Bo-Web badge reflects current verification
+                    // state. Verified rows render no badge (slot looks like
+                    // any other event). Rejected rows show a red warning
+                    // tappable → confirmation override modal.
                     if slot.isBoWeb {
-                        HStack(spacing: 3) {
-                            Image(systemName: "sparkles")
-                                .font(.system(size: 9, weight: .bold))
-                            Text("BO FOUND THIS — VERIFYING")
-                                .font(.system(size: 8, weight: .black))
-                                .tracking(0.5)
+                        let effectiveState = isLocallyVerified ? "verified" : slot.boWebState
+                        switch effectiveState {
+                        case "verified":
+                            EmptyView()
+                        case "rejected":
+                            Button(action: { onTapBoWebOverride() }) {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "exclamationmark.triangle.fill")
+                                        .font(.system(size: 9, weight: .bold))
+                                    Text("BO COULDN'T VERIFY")
+                                        .font(.system(size: 8, weight: .black))
+                                        .tracking(0.5)
+                                }
+                                .foregroundColor(Color(red: 0.85, green: 0.40, blue: 0.20))
+                            }
+                            .buttonStyle(.plain)
+                        default:
+                            HStack(spacing: 3) {
+                                Image(systemName: "sparkles")
+                                    .font(.system(size: 9, weight: .bold))
+                                Text("BO FOUND THIS — VERIFYING")
+                                    .font(.system(size: 8, weight: .black))
+                                    .tracking(0.5)
+                            }
+                            .foregroundColor(pdCoral)
                         }
-                        .foregroundColor(pdCoral)
                     }
                     // Restaurant: amber "BOOK AHEAD" only when the venue likely
                     // takes reservations and the user hasn't booked one yet.
