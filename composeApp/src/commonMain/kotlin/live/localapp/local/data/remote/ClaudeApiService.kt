@@ -647,6 +647,28 @@ class ClaudeApiService {
                                     contentBlocks[index] = ClaudeContentBlock(type = "tool_use", id = id, name = name)
                                     trySend(StreamEvent.ToolUseStart(index, id, name))
                                 }
+                                // Anthropic server-side tools (web_search_20250305, web_fetch_20250910)
+                                // emit blocks of type server_tool_use (the model's request) and
+                                // web_search_tool_result / web_fetch_tool_result (Anthropic's reply
+                                // injected into the same response). We track the request blocks so
+                                // tallyWebCalls can count them; results are accepted and skipped —
+                                // the model already integrated them into its text by the Done event.
+                                "server_tool_use" -> {
+                                    val id = block["id"]?.jsonPrimitive?.content ?: ""
+                                    val name = block["name"]?.jsonPrimitive?.content ?: ""
+                                    inputBuffers[index] = StringBuilder()
+                                    while (contentBlocks.size <= index) contentBlocks.add(ClaudeContentBlock())
+                                    contentBlocks[index] = ClaudeContentBlock(type = "server_tool_use", id = id, name = name)
+                                    // Emit ToolUseStart so the chat UI commits any in-progress
+                                    // streaming text and shows the searching indicator. Without
+                                    // this, the partial text Bo wrote before invoking web_search
+                                    // gets clobbered by the post-search final response.
+                                    trySend(StreamEvent.ToolUseStart(index, id, name))
+                                }
+                                "web_search_tool_result", "web_fetch_tool_result" -> {
+                                    while (contentBlocks.size <= index) contentBlocks.add(ClaudeContentBlock())
+                                    contentBlocks[index] = ClaudeContentBlock(type = blockType)
+                                }
                             }
                         }
 
@@ -677,11 +699,11 @@ class ClaudeApiService {
                                 contentBlocks[index] = ClaudeContentBlock(type = "text", text = currentTextBuffer.toString())
                                 currentTextIndex = -1
                             }
-                            // Finalize tool_use block — parse accumulated JSON input
+                            // Finalize tool_use / server_tool_use blocks — parse accumulated JSON input
                             val inputJson = inputBuffers[index]?.toString()
                             if (inputJson != null) {
                                 val existing = contentBlocks.getOrNull(index)
-                                if (existing != null && existing.type == "tool_use") {
+                                if (existing != null && (existing.type == "tool_use" || existing.type == "server_tool_use")) {
                                     val parsedInput = try {
                                         json.parseToJsonElement(inputJson).jsonObject
                                     } catch (_: Exception) {
