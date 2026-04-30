@@ -699,13 +699,11 @@ class ChatViewModel(
                     }
                 }
                 is StreamEvent.ToolUseStart -> {
-                    // If Claude already streamed partial text in this round, commit
-                    // it as a real message before entering the search state — otherwise
-                    // the partial response disappears and the UI reverts to the idiom.
-                    if (!isToolRound && streamBuffer.isNotEmpty()) {
-                        val pending = streamBuffer.toString().trim()
-                        if (pending.isNotEmpty()) addAiMessage(pending)
-                    }
+                    // Drop any partial streaming text — these are preambles
+                    // ("I'll search…", "Let me check…") that the prompt rules
+                    // tell Bo not to write but the model keeps emitting anyway.
+                    // We just clear the buffer; the final post-tool text becomes
+                    // the only persisted assistant message via extractText.
                     _uiState.update { it.copy(isSearching = true, streamingText = "") }
                     streamBuffer.clear()
                 }
