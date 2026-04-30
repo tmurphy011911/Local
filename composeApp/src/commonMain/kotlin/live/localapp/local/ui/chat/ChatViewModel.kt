@@ -766,6 +766,13 @@ class ChatViewModel(
         val time = slotObj["time"]?.jsonPrimitive?.contentOrNull ?: ""
         val note = slotObj["note"]?.jsonPrimitive?.contentOrNull ?: ""
         val isBoWeb = slotObj["is_bo_web"]?.jsonPrimitive?.booleanOrNull == true
+        // Defensive: if Bo flagged is_bo_web but only filled venue_name (no event_id),
+        // it found a specific event but classified it as a venue stop — exactly the
+        // bug the prompt warns against. Log loudly so we can spot it; treat as venue
+        // ref so something renders, but the slot will be missing event context.
+        if (isBoWeb && eventId == null && venueName != null) {
+            println("parsePlanSlot WARNING: is_bo_web=true with venue_name but no event_id — Bo lost the event title for venue '$venueName'. Slot will render as venue without event context.")
+        }
         return live.localapp.local.data.remote.EventRef(
             id = eventId ?: venueName ?: "",
             time = time,
@@ -1261,11 +1268,35 @@ class ChatViewModel(
                     appendLine("Always try database tools (search_events, search_venues) first when the question is about")
                     appendLine("local events/venues we might already have indexed.")
                     appendLine("")
-                    appendLine("STAGING WEB FINDINGS FOR PLANS:")
-                    appendLine("When you find an event/venue via web_search and want to include it in a plan, call")
-                    appendLine("save_web_finding FIRST. It returns an id you must put in the present_plan/update_plan")
-                    appendLine("slot's event_id, AND set is_bo_web: true on that slot. Without this step, the slot")
-                    appendLine("won't render correctly. Pass at least one source_domain (where you found it).")
+                    appendLine("EVENT vs VENUE — READ CAREFULLY (this applies to BOTH search_events results AND")
+                    appendLine("web_search findings, equally):")
+                    appendLine("")
+                    appendLine("If you discover a SPECIFIC EVENT (a workshop, concert, talk, class, performance,")
+                    appendLine("screening, anything happening at a specific date/time at a venue), the slot MUST")
+                    appendLine("represent that event. THE EVENT IS THE THING THE USER IS GOING TO. The venue is just")
+                    appendLine("where it happens. Examples: 'Threads That Bind weaving workshop at Newton Free Library',")
+                    appendLine("'Pottery class at the Y', 'Author talk at MIT', 'Trivia night at Trillium'.")
+                    appendLine("")
+                    appendLine("RULES (no exceptions, regardless of source):")
+                    appendLine("  • If the event came from search_events → put its event_id in the slot's event_id field.")
+                    appendLine("  • If the event came from web_search → call save_web_finding(kind='event') with the")
+                    appendLine("    EVENT title (the workshop/class/talk name, NOT the venue name), include venue_name,")
+                    appendLine("    venue_address, start_at (ISO 8601, future, full datetime), source_url, and")
+                    appendLine("    source_domains. Use the returned id in slot.event_id and set is_bo_web: true.")
+                    appendLine("  • NEVER put a discovered event into venue_name. venue_name is ONLY for plain")
+                    appendLine("    restaurant/bar/cafe stops (just 'go eat dinner here' — no specific event).")
+                    appendLine("    If you found 'a weaving workshop at the library', the SLOT IS the workshop, not the")
+                    appendLine("    library — the slot's display name comes from the event title, so readers see")
+                    appendLine("    'Threads That Bind' (the event), not 'Newton Free Library' (the venue).")
+                    appendLine("")
+                    appendLine("PROACTIVE OPTIONS — when the user asks for a category ('artsy events', 'something")
+                    appendLine("outdoorsy', 'a fun date night'):")
+                    appendLine("  • Run search_events FIRST. If it returns 5+ results, present 3-4 as options.")
+                    appendLine("  • In parallel or as a follow-up, run web_search for 'long-tail' or unique events not")
+                    appendLine("    in our DB (workshops, lectures, smaller venues, library/community events). Include")
+                    appendLine("    these as additional options in the same response — don't make the user ask twice.")
+                    appendLine("  • Surface 3-6 distinct options when the user is in discovery mode. Don't pick ONE")
+                    appendLine("    without showing alternatives unless the user explicitly asked for a specific thing.")
                     appendLine("")
                     appendLine("FORMATTING — when responding after web_search:")
                     appendLine("  • Write a single coherent message. Don't lead with 'I'll check…' before searching;")
