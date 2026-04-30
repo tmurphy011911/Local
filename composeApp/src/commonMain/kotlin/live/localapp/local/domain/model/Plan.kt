@@ -45,6 +45,13 @@ data class PlanSlot(
     val isFree: Boolean,
     val eventId: String? = null,
     val isCustom: Boolean = false,
+    /**
+     * True when Bo created this slot from a web_search finding (Phase 2).
+     * The slot's [eventId] is the bo_web_events.id row, not events.id.
+     * UI shows a "Bo found this — verifying" badge until Phase 3's verifier
+     * promotes the row to events and clears this flag.
+     */
+    val isBoWeb: Boolean = false,
     val imageUrl: String? = null,
     val ticketUrl: String? = null,
     val venueRating: Double? = null,

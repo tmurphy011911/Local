@@ -54,6 +54,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -97,6 +98,7 @@ data class ItinerarySlot(
     val imageUrl: String? = null,
     val eventId: String? = null,
     val isCustom: Boolean = false,
+    val isBoWeb: Boolean = false,
     val ticketUrl: String? = null,
     val venueRating: Double? = null,
     val venueAddress: String? = null,
@@ -386,6 +388,55 @@ class ChatViewModel(
             println("buildPlanFromRefs: cache has ${cacheById.size} events")
 
             val slots = parsedDay.events.mapNotNull { ref ->
+                if (ref.isBoWeb) {
+                    // Bo-Web event: hydrate from the save_web_finding cache that
+                    // was populated when Bo invoked the tool earlier this turn.
+                    // No DB roundtrip — the input payload Bo passed has every
+                    // field we need.
+                    val cached = boWebFindingsCache[ref.id]
+                    if (cached == null) {
+                        println("buildPlanFromRefs: bo-web id '${ref.id}' missing from cache — dropping slot")
+                        return@mapNotNull null
+                    }
+                    val title = cached["title"]?.jsonPrimitive?.contentOrNull
+                        ?: cached["name"]?.jsonPrimitive?.contentOrNull
+                        ?: ref.id
+                    val venueName = cached["venue_name"]?.jsonPrimitive?.contentOrNull
+                        ?: cached["name"]?.jsonPrimitive?.contentOrNull
+                    val venueAddress = cached["venue_address"]?.jsonPrimitive?.contentOrNull
+                        ?: cached["address"]?.jsonPrimitive?.contentOrNull
+                    val venueCity = cached["venue_city"]?.jsonPrimitive?.contentOrNull
+                        ?: cached["city"]?.jsonPrimitive?.contentOrNull
+                    val venueLat = cached["venue_lat"]?.jsonPrimitive?.doubleOrNull
+                        ?: cached["lat"]?.jsonPrimitive?.doubleOrNull
+                    val venueLng = cached["venue_lng"]?.jsonPrimitive?.doubleOrNull
+                        ?: cached["lng"]?.jsonPrimitive?.doubleOrNull
+                    val ticketUrl = cached["ticket_url"]?.jsonPrimitive?.contentOrNull
+                    val sourceUrl = cached["source_url"]?.jsonPrimitive?.contentOrNull
+                    val imageUrl = cached["image_url"]?.jsonPrimitive?.contentOrNull
+                    val isFree = cached["is_free"]?.jsonPrimitive?.booleanOrNull == true
+                    return@mapNotNull ItinerarySlot(
+                        id = generateId(),
+                        time = ref.time,
+                        emoji = "",
+                        name = title,
+                        detail = ref.note.ifBlank {
+                            listOfNotNull(venueName, venueCity).joinToString(" · ").ifBlank { ref.note }
+                        },
+                        price = "",
+                        isFree = isFree,
+                        imageUrl = imageUrl,
+                        eventId = ref.id,
+                        isCustom = false,
+                        isBoWeb = true,
+                        ticketUrl = ticketUrl,
+                        venueAddress = venueAddress,
+                        venueName = venueName,
+                        venueLat = venueLat,
+                        venueLng = venueLng,
+                        sourceUrl = sourceUrl,
+                    )
+                }
                 if (ref.isVenue) {
                     // Venue ref — look up by name in the venue repo or use the name directly
                     val venue = try { venueRepo.searchByName(ref.id) } catch (_: Exception) { null }
@@ -714,11 +765,13 @@ class ChatViewModel(
         val venueName = slotObj["venue_name"]?.jsonPrimitive?.contentOrNull
         val time = slotObj["time"]?.jsonPrimitive?.contentOrNull ?: ""
         val note = slotObj["note"]?.jsonPrimitive?.contentOrNull ?: ""
+        val isBoWeb = slotObj["is_bo_web"]?.jsonPrimitive?.booleanOrNull == true
         return live.localapp.local.data.remote.EventRef(
             id = eventId ?: venueName ?: "",
             time = time,
             note = note,
             isVenue = eventId == null && venueName != null,
+            isBoWeb = isBoWeb,
         )
     }
 
@@ -963,6 +1016,7 @@ class ChatViewModel(
                     "search_venues" -> searchVenues(input)
                     "get_event_details" -> getEventDetails(input)
                     "recommend_and_save_venue" -> recommendAndSaveVenue(input)
+                    "save_web_finding" -> saveWebFinding(input)
                     else -> return """{"error": "Unknown tool: $name"}"""
                 }
                 return result
@@ -1207,6 +1261,12 @@ class ChatViewModel(
                     appendLine("Always try database tools (search_events, search_venues) first when the question is about")
                     appendLine("local events/venues we might already have indexed.")
                     appendLine("")
+                    appendLine("STAGING WEB FINDINGS FOR PLANS:")
+                    appendLine("When you find an event/venue via web_search and want to include it in a plan, call")
+                    appendLine("save_web_finding FIRST. It returns an id you must put in the present_plan/update_plan")
+                    appendLine("slot's event_id, AND set is_bo_web: true on that slot. Without this step, the slot")
+                    appendLine("won't render correctly. Pass at least one source_domain (where you found it).")
+                    appendLine("")
                     appendLine("FORMATTING — when responding after web_search:")
                     appendLine("  • Write a single coherent message. Don't lead with 'I'll check…' before searching;")
                     appendLine("    the user already sees a searching indicator. Just answer the question directly.")
@@ -1242,6 +1302,54 @@ class ChatViewModel(
                     ?: block.input?.get("url")?.jsonPrimitive?.contentOrNull
                 tally.add(Triple(block.name!!, q, null))
             }
+        }
+    }
+
+    /**
+     * Bo's save_web_finding tool dispatcher. Forwards the input payload to the
+     * save-bo-web-finding edge function which inserts into bo_web_events or
+     * bo_web_venues with state='unverified' and returns the new row id. Bo uses
+     * that id as the slot's event_id in present_plan / update_plan, plus
+     * is_bo_web=true so the UI shows the "Bo found this — verifying" badge.
+     */
+    /**
+     * Cache of save_web_finding input payloads keyed by the returned bo_web_events
+     * (or bo_web_venues) id, so buildPlanFromRefs can hydrate Bo-Web slots
+     * without a DB roundtrip. Lives for the chat session.
+     */
+    private val boWebFindingsCache = mutableMapOf<String, JsonObject>()
+
+    private suspend fun saveWebFinding(input: JsonObject): String {
+        val userId = userPrefsRepo.getLocalUserId()
+            ?: return """{"error": "no_user"}"""
+        val kind = input["kind"]?.jsonPrimitive?.contentOrNull
+            ?: return """{"error": "kind required (event|venue)"}"""
+
+        val payload = buildJsonObject {
+            put("user_id", JsonPrimitive(userId))
+            put("kind", JsonPrimitive(kind))
+            put("payload", input)
+        }
+        return try {
+            val res = httpClient.post("${Config.SUPABASE_URL}/functions/v1/save-bo-web-finding") {
+                header("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
+                contentType(ContentType.Application.Json)
+                setBody(payload.toString())
+            }
+            val body = res.bodyAsText()
+            if (res.status.value !in 200..299) {
+                println("save_web_finding error: status=${res.status.value} body=${body.take(300)}")
+                """{"error": "save failed (${res.status.value})", "details": ${kotlinx.serialization.json.Json.parseToJsonElement(body)}}"""
+            } else {
+                // Cache the input so the slot builder can render without re-fetching.
+                val id = kotlinx.serialization.json.Json.parseToJsonElement(body)
+                    .jsonObject["id"]?.jsonPrimitive?.contentOrNull
+                if (id != null) boWebFindingsCache[id] = input
+                body  // {"id":"<uuid>"}
+            }
+        } catch (e: Throwable) {
+            println("save_web_finding exception: ${e.message}")
+            """{"error": "network: ${e.message}"}"""
         }
     }
 
@@ -1524,6 +1632,7 @@ class ChatViewModel(
                                     isFree = slot.isFree,
                                     eventId = slot.eventId,
                                     isCustom = slot.isCustom,
+                                    isBoWeb = slot.isBoWeb,
                                     imageUrl = slot.imageUrl,
                                     ticketUrl = slot.ticketUrl,
                                     venueRating = slot.venueRating,
@@ -2271,7 +2380,8 @@ $currentPlanContext
                                 live.localapp.local.domain.model.PlanSlot(
                                     id = s.id, time = s.time, emoji = s.emoji, name = s.name,
                                     detail = s.detail, price = s.price, isFree = s.isFree,
-                                    eventId = s.eventId, isCustom = s.isCustom, imageUrl = s.imageUrl,
+                                    eventId = s.eventId, isCustom = s.isCustom, isBoWeb = s.isBoWeb,
+                                    imageUrl = s.imageUrl,
                                     ticketUrl = s.ticketUrl, venueRating = s.venueRating,
                                     venueAddress = s.venueAddress, venueLat = s.venueLat, venueLng = s.venueLng,
                                     priceMin = s.priceMin, priceMax = s.priceMax,

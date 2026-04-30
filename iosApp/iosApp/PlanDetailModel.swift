@@ -75,6 +75,11 @@ struct PlanDetailSlot: Decodable, Equatable {
     let reservationUrl: String?
     let eventId: String?
 
+    /// Phase 2: true when Bo created this slot from a web_search finding.
+    /// Plan card shows "Bo found this — verifying" badge until Phase 3's
+    /// verifier promotes the row to events and clears this flag.
+    let isBoWeb: Bool
+
     // V1 reservation/ticket state
     let venueReservable: Bool?
     let reservationState: ReservationState
@@ -88,6 +93,7 @@ struct PlanDetailSlot: Decodable, Equatable {
         case id, time, emoji, name, detail, price, isFree, isReserved
         case imageUrl, ticketUrl, venueRating, venueAddress, venueLat, venueLng
         case venueCategory, venueWebsite, sourceUrl, reservationUrl, eventId, venueName
+        case isBoWeb = "isBoWeb"
         case venueReservable, reservationState, reservationPartySize, reservationTime
         case ticketState, ticketCount
     }
@@ -113,6 +119,7 @@ struct PlanDetailSlot: Decodable, Equatable {
         sourceUrl = try? c.decode(String?.self, forKey: .sourceUrl) ?? nil
         reservationUrl = try? c.decode(String?.self, forKey: .reservationUrl) ?? nil
         eventId = try? c.decode(String?.self, forKey: .eventId) ?? nil
+        isBoWeb = (try? c.decode(Bool.self, forKey: .isBoWeb)) ?? false
         venueReservable = try? c.decode(Bool?.self, forKey: .venueReservable) ?? nil
         reservationState = (try? c.decode(ReservationState.self, forKey: .reservationState)) ?? .none
         reservationPartySize = try? c.decode(Int?.self, forKey: .reservationPartySize) ?? nil

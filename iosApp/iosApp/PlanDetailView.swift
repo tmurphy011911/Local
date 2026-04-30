@@ -1252,6 +1252,18 @@ private struct StopCard: View {
                         .font(.system(size: 11, weight: .bold))
                         .foregroundColor(pdCoral)
                         .tracking(0.5)
+                    // Phase 2: Bo-Web slot — show "verifying" badge until the
+                    // verifier promotes the row. Tap behavior in Phase 3.
+                    if slot.isBoWeb {
+                        HStack(spacing: 3) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 9, weight: .bold))
+                            Text("BO FOUND THIS — VERIFYING")
+                                .font(.system(size: 8, weight: .black))
+                                .tracking(0.5)
+                        }
+                        .foregroundColor(pdCoral)
+                    }
                     // Restaurant: amber "BOOK AHEAD" only when the venue likely
                     // takes reservations and the user hasn't booked one yet.
                     if slot.stopType == .restaurant

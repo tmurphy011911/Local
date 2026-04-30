@@ -144,6 +144,8 @@ data class EventRef(
     val time: String,
     val note: String,
     val isVenue: Boolean,
+    /** True when [id] is a bo_web_events row id (Bo found via web_search). */
+    val isBoWeb: Boolean = false,
 )
 
 data class ParsedDay(
@@ -320,7 +322,7 @@ val claudeTools: JsonArray = buildJsonArray {
                                     putJsonObject("properties") {
                                         putJsonObject("event_id") {
                                             put("type", "string")
-                                            put("description", "Event ID from search_events results. ALWAYS use this when an event exists — even if it's at a venue you recommended. Never use venue_name for events that have an event_id in search results.")
+                                            put("description", "Event ID from search_events results, OR a bo_web_events.id returned by save_web_finding. ALWAYS use this when an event exists.")
                                         }
                                         putJsonObject("venue_name") {
                                             put("type", "string")
@@ -333,6 +335,10 @@ val claudeTools: JsonArray = buildJsonArray {
                                         putJsonObject("note") {
                                             put("type", "string")
                                             put("description", "Brief reason for picking this (1 sentence)")
+                                        }
+                                        putJsonObject("is_bo_web") {
+                                            put("type", "boolean")
+                                            put("description", "Set true ONLY when event_id is a bo_web_events.id returned by save_web_finding (i.e. you sourced it via web_search). Default false. The UI uses this to show a 'Bo found this — verifying' badge.")
                                         }
                                     }
                                     putJsonArray("required") {
@@ -386,7 +392,7 @@ val claudeTools: JsonArray = buildJsonArray {
                         putJsonObject("properties") {
                             putJsonObject("event_id") {
                                 put("type", "string")
-                                put("description", "Event ID from search_events results")
+                                put("description", "Event ID from search_events results OR a bo_web_events.id from save_web_finding")
                             }
                             putJsonObject("venue_name") {
                                 put("type", "string")
@@ -399,6 +405,10 @@ val claudeTools: JsonArray = buildJsonArray {
                             putJsonObject("note") {
                                 put("type", "string")
                                 put("description", "Brief reason for picking this")
+                            }
+                            putJsonObject("is_bo_web") {
+                                put("type", "boolean")
+                                put("description", "Set true when event_id is a bo_web_events.id from save_web_finding.")
                             }
                         }
                         putJsonArray("required") {
@@ -422,6 +432,80 @@ val claudeTools: JsonArray = buildJsonArray {
                 add(JsonPrimitive("label"))
                 add(JsonPrimitive("slots"))
             }
+        }
+    }
+}
+
+/**
+ * save_web_finding tool — Bo calls this AFTER web_search returns a usable
+ * event/venue. The dispatcher (ChatViewModel.executeToolCall /
+ * PlanChatViewModel.executeToolCall) hits the save-bo-web-finding edge
+ * function which writes to bo_web_events / bo_web_venues with state=
+ * 'unverified' and returns the new uuid. Bo then uses that uuid as the
+ * `event_id` in present_plan / update_plan slots, and sets `is_bo_web: true`
+ * on the slot so the UI shows the "Bo found this — verifying" badge.
+ *
+ * Phase 3 will add a server-side verifier that flips state to 'verified' or
+ * 'rejected' and (on verify) promotes the row into the canonical events /
+ * venues tables. Until then rows just sit at unverified — they're visible
+ * in the user's own plan but never surface in carousels/search/other users.
+ */
+val saveBoWebFindingTool: JsonObject = buildJsonObject {
+    put("name", "save_web_finding")
+    put("description", "Save an event or venue you found via web_search to the bo_web_events / bo_web_venues staging tables. Call this BEFORE present_plan/update_plan when you want to include a web-discovered item in a plan slot. Returns an id you must use as the slot's event_id (for events) along with is_bo_web: true. Also save the venue separately if it's not already in our database. Strict: start_at must be in the future for events.")
+    putJsonObject("input_schema") {
+        put("type", "object")
+        putJsonObject("properties") {
+            putJsonObject("kind") {
+                put("type", "string")
+                put("description", "event | venue")
+            }
+            putJsonObject("title") {
+                put("type", "string")
+                put("description", "Event title (required when kind=event).")
+            }
+            putJsonObject("name") {
+                put("type", "string")
+                put("description", "Venue name (required when kind=venue).")
+            }
+            putJsonObject("start_at") {
+                put("type", "string")
+                put("description", "ISO 8601 datetime, e.g. '2026-05-08T19:00:00-04:00'. Required for events. Must be in the future.")
+            }
+            putJsonObject("end_at") { put("type", "string"); put("description", "ISO 8601 end datetime (optional)") }
+            putJsonObject("description") { put("type", "string") }
+            putJsonObject("category") { put("type", "string"); put("description", "music | comedy | arts | sports | food | community | family | outdoors | nightlife") }
+            putJsonObject("ticket_url") { put("type", "string") }
+            putJsonObject("source_url") { put("type", "string"); put("description", "The page you found this on.") }
+            putJsonObject("image_url") { put("type", "string") }
+            putJsonObject("is_free") { put("type", "boolean") }
+            putJsonObject("price_min") { put("type", "number") }
+            putJsonObject("price_max") { put("type", "number") }
+            putJsonObject("is_recurring") { put("type", "boolean") }
+            putJsonObject("recurrence_rule") { put("type", "string"); put("description", "Optional RFC 5545 RRULE string for recurring events.") }
+            putJsonObject("venue_id") { put("type", "string"); put("description", "If you matched the event to an existing venue from search_venues, pass its id here.") }
+            putJsonObject("bo_web_venue_id") { put("type", "string"); put("description", "If you previously saved a Bo-Web venue and want to link this event to it, pass that id.") }
+            putJsonObject("venue_name") { put("type", "string"); put("description", "Inline venue name when not matched to an existing or saved Bo-Web venue.") }
+            putJsonObject("venue_address") { put("type", "string") }
+            putJsonObject("venue_city") { put("type", "string") }
+            putJsonObject("venue_state") { put("type", "string"); put("description", "Two-letter state code") }
+            putJsonObject("venue_lat") { put("type", "number") }
+            putJsonObject("venue_lng") { put("type", "number") }
+            putJsonObject("address") { put("type", "string"); put("description", "Venue street address (when kind=venue).") }
+            putJsonObject("city") { put("type", "string"); put("description", "Venue city (when kind=venue).") }
+            putJsonObject("state_code") { put("type", "string"); put("description", "Two-letter venue state code (when kind=venue).") }
+            putJsonObject("lat") { put("type", "number") }
+            putJsonObject("lng") { put("type", "number") }
+            putJsonObject("website") { put("type", "string"); put("description", "Venue official website (when kind=venue).") }
+            putJsonObject("phone") { put("type", "string") }
+            putJsonObject("source_domains") {
+                put("type", "array")
+                putJsonObject("items") { put("type", "string") }
+                put("description", "Domains your web_search corroborated this from. Pass at least 1.")
+            }
+        }
+        putJsonArray("required") {
+            add(JsonPrimitive("kind"))
         }
     }
 }
@@ -462,6 +546,11 @@ fun toolsWithWeb(
             put("name", "web_fetch")
             put("max_uses", webFetchMaxUses)
         }
+    }
+    // save_web_finding is a regular client-side tool — only include it when
+    // web access is allowed (otherwise Bo has no way to find anything to save).
+    if (allowWebSearch || allowWebFetch) {
+        add(saveBoWebFindingTool)
     }
 }
 

@@ -520,7 +520,35 @@ class PlanChatViewModel(
             "search_events" -> searchEvents(input)
             "search_venues" -> searchVenues(input)
             "get_event_details" -> getEventDetails(input)
+            "save_web_finding" -> saveWebFinding(input)
             else -> """{"error": "Unsupported tool: $name"}"""
+        }
+    }
+
+    /** Same shape as ChatViewModel.saveWebFinding — forwards to save-bo-web-finding. */
+    private suspend fun saveWebFinding(input: JsonObject): String {
+        val userId = userPrefsRepo.getLocalUserId() ?: return """{"error": "no_user"}"""
+        val kind = input["kind"]?.jsonPrimitive?.contentOrNull
+            ?: return """{"error": "kind required (event|venue)"}"""
+        val payload = buildJsonObject {
+            put("user_id", JsonPrimitive(userId))
+            put("kind", JsonPrimitive(kind))
+            put("payload", input)
+        }
+        return try {
+            val res = webHttpClient.post("${live.localapp.local.Config.SUPABASE_URL}/functions/v1/save-bo-web-finding") {
+                header("Authorization", "Bearer ${live.localapp.local.Config.SUPABASE_ANON_KEY}")
+                contentType(ContentType.Application.Json)
+                setBody(payload.toString())
+            }
+            val body = res.bodyAsText()
+            if (res.status.value !in 200..299) {
+                println("PlanChatVM save_web_finding error: ${res.status.value} ${body.take(300)}")
+                """{"error": "save failed"}"""
+            } else body
+        } catch (e: Throwable) {
+            println("PlanChatVM save_web_finding exception: ${e.message}")
+            """{"error": "network: ${e.message}"}"""
         }
     }
 
@@ -708,6 +736,11 @@ GUIDELINES:
                     appendLine("or anything similar. You DO have web_search. USE IT.")
                     appendLine("")
                     appendLine("Cap at 3 web_search invocations per turn. web_fetch when user pastes a URL.")
+                    appendLine("")
+                    appendLine("STAGING WEB FINDINGS FOR PLANS:")
+                    appendLine("When you find an event/venue via web_search and want to include it in update_plan,")
+                    appendLine("call save_web_finding FIRST. It returns an id you must put in the slot's event_id,")
+                    appendLine("AND set is_bo_web: true on that slot.")
                     appendLine("")
                     appendLine("FORMATTING — when responding after web_search:")
                     appendLine("  • Don't lead with 'I'll check…' — just answer directly. The user sees a searching")

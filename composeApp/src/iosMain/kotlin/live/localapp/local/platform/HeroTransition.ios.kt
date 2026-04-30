@@ -377,6 +377,7 @@ actual fun showNativePlanDetail(
                                 put("sourceUrl", kotlinx.serialization.json.JsonPrimitive(slot.sourceUrl))
                                 put("reservationUrl", kotlinx.serialization.json.JsonPrimitive(slot.reservationUrl))
                                 put("eventId", kotlinx.serialization.json.JsonPrimitive(slot.eventId))
+                                put("isBoWeb", kotlinx.serialization.json.JsonPrimitive(slot.isBoWeb))
                             })
                         }
                     })
@@ -468,6 +469,7 @@ private fun serializePlanToJson(plan: live.localapp.local.domain.model.Plan): St
                                 put("sourceUrl", kotlinx.serialization.json.JsonPrimitive(slot.sourceUrl))
                                 put("reservationUrl", kotlinx.serialization.json.JsonPrimitive(slot.reservationUrl))
                                 put("eventId", kotlinx.serialization.json.JsonPrimitive(slot.eventId))
+                                put("isBoWeb", kotlinx.serialization.json.JsonPrimitive(slot.isBoWeb))
                             })
                         }
                     })

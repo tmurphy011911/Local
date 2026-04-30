@@ -55,6 +55,7 @@ private data class PlanSlotDto(
     @SerialName("is_free") val isFree: Boolean = false,
     @SerialName("event_id") val eventId: String? = null,
     @SerialName("is_custom") val isCustom: Boolean = false,
+    @SerialName("is_bo_web") val isBoWeb: Boolean = false,
     @SerialName("image_url") val imageUrl: String? = null,
     @SerialName("ticket_url") val ticketUrl: String? = null,
     @SerialName("venue_rating") val venueRating: Double? = null,
@@ -99,7 +100,7 @@ private data class PlanInsertDto(
 
 private fun PlanSlot.toDto() = PlanSlotDto(
     id = id, time = time, emoji = emoji, name = name, detail = detail, price = price,
-    isFree = isFree, eventId = eventId, isCustom = isCustom, imageUrl = imageUrl,
+    isFree = isFree, eventId = eventId, isCustom = isCustom, isBoWeb = isBoWeb, imageUrl = imageUrl,
     ticketUrl = ticketUrl, venueRating = venueRating, venueAddress = venueAddress,
     venueName = venueName,
     venueLat = venueLat, venueLng = venueLng, priceMin = priceMin, priceMax = priceMax,
@@ -129,6 +130,7 @@ private fun PlanSlotDto.toDomain() = PlanSlot(
     isFree = isFree,
     eventId = eventId,
     isCustom = isCustom,
+    isBoWeb = isBoWeb,
     imageUrl = imageUrl,
     ticketUrl = ticketUrl,
     venueRating = venueRating,
