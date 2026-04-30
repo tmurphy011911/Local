@@ -426,6 +426,45 @@ val claudeTools: JsonArray = buildJsonArray {
     }
 }
 
+/**
+ * Build a tools array with the optional Anthropic-managed web tools appended.
+ * web_search and web_fetch are server-side tools — Anthropic executes them and
+ * returns the results in the response. We just gate them by including/omitting
+ * the tool definitions per turn based on the bo-web-budget edge function.
+ *
+ * Caps:
+ *   - max_uses on web_search caps Anthropic's invocations within ONE assistant
+ *     turn (defense in depth alongside our own per-user/hour/day counters).
+ *   - max_uses on web_fetch caps direct URL fetches per turn.
+ *
+ * No allowed_domains list — we want long-tail coverage. Verifier-side rules
+ * (tiered domain rubric, 2 independent sources) are where hallucination
+ * defense lives, not at the search layer.
+ */
+fun toolsWithWeb(
+    base: JsonArray = claudeTools,
+    allowWebSearch: Boolean,
+    allowWebFetch: Boolean,
+    webSearchMaxUses: Int = 3,
+    webFetchMaxUses: Int = 5,
+): JsonArray = buildJsonArray {
+    base.forEach { add(it) }
+    if (allowWebSearch) {
+        addJsonObject {
+            put("type", "web_search_20250305")
+            put("name", "web_search")
+            put("max_uses", webSearchMaxUses)
+        }
+    }
+    if (allowWebFetch) {
+        addJsonObject {
+            put("type", "web_fetch_20250910")
+            put("name", "web_fetch")
+            put("max_uses", webFetchMaxUses)
+        }
+    }
+}
+
 // ── Helper builder functions for JSON DSL ──
 
 private inline fun kotlinx.serialization.json.JsonArrayBuilder.addJsonObject(

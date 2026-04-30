@@ -26,6 +26,7 @@ import live.localapp.local.data.remote.ParsedChatResponse
 import live.localapp.local.data.remote.ParsedResponseType
 import live.localapp.local.data.remote.StreamEvent
 import live.localapp.local.data.remote.claudeTools
+import live.localapp.local.data.remote.toolsWithWeb
 import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.Config
 import live.localapp.local.domain.model.Event
@@ -44,14 +45,19 @@ import live.localapp.local.domain.repository.UserPreferencesRepository
 import live.localapp.local.domain.repository.TasteRepository
 import live.localapp.local.domain.repository.VenueRepository
 import io.ktor.client.HttpClient
+import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.putJsonArray
 
 // ── Message models ──
 
@@ -730,10 +736,27 @@ class ChatViewModel(
         // Start with Haiku for fast clarifying questions. Switch to Opus when tools are needed.
         var currentModel = live.localapp.local.data.remote.ClaudeApiService.MODEL_CHAT
 
+        // Phase 1: Bo's web search/fetch gate. Per-turn check against:
+        //  - Live-state rule (user must be in a state with is_live=true)
+        //  - Per-user 30/day + 10/hour caps
+        //  - Global $500/month cap
+        // The system prompt is augmented with the gate verdict so Bo delivers
+        // the right user-facing message when blocked.
+        val budget = fetchBoWebBudget()
+        val toolsForTurn = toolsWithWeb(
+            base = claudeTools,
+            allowWebSearch = budget?.allowWebSearch == true,
+            allowWebFetch = budget?.allowWebFetch == true,
+        )
+        val augmentedSystemPrompt = augmentSystemPromptWithBudget(systemPrompt, budget)
+        val webCallTally = mutableListOf<Triple<String, String?, Int?>>()  // tool, query, result_count
+
+        try {
         while (true) {
             // Always stream text to UI for a conversational feel.
             // If Claude calls tools on round 0, we'll clear the streaming text.
-            val response = sendStreaming(systemPrompt, claudeTools, isToolRound = false, model = currentModel)
+            val response = sendStreaming(augmentedSystemPrompt, toolsForTurn, isToolRound = false, model = currentModel)
+            tallyWebCalls(response, webCallTally)
 
             val toolCalls = claudeApi.extractToolCalls(response)
             val text = claudeApi.extractText(response) ?: ""
@@ -826,7 +849,8 @@ class ChatViewModel(
                 conversationHistory.add(ClaudeMessage.text("user", "You have enough information now. Please present a plan using the present_plan tool, or just respond naturally."))
 
                 // Final response — stream with text visible
-                val finalResponse = sendStreaming(systemPrompt, claudeTools, isToolRound = false, model = currentModel)
+                val finalResponse = sendStreaming(augmentedSystemPrompt, toolsForTurn, isToolRound = false, model = currentModel)
+                tallyWebCalls(finalResponse, webCallTally)
                 val finalText = claudeApi.extractText(finalResponse) ?: ""
                 val finalTerminal = claudeApi.extractToolCalls(finalResponse).firstOrNull { it.name in terminalTools }
 
@@ -870,6 +894,13 @@ class ChatViewModel(
                 }
             }
             conversationHistory.add(ClaudeMessage.blocks("user", toolResultBlocks))
+        }
+        } finally {
+            // Fire-and-forget the per-turn usage log. Anthropic doesn't return
+            // cost; we estimate from result counts and reconcile monthly.
+            if (webCallTally.isNotEmpty()) {
+                viewModelScope.launch { logBoWebCalls(webCallTally.toList()) }
+            }
         }
     }
 
@@ -1105,6 +1136,112 @@ class ChatViewModel(
     }
 
     private val httpClient = HttpClient()
+
+    // ── Bo web tools (Phase 1) ────────────────────────────────────────────
+
+    private data class BoWebBudget(
+        val allowWebSearch: Boolean,
+        val allowWebFetch: Boolean,
+        val reason: String,           // ok | not_live_state | user_day_cap | user_hour_cap | monthly_cap | no_profile | no_state
+        val userState: String?,
+        val liveStatesList: String,
+    )
+
+    /** GET /functions/v1/bo-web-budget — gate decision for this turn. */
+    private suspend fun fetchBoWebBudget(): BoWebBudget? {
+        val userId = userPrefsRepo.getLocalUserId() ?: return null
+        return try {
+            val res = httpClient.get("${Config.SUPABASE_URL}/functions/v1/bo-web-budget?user_id=$userId") {
+                header("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
+            }
+            if (res.status.value !in 200..299) return null
+            val body = res.bodyAsText()
+            val obj = kotlinx.serialization.json.Json.parseToJsonElement(body).jsonObject
+            BoWebBudget(
+                allowWebSearch = obj["allow_web_search"]?.jsonPrimitive?.booleanOrNull == true,
+                allowWebFetch = obj["allow_web_fetch"]?.jsonPrimitive?.booleanOrNull == true,
+                reason = obj["reason"]?.jsonPrimitive?.contentOrNull ?: "unknown",
+                userState = obj["user_state"]?.jsonPrimitive?.contentOrNull,
+                liveStatesList = obj["live_states_list"]?.jsonPrimitive?.contentOrNull ?: "",
+            )
+        } catch (e: Throwable) {
+            println("fetchBoWebBudget error: ${e.message}")
+            null
+        }
+    }
+
+    /** Append per-turn budget context so Bo delivers the right blocked message. */
+    private fun augmentSystemPromptWithBudget(systemPrompt: String, budget: BoWebBudget?): String {
+        if (budget == null) return systemPrompt
+        val lines = buildString {
+            appendLine()
+            appendLine("--- WEB SEARCH GATE ---")
+            when (budget.reason) {
+                "ok" -> {
+                    appendLine("You have access to web_search and web_fetch tools as a fallback. PRIORITY ORDER:")
+                    appendLine("  1. ALWAYS try search_events / search_venues against our database first.")
+                    appendLine("  2. Use web_search ONLY when (a) DB returns 0 results, (b) the user asks something time-sensitive (open hours, weather, 'this weekend'), or (c) they reference a specific named event/venue not in DB.")
+                    appendLine("  3. Use web_fetch when the user shares a URL — fetch it directly instead of searching.")
+                    appendLine("Cap yourself to 3 web_search invocations per turn. Don't web-search for trivial facts you already know (e.g. 'what's a brewery').")
+                }
+                "not_live_state" -> {
+                    appendLine("USER IS IN A NON-LIVE STATE${budget.userState?.let { " ($it)" } ?: ""}. Web search is DISABLED.")
+                    appendLine("If the user asks anything that would require web lookup or events outside our DB, respond:")
+                    appendLine("  \"Local is not yet live in your state. It is currently live in ${budget.liveStatesList}.\"")
+                    appendLine("Otherwise, continue helping with whatever you can do from the database.")
+                }
+                "user_day_cap", "user_hour_cap" -> {
+                    appendLine("USER HIT DAILY/HOURLY WEB-SEARCH QUOTA. Web search is DISABLED for this turn.")
+                    appendLine("If they ask something requiring web search, respond: \"I've hit my lookup limit for now — try again later.\" Otherwise, continue from the database.")
+                }
+                "monthly_cap" -> {
+                    appendLine("GLOBAL MONTHLY WEB-SEARCH BUDGET REACHED. Web search is DISABLED.")
+                    appendLine("Respond as if you can only use database tools.")
+                }
+                else -> {
+                    appendLine("Web search status: ${budget.reason}. Use database tools only.")
+                }
+            }
+        }
+        return systemPrompt + lines
+    }
+
+    private fun tallyWebCalls(response: ClaudeResponse, tally: MutableList<Triple<String, String?, Int?>>) {
+        for (block in response.content) {
+            if (block.type == "server_tool_use" && (block.name == "web_search" || block.name == "web_fetch")) {
+                val q = block.input?.get("query")?.jsonPrimitive?.contentOrNull
+                    ?: block.input?.get("url")?.jsonPrimitive?.contentOrNull
+                tally.add(Triple(block.name!!, q, null))
+            }
+        }
+    }
+
+    /** POST /functions/v1/bo-web-budget — log per-turn web tool usage. */
+    private suspend fun logBoWebCalls(calls: List<Triple<String, String?, Int?>>) {
+        val userId = userPrefsRepo.getLocalUserId() ?: return
+        try {
+            val payload = kotlinx.serialization.json.buildJsonObject {
+                put("user_id", JsonPrimitive(userId))
+                put("caller", JsonPrimitive("bo_chat"))
+                putJsonArray("calls") {
+                    for ((tool, query, count) in calls) {
+                        add(kotlinx.serialization.json.buildJsonObject {
+                            put("tool", JsonPrimitive(tool))
+                            if (query != null) put("query", JsonPrimitive(query))
+                            if (count != null) put("result_count", JsonPrimitive(count))
+                        })
+                    }
+                }
+            }
+            httpClient.post("${Config.SUPABASE_URL}/functions/v1/bo-web-budget") {
+                header("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
+                contentType(ContentType.Application.Json)
+                setBody(payload.toString())
+            }
+        } catch (e: Throwable) {
+            println("logBoWebCalls error: ${e.message}")
+        }
+    }
 
     private suspend fun recommendAndSaveVenue(input: JsonObject): String {
         val name = input["name"]?.jsonPrimitive?.contentOrNull
