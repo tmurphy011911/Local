@@ -395,8 +395,23 @@ class ChatViewModel(
                     // field we need.
                     val cached = boWebFindingsCache[ref.id]
                     if (cached == null) {
-                        println("buildPlanFromRefs: bo-web id '${ref.id}' missing from cache — dropping slot")
-                        return@mapNotNull null
+                        // Cache miss usually means save_web_finding never ran or
+                        // returned a different id than Bo put in the slot. Render
+                        // a minimal placeholder slot from ref data so the plan
+                        // still shows — better than dropping a stop silently.
+                        println("buildPlanFromRefs: bo-web id '${ref.id}' missing from cache (cache size=${boWebFindingsCache.size} keys=${boWebFindingsCache.keys.take(5)}) — rendering placeholder")
+                        return@mapNotNull ItinerarySlot(
+                            id = generateId(),
+                            time = ref.time,
+                            emoji = "✨",
+                            name = ref.note.take(60).ifBlank { "Bo's pick" },
+                            detail = ref.note,
+                            price = "",
+                            isFree = false,
+                            eventId = ref.id,
+                            isCustom = false,
+                            isBoWeb = true,
+                        )
                     }
                     val title = cached["title"]?.jsonPrimitive?.contentOrNull
                         ?: cached["name"]?.jsonPrimitive?.contentOrNull
