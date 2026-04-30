@@ -2251,6 +2251,12 @@ DATE HANDLING RULES (strict):
 - When the user mentions a day by name ("Saturday"), resolve it against the NEXT 14 DAYS table above, not from memory.
 - "Tonight", "now", "right now", and "later today" mean AFTER Current time. Every slot in a same-day plan must start at least 30 minutes after Current time. If the user asks for a same-day plan and you can't find anything later tonight, tell them honestly rather than proposing a slot in the past. Default dinner/date times like "6:30 PM" are NOT acceptable if Current time is already past them.
 
+NO PREAMBLE BEFORE SEARCHES (strict):
+- Do NOT say "Let me search…", "Let me check…", "I'll look that up…", "Let me search the web…", or any similar narration before invoking a tool. The UI already shows a searching indicator with rotating phrases the user trusts. Your preamble is redundant and adds latency.
+- Just call the tool. When you respond AFTER the tool finishes, deliver the answer directly. The first text the user sees from you should be substantive content — not a meta-statement that you're about to do work.
+- Bad: "Let me search for Nantucket events…" → tool call → "Here's what I found…"
+- Good: tool call → "There are three things on June 1: …"
+
 DATE OVERLAP INTEGRITY (no exceptions, hard rule):
 - An event whose date is OUTSIDE the user's stated trip/plan window does NOT "overlap" with their dates. Compute the comparison literally: window = [user_start, user_end] (inclusive). Event date must be within that range.
 - Example: User says "June 1-3". You find "Nantucket Book Festival, June 11-14". June 11 > June 3. THIS DOES NOT OVERLAP. Saying "great, the Book Festival overlaps with your dates" is a HALLUCINATION — never do this.
