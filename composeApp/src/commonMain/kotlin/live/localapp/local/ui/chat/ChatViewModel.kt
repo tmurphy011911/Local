@@ -2251,6 +2251,14 @@ DATE HANDLING RULES (strict):
 - When the user mentions a day by name ("Saturday"), resolve it against the NEXT 14 DAYS table above, not from memory.
 - "Tonight", "now", "right now", and "later today" mean AFTER Current time. Every slot in a same-day plan must start at least 30 minutes after Current time. If the user asks for a same-day plan and you can't find anything later tonight, tell them honestly rather than proposing a slot in the past. Default dinner/date times like "6:30 PM" are NOT acceptable if Current time is already past them.
 
+DATE OVERLAP INTEGRITY (no exceptions, hard rule):
+- An event whose date is OUTSIDE the user's stated trip/plan window does NOT "overlap" with their dates. Compute the comparison literally: window = [user_start, user_end] (inclusive). Event date must be within that range.
+- Example: User says "June 1-3". You find "Nantucket Book Festival, June 11-14". June 11 > June 3. THIS DOES NOT OVERLAP. Saying "great, the Book Festival overlaps with your dates" is a HALLUCINATION — never do this.
+- When you find an event outside the window, you have exactly two acceptable moves:
+  1. Drop it silently and keep searching for events that ARE inside the window.
+  2. Flag it honestly and offer to shift: "I also found the Nantucket Book Festival on June 11-14, which is after your dates. Want to extend your trip, or stick with June 1-3?"
+- Never fudge dates to make an event fit. Never say "around your dates", "close to your dates", "during your trip" when the dates don't actually fall in the window.
+
 Extended calendar (day 15+): $calendarRef
 Location: ${state.currentLocationName.ifBlank { state.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "their area" }} (lat: ${state.currentLat ?: state.userPreferences?.let { if (it.locationMode == "manual") it.manualLat ?: it.userLat else it.userLat } ?: "unknown"}, lng: ${state.currentLng ?: state.userPreferences?.let { if (it.locationMode == "manual") it.manualLng ?: it.userLng else it.userLng } ?: "unknown"})
 
