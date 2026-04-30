@@ -71,6 +71,37 @@ Deno.serve(async (req) => {
   }
 
   if (result.decision === "verified") {
+    // Enrich with Google Places before promoting: fetches the canonical
+    // address, lat/lng, and photo_url for the venue, AND acts as a
+    // geographic safety net — if Google's resolved city doesn't match the
+    // user-claimed city, we reject (Plymouth-vs-Nantucket-Surfside-Beach
+    // class of bug). For events we look up the venue; for venue rows we
+    // look up the place itself.
+    const placesKey = await getSecret(supabase, "GOOGLE_PLACES_API_KEY");
+    if (placesKey) {
+      const enrichResult = await enrichWithGooglePlaces(body.kind, row, placesKey);
+      if (enrichResult.cityMismatch) {
+        result = {
+          decision: "rejected",
+          reason: `Geographic mismatch: Google resolved to ${enrichResult.resolvedCity ?? "different city"} but row claims ${row.venue_city ?? row.city ?? "?"}`,
+          corroborating_urls: result.corroborating_urls,
+        };
+        await supabase.from(table).update({
+          state: "rejected",
+          verifier_run_at: new Date().toISOString(),
+          verifier_decision: "rejected",
+          verifier_reason: result.reason.slice(0, 500),
+          verifier_corroborating_urls: result.corroborating_urls,
+          updated_at: new Date().toISOString(),
+        }).eq("id", body.id);
+        return json({ decision: "rejected", id: body.id, reason: result.reason });
+      }
+      // Patch the row with enriched fields before we promote.
+      if (enrichResult.fields) {
+        await supabase.from(table).update(enrichResult.fields).eq("id", body.id);
+        Object.assign(row, enrichResult.fields);
+      }
+    }
     await promote(supabase, body.kind, row, result);
     return json({ decision: "verified", id: body.id });
   } else {
@@ -341,6 +372,93 @@ async function promote(supabase: any, kind: string, row: any, result: VerifierRe
       updated_at: nowIso,
     }).eq("id", row.id);
   }
+}
+
+// ── Google Places enrichment ──────────────────────────────────────────────
+
+interface EnrichResult {
+  fields?: Record<string, any>;
+  cityMismatch?: boolean;
+  resolvedCity?: string | null;
+}
+
+/**
+ * Resolve the venue (for events) or place (for venues) via Google Places
+ * Text Search. Returns the canonical address, lat/lng, photo URL — and
+ * flags cityMismatch when Google's resolved locality contradicts the
+ * row's claimed city. Cheap insurance against Bo's geographic
+ * hallucinations: if "Cisco Brewers Nantucket" actually resolves to a
+ * place in Albany, we reject before the row hits the public events table.
+ */
+async function enrichWithGooglePlaces(kind: string, row: any, apiKey: string): Promise<EnrichResult> {
+  const query = kind === "event"
+    ? `${row.venue_name ?? row.title} ${row.venue_city ?? ""}`.trim()
+    : `${row.name} ${row.city ?? ""}`.trim();
+  if (!query) return {};
+  const claimedCity = (kind === "event" ? row.venue_city : row.city)?.toLowerCase()?.trim() ?? null;
+
+  try {
+    const searchRes = await fetch("https://places.googleapis.com/v1/places:searchText", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": apiKey,
+        "X-Goog-FieldMask": "places.id,places.displayName,places.formattedAddress,places.location,places.addressComponents,places.photos",
+      },
+      body: JSON.stringify({ textQuery: query, maxResultCount: 1 }),
+    });
+    if (!searchRes.ok) return {};
+    const data = await searchRes.json();
+    const place = data.places?.[0];
+    if (!place) return {};
+
+    const lat = place.location?.latitude ?? null;
+    const lng = place.location?.longitude ?? null;
+    const formattedAddress = place.formattedAddress ?? null;
+
+    // Pull the city from addressComponents (locality) for a clean comparison.
+    const localityComp = place.addressComponents?.find((c: any) =>
+      Array.isArray(c.types) && c.types.includes("locality")
+    );
+    const resolvedCity = localityComp?.longText?.toLowerCase()?.trim() ?? null;
+
+    if (claimedCity && resolvedCity && !cityNamesMatch(claimedCity, resolvedCity)) {
+      return { cityMismatch: true, resolvedCity };
+    }
+
+    // Build the photo URL via the Places Photo API (returns the actual image).
+    let photoUrl: string | null = null;
+    const photoName = place.photos?.[0]?.name;
+    if (photoName) {
+      photoUrl = `https://places.googleapis.com/v1/${photoName}/media?maxHeightPx=600&maxWidthPx=800&key=${apiKey}`;
+    }
+
+    const fields: Record<string, any> = {};
+    if (kind === "event") {
+      if (lat != null && row.venue_lat == null) fields.venue_lat = lat;
+      if (lng != null && row.venue_lng == null) fields.venue_lng = lng;
+      if (formattedAddress && !row.venue_address) fields.venue_address = formattedAddress;
+      if (photoUrl && !row.image_url) fields.image_url = photoUrl;
+    } else {
+      if (lat != null && row.lat == null) fields.lat = lat;
+      if (lng != null && row.lng == null) fields.lng = lng;
+      if (formattedAddress && !row.address) fields.address = formattedAddress;
+      if (photoUrl && !row.image_url) fields.image_url = photoUrl;
+    }
+    if (Object.keys(fields).length === 0) return {};
+    fields.updated_at = new Date().toISOString();
+    return { fields };
+  } catch (e: any) {
+    console.log(`[enrich] error: ${e?.message}`);
+    return {};
+  }
+}
+
+function cityNamesMatch(a: string, b: string): boolean {
+  // Tolerate near-misses: drop "city of"/"town of" prefixes, strip
+  // punctuation, exact match. Avoids rejecting "Boston" vs "boston".
+  const norm = (s: string) => s.replace(/^(city|town) of\s+/i, "").replace(/[^a-z]/g, "").toLowerCase();
+  return norm(a) === norm(b);
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────

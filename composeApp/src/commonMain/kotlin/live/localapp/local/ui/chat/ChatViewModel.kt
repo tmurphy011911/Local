@@ -1404,11 +1404,24 @@ class ChatViewModel(
                 println("save_web_finding error: status=${res.status.value} body=${body.take(300)}")
                 """{"error": "save failed (${res.status.value})", "details": ${kotlinx.serialization.json.Json.parseToJsonElement(body)}}"""
             } else {
-                // Cache the input so the slot builder can render without re-fetching.
-                val id = kotlinx.serialization.json.Json.parseToJsonElement(body)
-                    .jsonObject["id"]?.jsonPrimitive?.contentOrNull
-                if (id != null) boWebFindingsCache[id] = input
-                body  // {"id":"<uuid>"}
+                // Cache the input merged with the enriched fields the
+                // edge function returned (Google Places address, lat/lng,
+                // image_url). Bo's slot builder uses this for the map pin
+                // and thumbnail without waiting on the verifier.
+                val parsed = kotlinx.serialization.json.Json.parseToJsonElement(body).jsonObject
+                val id = parsed["id"]?.jsonPrimitive?.contentOrNull
+                if (id != null) {
+                    val merged = buildJsonObject {
+                        for ((k, v) in input) put(k, v)
+                        // Enriched fields override null inputs.
+                        parsed["venue_address"]?.let { if (input["venue_address"] == null) put("venue_address", it) }
+                        parsed["venue_lat"]?.let { if (input["venue_lat"] == null) put("venue_lat", it) }
+                        parsed["venue_lng"]?.let { if (input["venue_lng"] == null) put("venue_lng", it) }
+                        parsed["image_url"]?.let { if (input["image_url"] == null) put("image_url", it) }
+                    }
+                    boWebFindingsCache[id] = merged
+                }
+                body  // {"id":"<uuid>", ...enriched fields...}
             }
         } catch (e: Throwable) {
             println("save_web_finding exception: ${e.message}")
