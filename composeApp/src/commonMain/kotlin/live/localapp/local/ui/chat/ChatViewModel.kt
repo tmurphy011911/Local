@@ -1206,6 +1206,13 @@ class ChatViewModel(
                     appendLine("Use web_fetch when the user pastes a URL. Cap yourself at 3 search invocations per turn.")
                     appendLine("Always try database tools (search_events, search_venues) first when the question is about")
                     appendLine("local events/venues we might already have indexed.")
+                    appendLine("")
+                    appendLine("FORMATTING — when responding after web_search:")
+                    appendLine("  • Write a single coherent message. Don't lead with 'I'll check…' before searching;")
+                    appendLine("    the user already sees a searching indicator. Just answer the question directly.")
+                    appendLine("  • NEVER put a period, comma, or any punctuation on its own line. Sentences end with")
+                    appendLine("    their period inline, not orphaned to the next paragraph.")
+                    appendLine("  • Keep paragraphs whole. No mid-sentence line breaks.")
                 }
                 "not_live_state" -> {
                     appendLine("Web search is DISABLED — user is in ${budget.userState ?: "a non-live state"}.")

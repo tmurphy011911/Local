@@ -756,18 +756,25 @@ class ClaudeApiService {
     }
 
     /**
-     * Extract all text from a Claude response, concatenated. Anthropic's
-     * server-side tools (web_search, web_fetch) split a turn into multiple
-     * text blocks: text-before-search, server_tool_use, tool_result, text-
-     * after-search. The post-search text is the actual answer; returning
-     * only the first text block dropped Bo's real response on the floor.
+     * Extract the final user-facing text from a Claude response.
+     *
+     * Anthropic's server-side tools (web_search, web_fetch) split a turn into
+     * multiple text blocks: text-before-search ("I'll check the weather…"),
+     * server_tool_use, tool_result, text-after-search (the actual answer).
+     *
+     * We return only the LAST text block — the post-search answer is what
+     * matters as Bo's persisted reply. The preamble lives transiently in
+     * streamingText during the search phase, then disappears when the real
+     * answer renders. Joining both produced duplicated "I'll check…" prefix
+     * stuck on top of the answer in the saved message.
+     *
+     * For non-search responses (only one text block), last == first.
      */
     fun extractText(response: ClaudeResponse): String? {
-        val parts = response.content
+        return response.content
             .filter { it.type == "text" }
             .mapNotNull { it.text?.takeIf { t -> t.isNotBlank() } }
-        if (parts.isEmpty()) return null
-        return parts.joinToString("\n\n")
+            .lastOrNull()
     }
 
     /**

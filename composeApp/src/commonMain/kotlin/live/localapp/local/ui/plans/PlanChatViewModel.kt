@@ -708,6 +708,12 @@ GUIDELINES:
                     appendLine("or anything similar. You DO have web_search. USE IT.")
                     appendLine("")
                     appendLine("Cap at 3 web_search invocations per turn. web_fetch when user pastes a URL.")
+                    appendLine("")
+                    appendLine("FORMATTING — when responding after web_search:")
+                    appendLine("  • Don't lead with 'I'll check…' — just answer directly. The user sees a searching")
+                    appendLine("    indicator already.")
+                    appendLine("  • NEVER put a period or other punctuation on its own line. Sentences end inline.")
+                    appendLine("  • Keep paragraphs whole. No mid-sentence line breaks.")
                 }
                 "not_live_state" -> {
                     appendLine("Web search is DISABLED — user is in ${budget.userState ?: "a non-live state"}.")
