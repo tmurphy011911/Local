@@ -691,9 +691,15 @@ class ChatViewModel(
                         if (now - lastEmitTime >= emitIntervalMs) {
                             lastEmitTime = now
                             val current = streamBuffer.toString()
+                            // Switch off the searching indicator the moment
+                            // post-tool text starts streaming. Without this,
+                            // a server_tool_use sets isSearching=true and the
+                            // UI sticks on "Eating a snack first…" forever
+                            // even as Bo's actual answer is filling streamingText.
                             _uiState.update { it.copy(
                                 streamingText = current,
                                 isTyping = false,
+                                isSearching = false,
                             ) }
                         }
                     }
