@@ -868,27 +868,29 @@ class ClaudeApiService {
 
     /**
      * Build the assistant message content blocks for conversation history.
-     * Preserves text + tool_use, plus server_tool_use and the corresponding
-     * tool_result blocks so subsequent rounds see Bo's web-search activity
-     * with full fidelity.
+     * Preserves text + regular tool_use only. server_tool_use and
+     * web_search_tool_result / web_fetch_tool_result blocks are STRIPPED —
+     * Anthropic requires tool_use_id + full content on echoed tool_result
+     * blocks, and reconstructing those is wasteful when Bo's synthesized
+     * text already carries the answer. If a follow-up turn needs the data,
+     * Bo will re-search; results are usually identical and cached.
      */
     fun buildAssistantContentBlocks(response: ClaudeResponse): JsonArray {
         return buildJsonArray {
             for (block in response.content) {
-                addJsonObject {
-                    put("type", block.type)
-                    when (block.type) {
-                        "text" -> put("text", block.text ?: "")
-                        "tool_use", "server_tool_use" -> {
-                            put("id", block.id ?: "")
-                            put("name", block.name ?: "")
-                            put("input", block.input ?: JsonObject(emptyMap()))
-                        }
-                        // web_search_tool_result / web_fetch_tool_result blocks
-                        // are passed through type-only — Anthropic sends them
-                        // back attached server-side; we don't need to recreate
-                        // their content for our history (it'd bloat the prompt).
+                when (block.type) {
+                    "text" -> addJsonObject {
+                        put("type", "text")
+                        put("text", block.text ?: "")
                     }
+                    "tool_use" -> addJsonObject {
+                        put("type", "tool_use")
+                        put("id", block.id ?: "")
+                        put("name", block.name ?: "")
+                        put("input", block.input ?: JsonObject(emptyMap()))
+                    }
+                    // server_tool_use, web_search_tool_result, web_fetch_tool_result
+                    // → omitted from history. See note above.
                 }
             }
         }
