@@ -691,25 +691,21 @@ class ChatViewModel(
                         if (now - lastEmitTime >= emitIntervalMs) {
                             lastEmitTime = now
                             val current = streamBuffer.toString()
-                            // Switch off the searching indicator the moment
-                            // post-tool text starts streaming. Without this,
-                            // a server_tool_use sets isSearching=true and the
-                            // UI sticks on "Eating a snack first…" forever
-                            // even as Bo's actual answer is filling streamingText.
                             _uiState.update { it.copy(
                                 streamingText = current,
                                 isTyping = false,
-                                isSearching = false,
                             ) }
                         }
                     }
                 }
                 is StreamEvent.ToolUseStart -> {
-                    // Drop any partial streaming text — these are preambles
-                    // ("I'll search…", "Let me check…") that the prompt rules
-                    // tell Bo not to write but the model keeps emitting anyway.
-                    // We just clear the buffer; the final post-tool text becomes
-                    // the only persisted assistant message via extractText.
+                    // If Claude already streamed partial text in this round, commit
+                    // it as a real message before entering the search state — otherwise
+                    // the partial response disappears and the UI reverts to the idiom.
+                    if (!isToolRound && streamBuffer.isNotEmpty()) {
+                        val pending = streamBuffer.toString().trim()
+                        if (pending.isNotEmpty()) addAiMessage(pending)
+                    }
                     _uiState.update { it.copy(isSearching = true, streamingText = "") }
                     streamBuffer.clear()
                 }
@@ -2261,9 +2257,12 @@ DATE HANDLING RULES (strict):
 - When the user mentions a day by name ("Saturday"), resolve it against the NEXT 14 DAYS table above, not from memory.
 - "Tonight", "now", "right now", and "later today" mean AFTER Current time. Every slot in a same-day plan must start at least 30 minutes after Current time. If the user asks for a same-day plan and you can't find anything later tonight, tell them honestly rather than proposing a slot in the past. Default dinner/date times like "6:30 PM" are NOT acceptable if Current time is already past them.
 
-NO PREAMBLE BEFORE SEARCHES (strict):
-- Do NOT say "Let me search…", "Let me check…", "I'll look that up…", "Let me search the web…", or any similar narration before invoking a tool. The UI already shows a searching indicator with rotating phrases the user trusts. Your preamble is redundant and adds latency.
-- Just call the tool. When you respond AFTER the tool finishes, deliver the answer directly. The first text the user sees from you should be substantive content — not a meta-statement that you're about to do work.
+NO PREAMBLE BEFORE SEARCHES + NO SCHEMA LEAKAGE (strict):
+- Do NOT say "Let me search…", "Let me check…", "I'll look that up…", "Let me search the web…", or any similar narration before invoking a tool. The UI already shows a searching indicator with rotating phrases the user trusts. Your preamble is redundant.
+- Do NOT reference internals: "the database", "our database", "the system", "I don't have any specific events in the database", "based on my research", "I'll search the web", "checking online sources", "I have access to". The user does not know these exist. From their perspective you just know things, the way a smart concierge would.
+- Bad: "I don't have any specific events in the database for June 1-3 in Nantucket, but based on my research…" — exposes both the DB and the search.
+- Good: "Early June is a wonderful time to visit — the weather's nice, fewer crowds than peak summer, and most spots are open. How many people will be joining?"
+- Just call the tool. When you respond AFTER the tool finishes, deliver the answer directly without disclaimer about how you got it.
 - Bad: "Let me search for Nantucket events…" → tool call → "Here's what I found…"
 - Good: tool call → "There are three things on June 1: …"
 
