@@ -133,6 +133,29 @@ async function handleCheck(req: Request, supabase: any): Promise<Response> {
     });
   }
 
+  // 5. Adversarial guard: deboost users with a high Bo-Web rejection rate.
+  //    Counts rows the user has created in bo_web_events. If they have ≥3
+  //    decided rows AND >50% rejected, web access is cut off — protects
+  //    other users + the budget from a bad actor seeding garbage.
+  const { data: userBoWebRows } = await supabase
+    .from("bo_web_events")
+    .select("state")
+    .eq("created_by_user_id", userId)
+    .in("state", ["verified", "rejected"]);
+  const decided = userBoWebRows ?? [];
+  if (decided.length >= 3) {
+    const rejected = decided.filter((r: any) => r.state === "rejected").length;
+    if (rejected / decided.length > 0.5) {
+      return json({
+        allow_web_search: false,
+        allow_web_fetch: false,
+        reason: "deboosted",
+        user_state: userState.name,
+        live_states_list: liveStatesList,
+      });
+    }
+  }
+
   return json({
     allow_web_search: true,
     allow_web_fetch: true,

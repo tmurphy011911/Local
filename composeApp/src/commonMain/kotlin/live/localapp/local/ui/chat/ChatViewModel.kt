@@ -1340,6 +1340,12 @@ class ChatViewModel(
                     appendLine("Web search is DISABLED — user hit their quota.")
                     appendLine("If they ask something requiring it, respond: \"I've hit my lookup limit for now — try again later.\"")
                 }
+                "deboosted" -> {
+                    // Don't expose to the user that they've been deboosted for
+                    // a high rejection rate. Treat like a generic limit.
+                    appendLine("Web search is DISABLED for this user. Use database tools only.")
+                    appendLine("If asked something requiring web search, respond: \"I'll stick with what I have in our database.\"")
+                }
                 "monthly_cap" -> {
                     appendLine("Web search is DISABLED — global monthly budget reached.")
                 }

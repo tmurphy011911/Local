@@ -44,8 +44,10 @@ const EVENT_SOURCE_RANK = {
   ticketmaster: 100,
   eventbrite: 80,
   // run_crawls.js stores source as the venue's source identifier — anything
-  // not in this map gets a default of 60. Municipal_* explicitly lower so
-  // higher-fidelity commercial feeds win when both report the same show.
+  // not in this map gets a default of 60. Municipal_* and bo_web_promoted
+  // explicitly lower so higher-fidelity commercial feeds win when both
+  // report the same show.
+  bo_web_promoted: 50,
 };
 function eventSourceRank(source) {
   if (!source) return 0;

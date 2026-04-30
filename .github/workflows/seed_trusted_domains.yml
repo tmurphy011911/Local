@@ -1,0 +1,29 @@
+name: Seed Trusted Domains for State
+
+# Run when toggling a new state to is_live=true. Asks Claude to enumerate
+# reputable local news/event domains for the state, validates each via HEAD
+# probe, and inserts into bo_web_trusted_domains. Idempotent — re-runs on a
+# state that's already seeded are a no-op (UNIQUE(domain) hard constraint).
+
+on:
+  workflow_dispatch:
+    inputs:
+      state:
+        description: 'Two-letter state code (e.g. NJ, CT, FL)'
+        required: true
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Seed Trusted Domains
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          STATE: ${{ github.event.inputs.state }}
+        run: node seed_trusted_domains_for_state.js
