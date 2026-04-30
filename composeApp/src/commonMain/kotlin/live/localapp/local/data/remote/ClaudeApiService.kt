@@ -756,27 +756,42 @@ class ClaudeApiService {
     }
 
     /**
-     * Extract the final text from a Claude response.
+     * Extract all text from a Claude response, concatenated. Anthropic's
+     * server-side tools (web_search, web_fetch) split a turn into multiple
+     * text blocks: text-before-search, server_tool_use, tool_result, text-
+     * after-search. The post-search text is the actual answer; returning
+     * only the first text block dropped Bo's real response on the floor.
      */
     fun extractText(response: ClaudeResponse): String? {
-        return response.content.firstOrNull { it.type == "text" }?.text
+        val parts = response.content
+            .filter { it.type == "text" }
+            .mapNotNull { it.text?.takeIf { t -> t.isNotBlank() } }
+        if (parts.isEmpty()) return null
+        return parts.joinToString("\n\n")
     }
 
     /**
-     * Build the assistant message content blocks from a Claude response,
-     * preserving both text and tool_use blocks for conversation history.
+     * Build the assistant message content blocks for conversation history.
+     * Preserves text + tool_use, plus server_tool_use and the corresponding
+     * tool_result blocks so subsequent rounds see Bo's web-search activity
+     * with full fidelity.
      */
     fun buildAssistantContentBlocks(response: ClaudeResponse): JsonArray {
         return buildJsonArray {
             for (block in response.content) {
                 addJsonObject {
                     put("type", block.type)
-                    if (block.type == "text") {
-                        put("text", block.text ?: "")
-                    } else if (block.type == "tool_use") {
-                        put("id", block.id ?: "")
-                        put("name", block.name ?: "")
-                        put("input", block.input ?: JsonObject(emptyMap()))
+                    when (block.type) {
+                        "text" -> put("text", block.text ?: "")
+                        "tool_use", "server_tool_use" -> {
+                            put("id", block.id ?: "")
+                            put("name", block.name ?: "")
+                            put("input", block.input ?: JsonObject(emptyMap()))
+                        }
+                        // web_search_tool_result / web_fetch_tool_result blocks
+                        // are passed through type-only — Anthropic sends them
+                        // back attached server-side; we don't need to recreate
+                        // their content for our history (it'd bloat the prompt).
                     }
                 }
             }
