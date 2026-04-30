@@ -860,10 +860,20 @@ class ClaudeApiService {
      * For non-search responses (only one text block), last == first.
      */
     fun extractText(response: ClaudeResponse): String? {
-        return response.content
+        val raw = response.content
             .filter { it.type == "text" }
             .mapNotNull { it.text?.takeIf { t -> t.isNotBlank() } }
-            .lastOrNull()
+            .lastOrNull() ?: return null
+        // Anthropic splits a single sentence into multiple text blocks
+        // when a server_tool_use lands mid-sentence — the post-tool block
+        // often starts with an orphan comma/period ("., which is after
+        // your dates."). Strip leading punctuation + whitespace and
+        // capitalize the first remaining letter so the persisted bubble
+        // reads cleanly. If the model behaved (full sentence in last
+        // block), this is a no-op.
+        val trimmed = raw.trimStart()
+        val cleaned = trimmed.replace(Regex("^[,.;:\\s]+"), "")
+        return cleaned.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
     }
 
     /**
