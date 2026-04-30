@@ -92,6 +92,10 @@ async function saveEvent(supabase: any, userId: string, p: any): Promise<Respons
     .single();
 
   if (error) return json({ error: error.message }, 500);
+  // Phase 3: fire-and-forget the verifier. The user gets the id back
+  // immediately; verification runs async in ~5-30s. Slot UI shows
+  // "verifying" until state flips to verified/rejected.
+  fireVerifier(data.id, "event").catch((e) => console.log(`verifier trigger failed: ${e?.message}`));
   return json({ id: data.id });
 }
 
@@ -123,7 +127,25 @@ async function saveVenue(supabase: any, userId: string, p: any): Promise<Respons
     .single();
 
   if (error) return json({ error: error.message }, 500);
+  fireVerifier(data.id, "venue").catch((e) => console.log(`verifier trigger failed: ${e?.message}`));
   return json({ id: data.id });
+}
+
+/**
+ * Fire-and-forget the verifier edge function. We don't await — the user
+ * gets the new row id immediately while verification runs in the
+ * background. Service-role auth means no extra header dance.
+ */
+async function fireVerifier(id: string, kind: "event" | "venue"): Promise<void> {
+  const url = `${SUPABASE_URL}/functions/v1/verify-bo-web-event`;
+  await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
+    },
+    body: JSON.stringify({ id, kind }),
+  });
 }
 
 function numOrNull(v: any): number | null {
