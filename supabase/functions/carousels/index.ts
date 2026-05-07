@@ -2118,13 +2118,41 @@ Deno.serve(async (req) => {
       try {
         const latBucket = Math.round(lat * 10) / 10;
         const lngBucket = Math.round(lng * 10) / 10;
-        const { data: cacheRows } = await supabase
+        // Try the exact bucket first.
+        let { data: cacheRows } = await supabase
           .from("carousel_cache")
-          .select("payload, computed_at")
+          .select("payload, computed_at, lat_bucket, lng_bucket")
           .eq("lat_bucket", latBucket)
           .eq("lng_bucket", lngBucket)
           .eq("category", category)
           .limit(1);
+
+        // Nearest-bucket fallback. The refresh script warms each active
+        // metro at its exact lat/lng, but users 5-15 mi out (Waltham vs.
+        // Boston, Cambridge vs. Boston, etc.) hit a different 0.1°
+        // bucket and get nothing. Widen to ±0.3° (~21 mi) and pick the
+        // closest fresh row — the carousel content is metro-wide anyway,
+        // so a Boston cache served to a Waltham user is the right answer.
+        if (!cacheRows || cacheRows.length === 0) {
+          const fb = await supabase
+            .from("carousel_cache")
+            .select("payload, computed_at, lat_bucket, lng_bucket")
+            .gte("lat_bucket", latBucket - 0.3).lte("lat_bucket", latBucket + 0.3)
+            .gte("lng_bucket", lngBucket - 0.3).lte("lng_bucket", lngBucket + 0.3)
+            .eq("category", category)
+            .limit(20);
+          if (fb.data && fb.data.length > 0) {
+            const ranked = fb.data
+              .map((r: any) => {
+                const dLat = (r.lat_bucket as number) - latBucket;
+                const dLng = (r.lng_bucket as number) - lngBucket;
+                return { row: r, d: dLat * dLat + dLng * dLng };
+              })
+              .sort((a, b) => a.d - b.d);
+            cacheRows = [ranked[0].row];
+          }
+        }
+
         const row = cacheRows?.[0];
         // Accept cache up to 30 min old. Refresh job runs every 10 min, so
         // most reads will land on a < 10 min old row. The 30 min ceiling
@@ -2134,11 +2162,12 @@ Deno.serve(async (req) => {
           // TODO(personalization): when user_id is present, layer favorites/
           // affinity scoring on top here. For v1 we return the precomputed
           // anonymous payload — same fidelity as the previous foryou cache.
+          const isFallback = (row as any).lat_bucket !== latBucket || (row as any).lng_bucket !== lngBucket;
           return new Response(JSON.stringify(row.payload), {
             status: 200,
             headers: {
               "Content-Type": "application/json",
-              "X-Cache": `precomputed-${Math.round(ageMs / 1000)}s`,
+              "X-Cache": `precomputed-${Math.round(ageMs / 1000)}s${isFallback ? "-nearest" : ""}`,
               ...CORS_HEADERS,
             },
           });

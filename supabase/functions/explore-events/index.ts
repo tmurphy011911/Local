@@ -365,14 +365,14 @@ async function fetchCommunityScores(supabase: any, userId: string | null): Promi
 
 function scoreEvent(
   e: EventRow,
-  resolvedImage: string | null,
+  _resolvedImage: string | null,
   venueRank: number | null,
   userLat: number,
   userLng: number,
   prefs: UserPrefs | null,
   affinityMap: Record<string, number>,
-  communityScores: Record<string, number>,
-  maxCommunityScore: number,
+  _communityScores: Record<string, number>,
+  _maxCommunityScore: number,
   nowMs: number,
 ): number {
   const eLat = e.venue_lat;
@@ -404,8 +404,6 @@ function scoreEvent(
   const savedVenueBoost =
     e.venue_name && tasteVenues.has(e.venue_name.toLowerCase().trim()) ? 1 : 0;
 
-  const hasImage = resolvedImage ? 1 : 0;
-
   // Affinity: learned preference from this user's own history (categories
   // they've clicked / favorited / added to plans most). 0-1 normalized.
   const affinity =
@@ -413,22 +411,32 @@ function scoreEvent(
     affinityMap[e.category.toLowerCase()] ||
     0;
 
-  // Community: log-scaled crowd save count. Log so one wildly popular event
-  // doesn't dwarf everyone — diminishing returns above ~50 saves.
-  const rawSaves = communityScores[e.id] ?? 0;
-  const community = maxCommunityScore > 0 ? Math.log1p(rawSaves) / Math.log1p(maxCommunityScore) : 0;
+  // Option A weighting — personal-dominant Explore feed:
+  //   hot user (any affinity history): aff 40 · taste 20 · saved 10 · prox 20 · rank 7 · fresh 3 = 100
+  //   cold start (no affinity yet):     aff  0 · taste 40 · saved 10 · prox 32 · rank 15 · fresh 3 = 100
+  // Cold-start redistributes the 40 affinity points to taste/prox/rank so a
+  // brand-new user still gets a sensible feed (onboarding-driven instead of
+  // history-driven). Once they accumulate any affinity rows we flip back to
+  // the hot weights — `hasAffinity` triggers off any non-empty affinityMap.
+  // The previous community + hasImage signals are dropped from the score:
+  // community is redundant under heavy personal weighting (it's basically
+  // crowd-affinity), and hasImage was a quality tiebreaker that belongs in
+  // a filter or as a render decision, not the sort.
+  const hasAffinity = Object.keys(affinityMap).length > 0;
+  const wAff = hasAffinity ? 0.40 : 0.00;
+  const wTaste = hasAffinity ? 0.20 : 0.40;
+  const wSaved = 0.10;
+  const wProx = hasAffinity ? 0.20 : 0.32;
+  const wRank = hasAffinity ? 0.07 : 0.15;
+  const wFresh = 0.03;
 
-  // proximity 20 · rank 26 · freshness 13 · taste 15 · saved 8 · image 4
-  //   + affinity 8 · community 6 = 100
   return (
-    proxScore * 0.20 +
-    rankScore * 0.26 +
-    freshness * 0.13 +
-    taste * 0.15 +
-    savedVenueBoost * 0.08 +
-    hasImage * 0.04 +
-    affinity * 0.08 +
-    community * 0.06
+    affinity * wAff +
+    taste * wTaste +
+    savedVenueBoost * wSaved +
+    proxScore * wProx +
+    rankScore * wRank +
+    freshness * wFresh
   );
 }
 
@@ -500,13 +508,16 @@ Deno.serve(async (req) => {
       scored = cached.scored;
     } else {
       const events = await fetchEvents(supabase, lat, lng, query, category, radiusMiles, dateFilter, dateStart, dateEnd, tzOffsetMin);
-      const [venueMeta, prefs, affinityMap, communityScores] = await Promise.all([
+      // community-scores fetch dropped — community signal removed from
+      // scoreEvent under Option A (heavy personal affinity makes it
+      // redundant). Saves one Postgres RPC per request.
+      const [venueMeta, prefs, affinityMap] = await Promise.all([
         fetchVenueMeta(supabase),
         userId ? fetchUserPrefs(supabase, userId) : Promise.resolve(null),
         fetchCategoryAffinity(supabase, userId),
-        fetchCommunityScores(supabase, userId),
       ]);
-      const maxCommunityScore = Math.max(0, ...Object.values(communityScores));
+      const communityScores: Record<string, number> = {};
+      const maxCommunityScore = 0;
       const nowMs = Math.floor(Date.now() / CACHE_TTL_MS) * CACHE_TTL_MS;
 
       const raw = events

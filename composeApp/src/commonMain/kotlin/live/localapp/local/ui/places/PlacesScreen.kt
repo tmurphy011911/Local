@@ -78,6 +78,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -94,6 +95,7 @@ import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.toLocalDateTime
+import live.localapp.local.platform.hapticSelection
 import live.localapp.local.platform.rememberNativeDateRangePicker
 import live.localapp.local.domain.model.Event
 import live.localapp.local.snakeToTitleCase
@@ -165,7 +167,10 @@ fun PlacesScreen(
             // ── Events | Places sub-tab row ──
             SearchSubTabRow(
                 active = state.activeTab,
-                onSelect = { viewModel.setActiveTab(it) },
+                onSelect = {
+                    if (it != state.activeTab) hapticSelection()
+                    viewModel.setActiveTab(it)
+                },
             )
 
             // ── Search bar — placeholder flips with active tab ──
@@ -606,7 +611,14 @@ private fun FilterChip(
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-                onClick = onClick,
+                onClick = {
+                    // Light haptic on every chip tap (Events date filters,
+                    // Places sort options, category sub-filters — all share
+                    // this component). No-op on platforms without haptic
+                    // support; never throws.
+                    hapticSelection()
+                    onClick()
+                },
             )
             .padding(start = 14.dp, end = if (onDismiss != null) 6.dp else 14.dp, top = 8.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -666,6 +678,7 @@ private fun VenueGrid(
     }
 
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
     LaunchedEffect(scrollResetKey) {
         if (scrollResetKey != null) listState.scrollToItem(0)
     }
@@ -692,7 +705,16 @@ private fun VenueGrid(
                 vm = venueWithMeta,
                 isFavorited = venueWithMeta.venue.id in favoriteIds,
                 onClick = { bounds -> onVenueClick(venueWithMeta, bounds) },
-                onFavoriteToggle = { onFavoriteToggle(venueWithMeta) },
+                onFavoriteToggle = {
+                    // Same pattern as Events — scroll to top on save (so the
+                    // Saved Places carousel that just grew/appeared is
+                    // visible) but not on un-save.
+                    val wasFavorited = venueWithMeta.venue.id in favoriteIds
+                    onFavoriteToggle(venueWithMeta)
+                    if (!wasFavorited) {
+                        coroutineScope.launch { listState.animateScrollToItem(0) }
+                    }
+                },
             )
         }
 
@@ -1688,6 +1710,7 @@ private fun EventGrid(
     scrollResetKey: Any? = null,
 ) {
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    val coroutineScope = rememberCoroutineScope()
     LaunchedEffect(scrollResetKey) {
         if (scrollResetKey != null) listState.scrollToItem(0)
     }
@@ -1731,7 +1754,20 @@ private fun EventGrid(
                 userLat = userLat,
                 userLng = userLng,
                 onClick = { bounds -> onEventClick(events[i], bounds) },
-                onFavoriteToggle = { onFavoriteToggle(events[i]) },
+                onFavoriteToggle = {
+                    // Capture favorite-before-toggle state BEFORE dispatching
+                    // so we know which direction this is. Tap-to-save scrolls
+                    // the list to the top so the Saved Events section that
+                    // just grew (or appeared) is visible immediately —
+                    // otherwise the user has to manually scroll up to find it.
+                    // Tap-to-unsave does NOT scroll — leaves the user where
+                    // they were in the list.
+                    val wasFavorited = events[i].id in favoriteIds
+                    onFavoriteToggle(events[i])
+                    if (!wasFavorited) {
+                        coroutineScope.launch { listState.animateScrollToItem(0) }
+                    }
+                },
             )
         }
         if (hasMore) {

@@ -240,6 +240,48 @@ async function fetchUserPrefs(supabase: any, userId: string): Promise<UserPrefs 
   return data ?? null;
 }
 
+/**
+ * Same `get_category_affinity` RPC the carousels + explore-events feeds use.
+ * Returns 0-1 normalized weights keyed by event-style category strings
+ * ("music", "sports", "outdoors", etc.). Anonymous → empty map → cold-start
+ * scoring path engages.
+ */
+async function fetchCategoryAffinity(supabase: any, userId: string | null): Promise<Record<string, number>> {
+  if (!userId) return {};
+  const { data } = await supabase.rpc("get_category_affinity", { p_user_id: userId });
+  if (!data || !Array.isArray(data)) return {};
+  const maxWeight = Math.max(...data.map((e: any) => e.weight ?? 0), 1);
+  const out: Record<string, number> = {};
+  for (const row of data) {
+    out[String(row.category ?? "").toLowerCase()] = Math.min((row.weight ?? 0) / maxWeight, 1);
+  }
+  return out;
+}
+
+/**
+ * Bridge raw venue.category (Google-Places freeform: "Brewery", "Sandwich
+ * shop", "Beach") to the event-style affinity keys ("music", "outdoors",
+ * "food", etc.) so the same get_category_affinity map applies to places.
+ * Returns null when the category doesn't fit any bucket — those venues
+ * just get affinity=0, falling back to the rest of the score.
+ */
+function venueCategoryToAffinityKey(category: string | null): string | null {
+  if (!category) return null;
+  const c = category.toLowerCase();
+  if (c.includes("museum") || c.includes("gallery") || c.includes("art center")) return "museums";
+  if (c.includes("library")) return "libraries";
+  if (c.includes("theatre") || c.includes("theater") || c.includes("performing arts")) return "theatre";
+  if (c.includes("comedy")) return "comedy";
+  if (c.includes("brewery") || c.includes("bar") || c.includes("pub") || c.includes("nightclub") || c.includes("lounge")) return "nightlife";
+  if (c.includes("restaurant") || c.includes("cafe") || c.includes("bakery") || c.includes("sandwich") || c.includes("ice cream") || c.includes("coffee") || c.includes("food")) return "food";
+  if (c.includes("beach") || c.includes("park") || c.includes("trail") || c.includes("garden") || c.includes("lighthouse") || c.includes("hike") || c.includes("outdoor")) return "outdoors";
+  if (c.includes("stadium") || c.includes("arena") || c.includes("sports")) return "sports";
+  if (c.includes("zoo") || c.includes("aquarium") || c.includes("kids") || c.includes("playground")) return "for-kids";
+  if (c.includes("tour")) return "tours";
+  if (c.includes("music") || c.includes("concert")) return "music";
+  return null;
+}
+
 // ── Scoring ──
 
 function scoreVenue(
@@ -247,26 +289,45 @@ function scoreVenue(
   distance: number,
   eventCount: number,
   prefs: UserPrefs | null,
+  affinityMap: Record<string, number>,
   maxRank: number,
 ): number {
   const proxScore = 1 / (1 + distance / 8); // falls off ~8mi — places lookups tolerate more radius than events
   const rankScore = maxRank > 0 ? (v.public_interest_rank ?? 0) / maxRank : 0;
   const eventDensity = Math.min(1, eventCount / 10); // 10+ events/month = full credit
-  const hasPhoto = v.photo_url ? 1 : 0;
 
   const tasteCats = new Set((prefs?.selected_categories ?? []).map((c) => c.toLowerCase().trim()));
   const tasteVenues = new Set((prefs?.selected_venues ?? []).map((v) => v.toLowerCase().trim()));
   const taste = tasteCats.size > 0 && v.category && tasteCats.has(v.category.toLowerCase()) ? 1 : 0;
   const savedVenueBoost = tasteVenues.has(v.name.toLowerCase().trim()) ? 1 : 0;
 
-  // Weights: proximity 30 · rank 25 · event density 20 · photo 10 · taste 10 · saved 5
+  // Translate venue.category (Google-Places freeform) to an event-affinity
+  // key, then look up the user's learned weight for that category. Venues
+  // whose category doesn't map cleanly get affinity=0 and fall back to the
+  // rest of the score — better than wrong-bucket bias.
+  const affinityKey = venueCategoryToAffinityKey(v.category);
+  const affinity = affinityKey ? (affinityMap[affinityKey] ?? 0) : 0;
+
+  // Option A weighting — personal-dominant Places feed:
+  //   hot user (any affinity history): aff 30 · taste 20 · saved 10 · prox 25 · rank 10 · density 5 = 100
+  //   cold start (no affinity yet):     aff  0 · taste 35 · saved 10 · prox 35 · rank 15 · density 5 = 100
+  // Photo dropped from sort — was a quality tiebreaker; if you want a
+  // photo floor it should be a filter (`WHERE photo_url IS NOT NULL`).
+  const hasAffinity = Object.keys(affinityMap).length > 0;
+  const wAff = hasAffinity ? 0.30 : 0.00;
+  const wTaste = hasAffinity ? 0.20 : 0.35;
+  const wSaved = 0.10;
+  const wProx = hasAffinity ? 0.25 : 0.35;
+  const wRank = hasAffinity ? 0.10 : 0.15;
+  const wDensity = 0.05;
+
   return (
-    proxScore * 0.3 +
-    rankScore * 0.25 +
-    eventDensity * 0.2 +
-    hasPhoto * 0.1 +
-    taste * 0.1 +
-    savedVenueBoost * 0.05
+    affinity * wAff +
+    taste * wTaste +
+    savedVenueBoost * wSaved +
+    proxScore * wProx +
+    rankScore * wRank +
+    eventDensity * wDensity
   );
 }
 
@@ -376,13 +437,14 @@ Deno.serve(async (req) => {
     if (cached) {
       scored = cached.scored;
     } else {
-      const [rawVenues, eventBuckets] = await Promise.all([
+      const [rawVenues, eventBuckets, prefs, affinityMap] = await Promise.all([
         fetchVenues(supabase, lat, lng, query, category, radiusMiles),
         fetchEventsByVenue(supabase, lat, lng, radiusMiles),
+        userId ? fetchUserPrefs(supabase, userId) : Promise.resolve(null),
+        fetchCategoryAffinity(supabase, userId),
       ]);
       const counts = countsFromBuckets(eventBuckets);
       const venues = dedupVenues(rawVenues, counts);
-      const prefs = userId ? await fetchUserPrefs(supabase, userId) : null;
       const maxRank = venues.reduce((m, v) => Math.max(m, v.public_interest_rank ?? 0), 0);
 
       scored = venues
@@ -398,7 +460,7 @@ Deno.serve(async (req) => {
             dist,
             eventCount,
             events,
-            score: scoreVenue(v, dist, eventCount, prefs, maxRank),
+            score: scoreVenue(v, dist, eventCount, prefs, affinityMap, maxRank),
           };
         })
         .filter((x) => x.dist <= radiusMiles)

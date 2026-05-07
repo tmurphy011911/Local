@@ -3,6 +3,20 @@ import SwiftUI
 import ComposeApp
 import RevenueCat
 
+/// Walk to the actual top-most view controller (presented chain). Needed
+/// because the slot-tap path on PlanDetailView (presented as a sheet,
+/// possibly itself nested behind ChatSheet) needs to present its event/
+/// venue detail OVER PlanDetail, not on whatever rootVC happens to be at
+/// the moment. `presentedViewController` only walks one step — this helper
+/// walks to the leaf so the new detail always lands on top of PlanDetail.
+private func topPresentedViewController(in window: UIWindow) -> UIViewController? {
+    var top = window.rootViewController
+    while let presented = top?.presentedViewController {
+        top = presented
+    }
+    return top
+}
+
 struct ComposeView: UIViewControllerRepresentable {
     func makeUIViewController(context: Context) -> UIViewController {
         let vc = MainViewControllerKt.MainViewController()
@@ -156,7 +170,12 @@ struct ComposeView: UIViewControllerRepresentable {
                         sheet.detents = [.large()]
                         sheet.prefersGrabberVisible = true
                     }
-                    let topVC = window.rootViewController?.presentedViewController ?? window.rootViewController
+                    // Walk to the actual top — events triggered from a slot
+                    // tap inside PlanDetail (itself a sheet, possibly over
+                    // ChatSheet) need this deep walk; the prior shallow
+                    // lookup landed on the wrong VC and either failed
+                    // silently or stacked weirdly.
+                    let topVC = topPresentedViewController(in: window)
                     topVC?.present(hostingVC, animated: true)
                 } else {
                     transition.present(event: event, cardFrame: cardFrame, in: window) {
@@ -249,14 +268,43 @@ struct ComposeView: UIViewControllerRepresentable {
                     height: CGFloat(cardH)
                 )
 
-                transition.present(
-                    venue: venue,
-                    cardFrame: cardFrame,
-                    in: window,
-                    isFavorited: isFavorited.boolValue,
-                    onFavorite: { vid in venueBridge.onFavorited?(vid) },
-                    onDismissed: { venueBridge.onDismissed?() }
-                )
+                // Zero-frame path = called from PlanDetail's slot tap (or any
+                // non-card-anchored origin). The hero transition adds the
+                // detail directly to the WINDOW via addSubview, which covers
+                // PlanDetail and prevents a clean dismiss-back-to-PlanDetail.
+                // For these calls, present as a regular pageSheet OVER the
+                // top VC instead — same pattern Event detail already uses.
+                if cardFrame.width == 0 && cardFrame.height == 0 {
+                    weak var weakHostingVC: UIHostingController<VenueDetailView>?
+                    let detailView = VenueDetailView(
+                        venue: venue,
+                        onDismiss: {
+                            weakHostingVC?.dismiss(animated: true) {
+                                venueBridge.onDismissed?()
+                            }
+                        },
+                        isFavorited: isFavorited.boolValue,
+                        onFavorite: { vid in venueBridge.onFavorited?(vid) }
+                    )
+                    let hostingVC = UIHostingController(rootView: detailView)
+                    weakHostingVC = hostingVC
+                    hostingVC.modalPresentationStyle = .pageSheet
+                    if let sheet = hostingVC.sheetPresentationController {
+                        sheet.detents = [.large()]
+                        sheet.prefersGrabberVisible = true
+                    }
+                    let topVC = topPresentedViewController(in: window)
+                    topVC?.present(hostingVC, animated: true)
+                } else {
+                    transition.present(
+                        venue: venue,
+                        cardFrame: cardFrame,
+                        in: window,
+                        isFavorited: isFavorited.boolValue,
+                        onFavorite: { vid in venueBridge.onFavorited?(vid) },
+                        onDismissed: { venueBridge.onDismissed?() }
+                    )
+                }
             }
         }
 

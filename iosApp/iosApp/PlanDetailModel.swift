@@ -197,9 +197,30 @@ struct PlanDetailSlot: Decodable, Equatable {
             if let c = venueCity, !c.isEmpty { return c }
             // Fallback to address parse when venueCity wasn't provided
             // (legacy slots / Bo-Web findings without explicit city).
+            //
+            // US addresses come in several shapes — the previous code blindly
+            // grabbed segs[1], which surfaces "MA 02109" instead of "Boston"
+            // for short addresses like "Boston, MA 02109" (Faneuil Hall et
+            // al). Heuristic: walk from the right, skip the trailing
+            // STATE-ZIP token if present, and return whatever segment is now
+            // last — that's the city in every common US format:
+            //   ["1 Main St", "Boston", "MA 02109"] → "Boston"
+            //   ["Boston", "MA 02109"]              → "Boston"
+            //   ["MA 02109"]                        → nil
+            //   ["Boston"]                          → "Boston"
             guard let addr = venueAddress, !addr.isEmpty else { return nil }
-            let segs = addr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
-            return segs.count >= 2 ? segs[1] : nil
+            var segs = addr.split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+            if segs.isEmpty { return nil }
+            if let last = segs.last, looksLikeStateZip(last) {
+                segs.removeLast()
+            }
+            // Also drop a trailing "USA" / "United States" if present.
+            if let last = segs.last?.uppercased(), last == "USA" || last == "UNITED STATES" {
+                segs.removeLast()
+            }
+            return segs.last
         }()
         if let c = city, !c.isEmpty { parts.append(c) }
         // Fallback: if neither venueName-distinct nor city is available,
@@ -209,6 +230,15 @@ struct PlanDetailSlot: Decodable, Equatable {
             parts.append(v)
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// True when [s] matches a US state abbreviation followed by an optional
+    /// 5-digit (or ZIP+4) zip code — e.g. "MA", "MA 02109", "CA 94110-1234".
+    /// Used by the subtitle parser to drop the state/zip token and surface
+    /// the city instead.
+    private func looksLikeStateZip(_ s: String) -> Bool {
+        let pattern = #"^[A-Z]{2}( \d{5}(-\d{4})?)?$"#
+        return s.range(of: pattern, options: .regularExpression) != nil
     }
 
     /// V1 OpenTable URL — search-based, no affiliate.

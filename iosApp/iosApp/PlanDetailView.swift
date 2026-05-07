@@ -1396,6 +1396,10 @@ private struct StopCard: View {
     @Environment(\.openURL) private var openURL
     @State private var showDirections = false
     @State private var showRemoveConfirm = false
+    /// Drives the press-shrink animation. A simultaneous zero-distance drag
+    /// flips this on touch-down and off on release, without consuming taps
+    /// from the ellipsis Menu / chip Buttons inside the card.
+    @State private var isPressed = false
 
     var body: some View {
         // Body — three single-line rows. The timeline rail (TIME + dot
@@ -1514,8 +1518,28 @@ private struct StopCard: View {
         }
         .padding(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12))
         .background(Color.white)
-        .overlay(RoundedRectangle(cornerRadius: 16).stroke(pdLine, lineWidth: 1))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(pdLine, lineWidth: 1.5))
         .clipShape(RoundedRectangle(cornerRadius: 16))
+        // Stacked-block "bezel" shadow — matches the Compose
+        // `localCardSurface` look used on the Home + Explore feeds: a flat
+        // pebble-coloured rectangle offset 4pt below the card, no Material
+        // elevation glow. Placed in a trailing .background so it lands
+        // BEHIND the white surface.
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(pdLine)
+                .offset(y: 4)
+        )
+        // Press-shrink — touch-down dips the card to 0.97 with a quick
+        // spring; release returns to 1.0. simultaneousGesture keeps the
+        // ellipsis Menu and chip Buttons inside the card tappable.
+        .scaleEffect(isPressed ? 0.97 : 1.0)
+        .animation(.spring(response: 0.28, dampingFraction: 0.7), value: isPressed)
+        .simultaneousGesture(
+            DragGesture(minimumDistance: 0)
+                .onChanged { _ in if !isPressed { isPressed = true } }
+                .onEnded { _ in isPressed = false }
+        )
         // BOOK AHEAD as a corner badge — flush with the top-right corner
         // of the card so the title row never gets truncated by an inline
         // chip. Same condition as before (restaurant + no reservation +

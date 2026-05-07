@@ -15,7 +15,9 @@ import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.repository.CommunityInterestRepository
+import live.localapp.local.domain.repository.EventPage
 import live.localapp.local.domain.repository.ExploreRepository
+import live.localapp.local.domain.repository.PlacePage
 import live.localapp.local.domain.repository.InteractionType
 import live.localapp.local.domain.repository.UserPreferences
 import live.localapp.local.domain.repository.UserPreferencesRepository
@@ -120,6 +122,41 @@ class PlacesViewModel(
     private var loadedLat: Double? = null
     private var loadedLng: Double? = null
 
+    // Per-filter response cache. Switching back to a filter we recently
+    // fetched returns instantly without a server round-trip — the dominant
+    // user-perceived latency win for the Explore tabs. Entries are scoped
+    // to the active lat/lng (cleared when location changes via clearCaches).
+    // Keep TTL short — server's edge-function cache (5 min) is the deeper
+    // layer; this client cache exists to skip the network entirely on quick
+    // back-and-forth taps.
+    private data class CachedEventsPage(val page: EventPage, val savedAt: Long)
+    private data class CachedPlacesPage(val page: PlacePage, val savedAt: Long)
+    private val eventsCache = mutableMapOf<String, CachedEventsPage>()
+    private val placesCache = mutableMapOf<String, CachedPlacesPage>()
+    private val cacheTtlMs = 60_000L
+
+    private fun nowMs(): Long = kotlin.time.Clock.System.now().toEpochMilliseconds()
+
+    private fun PlacesUiState.eventsCacheKey(): String = listOf(
+        userLat?.toString() ?: "", userLng?.toString() ?: "",
+        userPreferences?.id ?: "anon",
+        searchQuery, selectedFilter,
+        dateFilter?.slug ?: "", customStart?.toString() ?: "", customEnd?.toString() ?: "",
+        radiusFilter?.toString() ?: "",
+    ).joinToString("|")
+
+    private fun PlacesUiState.placesCacheKey(): String = listOf(
+        userLat?.toString() ?: "", userLng?.toString() ?: "",
+        userPreferences?.id ?: "anon",
+        searchQuery, selectedFilter, placeSort.slug,
+        hasEventsOnly.toString(), radiusFilter?.toString() ?: "",
+    ).joinToString("|")
+
+    private fun clearCaches() {
+        eventsCache.clear()
+        placesCache.clear()
+    }
+
     init {
         loadUserPreferences()
         loadFavoriteVenueIds()
@@ -129,6 +166,7 @@ class PlacesViewModel(
     fun ensureLoaded() {
         val state = _uiState.value
         val locationChanged = state.userLat != loadedLat || state.userLng != loadedLng
+        if (locationChanged) clearCaches()
         if (!venuesLoaded || locationChanged) {
             venuesLoaded = true
             loadedLat = state.userLat
@@ -204,11 +242,25 @@ class PlacesViewModel(
         if (_uiState.value.dateFilter == filter) return
         // Switching away from CUSTOM clears the picked range; the next CUSTOM
         // tap will re-open the picker fresh.
-        _uiState.update {
-            if (filter == EventDateFilter.CUSTOM) {
-                it.copy(dateFilter = filter)
+        _uiState.update { state ->
+            val baseUpdate = if (filter == EventDateFilter.CUSTOM) {
+                state.copy(dateFilter = filter)
             } else {
-                it.copy(dateFilter = filter, customStart = null, customEnd = null)
+                state.copy(dateFilter = filter, customStart = null, customEnd = null)
+            }
+            // Option A — optimistic narrowing. Re-slice the currently-loaded
+            // events to the new date window so the list visibly reorders
+            // immediately. Server response will replace with the canonical
+            // paginated set (which may include events not in the current
+            // page). If the predicate yields 0 hits, we leave the old list
+            // visible rather than blanking — the loading indicator is the
+            // signal that fresh data is on the way.
+            val predicate = eventDatePredicate(filter, baseUpdate.customStart, baseUpdate.customEnd)
+            val slice = baseUpdate.filteredEvents.filter(predicate)
+            if (slice.isNotEmpty() || filter == null) {
+                baseUpdate.copy(filteredEvents = slice, events = slice)
+            } else {
+                baseUpdate
             }
         }
         loadEvents(reset = true)
@@ -235,11 +287,83 @@ class PlacesViewModel(
 
     fun setPlaceSort(sort: PlaceSort) {
         if (_uiState.value.placeSort == sort) return
-        _uiState.update { it.copy(placeSort = sort) }
+        _uiState.update { state ->
+            // Option A — optimistic resort over the loaded list. Closest /
+            // Most Events have stable client-side sort keys (distance,
+            // upcomingEventCount). Popular falls back to whatever order was
+            // already in state — the server fetch below will deliver the
+            // canonical paginated list either way.
+            val resorted = optimisticPlaceSort(state.filteredVenues, sort)
+            state.copy(placeSort = sort, filteredVenues = resorted, venues = resorted)
+        }
         // Server-side sort — refetch from offset 0 with the new sort slug
         // so non-popularity sorts pull the best venues across the full list,
         // not just the popularity top-N already loaded.
         loadPlaces(reset = true)
+    }
+
+    private fun optimisticPlaceSort(venues: List<VenueWithMeta>, sort: PlaceSort): List<VenueWithMeta> = when (sort) {
+        PlaceSort.POPULAR -> venues
+        PlaceSort.CLOSEST -> venues.sortedWith(
+            compareBy({ it.distanceMiles ?: Double.MAX_VALUE }, { it.venue.id })
+        )
+        PlaceSort.MOST_EVENTS -> venues.sortedWith(
+            compareByDescending<VenueWithMeta> { it.upcomingEventCount }.thenBy { it.venue.id }
+        )
+    }
+
+    /**
+     * Build a predicate matching events whose local-tz start_at falls in the
+     * window implied by [filter]. Used by setDateFilter for optimistic
+     * narrowing — server response is the source of truth, the predicate is
+     * just the visible-immediately preview.
+     */
+    private fun eventDatePredicate(
+        filter: EventDateFilter?,
+        customStart: LocalDate?,
+        customEnd: LocalDate?,
+    ): (Event) -> Boolean {
+        if (filter == null) return { true }
+        val tz = TimeZone.currentSystemDefault()
+        val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        val today = kotlinx.datetime.Instant.fromEpochMilliseconds(nowMs).toLocalDateTime(tz).date
+        val (windowStart, windowEnd) = when (filter) {
+            EventDateFilter.TODAY -> today to today
+            EventDateFilter.TOMORROW -> {
+                val d = LocalDate.fromEpochDays(today.toEpochDays() + 1)
+                d to d
+            }
+            EventDateFilter.THIS_WEEKEND -> {
+                // Friday-Sunday of the upcoming weekend. If today is already
+                // Fri/Sat/Sun, "this weekend" means today through Sunday.
+                val dow = today.dayOfWeek
+                val daysToFri = when (dow) {
+                    kotlinx.datetime.DayOfWeek.FRIDAY,
+                    kotlinx.datetime.DayOfWeek.SATURDAY,
+                    kotlinx.datetime.DayOfWeek.SUNDAY -> 0
+                    kotlinx.datetime.DayOfWeek.MONDAY -> 4
+                    kotlinx.datetime.DayOfWeek.TUESDAY -> 3
+                    kotlinx.datetime.DayOfWeek.WEDNESDAY -> 2
+                    kotlinx.datetime.DayOfWeek.THURSDAY -> 1
+                    else -> 0
+                }
+                val fri = LocalDate.fromEpochDays(today.toEpochDays() + daysToFri)
+                val sun = LocalDate.fromEpochDays(fri.toEpochDays() + 2)
+                fri to sun
+            }
+            EventDateFilter.CUSTOM -> {
+                if (customStart == null || customEnd == null) return { true }
+                customStart to customEnd
+            }
+        }
+        return { ev ->
+            val s = ev.startAt
+            if (s.isNullOrBlank()) false
+            else try {
+                val d = kotlinx.datetime.Instant.parse(s).toLocalDateTime(tz).date
+                d.toEpochDays() in windowStart.toEpochDays()..windowEnd.toEpochDays()
+            } catch (_: Throwable) { false }
+        }
     }
 
     private var searchDebounceJob: Job? = null
@@ -258,6 +382,27 @@ class PlacesViewModel(
     private var placesLoadJob: Job? = null
     private fun loadPlaces(reset: Boolean) {
         placesLoadJob?.cancel()
+
+        // Cache short-circuit (Option B) — same pattern as loadEvents.
+        if (reset) {
+            val state0 = _uiState.value
+            val key = state0.placesCacheKey()
+            val hit = placesCache[key]
+            if (hit != null && nowMs() - hit.savedAt < cacheTtlMs) {
+                _uiState.update {
+                    it.copy(
+                        filteredVenues = hit.page.items,
+                        venues = hit.page.items,
+                        venueCursor = hit.page.cursor,
+                        hasMore = hit.page.hasMore,
+                        isLoading = false,
+                        isRefreshing = false,
+                    )
+                }
+                return
+            }
+        }
+
         placesLoadJob = viewModelScope.launch {
             if (reset) {
                 _uiState.update { it.copy(isLoading = true, error = null) }
@@ -294,6 +439,10 @@ class PlacesViewModel(
                         isRefreshing = false,
                     )
                 }
+                if (reset) {
+                    val key = state.placesCacheKey()
+                    placesCache[key] = CachedPlacesPage(page, nowMs())
+                }
             } catch (e: Exception) {
                 _uiState.update { it.copy(error = e.message, isLoading = false, isRefreshing = false) }
             }
@@ -311,6 +460,30 @@ class PlacesViewModel(
     private var eventsLoadJob: Job? = null
     private fun loadEvents(reset: Boolean) {
         eventsLoadJob?.cancel()
+
+        // Cache short-circuit: switching back to a recently-viewed filter
+        // combo on a reset should skip the network entirely.
+        if (reset) {
+            val state0 = _uiState.value
+            val key = state0.eventsCacheKey()
+            val hit = eventsCache[key]
+            if (hit != null && nowMs() - hit.savedAt < cacheTtlMs) {
+                val favs = state0.favoriteEventIds
+                val saved = hit.page.items.filter { e -> e.id in favs }
+                _uiState.update {
+                    it.copy(
+                        filteredEvents = hit.page.items,
+                        events = hit.page.items,
+                        eventCursor = hit.page.cursor,
+                        eventsHasMore = hit.page.hasMore,
+                        savedEvents = saved,
+                        isEventsLoading = false,
+                    )
+                }
+                return
+            }
+        }
+
         eventsLoadJob = viewModelScope.launch {
             if (reset) {
                 _uiState.update { it.copy(isEventsLoading = true) }
@@ -368,6 +541,13 @@ class PlacesViewModel(
                         savedEvents = saved,
                         isEventsLoading = false,
                     )
+                }
+                if (reset) {
+                    // Cache the first-page response for this filter combo so
+                    // a quick back-and-forth tap returns instantly via the
+                    // short-circuit at the top of loadEvents.
+                    val key = state.eventsCacheKey()
+                    eventsCache[key] = CachedEventsPage(page, nowMs())
                 }
             } catch (e: Exception) {
                 println("PlacesVM.loadEvents failed: ${e.message}")
