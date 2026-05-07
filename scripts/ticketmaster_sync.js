@@ -106,11 +106,59 @@ function parsePrice(priceRanges) {
   };
 }
 
+// Resolve a Ticketmaster start/end into an ISO timestamp + a time_known flag.
+//
+// Ticketmaster gives us three useful fields on dates.start:
+//   - dateTime: full UTC ISO ("2026-05-02T23:00:00Z") — only present when both
+//     date AND time are confirmed.
+//   - localDate: "YYYY-MM-DD" in the venue's local timezone, always present.
+//   - localTime: "HH:MM:SS" in venue local TZ, only when time is known.
+//   - dateTBD / timeTBA / noSpecificTime: signals that one half is unknown.
+//
+// The previous implementation fell back to bare `localDate` when dateTime was
+// missing, which Postgres interprets as midnight UTC — that renders as 8 PM
+// the previous calendar day in Eastern. So a TBD-time Saturday game shows up
+// as "Tomorrow 8 PM" on Friday. Fix: when only the date is known, anchor the
+// timestamp at noon UTC so it stays on the right calendar day in any US tz,
+// and emit time_known=false so the client renders "Time TBD" instead of "12 PM".
+function resolveStart(dates) {
+  const start = dates?.start;
+  if (!start) return { iso: null, timeKnown: false };
+  if (start.dateTime) return { iso: start.dateTime, timeKnown: true };
+  if (!start.localDate) return { iso: null, timeKnown: false };
+  return { iso: `${start.localDate}T12:00:00Z`, timeKnown: false };
+}
+
+// Translate Ticketmaster's dates.status.code to our (status, is_active) pair.
+// Canceled/postponed/rescheduled events should NOT show in feeds — flip
+// is_active=false so the upsert overwrites any prior "active" row. The
+// status string is preserved for analytics + future "Postponed" UX.
+function mapTicketmasterStatus(tm) {
+  const code = (tm.dates?.status?.code || "").toLowerCase();
+  switch (code) {
+    case "canceled":
+    case "cancelled":
+      return { status: "canceled", isActive: false };
+    case "postponed":
+      return { status: "postponed", isActive: false };
+    case "rescheduled":
+      // Treat rescheduled as inactive until the event reappears with a
+      // fresh start_at and onsale/offsale status — prevents stale dates
+      // surfacing as "Happening now" before the new time is confirmed.
+      return { status: "rescheduled", isActive: false };
+    case "onsale":
+    case "offsale":
+    default:
+      return { status: "active", isActive: true };
+  }
+}
+
 function normalizeEvent(tm) {
   const venue = tm._embedded?.venues?.[0];
   const prices = parsePrice(tm.priceRanges);
-  const startAt = tm.dates?.start?.dateTime || tm.dates?.start?.localDate;
+  const { iso: startAt, timeKnown } = resolveStart(tm.dates);
   const endAt = tm.dates?.end?.dateTime || null;
+  const { status, isActive } = mapTicketmasterStatus(tm);
 
   return {
     title: tm.name,
@@ -119,12 +167,14 @@ function normalizeEvent(tm) {
     subcategory: detectSubcategory(tm),
     start_at: startAt,
     end_at: endAt,
+    time_known: timeKnown,
     is_free: prices.min === 0 && prices.max === 0,
     price_min: prices.min,
     price_max: prices.max,
     ticket_url: tm.url || null,
     image_url: bestImage(tm.images),
-    status: "active",
+    status,
+    is_active: isActive,
     venue_name: venue?.name || null,
     venue_address: venue?.address?.line1 || null,
     venue_city: venue?.city?.name || CURRENT_CITY.charAt(0).toUpperCase() + CURRENT_CITY.slice(1),
@@ -272,6 +322,85 @@ async function upsertToSupabase(rows) {
   return { inserted, errors };
 }
 
+/**
+ * Catch events Ticketmaster *removed* from the API after our last sync.
+ * Some cancellations are signaled via dates.status.code (handled in
+ * normalizeEvent). Others — silent removals — never reach us; the row
+ * sits "active" in our DB until the daily past-events sweep finally
+ * deactivates it after start_at passes. That left a Celtics game still
+ * marked "Happening now" a week after it was canceled.
+ *
+ * Strategy: after a successful sync, deactivate ticketmaster rows for
+ * this city whose start_at is still in the future, were active before,
+ * and were NOT seen in this run's source_id set. Sanity-gated on a
+ * minimum seen-count so a transient TM outage doesn't wipe the catalog.
+ */
+async function deactivateMissingTicketmasterEvents(seenSourceIds, syncStartedAt) {
+  const MIN_SEEN_FOR_SAFETY = 100;
+  if (seenSourceIds.size < MIN_SEEN_FOR_SAFETY) {
+    console.log(
+      `  Skipping fell-off-API sweep: only ${seenSourceIds.size} ids seen (< ${MIN_SEEN_FOR_SAFETY}); likely partial fetch.`
+    );
+    return { deactivated: 0 };
+  }
+  // Page through future TM events for this city that weren't refreshed
+  // this run. last_synced_at is touched on every upsert, so the run
+  // start time is the cleanest "stale" boundary.
+  const PAGE = 500;
+  let deactivated = 0;
+  while (true) {
+    const url =
+      `${SUPABASE_URL}/rest/v1/events` +
+      `?select=id,source_id` +
+      `&source=eq.ticketmaster` +
+      `&city=eq.${encodeURIComponent(CURRENT_CITY)}` +
+      `&is_active=eq.true` +
+      `&start_at=gte.${encodeURIComponent(new Date().toISOString())}` +
+      `&last_synced_at=lt.${encodeURIComponent(syncStartedAt)}` +
+      `&order=start_at.asc` +
+      `&limit=${PAGE}`;
+    const res = await fetch(url, {
+      headers: {
+        apikey: SUPABASE_SERVICE_KEY,
+        Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      },
+    });
+    if (!res.ok) {
+      console.error(`  Sweep fetch failed: ${res.status} ${await res.text()}`);
+      break;
+    }
+    const rows = await res.json();
+    if (rows.length === 0) break;
+    // Defensive: don't deactivate ids we DID see this run (race against a
+    // partial successful sync of the same metro).
+    const stale = rows.filter((r) => !seenSourceIds.has(r.source_id));
+    if (stale.length === 0 && rows.length < PAGE) break;
+    if (stale.length > 0) {
+      const ids = stale.map((r) => r.id);
+      const patch = await fetch(
+        `${SUPABASE_URL}/rest/v1/events?id=in.(${ids.join(",")})`,
+        {
+          method: "PATCH",
+          headers: {
+            apikey: SUPABASE_SERVICE_KEY,
+            Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+            "Content-Type": "application/json",
+            Prefer: "return=minimal",
+          },
+          body: JSON.stringify({ is_active: false, status: "canceled" }),
+        }
+      );
+      if (!patch.ok) {
+        console.error(`  Sweep patch failed: ${patch.status} ${await patch.text()}`);
+        break;
+      }
+      deactivated += stale.length;
+    }
+    if (rows.length < PAGE) break;
+  }
+  return { deactivated };
+}
+
 async function fetchActiveMetros() {
   const res = await fetch(
     `${SUPABASE_URL}/rest/v1/metros?is_active=eq.true&select=*`,
@@ -320,6 +449,10 @@ async function main() {
     console.log(`Syncing metro: ${metro.name} (${CURRENT_LAT}, ${CURRENT_LNG}, ${CURRENT_RADIUS}mi)`);
     console.log(`${"=".repeat(50)}`);
 
+    // Stamp this metro's run start so the post-sync sweep can find rows
+    // whose last_synced_at is older than this run (i.e. fell off the API).
+    const syncStartedAt = new Date().toISOString();
+
     // 1. Fetch from Ticketmaster (per segment x monthly windows for max coverage)
     const tmEvents = await fetchAllEvents();
 
@@ -335,8 +468,29 @@ async function main() {
     const skipped = rows.length - valid.length;
     console.log(`Normalized: ${valid.length} valid, ${skipped} skipped (no date)\n`);
 
+    // Status breakdown so canceled/postponed counts are visible in CI logs.
+    const statusCounts = valid.reduce((acc, r) => {
+      acc[r.status] = (acc[r.status] || 0) + 1;
+      return acc;
+    }, {});
+    if (Object.keys(statusCounts).length > 1) {
+      console.log("  Status:", statusCounts);
+    }
+
     // 3. Upsert to Supabase
     const { inserted, errors } = await upsertToSupabase(valid);
+
+    // 4. Sweep: deactivate TM rows for this city that weren't refreshed
+    //    this run. Catches silent removals (canceled events TM dropped from
+    //    search). Sanity-gated by seen-id count inside the sweep.
+    const seenSourceIds = new Set(valid.map((r) => r.source_id));
+    const { deactivated } = await deactivateMissingTicketmasterEvents(
+      seenSourceIds,
+      syncStartedAt,
+    );
+    if (deactivated > 0) {
+      console.log(`  Fell-off-API sweep: deactivated ${deactivated} stale rows.`);
+    }
 
     // 4. Per-metro summary
     console.log(`\n--- ${metro.name} Summary ---`);

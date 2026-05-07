@@ -1,0 +1,32 @@
+name: Refresh Carousel Cache
+
+# Pre-compute home-tab carousels for every (metro × category) combo and
+# persist to the carousel_cache table. The carousels edge function reads
+# from that table on incoming requests, taking server-side latency from
+# 3-8 s down to ~50-200 ms.
+#
+# Runs every 10 minutes. Schedule offset by 3 min from the daily/weekly
+# crons so we don't pile up on the runner queue at the top of the hour.
+
+on:
+  schedule:
+    - cron: '3,13,23,33,43,53 * * * *'
+  workflow_dispatch: {}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Refresh carousel_cache
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node refresh_carousel_cache.js

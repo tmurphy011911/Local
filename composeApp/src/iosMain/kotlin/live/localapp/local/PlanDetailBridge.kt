@@ -48,6 +48,10 @@ object PlanDetailBridge {
     var onEditDay: ((String) -> Unit)? = null
 
     // ── Slot-level actions ─────────────────────────────────────────────
+    /** Tap on a slot card → open native event/venue detail. Params:
+     *  dayIndex, slotId, eventId (nullable — null for venue stops),
+     *  venueName (used for venue lookup when eventId is null). */
+    var onSlotTap: ((Int, String, String?, String?) -> Unit)? = null
     /** Legacy binary flag — Phase 3 will replace with the state-machine actions below. */
     var onSetSlotReserved: ((Int, String, Boolean) -> Unit)? = null
     /** Save reservation details (Phase 2). Params: dayIndex, slotId, partySize, reservationTime (e.g. "7:00 PM"). */

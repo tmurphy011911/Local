@@ -29,6 +29,7 @@ interface EventRow {
   source: string;
   source_url: string | null;
   city: string;
+  time_known: boolean;
 }
 
 interface ProcessedEvent extends EventRow {
@@ -118,7 +119,19 @@ interface ScoreWeights {
 // Constants
 // ════════════════════════════════════════════════════════════════
 
-const CAROUSEL_DISPLAY_LIMIT = 30;
+// Default per-carousel event cap. The home feed has ~17 carousels × this
+// many events per request. Users see 3–5 cards horizontally before
+// scrolling, and the "See all" sheet has its own dedicated query — so
+// loading 30 per niche carousel paid for cards no one looks at. 12 covers
+// a couple full horizontal swipes; "See all" handles the long tail.
+const CAROUSEL_DISPLAY_LIMIT = 12;
+
+// Hero carousels (Picked For You, Buzzing Right Now) get a much larger
+// budget. These are the primary discovery surface — users actually swipe
+// deep into them, so capping at 12 felt sparse. The Picked For You cap
+// drives the diversity logic in rankForColdStart, so increasing this also
+// gives the diversity gate room to surface 5+ distinct categories.
+const HERO_CAROUSEL_DISPLAY_LIMIT = 40;
 const MIN_CAROUSEL_SIZE = 15;
 const METRO_CENTER_LAT = 42.3601;
 const METRO_CENTER_LNG = -71.0589;
@@ -671,7 +684,14 @@ function coldStartScore(
   const venueLc = (event.venue_name ?? "").toLowerCase();
   const cityLc = event.venue_city.toLowerCase();
 
-  if (proTeams.some(t => titleLc.includes(t))) score += 0.35;
+  // Pro-sports nudge — used to be +0.35 (a 70 % boost over base 0.5) which
+  // pushed Celtics/Bruins/Red Sox to the top of every "Picked for You"
+  // carousel and crowded out arts/music/community/family events. Pro sports
+  // already win on venue rank (TD Garden / Fenway are rank 100) and
+  // community signals; an explicit content boost on top double-counts.
+  // Keeping a small +0.10 so they still bias upward against truly low-rank
+  // events but no longer dominate.
+  if (proTeams.some(t => titleLc.includes(t))) score += 0.10;
   if (premiumVenues.some(v => venueLc.includes(v))) score += 0.2;
 
   score += bostonArea.has(cityLc) ? 0.15 : -0.15;
@@ -776,39 +796,79 @@ function rankForColdStart(
   const result: ProcessedEvent[] = [];
   const deferred: typeof scored = [];
   const categoryCounts = new Map<string, number>();
+  const topLevelCounts = new Map<string, number>();
+
+  // Cap any single top-level category at ~25 % of the carousel (rounded up).
+  // Previously the only diversity gate was per-subcategory (basketball,
+  // hockey, baseball, etc., each capped at 3) — so Celtics + Bruins + Red
+  // Sox + Patriots + Revolution could collectively fill 15 of 30 slots.
+  // 25 % keeps a healthy mix of music / arts / food / community alongside
+  // sports without nuking the carousel for sports-heavy users.
+  const topLevelCap = Math.max(2, Math.ceil(maxResults * 0.25));
+  // Additional first-impression rule: the first 3 slots must each be a
+  // different top-level category. Prevents the carousel opening with
+  // "Celtics + Red Sox + Bruins" — the strongest reason it currently
+  // feels sports-dominated even before scrolling.
+  const FIRST_N_DISTINCT = 3;
 
   for (const pair of scored) {
     if (result.length >= maxResults) break;
     const subcat = pair.event.subcategory ?? "other";
+    const cat = pair.event.category ?? "other";
     const catCount = categoryCounts.get(subcat) ?? 0;
+    const topCount = topLevelCounts.get(cat) ?? 0;
     if (catCount >= 3) continue;
+    if (topCount >= topLevelCap) continue;
+    // First-N-distinct: defer events whose top-level category already
+    // appears in result while we're still filling the leading slots.
+    if (result.length < FIRST_N_DISTINCT && topCount >= 1) {
+      deferred.push(pair);
+      continue;
+    }
     if (result.length > 0 && isSimilarEvent(pair.event, result[result.length - 1])) {
       deferred.push(pair);
       continue;
     }
     result.push(pair.event);
     categoryCounts.set(subcat, catCount + 1);
+    topLevelCounts.set(cat, topCount + 1);
   }
 
   for (const pair of deferred) {
     if (result.length >= maxResults) break;
     const subcat = pair.event.subcategory ?? "other";
+    const cat = pair.event.category ?? "other";
     const catCount = categoryCounts.get(subcat) ?? 0;
+    const topCount = topLevelCounts.get(cat) ?? 0;
     if (catCount >= 3) continue;
+    if (topCount >= topLevelCap) continue;
+    // Find the lowest insertion position that doesn't violate the first-N
+    // distinct-category rule. If this event's category already appears in
+    // result[0..FIRST_N_DISTINCT-1], the earliest valid position is
+    // FIRST_N_DISTINCT (so the leading slots stay diverse).
+    let earliestAllowed = 1;
+    if (result.length >= 1) {
+      const headSlots = result.slice(0, Math.min(FIRST_N_DISTINCT, result.length));
+      if (headSlots.some(e => (e.category ?? "other") === cat)) {
+        earliestAllowed = FIRST_N_DISTINCT;
+      }
+    }
     let inserted = false;
-    for (let i = 1; i <= result.length - 1; i++) {
+    for (let i = Math.max(1, earliestAllowed); i <= result.length - 1; i++) {
       const prevSimilar = isSimilarEvent(pair.event, result[i - 1]);
       const nextSimilar = isSimilarEvent(pair.event, result[i]);
       if (!prevSimilar && !nextSimilar) {
         result.splice(i, 0, pair.event);
         categoryCounts.set(subcat, catCount + 1);
+        topLevelCounts.set(cat, topCount + 1);
         inserted = true;
         break;
       }
     }
-    if (!inserted && (result.length === 0 || !isSimilarEvent(pair.event, result[result.length - 1]))) {
+    if (!inserted && result.length >= earliestAllowed && (result.length === 0 || !isSimilarEvent(pair.event, result[result.length - 1]))) {
       result.push(pair.event);
       categoryCounts.set(subcat, catCount + 1);
+      topLevelCounts.set(cat, topCount + 1);
     }
   }
 
@@ -964,16 +1024,42 @@ function backfillToMinimum(
   events: ProcessedEvent[],
   seenEventIds: Set<string>,
   fillerPool: ProcessedEvent[],
+  targetSize: number = MIN_CAROUSEL_SIZE,
 ): ProcessedEvent[] {
-  if (events.length >= MIN_CAROUSEL_SIZE) return events;
+  if (events.length >= targetSize) return events;
   if (events.length === 0) return [];
   const result = [...events];
   const usedIds = new Set([...seenEventIds, ...result.map(e => e.id)]);
+  // Mirror the top-level category cap from rankForColdStart so backfill
+  // doesn't quietly let pro sports flood the carousel after the diversity
+  // pass. Cap scales with target size (~25 %).
+  const topLevelCounts = new Map<string, number>();
+  for (const e of result) {
+    const c = e.category ?? "other";
+    topLevelCounts.set(c, (topLevelCounts.get(c) ?? 0) + 1);
+  }
+  const topLevelCap = Math.max(2, Math.ceil(targetSize * 0.25));
+
   for (const filler of fillerPool) {
-    if (result.length >= MIN_CAROUSEL_SIZE) break;
-    if (!usedIds.has(filler.id)) {
-      result.push(filler);
-      usedIds.add(filler.id);
+    if (result.length >= targetSize) break;
+    if (usedIds.has(filler.id)) continue;
+    const cat = filler.category ?? "other";
+    const topCount = topLevelCounts.get(cat) ?? 0;
+    if (topCount >= topLevelCap) continue;
+    result.push(filler);
+    usedIds.add(filler.id);
+    topLevelCounts.set(cat, topCount + 1);
+  }
+  // Second pass: if we still couldn't reach the target size under the cap
+  // (sparse-data case), allow uncapped fill so users don't see a
+  // half-empty carousel.
+  if (result.length < targetSize) {
+    for (const filler of fillerPool) {
+      if (result.length >= targetSize) break;
+      if (!usedIds.has(filler.id)) {
+        result.push(filler);
+        usedIds.add(filler.id);
+      }
     }
   }
   return result;
@@ -1302,11 +1388,14 @@ function buildCarousels(
     // Build carousel pools by type, then interleave
     const monthCutoff = daysFromNowIso(31);
 
-    // Pool: Personalized
+    // Pool: Personalized — the hero carousel. Users actually swipe deep here,
+    // so we use the bigger HERO_CAROUSEL_DISPLAY_LIMIT instead of the niche
+    // default. Diversity caps inside rankForColdStart scale with maxResults,
+    // so a 40-slot pool naturally surfaces 5+ distinct categories.
     const weekCutoff = daysFromNowIso(7);
     const weekPool = filtered.filter(e => (e.start_at ?? "") <= weekCutoff);
-    const ranked = rankForColdStart(weekPool, prefs, CAROUSEL_DISPLAY_LIMIT, affinityMap);
-    const personalizedEvents = backfillToMinimum(ranked, seenEventIds, filtered);
+    const ranked = rankForColdStart(weekPool, prefs, HERO_CAROUSEL_DISPLAY_LIMIT, affinityMap);
+    const personalizedEvents = backfillToMinimum(ranked, seenEventIds, filtered, HERO_CAROUSEL_DISPLAY_LIMIT);
 
     // Pool: Weekend
     const weekendStart = startOfNextFridayIso();
@@ -2015,6 +2104,48 @@ Deno.serve(async (req) => {
     // Cache key: rounded lat/lng so nearby requests share cache
     const cacheGeoKey = `${Math.round(lat * 10) / 10},${Math.round(lng * 10) / 10}`;
 
+    // ── Tier 3 read-through: precomputed carousel_cache table ──────────
+    // The refresh_carousel_cache.js cron job pre-computes carousels for
+    // every (metro × category) combo and writes them here. On a request
+    // we do ONE indexed SELECT instead of the 5-section heavy aggregation
+    // — typically <100 ms server-side. Per-user personalization is still
+    // fetched fresh and overlaid below.
+    //
+    // The refresh script bypasses this read by sending X-Refresh-Cache:1,
+    // so we don't return stale data to ourselves while warming the cache.
+    const isRefreshing = req.headers.get("X-Refresh-Cache") === "1";
+    if (!isRefreshing) {
+      try {
+        const latBucket = Math.round(lat * 10) / 10;
+        const lngBucket = Math.round(lng * 10) / 10;
+        const { data: cacheRows } = await supabase
+          .from("carousel_cache")
+          .select("payload, computed_at")
+          .eq("lat_bucket", latBucket)
+          .eq("lng_bucket", lngBucket)
+          .eq("category", category)
+          .limit(1);
+        const row = cacheRows?.[0];
+        // Accept cache up to 30 min old. Refresh job runs every 10 min, so
+        // most reads will land on a < 10 min old row. The 30 min ceiling
+        // tolerates one missed cron without falling back to slow path.
+        const ageMs = row?.computed_at ? Date.now() - new Date(row.computed_at as string).getTime() : Infinity;
+        if (row?.payload && ageMs < 30 * 60 * 1000) {
+          // TODO(personalization): when user_id is present, layer favorites/
+          // affinity scoring on top here. For v1 we return the precomputed
+          // anonymous payload — same fidelity as the previous foryou cache.
+          return new Response(JSON.stringify(row.payload), {
+            status: 200,
+            headers: {
+              "Content-Type": "application/json",
+              "X-Cache": `precomputed-${Math.round(ageMs / 1000)}s`,
+              ...CORS_HEADERS,
+            },
+          });
+        }
+      } catch (_) { /* fall through to slow path */ }
+    }
+
     // Use cached event/venue data if available, only fetch per-user data fresh
     // Invalidate cache if location changed significantly
     let allEvents: ProcessedEvent[];
@@ -2065,6 +2196,11 @@ Deno.serve(async (req) => {
     // Trim heavy fields from events to reduce response size
     const trimmedCarousels = carouselSections.map(section => ({
       ...section,
+      // Truncate description to 200 chars (cards don't display it; iOS hero
+      // transition still gets a preview snippet for the detail screen until
+      // the full row is fetched). Strip venue_description entirely — it's a
+      // fallback only used when description is null, and the detail screen
+      // refetches the venue independently.
       events: section.events.map((e: ProcessedEvent) => ({
         id: e.id,
         title: e.title,
@@ -2083,13 +2219,13 @@ Deno.serve(async (req) => {
         venue_state: e.venue_state,
         venue_lat: e.venue_lat,
         venue_lng: e.venue_lng,
+        venue_address: e.venue_address,
         city: e.city,
         source: e.source,
         source_url: e.source_url,
         distance_miles: e.distance_miles,
-        description: e.description,
-        venue_description: e.venue_description,
-        venue_address: e.venue_address,
+        description: e.description ? e.description.slice(0, 200) : null,
+        time_known: e.time_known ?? true,
       })),
     }));
 

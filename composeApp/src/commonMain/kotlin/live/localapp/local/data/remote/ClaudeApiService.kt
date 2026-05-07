@@ -136,7 +136,9 @@ data class AiTravelInfo(
 // ── Natural language parsed response (Phase 1 architecture) ──
 
 enum class ParsedResponseType {
-    CHAT, PLAN, PLAN_UPDATE, APPROVE
+    CHAT, PLAN, PLAN_UPDATE, APPROVE,
+    // Phase 6 — structured-response tools.
+    SUGGESTIONS, EVENT_BRIEF, VENUE_BRIEF, QUICK_FACT, SCOPE_REDIRECT
 }
 
 data class EventRef(
@@ -161,6 +163,13 @@ data class ParsedChatResponse(
     val days: List<ParsedDay> = emptyList(),
     val chips: List<String> = emptyList(),
     val dayIndex: Int? = null,
+    /**
+     * Phase 6 — raw JSON of the structured-response tool input, when the
+     * terminal tool is one of present_suggestions / present_event_brief /
+     * present_venue_brief / present_quick_fact / present_scope_redirect.
+     * The view-model converts this to the corresponding domain model.
+     */
+    val structuredJson: kotlinx.serialization.json.JsonElement? = null,
 )
 
 // ── Mappers to domain models ──
@@ -207,19 +216,19 @@ val claudeTools: JsonArray = buildJsonArray {
                 }
                 putJsonObject("date_range") {
                     put("type", "string")
-                    put("description", "Time filter: today, this_weekend, next_weekend, this_week, next_week, this_month. Use 'next_weekend' for the FOLLOWING weekend, 'this_weekend' for the CURRENT/upcoming weekend. For specific dates, use start_date/end_date instead.")
+                    put("description", "Time filter for relative ranges only: today, this_weekend, next_weekend, this_week, next_week, this_month. 'next_weekend' = the weekend AFTER this one. For ANY specific calendar date or weekday name, use start_date + end_date instead.")
                 }
                 putJsonObject("start_date") {
                     put("type", "string")
-                    put("description", "Start date in ISO format (YYYY-MM-DD). Use this for specific date searches instead of date_range.")
+                    put("description", "Start date in ISO format (YYYY-MM-DD). REQUIRED whenever the user names a specific date or weekday. Pair with end_date — for a single-day search, set end_date to the SAME value as start_date.")
                 }
                 putJsonObject("end_date") {
                     put("type", "string")
-                    put("description", "End date in ISO format (YYYY-MM-DD). Use with start_date for date range searches.")
+                    put("description", "End date in ISO format (YYYY-MM-DD). REQUIRED whenever start_date is set. For a single-day search, pass the SAME date as start_date — do not omit it. Without end_date, the search degrades to a wide window and the named date may be culled by rank-based truncation.")
                 }
                 putJsonObject("keyword") {
                     put("type", "string")
-                    put("description", "Search keyword for event title or venue name")
+                    put("description", "Free-text search across the title, venue name, description, and category fields. Use this whenever the user names a specific venue ('what's on at Sundancer's?', 'anything at Trader Ed's?') or activity ('dance', 'jazz', 'trivia') — the keyword is matched broadly, so a generic music event whose description says 'DJ, dancing under the stars' WILL match keyword='dance'. Always try a venue-name keyword search before claiming the DB has no schedule for that venue.")
                 }
                 putJsonObject("limit") {
                     put("type", "integer")
@@ -356,7 +365,7 @@ val claudeTools: JsonArray = buildJsonArray {
                 }
                 putJsonObject("attendee_count") {
                     put("type", "integer")
-                    put("description", "Number of people attending. Infer from context: 'date night'=2, 'double date'=4, 'just me'=1. If unknown, you MUST ask before presenting the plan.")
+                    put("description", "Optional. Only set this if the user volunteered the group size in chat ('date night'=2, 'double date'=4, 'just me'=1, '4 of us', etc.). Do NOT ask for it — the user sets group size from the plan detail screen. Omit when not stated.")
                 }
                 putJsonObject("chips") {
                     put("type", "array")
@@ -367,7 +376,6 @@ val claudeTools: JsonArray = buildJsonArray {
             putJsonArray("required") {
                 add(JsonPrimitive("title"))
                 add(JsonPrimitive("days"))
-                add(JsonPrimitive("attendee_count"))
             }
         }
     }
@@ -431,6 +439,202 @@ val claudeTools: JsonArray = buildJsonArray {
                 add(JsonPrimitive("day_index"))
                 add(JsonPrimitive("label"))
                 add(JsonPrimitive("slots"))
+            }
+        }
+    }
+
+    // ── Structured-response tools (Phase 6) ──
+    // These replace the prior "describe events as paragraph text" pattern.
+    // Bo MUST use exactly one of these whenever surfacing events, venues, or
+    // off-topic redirects to the user. Paragraph-list event descriptions are
+    // forbidden by the system prompt — every event becomes a real object with
+    // its event_id carried through, eliminating the "user retypes which one
+    // they meant" failure that broke plan-build.
+
+    addJsonObject {
+        put("name", "present_suggestions")
+        put("description", "Display a structured tray of event candidates for the user to browse and add to a draft plan. Use this WHENEVER the user is browsing events or considering options — never describe events as paragraph text or numbered lists. The tray is the only way the user can pick events explicitly. Each event must come from search_events results — never invent event_ids. If search_events returns nothing relevant, you may still call this with an empty groups array and footer.actions to let the user broaden the search with one tap.")
+        putJsonObject("input_schema") {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("headline") {
+                    put("type", "string")
+                    put("description", "1-line title for the tray (e.g. 'Saturday, May 25', 'Arts events this week', 'Free tonight')")
+                }
+                putJsonObject("groupBy") {
+                    put("type", "string")
+                    putJsonArray("enum") {
+                        add(JsonPrimitive("day"))
+                        add(JsonPrimitive("category"))
+                        add(JsonPrimitive("none"))
+                    }
+                    put("description", "How to group events. 'day' when user asked about a date, 'category' when user asked about a type of thing, 'none' when results are too small to group.")
+                }
+                putJsonObject("groups") {
+                    put("type", "array")
+                    putJsonObject("items") {
+                        put("type", "object")
+                        putJsonObject("properties") {
+                            putJsonObject("label") {
+                                put("type", "string")
+                                put("description", "Group header (category name when groupBy=day, date label when groupBy=category, empty when groupBy=none)")
+                            }
+                            putJsonObject("events") {
+                                put("type", "array")
+                                putJsonObject("items") {
+                                    put("type", "object")
+                                    putJsonObject("properties") {
+                                        putJsonObject("event_id") {
+                                            put("type", "string")
+                                            put("description", "Real event_id from search_events. Never invent. Strip any 'evt:' prefix.")
+                                        }
+                                        putJsonObject("boRationale") {
+                                            put("type", "string")
+                                            put("description", "One short line (≤60 chars) explaining why this event fits the user's request. Not the event title — additional context.")
+                                        }
+                                    }
+                                    putJsonArray("required") {
+                                        add(JsonPrimitive("event_id"))
+                                    }
+                                }
+                            }
+                        }
+                        putJsonArray("required") {
+                            add(JsonPrimitive("label"))
+                            add(JsonPrimitive("events"))
+                        }
+                    }
+                }
+                putJsonObject("footer") {
+                    put("type", "object")
+                    putJsonObject("properties") {
+                        putJsonObject("text") {
+                            put("type", "string")
+                            put("description", "Optional one-line prompt above the chips (e.g. 'Want more?')")
+                        }
+                        putJsonObject("actions") {
+                            put("type", "array")
+                            putJsonObject("items") {
+                                put("type", "string")
+                                putJsonArray("enum") {
+                                    add(JsonPrimitive("search_wider"))
+                                    add(JsonPrimitive("different_category"))
+                                    add(JsonPrimitive("late_night"))
+                                    add(JsonPrimitive("different_day"))
+                                    add(JsonPrimitive("more_results"))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            putJsonArray("required") {
+                add(JsonPrimitive("headline"))
+                add(JsonPrimitive("groupBy"))
+                add(JsonPrimitive("groups"))
+            }
+        }
+    }
+
+    addJsonObject {
+        put("name", "present_event_brief")
+        put("description", "Display a single event with a one-line answer to the user's question. Use when the user asks about a specific event by name (e.g. 'what time is Springsteen?', 'how much for LCD tickets?'). The answerLine should directly address the question.")
+        putJsonObject("input_schema") {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("event_id") {
+                    put("type", "string")
+                    put("description", "Real event_id from search_events. Strip 'evt:' prefix.")
+                }
+                putJsonObject("answerLine") {
+                    put("type", "string")
+                    put("description", "Direct answer to the user's question (≤80 chars). E.g. 'Doors at 8 PM, show at 9.' or '$65+ for general admission, $120 for premium.'")
+                }
+            }
+            putJsonArray("required") {
+                add(JsonPrimitive("event_id"))
+                add(JsonPrimitive("answerLine"))
+            }
+        }
+    }
+
+    addJsonObject {
+        put("name", "present_venue_brief")
+        put("description", "Display a single venue with optional list of upcoming events. Use when the user asks about a specific place (e.g. 'what's at TD Garden?', 'when does the ICA close?').")
+        putJsonObject("input_schema") {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("venue_name") {
+                    put("type", "string")
+                    put("description", "Venue name from search_venues result")
+                }
+                putJsonObject("answerLine") {
+                    put("type", "string")
+                    put("description", "Optional one-line direct answer (e.g. 'Open until 10 PM tonight')")
+                }
+                putJsonObject("upcomingEventIds") {
+                    put("type", "array")
+                    putJsonObject("items") { put("type", "string") }
+                    put("description", "Up to 6 event_ids of upcoming events at this venue. Pulled from search_events filtered to this venue.")
+                }
+            }
+            putJsonArray("required") { add(JsonPrimitive("venue_name")) }
+        }
+    }
+
+    addJsonObject {
+        put("name", "present_quick_fact")
+        put("description", "One-line factual answer with optional tap-target to an event. Use for very focused questions where a full card would be overkill (e.g. 'how late is open?', 'is it 21+?'). Limit to 100 chars.")
+        putJsonObject("input_schema") {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("text") {
+                    put("type", "string")
+                    put("description", "The answer text, ≤100 chars.")
+                }
+                putJsonObject("ctaEventId") {
+                    put("type", "string")
+                    put("description", "Optional event_id the fact is about — provides a tap target.")
+                }
+            }
+            putJsonArray("required") { add(JsonPrimitive("text")) }
+        }
+    }
+
+    addJsonObject {
+        put("name", "present_scope_redirect")
+        put("description", "Tell the user this question is out of scope, then offer 1-3 redirect chips. Use when the topic is general knowledge (history, geography, definitions, biology, news, weather alone, sports scores, advice, anything not local-event-discovery). Do NOT free-text answer the off-topic question — use this tool. Do NOT call web_search to research the topic.")
+        putJsonObject("input_schema") {
+            put("type", "object")
+            putJsonObject("properties") {
+                putJsonObject("explanation") {
+                    put("type", "string")
+                    put("description", "One-sentence polite decline (≤120 chars). E.g. 'That's outside what I can help with — I'm here to plan local events.'")
+                }
+                putJsonObject("redirectChips") {
+                    put("type", "array")
+                    putJsonObject("items") {
+                        put("type", "object")
+                        putJsonObject("properties") {
+                            putJsonObject("label") {
+                                put("type", "string")
+                                put("description", "Chip text (e.g. 'Ethiopian restaurants nearby', 'Something this weekend')")
+                            }
+                            putJsonObject("intent") {
+                                put("type", "string")
+                                put("description", "Pre-filled message Bo will receive when the user taps this chip")
+                            }
+                        }
+                        putJsonArray("required") {
+                            add(JsonPrimitive("label"))
+                            add(JsonPrimitive("intent"))
+                        }
+                    }
+                }
+            }
+            putJsonArray("required") {
+                add(JsonPrimitive("explanation"))
+                add(JsonPrimitive("redirectChips"))
             }
         }
     }
@@ -583,8 +787,14 @@ class ClaudeApiService {
     companion object {
         /** Fast model for conversational turns (clarifying questions, greetings) */
         const val MODEL_CHAT = "claude-haiku-4-5-20251001"
-        /** Full model for plan building, event search, and tool use */
-        const val MODEL_PLAN = "claude-sonnet-4-5-20250929"
+        /** Tool-orchestration model — search loops, venue resolution, plan
+         *  synthesis. Haiku 4.5 is dramatically faster than Sonnet (TTFT
+         *  ~1-2s vs 3-5s) and more than capable for tool-call orchestration.
+         *  Sonnet 4.5 was a 60s-on-3-day-plan latency bottleneck; Haiku
+         *  brings that into the 15-25s range. If plan-quality regressions
+         *  surface, the next step is to keep Haiku for non-terminal rounds
+         *  but switch to Sonnet on the present_plan emit only. */
+        const val MODEL_PLAN = "claude-haiku-4-5-20251001"
     }
 
     private val apiUrl = "https://api.anthropic.com/v1/messages"
@@ -607,6 +817,40 @@ class ClaudeApiService {
     }
 
     /**
+     * Wrap a string system prompt in the structured array form Anthropic
+     * accepts, with `cache_control: ephemeral` on the (single) text block.
+     * Anthropic caches the prefix for ~5 minutes; subsequent requests with
+     * the same system prompt + tools hit the cache, dropping TTFT and input
+     * cost by ~80-90%. Bo's system prompt is multi-thousand tokens and
+     * rarely changes within a session, so caching is high-ROI here.
+     * Min cacheable block size on Haiku is 2048 tokens — Bo's prompt
+     * comfortably exceeds that.
+     */
+    private fun cacheableSystem(systemPrompt: String): JsonArray = buildJsonArray {
+        add(buildJsonObject {
+            put("type", JsonPrimitive("text"))
+            put("text", JsonPrimitive(systemPrompt))
+            put("cache_control", buildJsonObject { put("type", JsonPrimitive("ephemeral")) })
+        })
+    }
+
+    /**
+     * Add `cache_control: ephemeral` to the LAST tool definition. This
+     * marks the entire tools array as part of the cached prefix — when
+     * unchanged across requests, the model's tool-loading cost drops to
+     * near zero. Tools rarely change within a session.
+     */
+    private fun cacheableTools(tools: JsonArray): JsonArray = buildJsonArray {
+        if (tools.isEmpty()) return@buildJsonArray
+        for (i in 0 until tools.size - 1) add(tools[i])
+        val last = tools[tools.size - 1].jsonObject
+        add(buildJsonObject {
+            for ((k, v) in last) put(k, v)
+            put("cache_control", buildJsonObject { put("type", JsonPrimitive("ephemeral")) })
+        })
+    }
+
+    /**
      * Send a message to Claude via the Supabase Edge Function proxy.
      * Returns the raw ClaudeResponse so callers can inspect tool_use blocks.
      */
@@ -619,13 +863,13 @@ class ClaudeApiService {
         val body = buildJsonObject {
             put("model", model)
             put("max_tokens", 16384)
-            put("system", systemPrompt)
+            put("system", cacheableSystem(systemPrompt))
             put("messages", json.encodeToJsonElement(
                 kotlinx.serialization.serializer<List<ClaudeMessage>>(),
                 messages,
             ))
             if (tools != null && tools.isNotEmpty()) {
-                put("tools", tools)
+                put("tools", cacheableTools(tools))
             }
         }
 
@@ -663,13 +907,13 @@ class ClaudeApiService {
             put("model", model)
             put("max_tokens", 16384)
             put("stream", true)
-            put("system", systemPrompt)
+            put("system", cacheableSystem(systemPrompt))
             put("messages", json.encodeToJsonElement(
                 kotlinx.serialization.serializer<List<ClaudeMessage>>(),
                 messages,
             ))
             if (tools != null && tools.isNotEmpty()) {
-                put("tools", tools)
+                put("tools", cacheableTools(tools))
             }
         }
 

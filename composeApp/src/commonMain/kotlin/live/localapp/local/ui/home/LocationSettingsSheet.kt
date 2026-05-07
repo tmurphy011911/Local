@@ -255,7 +255,7 @@ fun LocationSettingsSheet(
                 modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                listOf<Double?>(null, 5.0, 10.0, 25.0, 50.0, 100.0).forEach { option ->
+                listOf<Double?>(null, 25.0, 50.0, 100.0).forEach { option ->
                     val isSelected = option == radiusFilter
                     val label = if (option == null) "Any" else "${option.toInt()} mi"
                     Box(

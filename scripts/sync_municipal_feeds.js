@@ -15,7 +15,12 @@
  */
 
 const crypto = require("crypto");
-const { SUPABASE_URL } = require("./lib/secrets");
+const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
+const { fetchHtml } = require("./lib/scrapfly_fetch");
+const { extractEventsFromHtml } = require("./lib/claude_html_extract");
+
+let SCRAPFLY_API_KEY = null;
+let ANTHROPIC_API_KEY = null;
 
 const SUPABASE_SERVICE_KEY = (process.env.SUPABASE_SERVICE_KEY || "").trim();
 if (!SUPABASE_SERVICE_KEY) {
@@ -57,9 +62,21 @@ function detectCategory(title, body) {
   return "community";
 }
 
+// Metro lat/lng cache — populated from metros table at startup. Lets us
+// default an event's venue coords to the metro center when the parser
+// can't extract them (most municipal sources don't expose venue geo).
+// Without this, events fail the carousel edge function's radius filter
+// `(distance_miles ?? 999) <= maxRadius` and get silently dropped.
+const METRO_COORDS = new Map(); // metro slug → {lat, lng}
+
 function buildEvent(feed, raw) {
   // raw is { title, description, startAt, endAt, sourceId, sourceUrl,
-  //          venueName, venueAddress, venueCity, venueState, isFree, imageUrl }
+  //          venueName, venueAddress, venueCity, venueState, isFree, imageUrl,
+  //          venueLat, venueLng }
+  // Fall back to the feed's metro center for venue coords. Eventually we
+  // should geocode venue_address through Google for true accuracy, but
+  // metro-center is enough to land the event in the right radius bucket.
+  const metro = METRO_COORDS.get(feed.metro);
   return {
     title: raw.title,
     description: raw.description || null,
@@ -77,8 +94,8 @@ function buildEvent(feed, raw) {
     venue_address: raw.venueAddress || null,
     venue_city: raw.venueCity || feed.city,
     venue_state: raw.venueState || feed.state,
-    venue_lat: raw.venueLat || null,
-    venue_lng: raw.venueLng || null,
+    venue_lat: raw.venueLat ?? metro?.lat ?? null,
+    venue_lng: raw.venueLng ?? metro?.lng ?? null,
     source: `municipal_${feed.metro}`,
     source_id: raw.sourceId,
     source_url: raw.sourceUrl || null,
@@ -307,12 +324,60 @@ function parseRss(text, feed) {
   return events;
 }
 
+// claude_html — Scrapfly fetches the calendar page (with JS rendering for
+// CivicPlus/Granicus/SPA), then Claude extracts events as structured JSON.
+// The extracted records use the same shape as the other parsers via buildEvent.
+async function fetchClaudeHtml(feed) {
+  if (!SCRAPFLY_API_KEY || !ANTHROPIC_API_KEY) {
+    throw new Error("claude_html requires SCRAPFLY_API_KEY and ANTHROPIC_API_KEY");
+  }
+  const { html } = await fetchHtml(feed.url, {
+    scrapflyKey: SCRAPFLY_API_KEY,
+    renderJs: true,
+    timeoutMs: 45000,
+  });
+  const extracted = await extractEventsFromHtml({
+    html,
+    sourceUrl: feed.url,
+    anthropicKey: ANTHROPIC_API_KEY,
+    city: feed.city,
+    state: feed.state,
+  });
+  // Stable per-event hash so weekly re-extraction upserts instead of dup-ing.
+  // Title + start_at + venue is the strongest natural key for these.
+  const events = [];
+  for (const e of extracted) {
+    if (!e?.title || !e?.start_at) continue;
+    if (new Date(e.start_at) < new Date()) continue;
+    const sourceId = crypto
+      .createHash("sha1")
+      .update(`${e.title}|${e.start_at}|${e.venue_name || feed.city}`)
+      .digest("hex")
+      .slice(0, 24);
+    events.push(buildEvent(feed, {
+      title: e.title,
+      description: e.description || null,
+      startAt: e.start_at,
+      endAt: e.end_at || null,
+      sourceId,
+      sourceUrl: e.source_url || feed.url,
+      venueName: e.venue_name || null,
+      venueAddress: e.venue_address || null,
+      venueCity: feed.city,
+      venueState: feed.state,
+      isFree: e.is_free ?? null,
+    }));
+  }
+  return events;
+}
+
 const PARSERS = {
   drupal_jsonapi: fetchDrupalJsonApi,
   localist: fetchLocalist,
   ical: fetchIcal,
   wp_tribe: fetchWpTribe,
   rss: fetchRss,
+  claude_html: fetchClaudeHtml,
 };
 
 // ── Supabase I/O ──
@@ -379,6 +444,37 @@ async function upsertToSupabase(rows) {
 // ── Main ──
 
 async function main() {
+  // Pull Scrapfly + Claude keys for the claude_html parser. Both are optional
+  // — if a feed of type claude_html exists but keys are missing, it'll error
+  // for that one feed and continue with the rest.
+  try {
+    const secrets = await getSecrets(["SCRAPFLY_API_KEY", "ANTHROPIC_API_KEY"]);
+    SCRAPFLY_API_KEY = secrets.SCRAPFLY_API_KEY || null;
+    ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY || null;
+    console.log(
+      `Scrapfly: ${SCRAPFLY_API_KEY ? "available" : "not configured"}, ` +
+      `Claude: ${ANTHROPIC_API_KEY ? "available" : "not configured"}`
+    );
+  } catch (e) { console.warn(`Secret fetch failed: ${e.message}`); }
+
+  // Load metro centers so events without parser-extracted venue coords
+  // can default to their feed's metro lat/lng. Required for them to pass
+  // the carousel edge function's radius filter.
+  const metrosRes = await fetch(
+    `${SUPABASE_URL}/rest/v1/metros?is_active=eq.true&select=name,lat,lng`,
+    { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } },
+  );
+  if (metrosRes.ok) {
+    const metros = await metrosRes.json();
+    for (const m of metros) {
+      // metro slug = lowercased name (matches `feed.metro` set by discover script)
+      METRO_COORDS.set((m.name || "").toLowerCase(), { lat: m.lat, lng: m.lng });
+    }
+    console.log(`Loaded ${METRO_COORDS.size} metro centers`);
+  } else {
+    console.warn(`Metro fetch failed: ${metrosRes.status} — events without coords will be dropped from carousels`);
+  }
+
   const feeds = await fetchEnabledFeeds();
   console.log(`Municipal Feed Sync — ${feeds.length} enabled feed(s)\n`);
 

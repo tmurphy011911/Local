@@ -3,8 +3,10 @@ package live.localapp.local.platform
 /** Present the platform's native share sheet with text and a URL. */
 expect fun presentShareSheet(text: String, url: String)
 
-/** Check clipboard for a localapp.live deep link and return the path, or null. */
-expect fun checkClipboardForDeepLink(): String?
+/** Check clipboard for a localapp.live deep link and return the path, or null.
+ *  iOS implementation probes patterns silently before reading the string, so the
+ *  system paste prompt only appears when the clipboard plausibly contains a URL. */
+expect suspend fun checkClipboardForDeepLink(): String?
 
 /** Clear any deep link from the clipboard after handling. */
 expect fun clearClipboardDeepLink()

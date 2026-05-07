@@ -62,6 +62,7 @@ private data class EventDto(
     val city: String = "",
     @SerialName("distance_miles") val distanceMiles: Double? = null,
     @SerialName("venue_description") val venueDescription: String? = null,
+    @SerialName("time_known") val timeKnown: Boolean = true,
 )
 
 @Serializable
@@ -98,6 +99,74 @@ class ServerCarouselRepository : CarouselRepository {
     /** Cached carousels per category tab — avoids re-fetching on tab switch */
     private val carouselCache = mutableMapOf<String, List<CarouselSection>>()
 
+    /**
+     * Persistent disk cache. Lets cold-open paint the previous session's
+     * carousels in <100ms while the fresh fetch runs in the background.
+     * Without this every launch hits the 5-8s edge function for first paint.
+     *
+     * Key: same `tab:uid` as the in-memory cache, plus a "carousels-disk:"
+     * prefix to namespace from other Settings consumers (tutorial seen,
+     * paywall counters, etc.).
+     */
+    private val settings = com.russhwolf.settings.Settings()
+
+    private fun diskKey(tab: String, uid: String) = "carousels-disk:$tab:$uid"
+    private fun diskKeyMeta(tab: String, uid: String) = "carousels-disk-meta:$tab:$uid"
+
+    @Serializable
+    private data class CacheMeta(
+        val locationName: String,
+        val fetchedAtMs: Long,
+    )
+
+    /**
+     * Fetch the disk-cached carousels for a (tab, user, location) combo. The
+     * ViewModel calls this BEFORE issuing the fresh network fetch, so the
+     * Home tab can render instantly on cold open. Returns null when there's
+     * no cache OR when location changed (cache shouldn't carry across cities).
+     *
+     * Note: no TTL gate here — even an old cache is better than a blank
+     * loading screen. Stale data shows for the ~1-3s it takes the fresh
+     * fetch to land, then gets replaced silently.
+     */
+    override suspend fun getCachedCarouselsFromDisk(
+        category: String?,
+        userPreferences: UserPreferences?,
+        locationName: String,
+    ): List<CarouselSection>? {
+        val tab = category ?: "foryou"
+        val uid = userPreferences?.id?.takeIf { it.isNotBlank() } ?: "anon"
+        val payload = settings.getStringOrNull(diskKey(tab, uid)) ?: return null
+        val metaJson = settings.getStringOrNull(diskKeyMeta(tab, uid)) ?: return null
+        val meta = try { json.decodeFromString<CacheMeta>(metaJson) } catch (_: Throwable) { return null }
+        // Bail if user has changed locations since this cache was written —
+        // we'd be showing Boston cards to someone now in Philly.
+        if (meta.locationName.isNotBlank() && locationName.isNotBlank() && meta.locationName != locationName) {
+            return null
+        }
+        val parsed = try { json.decodeFromString<CarouselResponse>(payload) } catch (_: Throwable) { return null }
+        // Hydrate in-memory caches too so subsequent calls in this process
+        // don't re-read disk. Categories: hydrate only if we don't already
+        // have them (a fresh response in a different tab wins).
+        if (cachedCategories == null) cachedCategories = parsed.categories.map { it.toDomain() }
+        val carousels = parsed.carousels.map { it.toDomain() }
+        carouselCache["$tab:$uid"] = carousels
+        return carousels
+    }
+
+    private fun writeDiskCache(
+        tab: String,
+        uid: String,
+        rawJson: String,
+        locationName: String,
+    ) {
+        try {
+            settings.putString(diskKey(tab, uid), rawJson)
+            val meta = json.encodeToString(CacheMeta.serializer(), CacheMeta(locationName, kotlin.time.Clock.System.now().toEpochMilliseconds()))
+            settings.putString(diskKeyMeta(tab, uid), meta)
+        } catch (_: Throwable) { /* disk full / serialization error — fail silently, fresh fetch still works */ }
+    }
+
     override suspend fun getCarousels(
         userLat: Double,
         userLng: Double,
@@ -106,16 +175,23 @@ class ServerCarouselRepository : CarouselRepository {
         locationName: String,
         radiusMiles: Int,
     ): List<CarouselSection> {
-        val cacheKey = category ?: "foryou"
+        // Include the user_id in the cache key so an anon-fetch (which
+        // ran before prefs hydrated) doesn't satisfy a later authed
+        // request. Without this, post-onboarding users would never see
+        // their personalized carousels (favCat / favVenue / neighborhood)
+        // until pull-to-refresh, because the unpersonalized response
+        // cached at cold start kept hitting on every tab open.
+        val tab = category ?: "foryou"
+        val uid = userPreferences?.id?.takeIf { it.isNotBlank() } ?: "anon"
+        val cacheKey = "$tab:$uid"
 
-        // Return cached if available
         carouselCache[cacheKey]?.let { return it }
 
         val response = httpClient.get(edgeFunctionUrl) {
             header("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
             parameter("lat", userLat)
             parameter("lng", userLng)
-            parameter("category", cacheKey)
+            parameter("category", tab)
             parameter("location_name", locationName)
             parameter("radius", radiusMiles)
             userPreferences?.let { parameter("user_id", it.id) }
@@ -129,6 +205,10 @@ class ServerCarouselRepository : CarouselRepository {
 
         val carousels = parsed.carousels.map { it.toDomain() }
         carouselCache[cacheKey] = carousels
+        // Persist the raw JSON to disk so the next cold open can paint
+        // immediately. Done after the in-memory cache update so a crash
+        // mid-write doesn't poison the in-process cache.
+        writeDiskCache(tab, uid, body, locationName)
         return carousels
     }
 
@@ -194,6 +274,7 @@ class ServerCarouselRepository : CarouselRepository {
         sourceUrl = sourceUrl,
         distanceMiles = distanceMiles,
         venueDescription = venueDescription,
+        timeKnown = timeKnown,
     )
 
     private fun CategoryInfoDto.toDomain(): CategoryInfo = CategoryInfo(

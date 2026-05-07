@@ -2,6 +2,7 @@ package live.localapp.local.ui.plans
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import kotlinx.datetime.toLocalDateTime
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -167,6 +168,22 @@ class PlanChatViewModel(
 
     /** Route to Claude if the current user is allowed to edit, else post a private hint. */
     private suspend fun handleYocalMention(userText: String) {
+        // Refresh the plan from the DB before handing it to Bo. The user
+        // may have deleted or swapped slots from the Plan Detail screen
+        // since this ViewModel was constructed; without a refetch Bo's
+        // CURRENT PLAN context still includes the deleted slot, and any
+        // update_plan tool call rebuilds the day with that slot back in.
+        try {
+            val fresh = planRepo.getPlan(plan.id)
+            if (fresh != null) {
+                plan = fresh
+            } else {
+                println("PlanChatVM: getPlan(${plan.id}) returned null — falling back to local plan state, may be stale")
+            }
+        } catch (e: Throwable) {
+            println("PlanChatVM: plan refresh failed (${e.message}) — falling back to local plan state")
+        }
+
         val isCreator = plan.creatorId != null && plan.creatorId == currentUserId
         val canEdit = isCreator || plan.attendeesCanEdit
 
@@ -631,14 +648,47 @@ class PlanChatViewModel(
 
     // ── System prompt ──
 
+    /**
+     * Expand "Thursday, May 15" to "Thursday, May 15, 2026 (ISO 2026-05-15)".
+     * Bo's `search_events` calls need an unambiguous date — if the year
+     * is missing it sometimes searches relative to today and reports
+     * "I'm not finding events on May 15" when it actually queried with
+     * the wrong year. Year is inferred: if the parsed month is already
+     * past today's month, use next year; otherwise current year.
+     */
+    private fun expandLabelWithYearAndIso(label: String, today: kotlinx.datetime.LocalDate): String {
+        val months = listOf(
+            "January", "February", "March", "April", "May", "June",
+            "July", "August", "September", "October", "November", "December",
+        )
+        val abbrs = listOf("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+        val afterComma = label.substringAfter(',', label).trim()
+        val tokens = afterComma.split(' ').filter { it.isNotBlank() }
+        if (tokens.size < 2) return label
+        val monthIdx = months.indexOfFirst { it.equals(tokens[0], ignoreCase = true) }
+            .let { if (it >= 0) it else abbrs.indexOfFirst { a -> a.equals(tokens[0].take(3), ignoreCase = true) } }
+        if (monthIdx < 0) return label
+        val day = tokens[1].takeWhile { it.isDigit() }.toIntOrNull() ?: return label
+        val year = if (monthIdx + 1 < today.monthNumber) today.year + 1 else today.year
+        val iso = "$year-${(monthIdx + 1).toString().padStart(2, '0')}-${day.toString().padStart(2, '0')}"
+        return "$label, $year (ISO $iso)"
+    }
+
     private fun buildPlanSystemPrompt(): String {
-        val today = kotlin.time.Clock.System.now()
-            .toString().take(10)
+        val todayLocal = kotlin.time.Clock.System.now()
+            .toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault()).date
+        val today = todayLocal.toString()
 
         val planContext = buildString {
             appendLine("CURRENT PLAN (title: \"${plan.title}\") in ${plan.city}:")
             plan.days.forEachIndexed { i, day ->
-                appendLine("Day $i (${day.label}):")
+                // Append explicit year + ISO date so Bo never has to guess
+                // which "Thursday, May 15" we mean. Without this, Bo
+                // confuses plan dates with today and asks the user to
+                // disambiguate ("which Thursday?") even though the plan
+                // is unambiguous from context.
+                val dated = expandLabelWithYearAndIso(day.label, todayLocal)
+                appendLine("Day $i ($dated):")
                 if (day.slots.isEmpty()) appendLine("  (empty)")
                 day.slots.forEach { s ->
                     val tag = when {
@@ -657,11 +707,31 @@ Today is $today.
 
 $planContext
 
+SCOPE — what you are and aren't (hard rule, single biggest source of bad responses):
+- You help users plan local events, venues, and experiences in their coverage area. That's it.
+- You do NOT answer general-knowledge questions: history, geography, biography, current news, weather (except as it affects an event), sports scores, recipes, homework, advice, biology, etc.
+- When the user mentions a noun (e.g. "Lalibela", "Roxbury", "Symphony"), DO NOT assume it's a topic to research. First treat it as a possible event/venue/neighborhood: run search_events and search_venues with that token. If both return nothing relevant, reply ONE sentence telling the user you didn't find a local match, and offer ONE concrete redirect ("Did you mean a restaurant nearby?" / "Want me to search for events tagged with that?"). Do NOT volunteer history, definitions, or trivia about the noun.
+- web_search is a TOOL FOR FACTS ABOUT EVENTS WE ALREADY HAVE — hours, ticket availability, capacity, weather affecting an outdoor event. It is NOT a general-purpose research engine. If you find yourself wanting to web_search to "explain" or "describe" something, STOP and use the scope-decline path above.
+
+SEARCH DEPTH — keep digging before giving up (hard rule):
+- If search_events returns < 3 results AND the user is browsing or open-ended, you MUST run a second search_events call with broadened terms before responding. Try in order: (1) drop the keyword, (2) drop the category filter, (3) widen the date window, (4) widen the radius.
+- Same applies to search_venues.
+- Never say "I couldn't find anything" after a single search. The user will assume our database is empty.
+- Only after ≥ 2 search attempts may you fall back to web_search (and only for the factual cases above).
+
+EXCLUSIONS — when the user says "not X" (hard rule):
+- Phrases like "not the Red Sox", "something other than X", "no Y", "anything but Z" are EXCLUSIONS. The next response MUST contain ZERO results matching X.
+- Re-run search_events / search_venues with the excluded term explicitly filtered. Do not rely on the previously-cached results — they may include the excluded item.
+- Track exclusions across the conversation. If the user said "not Red Sox" three turns ago, do not surface a Red Sox event on this turn either.
+
+DATE GROUNDING — never derive dates from text (hard rule):
+- When you build or edit a slot in update_plan, the slot's start_at / time / day MUST come from the event row's actual `start_at` field returned by search_events or get_event_details. Never compute a date from words like "tomorrow" or "the show on the 24th" without confirming against the event row.
+- If you can't see the event's start_at, call get_event_details before placing it in a slot.
+- Multi-day plan: each day's events go into THAT day's slots. An event dated 2026-05-24 belongs in the day labeled "Saturday, May 24, 2026", not the next day.
+
 NO PREAMBLE BEFORE SEARCHES (strict):
-- Never say "Let me search…", "Let me check…", "I'll look that up…", "Let me search the web…", or any similar narration before invoking a tool. The UI shows a searching indicator already.
+- Never say "Let me search…", "Let me check…", "I'll look that up…", or any similar narration before invoking a tool. The UI shows a searching indicator already.
 - Just call the tool. After it finishes, deliver the answer directly. Don't split your response across multiple chat bubbles where one is meta-commentary and the next is the actual content.
-- Bad: "Let me search for events…" → tool call → ", which are both outside your dates"  ← orphan fragment
-- Good: tool call → "Two events happened that week, both on June 11-14 — outside your June 1-3 trip."
 
 DATE OVERLAP INTEGRITY (hard rule):
 - An event whose date is OUTSIDE the user's stated trip/plan window does NOT "overlap" with their dates. Compute it literally: window = [user_start, user_end] inclusive. The event's date(s) must be in that range.
@@ -734,19 +804,33 @@ GUIDELINES:
             appendLine("============================================")
             when (budget.reason) {
                 "ok" -> {
-                    appendLine("You have web_search and web_fetch tools available right now.")
+                    appendLine("You have web_search and web_fetch tools available, but use them SPARINGLY.")
+                    appendLine("They are NOT a general-purpose research engine — they exist to verify facts")
+                    appendLine("ABOUT events and venues we already have in our database.")
                     appendLine("")
-                    appendLine("MANDATORY web_search use cases (do NOT respond from training data):")
-                    appendLine("  • Open hours, schedules of any specific business")
-                    appendLine("  • Weather for today/tomorrow/this weekend")
-                    appendLine("  • Current sports scores, recent news, anything 'this week' or 'tonight'")
-                    appendLine("  • Specific named event/venue/restaurant — when the user wants real, current info")
-                    appendLine("  • When search_events / search_venues returns 0 results")
+                    appendLine("USE web_search ONLY when ALL of these are true:")
+                    appendLine("  1. The user is asking about a specific event or venue already in our DB,")
+                    appendLine("     OR an event you've already discussed in this conversation.")
+                    appendLine("  2. You need a factual detail we don't store: open hours, ticket")
+                    appendLine("     availability, price, weather affecting an outdoor event, capacity.")
+                    appendLine("  3. You've already run search_events or search_venues at least twice")
+                    appendLine("     with broadened terms. web_search is the LAST resort, not the first.")
                     appendLine("")
-                    appendLine("CRITICAL: Do NOT say 'I don't have real-time data', 'I'd recommend checking weather.com',")
-                    appendLine("or anything similar. You DO have web_search. USE IT.")
+                    appendLine("DO NOT use web_search for:")
+                    appendLine("  • Explaining what something is (history, geography, biography, definitions).")
+                    appendLine("    If the user asks 'what is Lalibela', they want a local match — search the")
+                    appendLine("    DB for venue/event tokens, then offer a redirect if no hit.")
+                    appendLine("  • General-knowledge questions or anything outside event discovery.")
+                    appendLine("  • Topics, news, biology, pop culture, advice, etc.")
+                    appendLine("  • A first-pass response when you could have searched our DB first.")
                     appendLine("")
-                    appendLine("Cap at 3 web_search invocations per turn. web_fetch when user pastes a URL.")
+                    appendLine("If the user asks something out of scope, decline politely in ONE sentence:")
+                    appendLine("'That's not something I can help with — I'm here to plan local events. Want")
+                    appendLine("me to find <a relevant local thing> instead?' Then stop. Do not free-text")
+                    appendLine("an answer to the off-topic question. Do not web_search to look it up.")
+                    appendLine("")
+                    appendLine("Hard cap: 2 web_search invocations per user turn. web_fetch only when user")
+                    appendLine("pastes a URL or you need to read a specific page already discussed.")
                     appendLine("")
                     appendLine("STAGING WEB FINDINGS FOR PLANS:")
                     appendLine("When you find an event/venue via web_search and want to include it in update_plan,")

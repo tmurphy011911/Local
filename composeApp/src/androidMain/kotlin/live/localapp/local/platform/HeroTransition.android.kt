@@ -86,6 +86,7 @@ actual fun showNativePlanDetail(
     onSwapInAlternative: (Int, String, String) -> Unit,
     onSeeMoreSwapOptions: (Int, String, String) -> Unit,
     onSwapForUnavailable: (Int, String, String, String) -> Unit,
+    onSlotTap: (Int, String, String?, String?) -> Unit,
 ) {
     // No-op on Android — Compose PlanDetailScreen renders inline.
 }

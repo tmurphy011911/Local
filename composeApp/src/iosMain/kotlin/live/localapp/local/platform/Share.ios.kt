@@ -1,14 +1,34 @@
 package live.localapp.local.platform
 
+import kotlinx.cinterop.ExperimentalForeignApi
+import kotlin.coroutines.resume
+import kotlin.coroutines.suspendCoroutine
 import live.localapp.local.ShareBridge
 import platform.UIKit.UIPasteboard
+import platform.UIKit.UIPasteboardDetectionPatternProbableWebURL
 
+@OptIn(ExperimentalForeignApi::class)
 actual fun presentShareSheet(text: String, url: String) {
     ShareBridge.presentShareSheet?.invoke(text, url)
 }
 
-actual fun checkClipboardForDeepLink(): String? {
-    val clip = UIPasteboard.generalPasteboard.string ?: return null
+@OptIn(ExperimentalForeignApi::class)
+actual suspend fun checkClipboardForDeepLink(): String? {
+    // Probe the pasteboard silently for a URL pattern. detectPatternsForPatterns
+    // does not trigger the iOS 14+ "would like to paste" system prompt — only
+    // reading .string does. So we only read the string if a URL is detected.
+    val pasteboard = UIPasteboard.generalPasteboard
+    val hasUrlPattern = suspendCoroutine<Boolean> { cont ->
+        pasteboard.detectPatternsForPatterns(
+            patterns = setOf(UIPasteboardDetectionPatternProbableWebURL),
+            completionHandler = { found, _ ->
+                cont.resume(found?.contains(UIPasteboardDetectionPatternProbableWebURL) == true)
+            },
+        )
+    }
+    if (!hasUrlPattern) return null
+
+    val clip = pasteboard.string ?: return null
     if (!clip.contains("localapp.live/")) return null
     // Extract path: /p/token, /e/id, /v/id
     val regex = Regex("localapp\\.live(/[pev]/[A-Za-z0-9_-]+)")

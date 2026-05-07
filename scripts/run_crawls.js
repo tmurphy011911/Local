@@ -23,6 +23,11 @@ const CATEGORY_FILTER = process.env.CATEGORY
   ? process.env.CATEGORY.split(",").map((s) => s.trim())
   : null;
 const VENUE_NAME = process.env.VENUE_NAME || null;
+// STATE filter — used by the weekly workflow's matrix to shard the crawl
+// across states in parallel runners (each gets <2h instead of one runner
+// hitting the 6h GitHub Actions max). Comma-separated list e.g. "MA" or
+// "MA,RI". Null/empty = all states.
+const STATE_FILTER = (process.env.STATE || "").trim() || null;
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || "3", 10);
 const MAX_VENUES = parseInt(process.env.MAX_VENUES || "0", 10);
 // NPS Developer API — falls back to api.data.gov DEMO_KEY (30 req/hr, 50/day)
@@ -383,6 +388,12 @@ async function fetchVenues() {
   }
   if (CATEGORY_FILTER) {
     baseUrl += `&category=in.(${CATEGORY_FILTER.join(",")})`;
+  }
+  if (STATE_FILTER) {
+    const states = STATE_FILTER.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+    baseUrl += states.length === 1
+      ? `&state=eq.${states[0]}`
+      : `&state=in.(${states.join(",")})`;
   }
   baseUrl += "&order=events_url.desc.nullslast,crawl_success_rate.desc";
 

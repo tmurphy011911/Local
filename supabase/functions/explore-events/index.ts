@@ -157,38 +157,78 @@ function distanceMiles(lat1: number, lng1: number, lat2: number, lng2: number): 
 
 // ── Fetch helpers ──
 
-// Maps the date_filter slug to a {startIso, endIso} window. Uses UTC for
-// simplicity — good enough for chunked date filters; we aren't doing local-
-// midnight precision here.
-function resolveDateWindow(dateFilter: string | null): { startIso: string; endIso: string } {
+// Maps the date_filter slug to a {startIso, endIso} window in absolute UTC
+// time, snapped to the user's LOCAL midnight via [tzOffsetMin].
+//
+// [tzOffsetMin] is (local − UTC) in minutes. For US Eastern Daylight Time
+// (UTC−4) the client sends -240. Defaulting to 0 (UTC) preserves the old
+// behavior for clients that haven't been updated yet.
+//
+// When dateFilter == "custom", `dateStart` / `dateEnd` are inclusive
+// ISO-date strings (YYYY-MM-DD) interpreted as the user's LOCAL day. The
+// end is expanded to the start of the following local day so events on
+// the end date itself are included.
+function resolveDateWindow(
+  dateFilter: string | null,
+  dateStart: string | null = null,
+  dateEnd: string | null = null,
+  tzOffsetMin: number = 0,
+): { startIso: string; endIso: string } {
   const now = Date.now();
-  const startOfToday = new Date(now);
-  startOfToday.setUTCHours(0, 0, 0, 0);
   const DAY = 24 * 60 * 60 * 1000;
+  const offsetMs = tzOffsetMin * 60 * 1000;
+
+  // UTC instant of "the start of today" in the user's local time.
+  // Trick: shift now into a pseudo-UTC that matches local wall-clock,
+  // snap to UTC midnight, then shift back.
+  const localNow = new Date(now + offsetMs);
+  localNow.setUTCHours(0, 0, 0, 0);
+  const startOfTodayUtcMs = localNow.getTime() - offsetMs;
+  const localDow = new Date(now + offsetMs).getUTCDay(); // 0=Sun..6=Sat in local
+
   switch (dateFilter) {
     case "today": {
-      const end = startOfToday.getTime() + DAY;
-      return { startIso: new Date(Math.max(now, startOfToday.getTime())).toISOString(), endIso: new Date(end).toISOString() };
+      const end = startOfTodayUtcMs + DAY;
+      return {
+        startIso: new Date(Math.max(now, startOfTodayUtcMs)).toISOString(),
+        endIso: new Date(end).toISOString(),
+      };
     }
     case "tomorrow": {
-      const start = startOfToday.getTime() + DAY;
+      const start = startOfTodayUtcMs + DAY;
       const end = start + DAY;
       return { startIso: new Date(start).toISOString(), endIso: new Date(end).toISOString() };
     }
     case "this_weekend": {
-      // Fri 00:00 UTC through Mon 00:00 UTC. getUTCDay: Sun=0..Sat=6
-      const dow = startOfToday.getUTCDay();
-      let daysUntilFri = (5 - dow + 7) % 7;
-      // If we're already in Fri/Sat/Sun, use the ongoing weekend.
-      if (dow === 5 || dow === 6 || dow === 0) daysUntilFri = 0;
-      const fri = startOfToday.getTime() + daysUntilFri * DAY;
+      // Fri local-00:00 through Mon local-00:00.
+      let daysUntilFri = (5 - localDow + 7) % 7;
+      // Already inside Fri/Sat/Sun → use the ongoing weekend.
+      if (localDow === 5 || localDow === 6 || localDow === 0) daysUntilFri = 0;
+      const fri = startOfTodayUtcMs + daysUntilFri * DAY;
       const mon = fri + 3 * DAY;
-      return { startIso: new Date(Math.max(now, fri)).toISOString(), endIso: new Date(mon).toISOString() };
+      return {
+        startIso: new Date(Math.max(now, fri)).toISOString(),
+        endIso: new Date(mon).toISOString(),
+      };
     }
-    case "next_7_days":
-      return { startIso: new Date(now).toISOString(), endIso: new Date(now + 7 * DAY).toISOString() };
-    case "next_30_days":
-      return { startIso: new Date(now).toISOString(), endIso: new Date(now + 30 * DAY).toISOString() };
+    case "custom": {
+      // YYYY-MM-DD parsed at the user's LOCAL midnight (not UTC midnight).
+      // End shifts to start-of-next-local-day so the range is inclusive.
+      const parseLocalDate = (s: string): number => {
+        const utcMs = Date.parse(`${s}T00:00:00Z`);
+        return utcMs - offsetMs;
+      };
+      const startMs = dateStart ? parseLocalDate(dateStart) : Number.NaN;
+      const endMs = dateEnd ? parseLocalDate(dateEnd) : Number.NaN;
+      if (Number.isFinite(startMs) && Number.isFinite(endMs)) {
+        return {
+          startIso: new Date(Math.max(now, startMs)).toISOString(),
+          endIso: new Date(endMs + DAY).toISOString(),
+        };
+      }
+      // Bad/missing range — fall through to the default window.
+      return { startIso: new Date(now).toISOString(), endIso: new Date(now + 60 * DAY).toISOString() };
+    }
     default:
       return { startIso: new Date(now).toISOString(), endIso: new Date(now + 60 * DAY).toISOString() };
   }
@@ -202,11 +242,14 @@ async function fetchEvents(
   category: string | null,
   radiusMiles: number,
   dateFilter: string | null,
+  dateStart: string | null = null,
+  dateEnd: string | null = null,
+  tzOffsetMin: number = 0,
 ): Promise<EventRow[]> {
   // Generous bbox prefilter — tighter radius applied post-fetch.
   const latDelta = radiusMiles / 55;
   const lngDelta = radiusMiles / 45;
-  const { startIso: nowIso, endIso } = resolveDateWindow(dateFilter);
+  const { startIso: nowIso, endIso } = resolveDateWindow(dateFilter, dateStart, dateEnd, tzOffsetMin);
 
   let q = supabase
     .from("events")
@@ -215,7 +258,10 @@ async function fetchEvents(
     )
     .eq("is_active", true)
     .gte("start_at", nowIso)
-    .lte("start_at", endIso)
+    // Upper bound is EXCLUSIVE: events at exactly the next-local-midnight
+    // belong to the following day's bucket. With `.lte` they were leaking
+    // into both today's and tomorrow's filter.
+    .lt("start_at", endIso)
     .gte("venue_lat", lat - latDelta)
     .lte("venue_lat", lat + latDelta)
     .gte("venue_lng", lng - lngDelta)
@@ -422,6 +468,11 @@ Deno.serve(async (req) => {
     const category = url.searchParams.get("category");
     const radiusMiles = Math.min(parseFloat(url.searchParams.get("radius") ?? "50"), 100);
     const dateFilter = url.searchParams.get("date_filter");
+    const dateStart = url.searchParams.get("date_start");
+    const dateEnd = url.searchParams.get("date_end");
+    // (local − UTC) in minutes. Defaults to 0 so older clients fall back
+    // to UTC-based windows (the previous behavior) instead of erroring.
+    const tzOffsetMin = parseInt(url.searchParams.get("tz_offset_min") ?? "0", 10) || 0;
     const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10), 100);
     const offset = decodeCursor(url.searchParams.get("cursor"));
 
@@ -437,6 +488,9 @@ Deno.serve(async (req) => {
       category ?? "",
       radiusMiles,
       dateFilter ?? "",
+      dateStart ?? "",
+      dateEnd ?? "",
+      tzOffsetMin,
       userId ?? "anon",
     ].join("|");
 
@@ -445,7 +499,7 @@ Deno.serve(async (req) => {
     if (cached) {
       scored = cached.scored;
     } else {
-      const events = await fetchEvents(supabase, lat, lng, query, category, radiusMiles, dateFilter);
+      const events = await fetchEvents(supabase, lat, lng, query, category, radiusMiles, dateFilter, dateStart, dateEnd, tzOffsetMin);
       const [venueMeta, prefs, affinityMap, communityScores] = await Promise.all([
         fetchVenueMeta(supabase),
         userId ? fetchUserPrefs(supabase, userId) : Promise.resolve(null),

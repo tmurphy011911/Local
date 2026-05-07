@@ -25,11 +25,46 @@
  */
 
 const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
+const { fetchHtml } = require("./lib/scrapfly_fetch");
 
-let SUPABASE_SERVICE_KEY, ANTHROPIC_API_KEY;
+let SUPABASE_SERVICE_KEY, ANTHROPIC_API_KEY, SCRAPFLY_API_KEY;
 
 const ONLY_STATE = process.env.STATE || null;
 const PROBE_TIMEOUT_MS = 8000;
+
+// Curated tourism / CVB / chamber domains to seed alongside Claude's
+// city enumeration. These cover MA cities where the .gov calendar is
+// thin or absent but the visitor bureau / chamber publishes a calendar
+// (Cambridge, Salem, Newton, etc.). Each entry is treated as a normal
+// candidate and goes through the same probe → claude_html fallback.
+const CURATED_TOURISM_DOMAINS = {
+  MA: [
+    { name: "Cambridge (visitor)", domain: "cambridgeusa.org", nearest_metro: "Boston" },
+    { name: "Somerville (discover)", domain: "somervillema.gov/events", nearest_metro: "Boston" },
+    { name: "Salem (visitor)", domain: "salem.org", nearest_metro: "Boston" },
+    { name: "Newton (events)", domain: "newtonma.gov", nearest_metro: "Boston" },
+    { name: "Boston (events)", domain: "boston.gov/events", nearest_metro: "Boston" },
+    { name: "Brookline (chamber)", domain: "brooklinechamber.com", nearest_metro: "Boston" },
+    { name: "Provincetown (CVB)", domain: "ptownchamber.com", nearest_metro: "Boston" },
+    { name: "Plymouth (visitor)", domain: "seeplymouth.com", nearest_metro: "Boston" },
+    { name: "Worcester (DCU/Discover)", domain: "discovercentralma.org", nearest_metro: "Worcester" },
+    { name: "Berkshires (visitor)", domain: "berkshires.org", nearest_metro: "Boston" },
+    { name: "Lowell (chamber)", domain: "merrimackvalleychamber.com", nearest_metro: "Boston" },
+    { name: "Cape Cod (CVB)", domain: "capecodchamber.org", nearest_metro: "Boston" },
+  ],
+  RI: [
+    { name: "Providence (CVB)", domain: "goprovidence.com", nearest_metro: "Providence" },
+    { name: "Newport (CVB)", domain: "discovernewport.org", nearest_metro: "Providence" },
+    { name: "Rhode Island (state)", domain: "visitrhodeisland.com", nearest_metro: "Providence" },
+  ],
+  PA: [
+    { name: "Philadelphia (CVB)", domain: "visitphilly.com", nearest_metro: "Philadelphia" },
+    { name: "Pittsburgh (CVB)", domain: "visitpittsburgh.com", nearest_metro: "Pittsburgh" },
+    { name: "Lancaster (CVB)", domain: "discoverlancaster.com", nearest_metro: "Philadelphia" },
+    { name: "Bucks County (CVB)", domain: "visitbuckscounty.com", nearest_metro: "Philadelphia" },
+    { name: "Hershey/Harrisburg (CVB)", domain: "visithersheyharrisburg.org", nearest_metro: "Philadelphia" },
+  ],
+};
 const PROBE_PATHS = [
   { path: "/jsonapi/node/event",  type: "drupal_jsonapi", validate: validateDrupal },
   { path: "/jsonapi/node/events", type: "drupal_jsonapi", validate: validateDrupal },
@@ -199,20 +234,77 @@ async function probeDomain(domain) {
       }
     }
   }
+
+  // Step 3: Scrapfly + Claude HTML extraction fallback. Most MA cities
+  // (CivicPlus, Granicus, proprietary SPA calendars) have visible event
+  // listings on a calendar page but expose no feed. Find the page that
+  // actually has events and register it as a `claude_html` feed — the sync
+  // job will re-fetch via Scrapfly and ask Claude to extract events weekly.
+  if (SCRAPFLY_API_KEY) {
+    for (const base of bases) {
+      for (const htmlPath of HTML_PROBE_PATHS) {
+        const candidate = `${base}${htmlPath}`;
+        try {
+          const { html } = await fetchHtml(candidate, {
+            scrapflyKey: SCRAPFLY_API_KEY,
+            renderJs: true,
+            timeoutMs: PROBE_TIMEOUT_MS,
+          });
+          if (looksLikeEventCalendar(html)) {
+            return { url: candidate, type: "claude_html" };
+          }
+        } catch (_) { /* try next path */ }
+      }
+    }
+  }
+
   return null;
+}
+
+// Heuristic: does this HTML actually contain event-like content? We don't
+// want to register every random calendar page as a claude_html feed —
+// only ones with multiple dated entries. Cheap regex pass to avoid burning
+// Claude tokens during weekly sync on a page that has nothing to extract.
+function looksLikeEventCalendar(html) {
+  if (!html || html.length < 1000) return false;
+  // Multiple month/day mentions OR multiple time entries OR multiple
+  // event-shaped class/id markers.
+  const monthHits = (html.match(/\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}/gi) || []).length;
+  const timeHits = (html.match(/\b\d{1,2}:\d{2}\s?(?:am|pm|AM|PM)\b/g) || []).length;
+  const eventClassHits = (html.match(/class=["'][^"']*\bevent[^"']*["']/gi) || []).length;
+  const dateAttrHits = (html.match(/data-(?:event-)?date=/gi) || []).length;
+  // Need multiple signals — single-date pages (e.g. a contact page with one
+  // upcoming meeting) shouldn't trigger the fallback.
+  return (monthHits >= 3) || (timeHits >= 3 && eventClassHits >= 2) || (dateAttrHits >= 3);
 }
 
 // ── Claude city enumeration ──
 
 async function enumerateCities(stateName, stateCode, knownMetros) {
   const metroNames = knownMetros.map(m => m.name).join(", ");
-  const prompt = `Enumerate up to 30 incorporated cities and towns in ${stateName} (${stateCode}). Focus on places with population over 25,000 OR places that are well-known cultural/event hubs even if smaller. For each, provide:
-- name (city/town name only, no "City of" prefix)
-- domain (their official municipal website domain, NO protocol — e.g. "boston.gov", "city.waltham.ma.us", "cambridgema.gov")
+  // We ask for multiple event-source domains per city because the .gov site
+  // alone misses most public events — most calendar activity sits on tourism
+  // bureaus, chambers of commerce, BIDs, cultural councils, and town libraries.
+  // Returning these inline lets us probe ALL of them per city in one pass
+  // instead of hand-maintaining a curated list per state.
+  const prompt = `Enumerate up to 40 cities, towns, and culturally significant places in ${stateName} (${stateCode}). Include incorporated cities/towns over 15,000 population AND smaller places that are well-known cultural/event hubs (e.g. Provincetown, Stockbridge, Lenox).
+
+For each, return up to FIVE candidate event-source domains in priority order:
+
+- name (city/town name, no "City of" prefix)
 - nearest_metro (one of: ${metroNames})
+- domains: an array of objects { domain, kind } where kind is one of:
+  - "municipal" (official .gov site, e.g. "boston.gov", "cambridgema.gov")
+  - "tourism" (visitor bureau / CVB / DMO, e.g. "cambridgeusa.org", "salem.org")
+  - "chamber" (chamber of commerce, e.g. "brooklinechamber.com")
+  - "cultural_council" (local cultural council site, e.g. "newtonculturalalliance.org")
+  - "bid" (downtown BID / business improvement district, e.g. "downtownboston.com")
+  - "library" (the town/regional library system, e.g. "minlib.net")
+
+Domains should be JUST the host (no protocol, no path). Skip a kind if you don't know a real domain — DO NOT INVENT domains; better to omit than guess. A city might have only "municipal" or have all six.
 
 Respond with ONLY a JSON array, no prose. Example:
-[{"name":"Boston","domain":"boston.gov","nearest_metro":"Boston"},{"name":"Waltham","domain":"city.waltham.ma.us","nearest_metro":"Boston"}]`;
+[{"name":"Cambridge","nearest_metro":"Boston","domains":[{"domain":"cambridgema.gov","kind":"municipal"},{"domain":"cambridgeusa.org","kind":"tourism"},{"domain":"cambridgechamber.org","kind":"chamber"},{"domain":"cambridgeartscouncil.org","kind":"cultural_council"}]}]`;
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -223,7 +315,7 @@ Respond with ONLY a JSON array, no prose. Example:
     },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
-      max_tokens: 4096,
+      max_tokens: 8192,
       messages: [{ role: "user", content: prompt }],
     }),
   });
@@ -235,19 +327,42 @@ Respond with ONLY a JSON array, no prose. Example:
   const text = data.content?.[0]?.text || "";
   const match = text.match(/\[[\s\S]*\]/);
   if (!match) throw new Error(`No JSON array in Claude response: ${text.slice(0, 200)}`);
-  return JSON.parse(match[0]);
+  const cities = JSON.parse(match[0]);
+
+  // Fan out: each city becomes one candidate per domain, so the existing
+  // probe loop touches all of them. Backwards-compatible with the legacy
+  // single-domain shape (some Claude responses may still omit `domains`).
+  const expanded = [];
+  for (const c of cities) {
+    if (Array.isArray(c.domains) && c.domains.length) {
+      for (const d of c.domains) {
+        if (!d.domain) continue;
+        expanded.push({
+          name: `${c.name}${d.kind && d.kind !== "municipal" ? ` (${d.kind})` : ""}`,
+          domain: d.domain,
+          nearest_metro: c.nearest_metro,
+          kind: d.kind || "municipal",
+        });
+      }
+    } else if (c.domain) {
+      expanded.push({ name: c.name, domain: c.domain, nearest_metro: c.nearest_metro, kind: "municipal" });
+    }
+  }
+  return expanded;
 }
 
 // ── Main ──
 
 async function main() {
-  const secrets = await getSecrets(["ANTHROPIC_API_KEY"]);
+  const secrets = await getSecrets(["ANTHROPIC_API_KEY", "SCRAPFLY_API_KEY"]);
   SUPABASE_SERVICE_KEY = secrets.SUPABASE_SERVICE_KEY;
   ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY;
+  SCRAPFLY_API_KEY = secrets.SCRAPFLY_API_KEY || process.env.SCRAPFLY_API_KEY || null;
   if (!ANTHROPIC_API_KEY) {
     console.error("Missing ANTHROPIC_API_KEY (not in Supabase secrets table or env vars)");
     process.exit(1);
   }
+  console.log(`Scrapfly: ${SCRAPFLY_API_KEY ? "available — claude_html fallback enabled" : "NOT configured — only structured-feed discovery"}`);
 
   // 1. Active states
   const stateFilter = ONLY_STATE ? `&code=eq.${ONLY_STATE}` : "";
@@ -277,6 +392,16 @@ async function main() {
       continue;
     }
     console.log(`  Claude returned ${candidates.length} candidate cities`);
+
+    // Prepend curated tourism / CVB / chamber domains for this state.
+    // These cover MA cities where the .gov calendar is thin or absent
+    // but the visitor bureau publishes a real one (Cambridge USA, Salem.org,
+    // discovercentralma.org, etc.). Same probe pipeline as Claude's list.
+    const curated = CURATED_TOURISM_DOMAINS[state.code] || [];
+    if (curated.length) {
+      console.log(`  + ${curated.length} curated tourism/CVB domain(s)`);
+      candidates = [...curated, ...candidates];
+    }
 
     for (const c of candidates) {
       if (!c.domain) continue;

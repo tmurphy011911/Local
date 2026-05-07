@@ -57,7 +57,6 @@ import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.draw.clipToBounds
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -123,6 +122,23 @@ fun PlansScreen(
     // the count is already current.
     live.localapp.local.platform.OnAppResumeEffect {
         viewModel.refresh()
+    }
+
+    // Pending-open hook: when an external surface (the chat-success
+    // "View Plan" link) requests a specific plan be opened, find it in
+    // the loaded list and route through the normal onPlanClick handler
+    // so the full plan-detail bridge gets wired up the same way as a
+    // tap. Clears the signal after consumption so it doesn't fire twice.
+    androidx.compose.runtime.LaunchedEffect(state.pendingOpenPlanId, state.upcomingPlans, state.pastPlans) {
+        val pendingId = state.pendingOpenPlanId ?: return@LaunchedEffect
+        val match = (state.upcomingPlans + state.pastPlans).firstOrNull { it.id == pendingId }
+        if (match != null) {
+            onPlanClick(match, androidx.compose.ui.geometry.Rect.Zero)
+            viewModel.consumePendingOpenPlan()
+        }
+        // If not found yet (still loading after onboarding), leave the
+        // signal in place — the next state emission with loaded plans
+        // will trigger this effect again.
     }
 
     Column(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
@@ -1107,7 +1123,13 @@ private fun HeroPlanCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 val confirmed = plan.attendees.count { it.confirmed }
-                val total = plan.attendees.size.coerceAtLeast(1)
+                // Use the creator-set group size as the denominator so a 3-person
+                // plan reads "1/3 confirmed" while invites are still pending,
+                // not "1/1 confirmed". Falls back to attendees.size for legacy
+                // plans where groupSize was never set.
+                val total = (plan.groupSize ?: plan.attendees.size)
+                    .coerceAtLeast(plan.attendees.size)
+                    .coerceAtLeast(1)
                 Row(
                     modifier = Modifier
                         .background(Color.White.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
@@ -1187,10 +1209,8 @@ private fun CompactPlanRow(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(80.dp)
-                .shadow(2.dp, RoundedCornerShape(14.dp))
-                .background(Color.White, RoundedCornerShape(14.dp))
-                .clip(RoundedCornerShape(14.dp))
-                .pressable(onClick = { onClick(cardBounds) }),
+                .pressable(onClick = { onClick(cardBounds) })
+                .localCardSurface(cornerRadius = 14.dp),
         ) {
             // Thumbnail
             Box(
@@ -1281,10 +1301,8 @@ private fun InvitePlanRow(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .shadow(2.dp, RoundedCornerShape(14.dp))
-                .background(Color.White, RoundedCornerShape(14.dp))
-                .clip(RoundedCornerShape(14.dp))
-                .pressable(onClick = onClick),
+                .pressable(onClick = onClick)
+                .localCardSurface(cornerRadius = 14.dp),
         ) {
             // Thumbnail
             Box(

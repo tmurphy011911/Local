@@ -55,6 +55,9 @@ interface ScoredVenue {
   v: VenueRow;
   dist: number;
   eventCount: number;
+  // Capped at MAX_EVENTS_PER_VENUE; same source as eventCount so the venue
+  // detail screen never sees a non-zero count with a zero events list.
+  events: InlineEventRow[];
   score: number;
 }
 interface CacheEntry {
@@ -124,6 +127,12 @@ async function fetchVenues(
     .lte("lat", lat + latDelta)
     .gte("lng", lng - lngDelta)
     .lte("lng", lng + lngDelta)
+    // Deterministic order so the .limit(500) cut is stable across refreshes
+    // (and across cold-started edge function instances). Without this, Postgres
+    // can return a different 500-row subset each call, producing a visibly
+    // different scored ranking on refresh.
+    .order("public_interest_rank", { ascending: false })
+    .order("id", { ascending: true })
     .limit(500);
 
   if (query && query.trim()) {
@@ -139,49 +148,87 @@ async function fetchVenues(
   return (data ?? []) as VenueRow[];
 }
 
-async function fetchEventCountsByVenue(
+// Per-venue event slim row — same shape as the inline events the client
+// needs to render the venue detail's "Upcoming Events" list.
+interface InlineEventRow {
+  id: string;
+  title: string;
+  description: string | null;
+  category: string | null;
+  subcategory: string | null;
+  start_at: string | null;
+  is_free: boolean;
+  price_min: number | null;
+  price_max: number | null;
+  ticket_url: string | null;
+  image_url: string | null;
+  venue_name: string | null;
+  venue_city: string | null;
+  source_url: string | null;
+}
+
+interface VenueEvents {
+  count: number;
+  // Sorted by start_at ASC, capped at MAX_EVENTS_PER_VENUE
+  events: InlineEventRow[];
+}
+
+const MAX_EVENTS_PER_VENUE = 25;
+
+async function fetchEventsByVenue(
   supabase: any,
   lat: number,
   lng: number,
   radiusMiles: number,
-): Promise<Record<string, number>> {
+): Promise<Record<string, VenueEvents>> {
   const latDelta = radiusMiles / 55;
   const lngDelta = radiusMiles / 45;
   const nowIso = new Date().toISOString();
 
-  // Page through ALL future active events in the bbox (not just a limit-2000
-  // unordered slice — that was producing jittery counts because Postgres
-  // returned a different 2000-row subset per call). Deterministic id-sorted
-  // pagination keeps counts stable across refreshes.
+  // Page through ALL future active events in the bbox. Deterministic
+  // start_at order so we keep the soonest events when capping per venue.
   const pageSize = 1000;
   let offset = 0;
-  const counts: Record<string, number> = {};
+  const buckets: Record<string, VenueEvents> = {};
   for (let page = 0; page < 20; page++) {
     const { data } = await supabase
       .from("events")
-      .select("venue_name")
+      .select(
+        "id,title,description,category,subcategory,start_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,source_url",
+      )
       .eq("is_active", true)
-      .neq("subcategory", "no-public-interest") // skip auto-excluded events from counts
+      .neq("subcategory", "no-public-interest") // skip auto-excluded events
       .gte("start_at", nowIso)
       .gte("venue_lat", lat - latDelta)
       .lte("venue_lat", lat + latDelta)
       .gte("venue_lng", lng - lngDelta)
       .lte("venue_lng", lng + lngDelta)
+      .order("start_at", { ascending: true })
       .order("id", { ascending: true })
       .range(offset, offset + pageSize - 1);
-    const rows = data ?? [];
+    const rows: InlineEventRow[] = (data ?? []) as InlineEventRow[];
     for (const row of rows) {
       // Match normalized key — "The Brattle Theatre" and "Brattle Theatre"
       // collapse to the same bucket so venue.name and event.venue_name
       // reliably join.
       const key = normalizeVenueName(row.venue_name ?? "");
       if (!key) continue;
-      counts[key] = (counts[key] ?? 0) + 1;
+      const bucket = buckets[key] ?? { count: 0, events: [] };
+      bucket.count += 1;
+      if (bucket.events.length < MAX_EVENTS_PER_VENUE) bucket.events.push(row);
+      buckets[key] = bucket;
     }
     if (rows.length < pageSize) break;
     offset += pageSize;
   }
-  return counts;
+  return buckets;
+}
+
+// Back-compat shim — most callers below only need the count.
+function countsFromBuckets(buckets: Record<string, VenueEvents>): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const [k, v] of Object.entries(buckets)) out[k] = v.count;
+  return out;
 }
 
 async function fetchUserPrefs(supabase: any, userId: string): Promise<UserPrefs | null> {
@@ -221,6 +268,24 @@ function scoreVenue(
     taste * 0.1 +
     savedVenueBoost * 0.05
   );
+}
+
+// ── Sort ──
+//
+// Mirrors the client's PlaceSort enum. Cached scored list is already
+// score-DESC; "popular" returns it as-is. "closest" and "most_events"
+// re-sort the full list so paging picks the best venues globally, not just
+// inside the popularity top-N. Stable tiebreak on venue id.
+function sortScored(scored: ScoredVenue[], sort: string): ScoredVenue[] {
+  switch (sort) {
+    case "closest":
+      return [...scored].sort((a, b) => a.dist - b.dist || a.v.id.localeCompare(b.v.id));
+    case "most_events":
+      return [...scored].sort((a, b) => b.eventCount - a.eventCount || a.v.id.localeCompare(b.v.id));
+    case "popular":
+    default:
+      return scored;
+  }
 }
 
 // ── Dedup ──
@@ -288,6 +353,7 @@ Deno.serve(async (req) => {
     const category = url.searchParams.get("category");
     const radiusMiles = Math.min(parseFloat(url.searchParams.get("radius") ?? "100"), 150);
     const hasEventsOnly = url.searchParams.get("has_events") === "true";
+    const sort = (url.searchParams.get("sort") ?? "popular").toLowerCase();
     const limit = Math.min(parseInt(url.searchParams.get("limit") ?? "50", 10), 100);
     const offset = decodeCursor(url.searchParams.get("cursor"));
 
@@ -310,10 +376,11 @@ Deno.serve(async (req) => {
     if (cached) {
       scored = cached.scored;
     } else {
-      const [rawVenues, counts] = await Promise.all([
+      const [rawVenues, eventBuckets] = await Promise.all([
         fetchVenues(supabase, lat, lng, query, category, radiusMiles),
-        fetchEventCountsByVenue(supabase, lat, lng, radiusMiles),
+        fetchEventsByVenue(supabase, lat, lng, radiusMiles),
       ]);
+      const counts = countsFromBuckets(eventBuckets);
       const venues = dedupVenues(rawVenues, counts);
       const prefs = userId ? await fetchUserPrefs(supabase, userId) : null;
       const maxRank = venues.reduce((m, v) => Math.max(m, v.public_interest_rank ?? 0), 0);
@@ -322,8 +389,17 @@ Deno.serve(async (req) => {
         .filter((v) => v.lat != null && v.lng != null)
         .map((v) => {
           const dist = distanceMiles(lat, lng, v.lat!, v.lng!);
-          const eventCount = counts[normalizeVenueName(v.name)] ?? 0;
-          return { v, dist, eventCount, score: scoreVenue(v, dist, eventCount, prefs, maxRank) };
+          const key = normalizeVenueName(v.name);
+          const bucket = eventBuckets[key];
+          const eventCount = bucket?.count ?? 0;
+          const events = bucket?.events ?? [];
+          return {
+            v,
+            dist,
+            eventCount,
+            events,
+            score: scoreVenue(v, dist, eventCount, prefs, maxRank),
+          };
         })
         .filter((x) => x.dist <= radiusMiles)
         // Stable tiebreak on venue id — guarantees identical order across
@@ -333,11 +409,16 @@ Deno.serve(async (req) => {
       cache.set(cacheKey, { scored, timestamp: Date.now() });
     }
 
-    const filtered = hasEventsOnly ? scored.filter((x) => x.eventCount > 0) : scored;
+    // Apply user-selected sort over the FULL scored list before paginating,
+    // so "closest" / "most_events" pick the best venues across the whole
+    // dataset (not just the popularity top-50 the client happens to hold).
+    // Sort runs post-cache so the cache key stays sort-agnostic.
+    const sortedAll = sortScored(scored, sort);
+    const filtered = hasEventsOnly ? sortedAll.filter((x) => x.eventCount > 0) : sortedAll;
     const page = filtered.slice(offset, offset + limit);
     const hasMore = filtered.length > offset + limit;
 
-    const items = page.map(({ v, dist, eventCount }) => ({
+    const items = page.map(({ v, dist, eventCount, events }) => ({
       id: v.id,
       name: v.name,
       address: v.address,
@@ -356,6 +437,24 @@ Deno.serve(async (req) => {
       upcomingEventCount: eventCount,
       publicInterestRank: v.public_interest_rank,
       isFeatured: false,
+      // Inline events keep the card and the detail in sync — same source,
+      // capped at MAX_EVENTS_PER_VENUE so the payload stays bounded.
+      upcomingEvents: events.map((e) => ({
+        id: e.id,
+        title: e.title,
+        description: e.description,
+        category: e.category ?? "",
+        subcategory: e.subcategory,
+        startAt: e.start_at,
+        isFree: e.is_free,
+        priceMin: e.price_min,
+        priceMax: e.price_max,
+        ticketUrl: e.ticket_url,
+        imageUrl: e.image_url,
+        venueName: e.venue_name,
+        venueCity: e.venue_city ?? "",
+        sourceUrl: e.source_url,
+      })),
     }));
 
     return new Response(

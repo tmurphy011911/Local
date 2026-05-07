@@ -66,6 +66,13 @@ actual fun openChatSheet(onReady: () -> Unit) {
     }
     ChatBridge.sendMessage = { msg -> chatVm.sendMessage(msg) }
     ChatBridge.resetChat = { chatVm.resetChat() }
+    ChatBridge.buildPlanFromSelections = { ids -> chatVm.buildPlanFromSelections(ids) }
+    ChatBridge.loadMoreSuggestions = { messageId, dayKey, categoryKey ->
+        chatVm.loadMoreSuggestionsForGroup(messageId, dayKey, categoryKey)
+    }
+    chatVm.onSuggestionLoadMoreFinished = { messageId, groupKey, addedCount ->
+        ChatBridge.onLoadMoreFinished?.invoke(messageId, groupKey, addedCount)
+    }
     ChatBridge.onQuickReply = { label, action ->
         chatVm.onQuickReply(live.localapp.local.ui.chat.QuickReply(label = label, action = action))
     }
@@ -77,6 +84,17 @@ actual fun openChatSheet(onReady: () -> Unit) {
     chatVm.onPlanBlocked = { ChatBridge.onPlanBlocked?.invoke() }
     ChatBridge.clearSuccessState = { chatVm.clearSuccessState() }
     ChatBridge.sharePlan = { chatVm.shareLastSavedPlan() }
+    // "View Plan" on the celebration overlay → set a pending-open
+    // signal on PlansViewModel. PlansScreen observes it and triggers
+    // its existing onPlanClick handler once the tab is active, which
+    // wires up the FULL plan-detail bridge (delete, edit, swap, etc.).
+    // Going through showNativePlanDetail directly here would require
+    // duplicating ~25 handlers and they'd no-op silently.
+    ChatBridge.viewSavedPlan = { planId ->
+        val plansVm = org.koin.mp.KoinPlatform.getKoin()
+            .get<live.localapp.local.ui.plans.PlansViewModel>()
+        plansVm.requestOpenPlan(planId)
+    }
     // Direct "Save to My Plans" tap bypasses the chat message path — the
     // VM runs the gate + save in place, so no "Looks good…" user bubble
     // is added to the transcript.
@@ -284,7 +302,9 @@ actual fun showNativePlanDetail(
     onSwapInAlternative: (Int, String, String) -> Unit,
     onSeeMoreSwapOptions: (Int, String, String) -> Unit,
     onSwapForUnavailable: (Int, String, String, String) -> Unit,
+    onSlotTap: (Int, String, String?, String?) -> Unit,
 ) {
+    PlanDetailBridge.onSlotTap = onSlotTap
     PlanDetailBridge.onDismissed = onDismissed
     PlanDetailBridge.onShare = onShare
     PlanDetailBridge.onEditPlan = onEditPlan
@@ -369,6 +389,7 @@ actual fun showNativePlanDetail(
                                 put("ticketUrl", kotlinx.serialization.json.JsonPrimitive(slot.ticketUrl))
                                 put("venueRating", kotlinx.serialization.json.JsonPrimitive(slot.venueRating))
                                 put("venueAddress", kotlinx.serialization.json.JsonPrimitive(slot.venueAddress))
+                                put("venueCity", kotlinx.serialization.json.JsonPrimitive(slot.venueCity))
                                 put("venueName", kotlinx.serialization.json.JsonPrimitive(slot.venueName))
                                 put("venueLat", kotlinx.serialization.json.JsonPrimitive(slot.venueLat))
                                 put("venueLng", kotlinx.serialization.json.JsonPrimitive(slot.venueLng))
@@ -462,6 +483,7 @@ private fun serializePlanToJson(plan: live.localapp.local.domain.model.Plan): St
                                 put("ticketUrl", kotlinx.serialization.json.JsonPrimitive(slot.ticketUrl))
                                 put("venueRating", kotlinx.serialization.json.JsonPrimitive(slot.venueRating))
                                 put("venueAddress", kotlinx.serialization.json.JsonPrimitive(slot.venueAddress))
+                                put("venueCity", kotlinx.serialization.json.JsonPrimitive(slot.venueCity))
                                 put("venueName", kotlinx.serialization.json.JsonPrimitive(slot.venueName))
                                 put("venueLat", kotlinx.serialization.json.JsonPrimitive(slot.venueLat))
                                 put("venueLng", kotlinx.serialization.json.JsonPrimitive(slot.venueLng))

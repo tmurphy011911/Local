@@ -64,6 +64,10 @@ data class PlanSlot(
     val ticketUrl: String? = null,
     val venueRating: Double? = null,
     val venueAddress: String? = null,
+    /** Venue city — populated from the event row's `venue_city` (events)
+     *  or the venues table (venue stops). Used as a subtitle fallback
+     *  when venueAddress is null/unparseable. */
+    val venueCity: String? = null,
     val venueName: String? = null,
     val venueLat: Double? = null,
     val venueLng: Double? = null,

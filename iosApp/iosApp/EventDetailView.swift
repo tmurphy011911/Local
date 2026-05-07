@@ -135,9 +135,18 @@ private func computeCountdown(startAt: String?) -> Countdown {
 
 // MARK: - Date Formatting
 
-private func formatDate(_ isoDate: String) -> String {
-    let isMidnightUtc = isoDate.contains("T00:00:00")
-
+/// Format an event's start_at for the detail screen.
+///
+/// Caller MUST pass the event's `timeKnown` flag — without it we used to
+/// guess from the ISO string ("does it contain T00:00:00?"), which silently
+/// classified real 8 PM Eastern events as date-only because their UTC form
+/// is midnight the next day. That's how the tray showed "Friday May 8" but
+/// the detail screen showed "May 9, 2026" — same row, two timezones,
+/// different calendar days. The flag removes the ambiguity:
+///   - timeKnown=true  → format in the user's local tz (what they expect).
+///   - timeKnown=false → date-only; format in UTC so legacy noon/midnight-UTC
+///     rows don't shift back a day for users west of UTC.
+private func formatDate(_ isoDate: String, timeKnown: Bool) -> String {
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
     guard let date = formatter.date(from: isoDate) ?? {
@@ -146,11 +155,9 @@ private func formatDate(_ isoDate: String) -> String {
         return f2.date(from: isoDate)
     }() else { return isoDate }
 
-    let cal = Calendar.current
     let months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
 
-    if isMidnightUtc {
-        // Use UTC components
+    if !timeKnown {
         var utcCal = Calendar.current
         utcCal.timeZone = TimeZone(identifier: "UTC")!
         let comps = utcCal.dateComponents([.year, .month, .day], from: date)
@@ -158,7 +165,7 @@ private func formatDate(_ isoDate: String) -> String {
         return "\(month) \(comps.day ?? 1), \(comps.year ?? 2026)"
     }
 
-    let comps = cal.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+    let comps = Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: date)
     let month = months[(comps.month ?? 1) - 1]
     let day = comps.day ?? 1
     let year = comps.year ?? 2026
@@ -412,8 +419,11 @@ struct EventDetailView: View {
             )
             let isRecurring = recurrence != nil
 
-            // Countdown — skip for recurring events
-            if countdown.hasDate && !isRecurring {
+            // Countdown — skip for recurring events and TBD-time events.
+            // When time_known=false the start_at is just a calendar-day
+            // placeholder (noon UTC), so a ticking down-to-the-minute banner
+            // would be a lie — better to omit it.
+            if countdown.hasDate && !isRecurring && event.timeKnown {
                 countdownBanner
                 Spacer().frame(height: 16)
             }
@@ -441,7 +451,9 @@ struct EventDetailView: View {
             // Date-only events (timeKnown=false) get a "Time TBD" suffix
             // instead of the misleading "12:00 AM" the formatter would emit.
             if let startAt = event.startAt {
-                let baseText = isRecurring ? "Next: \(formatDate(startAt))" : formatDate(startAt)
+                let baseText = isRecurring
+                    ? "Next: \(formatDate(startAt, timeKnown: event.timeKnown))"
+                    : formatDate(startAt, timeKnown: event.timeKnown)
                 let displayText: String = {
                     guard !event.timeKnown else { return baseText }
                     // Strip any time component the formatter appended (e.g.,

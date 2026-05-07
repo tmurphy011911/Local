@@ -14,6 +14,13 @@ class ChatState: ObservableObject {
     @Published var showPlanSuccess: Bool = false
     @Published var days: [DaySnapshot] = []
     @Published var weather: [KotlinInt: WeatherSnapshot] = [:]
+    /// Total people on the plan (creator + invitees). Drives the post-save
+    /// celebration's Share Plan CTA copy. Defaults to 1 (solo) so the label
+    /// reads sensibly before the first state snapshot arrives.
+    @Published var planAttendeeCount: Int = 1
+    /// ID of the just-saved plan — used by the celebration's "View Plan"
+    /// link to deep-link to the plan detail page after switching tabs.
+    @Published var lastSavedPlanId: String = ""
 
     func update(from snapshot: ChatStateSnapshot) {
         DispatchQueue.main.async { [weak self] in
@@ -27,6 +34,8 @@ class ChatState: ObservableObject {
             self?.showPlanSuccess = snapshot.showPlanSuccess
             self?.days = snapshot.days
             self?.weather = snapshot.weather
+            self?.planAttendeeCount = Int(snapshot.planAttendeeCount)
+            self?.lastSavedPlanId = snapshot.lastSavedPlanId
         }
     }
 }
@@ -143,6 +152,22 @@ struct ChatView: View {
     @StateObject private var state = ChatState()
     @State private var inputText = ""
     @FocusState private var inputFocused: Bool
+    /// Event IDs the user has tapped [+] on inside any SuggestionTray on this
+    /// chat session. While non-empty, a "Create plan" CTA appears above the
+    /// input bar — tap fires the canonical Build message back to Bo and
+    /// clears the selection. Cleared whenever messages reset (Start over).
+    @State private var selectedEventIds: Set<String> = []
+    /// Per-(messageId, groupKey) loading flags for the Find-more tile. Set
+    /// when the user taps Find more, cleared when ChatBridge.onLoadMoreFinished
+    /// fires for that key.
+    @State private var loadingGroupKeys: Set<String> = []
+    /// Per-(messageId, groupKey) flags for "no more results" — tile becomes
+    /// disabled once the well runs dry to prevent repeat taps.
+    @State private var exhaustedGroupKeys: Set<String> = []
+    /// AI text-bubble IDs whose typewriter animation has finished. New AI
+    /// messages reveal char-by-char on first appearance; once typed, they
+    /// stay static so re-renders / scrolling don't replay the animation.
+    @State private var typedMessageIds: Set<String> = []
     let onDismiss: () -> Void
     let showUpgradeBanner: Bool
     let onUpgrade: () -> Void
@@ -166,12 +191,21 @@ struct ChatView: View {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 12) {
                         ForEach(state.messages, id: \.id) { message in
-                            if message.isPlanCard {
-                                planCardRow(message)
-                            } else {
-                                messageRow(message)
+                            Group {
+                                if message.isPlanCard {
+                                    planCardRow(message)
+                                } else if let suggestions = message.structured {
+                                    suggestionTrayRow(messageId: message.id, suggestions: suggestions)
+                                } else {
+                                    messageRow(message)
+                                }
                             }
+                            .transition(.asymmetric(
+                                insertion: .opacity.combined(with: .move(edge: .bottom)),
+                                removal: .opacity
+                            ))
                         }
+                        .animation(.easeOut(duration: 0.22), value: state.messages.count)
 
                         // Mutually exclusive, matching Compose priority:
                         // searching (idiom) > streaming text > typing dots.
@@ -209,6 +243,13 @@ struct ChatView: View {
                 }
             }
 
+            // Create plan CTA (hidden during celebration). Shown when the
+            // user has tapped [+] on 1+ events in a SuggestionTray.
+            if !selectedEventIds.isEmpty && !state.showPlanSuccess {
+                createPlanBar
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             // Quick replies (hidden during celebration)
             if !state.quickReplies.isEmpty && !state.showPlanSuccess {
                 quickRepliesRow
@@ -224,6 +265,7 @@ struct ChatView: View {
             if state.showPlanSuccess {
                 PlanCelebrationOverlay(
                     days: state.days,
+                    attendeeCount: state.planAttendeeCount,
                     onSharePlan: {
                         // Fire the system share sheet for the plan we just
                         // saved. Do NOT clear the success overlay — the user
@@ -231,12 +273,21 @@ struct ChatView: View {
                         ChatBridge.shared.sharePlan?()
                     },
                     onViewPlans: {
-                        // Switch the native tab bar to Plans (index 2), clear
-                        // the success state in Kotlin, then dismiss the chat
-                        // sheet so the user lands on the Plans tab.
+                        // First: switch to Plans tab and dismiss chat. Second:
+                        // open the just-saved plan's detail sheet so the user
+                        // lands directly on it rather than the list. The
+                        // Kotlin viewSavedPlan binding fetches the plan and
+                        // calls showNativePlanDetail; brief delay so the tab
+                        // switch + sheet dismiss complete first.
+                        let savedId = state.lastSavedPlanId
                         TabBarBridge.shared.onTabSelected?(KotlinInt(integerLiteral: 2))
                         ChatBridge.shared.clearSuccessState?()
                         onDismiss()
+                        if !savedId.isEmpty {
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                                ChatBridge.shared.viewSavedPlan?(savedId)
+                            }
+                        }
                     }
                 )
             }
@@ -245,7 +296,23 @@ struct ChatView: View {
             ChatBridge.shared.onStateUpdate = { snapshot in
                 state.update(from: snapshot)
             }
+            ChatBridge.shared.onLoadMoreFinished = { messageId, groupKey, addedCount in
+                let key = loadKey(messageId: messageId as String, groupKey: groupKey as String)
+                let added = Int(truncating: addedCount)
+                DispatchQueue.main.async {
+                    loadingGroupKeys.remove(key)
+                    if added == 0 {
+                        exhaustedGroupKeys.insert(key)
+                    }
+                }
+            }
         }
+    }
+
+    /// Composite key for the loading/exhausted sets — same message can have
+    /// multiple groups, same group key can appear across messages.
+    private func loadKey(messageId: String, groupKey: String) -> String {
+        "\(messageId)|\(groupKey)"
     }
 
     // MARK: - Header
@@ -271,7 +338,11 @@ struct ChatView: View {
 
                 Spacer()
 
-                Button(action: { ChatBridge.shared.resetChat?() }) {
+                Button(action: {
+                    selectedEventIds.removeAll()
+                    typedMessageIds.removeAll()
+                    ChatBridge.shared.resetChat?()
+                }) {
                     Text("Start over")
                         .font(F.body(13, .bold))
                         .foregroundColor(C.ink3)
@@ -329,8 +400,12 @@ struct ChatView: View {
                     .padding(.vertical, 10)
                     .background(C.mist)
                     .clipShape(RoundedRectangle(cornerRadius: 18))
-            } else {
+            } else if typedMessageIds.contains(message.id) {
                 aiMessageBubble(message.text)
+            } else {
+                TypewritingAiBubble(text: message.text) {
+                    typedMessageIds.insert(message.id)
+                }
             }
 
             if !message.isUser { Spacer(minLength: 40) }
@@ -419,6 +494,83 @@ struct ChatView: View {
                 }
             }
         )
+    }
+
+    // MARK: - Suggestion Tray
+
+    /// Renders a `present_suggestions` structured response as a tray of
+    /// event cards. Matches the Compose `SuggestionTray` styling so the
+    /// iOS and Android trays look the same.
+    private func suggestionTrayRow(messageId: String, suggestions: SuggestionsSnapshot) -> some View {
+        SuggestionTrayView(
+            messageId: messageId,
+            suggestions: suggestions,
+            isSelected: { selectedEventIds.contains($0) },
+            onToggleSelected: { eventId in
+                withAnimation(.easeOut(duration: 0.18)) {
+                    if selectedEventIds.contains(eventId) {
+                        selectedEventIds.remove(eventId)
+                    } else {
+                        selectedEventIds.insert(eventId)
+                    }
+                }
+            },
+            onOpenEvent: { ev in
+                ChatBridge.shared.onEventTap?(ev.eventId, ev.imageUrl)
+            },
+            onFooterAction: { intent in
+                ChatBridge.shared.sendMessage?(intent)
+            },
+            isGroupLoading: { groupKey in
+                loadingGroupKeys.contains(loadKey(messageId: messageId, groupKey: groupKey))
+            },
+            isGroupExhausted: { groupKey in
+                exhaustedGroupKeys.contains(loadKey(messageId: messageId, groupKey: groupKey))
+            },
+            onFindMore: { dayKey, categoryKey in
+                let groupKey = dayKey ?? categoryKey ?? ""
+                guard !groupKey.isEmpty else { return }
+                let key = loadKey(messageId: messageId, groupKey: groupKey)
+                guard !loadingGroupKeys.contains(key), !exhaustedGroupKeys.contains(key) else { return }
+                loadingGroupKeys.insert(key)
+                ChatBridge.shared.loadMoreSuggestions?(messageId, dayKey, categoryKey)
+            }
+        )
+        .padding(.trailing, 40) // visual balance: keep tray off the right edge
+    }
+
+    /// Persistent "Create plan" CTA above the input bar, shown when the user
+    /// has tapped [+] on at least one event from a SuggestionTray. Mirrors
+    /// the Compose `DraftPlanTray` Build CTA. Sends Bo the canonical Build
+    /// message — see `ChatViewModel.buildFromDraftTray` for the format.
+    private var createPlanBar: some View {
+        let count = selectedEventIds.count
+        return VStack(spacing: 0) {
+            Divider().background(C.pebble.opacity(0.5))
+            Button {
+                let ids = Array(selectedEventIds)
+                ChatBridge.shared.buildPlanFromSelections?(ids)
+                withAnimation(.easeOut(duration: 0.18)) {
+                    selectedEventIds.removeAll()
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles")
+                        .font(.system(size: 14, weight: .bold))
+                    Text("Create plan from \(count) event\(count == 1 ? "" : "s")")
+                        .font(F.body(15, .black))
+                }
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(C.coral)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 10)
+            }
+            .buttonStyle(.plain)
+        }
+        .background(C.snow)
     }
 
     // MARK: - Plan Success
@@ -532,7 +684,10 @@ private struct MultiDayPlanCardView: View {
         return max(0, min(dayIndex, days.count - 1))
     }
     private var day: DaySnapshot { days[safeDayIndex] }
-    private var color: Color { dayColors[safeDayIndex % dayColors.count] }
+    // All day cards now use the same coral so the plan reads as a single
+    // brand artifact instead of a rotating rainbow. dayColors stays around
+    // for any historical/legacy callers but isn't used by the celebration.
+    private var color: Color { C.coral }
     private var activeSlot: Int {
         guard let id = slotId[safeDayIndex] else { return 0 }
         return day.slots.firstIndex { $0.id == id } ?? 0
@@ -555,12 +710,11 @@ private struct MultiDayPlanCardView: View {
             slotDots
             if showSave { saveButton }
         }
-        .background(.white)
+        .background(Color(hex2: 0xFFF8F2)) // warm cream — softer on the coral overlay than pure white
         .clipShape(RoundedRectangle(cornerRadius: 18))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(C.pebble, lineWidth: 1.5))
         .shadow(color: C.ink.opacity(0.06), radius: 8, x: 0, y: 3)
         .padding(.horizontal, 4)
-        .padding(.bottom, 4)
     }
 
     // MARK: Header with DAY X OF Y + arrow controls
@@ -661,8 +815,10 @@ private struct MultiDayPlanCardView: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.top, 10)
-        .padding(.bottom, 6)
+        // 8pt above + 12pt below — the timeline reads as a label for the
+        // card row beneath it without crowding either neighbor.
+        .padding(.top, 8)
+        .padding(.bottom, 12)
         .animation(.easeInOut(duration: 0.2), value: activeSlot)
     }
 
@@ -709,7 +865,11 @@ private struct MultiDayPlanCardView: View {
 
     @ViewBuilder
     private var slotDots: some View {
-        if day.slots.count > 1 {
+        // Render the dot row even for single-slot days — a single
+        // selected capsule. Without this, 1-stop days collapsed
+        // upward (no row reserved) and the card came out shorter
+        // than 2+ stop days, breaking the spacing across siblings.
+        if !day.slots.isEmpty {
             HStack(spacing: 8) {
                 ForEach(Array(day.slots.enumerated()), id: \.offset) { index, _ in
                     let selected = activeSlot == index
@@ -719,8 +879,8 @@ private struct MultiDayPlanCardView: View {
                 }
             }
             .frame(maxWidth: .infinity)
-            .padding(.top, 10)
-            .padding(.bottom, 6)
+            .padding(.top, 6)
+            .padding(.bottom, 8)
             .animation(.easeInOut(duration: 0.25), value: activeSlot)
         }
     }
@@ -753,6 +913,11 @@ private struct SlotCardView: View {
     let color: Color
 
     var body: some View {
+        // Image area is shorter (80pt instead of 100pt) — the card was
+        // reading "massively tall" because the image dominated the
+        // vertical space even when it was a coral fallback with no
+        // photo. Real photos still feel rich at 80pt; fallbacks feel
+        // less like dead space.
         VStack(alignment: .leading, spacing: 0) {
             Group {
                 if let urlStr = slot.imageUrl, let url = URL(string: urlStr) {
@@ -779,8 +944,8 @@ private struct SlotCardView: View {
                     slotImageFallback
                 }
             }
-            .frame(maxWidth: .infinity, maxHeight: 100)
-            .frame(height: 100)
+            .frame(maxWidth: .infinity, maxHeight: 80)
+            .frame(height: 80)
             .clipped()
 
             VStack(alignment: .leading, spacing: 3) {
@@ -788,11 +953,16 @@ private struct SlotCardView: View {
                     .font(F.body(13, .bold))
                     .foregroundColor(C.ink)
                     .lineLimit(1)
+                // Always reserve 2 lines of subtitle space + a star row,
+                // even when empty, so every card in the horizontal pager
+                // is the same height. Empty values render as transparent
+                // placeholders, not collapsed.
                 Text(slot.detail.isEmpty ? " " : slot.detail)
                     .font(F.body(11, .semibold))
                     .foregroundColor(C.ink3)
                     .lineLimit(2)
                     .frame(height: 32, alignment: .topLeading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: 2) {
                     if let rating = slot.venueRating as? Double, rating > 0 {
                         Image(systemName: "star.fill")
@@ -804,12 +974,15 @@ private struct SlotCardView: View {
                     }
                 }
                 .frame(height: 14)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(10)
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .frame(height: 200)
-        .background(.white)
+        // Card hugs content vertically — no fixed 200pt frame, so empty
+        // rating / single-line subtitle no longer leave dead whitespace
+        // below the content.
+        .background(Color(hex2: 0xFFF8F2)) // warm cream — softer than pure white against the coral hero
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(C.pebble, lineWidth: 1))
         .onTapGesture {
@@ -845,7 +1018,16 @@ private struct SlotCardView: View {
 
 private struct SearchingIndicatorView: View {
     @State private var phraseIndex: Int = Int.random(in: 0..<searchingPhrases.count)
+    @State private var revealCount: Int = 0
     @State private var opacity: Double = 1.0
+    @State private var caretOn: Bool = true
+
+    private var fullPhrase: String { searchingPhrases[phraseIndex % searchingPhrases.count] }
+    private var revealed: String {
+        let chars = Array(fullPhrase)
+        return String(chars.prefix(min(revealCount, chars.count)))
+    }
+    private var isTyping: Bool { revealCount < fullPhrase.count }
 
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
@@ -854,19 +1036,48 @@ private struct SearchingIndicatorView: View {
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 20, height: 20)
                 .padding(.top, 1)
-            Text(searchingPhrases[phraseIndex % searchingPhrases.count])
-                .font(F.body(14, .semibold))
-                .foregroundColor(C.ink3)
-                .opacity(opacity)
+            HStack(alignment: .firstTextBaseline, spacing: 1) {
+                Text(revealed)
+                    .font(F.body(14, .semibold))
+                    .foregroundColor(C.ink3)
+                Text("▍")
+                    .font(F.body(14, .semibold))
+                    .foregroundColor(C.coral)
+                    .opacity(caretOn ? 1 : 0)
+            }
+            .opacity(opacity)
         }
         .padding(.vertical, 2)
         .task {
+            // Typewriter loop: reveal chars at ~28ms, hold full phrase ~1.4s,
+            // fade out, advance, and type the next phrase. Slight randomness
+            // on the per-char delay so it doesn't feel mechanical.
             while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 2_500_000_000)
-                withAnimation(.easeIn(duration: 0.2)) { opacity = 0 }
+                opacity = 1.0
+                revealCount = 0
+                let phrase = fullPhrase
+                let chars = Array(phrase)
+                for i in 1...max(chars.count, 1) {
+                    let jitter = UInt64.random(in: 0...20_000_000)
+                    try? await Task.sleep(nanoseconds: 26_000_000 + jitter)
+                    if Task.isCancelled { return }
+                    revealCount = i
+                }
+                try? await Task.sleep(nanoseconds: 1_400_000_000)
+                if Task.isCancelled { return }
+                withAnimation(.easeIn(duration: 0.18)) { opacity = 0 }
                 try? await Task.sleep(nanoseconds: 220_000_000)
+                if Task.isCancelled { return }
                 phraseIndex += 1
-                withAnimation(.easeOut(duration: 0.4)) { opacity = 1 }
+            }
+        }
+        .task {
+            // Caret blink — independent loop so it keeps blinking after typing
+            // finishes during the hold + fade phase.
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 480_000_000)
+                if Task.isCancelled { return }
+                caretOn.toggle()
             }
         }
     }
@@ -876,6 +1087,8 @@ private struct SearchingIndicatorView: View {
 
 private struct PlanCelebrationOverlay: View {
     let days: [DaySnapshot]
+    /// Total people on the plan (creator + invitees). 1 = solo.
+    let attendeeCount: Int
     let onSharePlan: () -> Void
     let onViewPlans: () -> Void
 
@@ -888,6 +1101,18 @@ private struct PlanCelebrationOverlay: View {
     @State private var cardOpacity: Double = 0
     @State private var ctaOffset: CGFloat = 60
     @State private var ctaOpacity: Double = 0
+
+    /// "Share Plan" for solo plans; "Share with N others" for groups.
+    /// N excludes the creator (3-person plan → "with 2 others"). Singular
+    /// handled separately ("with 1 other").
+    private var sharePlanCtaLabel: String {
+        let others = max(0, attendeeCount - 1)
+        switch others {
+        case 0: return "Share Plan"
+        case 1: return "Share with 1 other"
+        default: return "Share with \(others) others"
+        }
+    }
 
     private var dateSubtitle: String {
         guard !days.isEmpty else { return "" }
@@ -973,37 +1198,36 @@ private struct PlanCelebrationOverlay: View {
 
                 Spacer()
 
-                // CTAs — match Compose: Share Plan, View Plans, Home
-                VStack(spacing: 8) {
+                // CTA stack: primary Share Plan button (label adapts to
+                // group size), with View Plans demoted to a secondary
+                // text link beneath it. The old equal-weight two-button
+                // stack made View Plans compete visually with Share Plan
+                // even though sharing is the natural next step right
+                // after saving.
+                VStack(spacing: 12) {
                     Button(action: onSharePlan) {
                         HStack(spacing: 9) {
                             Image(systemName: "square.and.arrow.up")
                                 .font(.system(size: 15, weight: .bold))
                                 .foregroundColor(C.coral)
-                            Text("Share Plan")
+                            Text(sharePlanCtaLabel)
                                 .font(F.display(15, .heavy))
                                 .foregroundColor(C.coral)
                         }
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 15)
-                        .background(.white)
+                        .background(Color(hex2: 0xFFF8F2)) // warm cream — softer on coral than pure white
                         .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
 
                     Button(action: onViewPlans) {
-                        Text("View Plans")
-                            .font(F.display(14, .heavy))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 13)
-                            .background(.white.opacity(0.2))
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 14)
-                                    .stroke(.white.opacity(0.4), lineWidth: 1.5)
-                            )
+                        Text("View Plan")
+                            .font(F.body(13, .bold))
+                            .foregroundColor(.white.opacity(0.85))
+                            .underline()
+                            .padding(.vertical, 4)
                     }
-
+                    .buttonStyle(.plain)
                 }
                 .offset(y: ctaOffset)
                 .opacity(ctaOpacity)
@@ -1062,5 +1286,314 @@ private struct PlanCelebrationOverlay: View {
             ctaOffset = 0
             ctaOpacity = 1
         }
+    }
+}
+
+// MARK: - Typewriting AI Bubble
+
+/// AI text bubble that reveals its content char-by-char on first appearance.
+/// Once the animation completes, the parent moves the message id into its
+/// "already typed" set so re-renders (state pushes, scrolling) don't
+/// replay the effect. The visual matches `aiMessageBubble`.
+private struct TypewritingAiBubble: View {
+    let text: String
+    let onComplete: () -> Void
+
+    @State private var revealCount: Int = 0
+    @State private var caretOn: Bool = true
+
+    private var revealed: String {
+        let chars = Array(text)
+        return String(chars.prefix(min(revealCount, chars.count)))
+    }
+    private var isComplete: Bool { revealCount >= text.count }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text("Bo")
+                .font(F.body(11, .bold))
+                .foregroundColor(C.coral)
+                .padding(.leading, 28)
+            HStack(alignment: .top, spacing: 8) {
+                Image("BoTiny")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 20, height: 20)
+                    .padding(.top, 1)
+                HStack(alignment: .firstTextBaseline, spacing: 1) {
+                    Text(revealed)
+                        .font(F.body(15))
+                        .foregroundColor(C.ink)
+                        .multilineTextAlignment(.leading)
+                    if !isComplete {
+                        Text("▍")
+                            .font(F.body(15, .semibold))
+                            .foregroundColor(C.coral)
+                            .opacity(caretOn ? 1 : 0)
+                    }
+                }
+            }
+        }
+        .task {
+            // Char reveal — slight per-char jitter so it doesn't feel mechanical.
+            // Pace tuned so a 200-char paragraph completes in ~2.5s.
+            let chars = Array(text)
+            let total = chars.count
+            if total == 0 {
+                onComplete()
+                return
+            }
+            for i in 1...total {
+                let jitter = UInt64.random(in: 0...4_000_000)
+                try? await Task.sleep(nanoseconds: 11_000_000 + jitter)
+                if Task.isCancelled { return }
+                revealCount = i
+            }
+            // Tiny hold so the caret blink is visible at the end before it disappears.
+            try? await Task.sleep(nanoseconds: 280_000_000)
+            if Task.isCancelled { return }
+            onComplete()
+        }
+        .task {
+            // Caret blink — independent loop, runs until the view disappears.
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 480_000_000)
+                if Task.isCancelled { return }
+                caretOn.toggle()
+            }
+        }
+    }
+}
+
+// MARK: - Suggestion Tray (Bo present_suggestions)
+
+private enum STC {
+    static let ink     = Color(hex2: 0x1A1523)
+    static let ink3    = Color(hex2: 0x8B7FA0)
+    static let pebble  = Color(hex2: 0xE0DCE8)
+    static let coral   = Color(hex2: 0xFF6B6B)
+    static let sage    = Color(hex2: 0x4ECBA0)
+    static let sky     = Color(hex2: 0x5B9CF6)
+    static let skyLt   = Color(hex2: 0xE8F1FE)
+}
+
+private enum STF {
+    static func display(_ size: CGFloat, _ weight: Font.Weight = .black) -> Font {
+        Font.custom("Fraunces", size: size).weight(weight)
+    }
+    static func body(_ size: CGFloat, _ weight: Font.Weight = .medium) -> Font {
+        Font.custom("Nunito", size: size).weight(weight)
+    }
+}
+
+struct SuggestionTrayView: View {
+    let messageId: String
+    let suggestions: SuggestionsSnapshot
+    let isSelected: (String) -> Bool
+    let onToggleSelected: (String) -> Void
+    let onOpenEvent: (SuggestionEventSnapshot) -> Void
+    let onFooterAction: (String) -> Void
+    let isGroupLoading: (String) -> Bool
+    let isGroupExhausted: (String) -> Bool
+    let onFindMore: (_ dayKey: String?, _ categoryKey: String?) -> Void
+
+    /// Fixed card width so a horizontal carousel always shows ~1.3 cards on a
+    /// standard iPhone width — the partial second card is the affordance that
+    /// tells the user they can swipe.
+    private let cardWidth: CGFloat = 270
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text(suggestions.headline)
+                .font(STF.display(18, .black))
+                .foregroundColor(STC.ink)
+                .padding(.horizontal, 14)
+
+            if isEmpty {
+                Spacer().frame(height: 8)
+                Text("No matches yet — want me to broaden the search?")
+                    .font(STF.body(13, .medium))
+                    .foregroundColor(STC.ink3)
+                    .padding(.horizontal, 14)
+            } else {
+                ForEach(Array(suggestions.groups.enumerated()), id: \.offset) { _, group in
+                    Spacer().frame(height: 12)
+                    if !group.label.isEmpty {
+                        Text(group.label)
+                            .font(STF.body(12, .heavy))
+                            .foregroundColor(STC.ink3)
+                            .tracking(0.6)
+                            .padding(.horizontal, 14)
+                        Spacer().frame(height: 8)
+                    }
+                    // Horizontal carousel — each event becomes a fixed-width
+                    // card. View-aligned snapping makes paging feel decisive.
+                    // Content margins push the first card 14pt off the edge
+                    // so it lines up with the headline above.
+                    let groupKey = group.dayKey ?? group.categoryKey ?? ""
+                    let canFindMore = !groupKey.isEmpty && !isGroupExhausted(groupKey)
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        LazyHStack(spacing: 10) {
+                            ForEach(Array(group.events.enumerated()), id: \.offset) { _, ev in
+                                SuggestionCardView(
+                                    event: ev,
+                                    isSelected: isSelected(ev.eventId),
+                                    onTap: { onOpenEvent(ev) },
+                                    onToggleSelected: { onToggleSelected(ev.eventId) }
+                                )
+                                .frame(width: cardWidth)
+                            }
+                            if canFindMore {
+                                FindMoreTile(
+                                    isLoading: isGroupLoading(groupKey),
+                                    onTap: { onFindMore(group.dayKey, group.categoryKey) }
+                                )
+                                .frame(width: 140)
+                            }
+                        }
+                        .scrollTargetLayout()
+                    }
+                    .scrollTargetBehavior(.viewAligned)
+                    .contentMargins(.horizontal, 14, for: .scrollContent)
+                }
+            }
+
+            if let footer = suggestions.footer, !footer.actions.isEmpty {
+                Spacer().frame(height: 14)
+                if !footer.text.isEmpty {
+                    Text(footer.text)
+                        .font(STF.body(12, .semibold))
+                        .foregroundColor(STC.ink3)
+                        .padding(.horizontal, 14)
+                    Spacer().frame(height: 6)
+                }
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 6) {
+                        ForEach(Array(footer.actions.enumerated()), id: \.offset) { _, action in
+                            Button(action: { onFooterAction(action.intent) }) {
+                                Text(action.label)
+                                    .font(STF.body(12, .bold))
+                                    .foregroundColor(STC.sky)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 6)
+                                    .background(STC.skyLt)
+                                    .clipShape(Capsule())
+                                    .overlay(Capsule().stroke(STC.sky, lineWidth: 1))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                }
+            }
+        }
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.white)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(STC.pebble, lineWidth: 1.5))
+    }
+
+    private var isEmpty: Bool {
+        suggestions.groups.isEmpty || suggestions.groups.allSatisfy { $0.events.isEmpty }
+    }
+}
+
+private struct SuggestionCardView: View {
+    let event: SuggestionEventSnapshot
+    let isSelected: Bool
+    let onTap: () -> Void
+    let onToggleSelected: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(alignment: .leading, spacing: 4) {
+                // Title shares its row with the [+] toggle so a 2-line title
+                // never collides with the button — they wrap around each
+                // other naturally, and the trailing 8pt spacing keeps a
+                // breath of air between them.
+                HStack(alignment: .top, spacing: 8) {
+                    Text(event.title)
+                        .font(STF.display(15, .bold))
+                        .foregroundColor(STC.ink)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                    Button(action: onToggleSelected) {
+                        Image(systemName: isSelected ? "checkmark" : "plus")
+                            .font(.system(size: 11, weight: .black))
+                            .foregroundColor(.white)
+                            .frame(width: 22, height: 22)
+                            .background(isSelected ? STC.sage : STC.coral)
+                            .clipShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isSelected ? "Remove from plan selection" : "Add to plan selection")
+                }
+                if !timeAndVenue.isEmpty {
+                    Text(timeAndVenue)
+                        .font(STF.body(12, .semibold))
+                        .foregroundColor(STC.ink3)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                if let rationale = event.rationale, !rationale.isEmpty {
+                    Text(rationale)
+                        .font(STF.body(12, .medium))
+                        .foregroundColor(STC.coral)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 10)
+            .frame(maxWidth: .infinity, minHeight: 86, alignment: .topLeading)
+            .background(STC.skyLt.opacity(0.35))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(STC.pebble, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var timeAndVenue: String {
+        [event.timeLabel, event.venueName]
+            .filter { !$0.isEmpty }
+            .joined(separator: " · ")
+    }
+}
+
+/// Trailing tile in a SuggestionTray carousel that lets the user pull more
+/// events for that day/category inline (no chat round-trip with Bo).
+private struct FindMoreTile: View {
+    let isLoading: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(spacing: 8) {
+                if isLoading {
+                    ProgressView()
+                        .progressViewStyle(.circular)
+                        .tint(STC.sky)
+                } else {
+                    Image(systemName: "arrow.right.circle.fill")
+                        .font(.system(size: 26, weight: .bold))
+                        .foregroundColor(STC.sky)
+                }
+                Text(isLoading ? "Looking…" : "Find more")
+                    .font(STF.body(13, .bold))
+                    .foregroundColor(STC.sky)
+            }
+            .frame(maxWidth: .infinity, minHeight: 86, alignment: .center)
+            .background(STC.skyLt.opacity(0.5))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(STC.sky.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+        }
+        .buttonStyle(.plain)
+        .disabled(isLoading)
+        .accessibilityLabel(isLoading ? "Loading more events" : "Find more events")
     }
 }

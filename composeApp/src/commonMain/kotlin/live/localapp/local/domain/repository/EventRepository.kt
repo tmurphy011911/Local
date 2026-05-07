@@ -20,4 +20,23 @@ interface EventRepository {
         userLng: Double? = null,
         radiusMiles: Double? = null,
     ): List<Event>
+
+    /**
+     * Three-lane stratified search (breadth + niche + keyword) used by the
+     * Yocal/Bo chat to give the model a diverse cross-section of upcoming
+     * events without forcing it to fan out across multiple narrow searches.
+     * Distinct from [searchEvents] which is a strict filter — this one
+     * intentionally returns events outside the keyword/category to ensure
+     * coverage. Backed by `search_events_stratified` Postgres function.
+     */
+    suspend fun searchEventsBroad(
+        userLat: Double,
+        userLng: Double,
+        radiusMiles: Double = 20.0,
+        dateRange: String? = null,
+        startDate: String? = null,
+        endDate: String? = null,
+        keyword: String? = null,
+        limit: Int = 300,
+    ): List<Event>
 }

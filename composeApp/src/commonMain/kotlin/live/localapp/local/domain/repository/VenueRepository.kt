@@ -32,6 +32,8 @@ interface VenueRepository {
     suspend fun findVenueByNameAndCity(name: String, city: String): Venue?
     suspend fun getVenuesByIds(ids: List<String>): List<Venue>
     suspend fun searchByName(name: String): Venue?
+    /** Persist a generated description on a venue row. */
+    suspend fun updateVenueDescription(id: String, description: String)
     /**
      * Wide-scope name search that ignores the user's geo-bbox. Used by the Places
      * page when the user types a search query — lets us surface venues further

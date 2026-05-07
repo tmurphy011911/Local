@@ -228,15 +228,48 @@ class VenueRepositoryImpl(
 
     override suspend fun searchByName(name: String): Venue? {
         return try {
+            // Try exact (case-insensitive) match first. Multiple rows can
+            // exist for the same venue name (Bo-Web duplicates, crawler
+            // duplicates, near-duplicates with different IDs); without
+            // ordering, Postgres returns whichever row it likes — often
+            // a stub row missing photo_url, which is why plan slots show
+            // a placeholder while the venue detail page (using a richer
+            // row) has the photo. Prefer rows that actually have data.
+            val exact = supabaseClient.from("venues")
+                .select {
+                    filter { ilike("name", name) }
+                    order("photo_url", Order.ASCENDING, nullsFirst = false)
+                    order("google_rating", Order.DESCENDING, nullsFirst = false)
+                    limit(1)
+                }
+                .decodeList<VenueDto>()
+                .firstOrNull()
+                ?.toDomain()
+            if (exact != null) return exact
+
             supabaseClient.from("venues")
                 .select {
                     filter { ilike("name", "%${name}%") }
+                    order("photo_url", Order.ASCENDING, nullsFirst = false)
+                    order("google_rating", Order.DESCENDING, nullsFirst = false)
                     limit(1)
                 }
                 .decodeList<VenueDto>()
                 .firstOrNull()
                 ?.toDomain()
         } catch (_: Throwable) { null }
+    }
+
+    override suspend fun updateVenueDescription(id: String, description: String) {
+        try {
+            supabaseClient.from("venues").update({
+                set("description", description)
+            }) {
+                filter { eq("id", id) }
+            }
+        } catch (e: Throwable) {
+            println("updateVenueDescription failed for id=$id: ${e.message}")
+        }
     }
 
     override suspend fun searchByNameWide(

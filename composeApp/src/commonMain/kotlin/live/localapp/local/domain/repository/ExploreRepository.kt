@@ -16,8 +16,15 @@ interface ExploreRepository {
         query: String? = null,
         category: String? = null,
         radiusMiles: Double? = null,
-        /** Slug like "today", "this_weekend", "next_7_days". Null = server default. */
+        /** Slug like "today", "this_weekend", "custom". Null = server default. */
         dateFilter: String? = null,
+        /** ISO date (YYYY-MM-DD), inclusive. Used when dateFilter == "custom". */
+        dateStart: String? = null,
+        /** ISO date (YYYY-MM-DD), inclusive. Used when dateFilter == "custom". */
+        dateEnd: String? = null,
+        /** (local − UTC) in minutes. Server uses this to snap today/tomorrow/
+         *  weekend boundaries to the user's local midnight instead of UTC. */
+        tzOffsetMinutes: Int? = null,
         cursor: String? = null,
         limit: Int = 50,
     ): EventPage
@@ -31,6 +38,8 @@ interface ExploreRepository {
         radiusMiles: Double? = null,
         /** If true, server excludes venues with zero upcoming events. */
         hasEventsOnly: Boolean = false,
+        /** "popular" | "closest" | "most_events". Null defaults to "popular". */
+        sort: String? = null,
         cursor: String? = null,
         limit: Int = 50,
     ): PlacePage

@@ -37,14 +37,15 @@ import androidx.compose.ui.unit.sp
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 
-private val RADIUS_OPTIONS = listOf<Double?>(null, 1.0, 3.0, 5.0, 10.0, 25.0)
+// 5 and 10 mi removed — too narrow for our event density per metro; users
+// who picked them saw mostly empty carousels. Jump straight from 3 mi
+// (walkable) to 25 mi (full metro).
+private val RADIUS_OPTIONS = listOf<Double?>(null, 1.0, 3.0, 25.0)
 
 private fun radiusLabel(miles: Double?): String = when (miles) {
     null  -> "Any distance"
     1.0   -> "1 mi"
     3.0   -> "3 mi"
-    5.0   -> "5 mi"
-    10.0  -> "10 mi"
     25.0  -> "25 mi"
     else  -> "${miles.toInt()} mi"
 }

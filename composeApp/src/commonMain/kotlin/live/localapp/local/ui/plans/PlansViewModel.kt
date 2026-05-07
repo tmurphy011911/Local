@@ -26,6 +26,11 @@ data class PlansUiState(
     val savedEvents: List<Event> = emptyList(),
     val savedVenues: List<Venue> = emptyList(),
     val templateRotationKey: Int = 0,
+    /** Set when an external surface (e.g. the chat-success "View Plan"
+     *  link) wants the Plans tab to auto-open a specific plan. PlansScreen
+     *  observes this and routes through its normal onPlanClick path so the
+     *  full plan-detail wiring fires; cleared after consumption. */
+    val pendingOpenPlanId: String? = null,
 )
 
 class PlansViewModel(
@@ -42,6 +47,16 @@ class PlansViewModel(
     init {
         loadPlans()
         loadSavedItems()
+    }
+
+    /** Set the pending-open plan id. Consumed by PlansScreen on observation. */
+    fun requestOpenPlan(planId: String?) {
+        _uiState.update { it.copy(pendingOpenPlanId = planId) }
+    }
+
+    /** Clear the pending-open signal once PlansScreen has acted on it. */
+    fun consumePendingOpenPlan() {
+        _uiState.update { it.copy(pendingOpenPlanId = null) }
     }
 
     fun refresh() {
@@ -449,7 +464,12 @@ class PlansViewModel(
     private fun loadPlans() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
-            val plans = planRepository.getPlans()
+            val rawPlans = planRepository.getPlans()
+            // Backfill venueCity on slots that have an eventId but no city
+            // — happens for plans saved before PlanSlotDto added the field.
+            // Without this, the plan-detail subtitle row stays blank
+            // ("KIMCHILI KOREAN RESTAURANT" with no city beneath it).
+            val plans = backfillSlotVenueCities(rawPlans)
             _uiState.update {
                 it.copy(
                     upcomingPlans = plans.filter { p -> !p.isPast }.sortedBy { p -> p.createdAt },
@@ -458,6 +478,44 @@ class PlansViewModel(
                     isRefreshing = false,
                 )
             }
+        }
+    }
+
+    /**
+     * Reads `event.venueCity` for any slot missing it and stamps the slot.
+     * Single batched eventRepository call so the cost is one round trip
+     * regardless of how many plans / slots are missing the field.
+     * Slots without an `eventId` (venue stops) are left alone — the city
+     * for those is captured at venue lookup time, not from event rows.
+     */
+    private suspend fun backfillSlotVenueCities(plans: List<live.localapp.local.domain.model.Plan>): List<live.localapp.local.domain.model.Plan> {
+        val needsFill = plans.flatMap { p ->
+            p.days.flatMap { d -> d.slots }
+        }.filter { s ->
+            s.eventId != null && s.venueCity.isNullOrBlank()
+        }.mapNotNull { it.eventId }.distinct()
+        if (needsFill.isEmpty()) return plans
+
+        val eventsById = try {
+            eventRepository.getEventsByIds(needsFill).associateBy { it.id }
+        } catch (e: Throwable) {
+            println("PlansVM.backfillSlotVenueCities: getEventsByIds failed — ${e.message}")
+            return plans
+        }
+
+        return plans.map { plan ->
+            plan.copy(
+                days = plan.days.map { day ->
+                    day.copy(
+                        slots = day.slots.map { slot ->
+                            if (slot.eventId != null && slot.venueCity.isNullOrBlank()) {
+                                val ev = eventsById[slot.eventId]
+                                if (ev != null) slot.copy(venueCity = ev.venueCity) else slot
+                            } else slot
+                        }
+                    )
+                }
+            )
         }
     }
 

@@ -592,7 +592,10 @@ function buildCategories(stateName) {
     { category: "arts_center", includedTypes: ["cultural_center", "performing_arts_theater"], textQuery: `arts centers in ${stateName}` },
     { category: "library", includedTypes: ["library"], textQuery: null },
     { category: "theater", includedTypes: ["performing_arts_theater", "movie_theater"], textQuery: `theaters in ${stateName}` },
-    { category: "escape_room", includedTypes: ["escape_room"], textQuery: `escape rooms in ${stateName}` },
+    // Google Places API v1 doesn't accept "escape_room" in includedTypes
+    // (returns 400 INVALID_ARGUMENT — silent failure mode that yielded 0
+    // escape-room coverage every monthly run). Text-search only.
+    { category: "escape_room", includedTypes: null, textQuery: `escape rooms in ${stateName}` },
 
     // ── Entertainment ──
     { category: "bowling", includedTypes: ["bowling_alley"], textQuery: null },
@@ -641,8 +644,9 @@ async function discoverForGrid(gridCenters, categoriesToRun, currentStateCode) {
       for (const center of gridCenters) {
         console.log(`  Searching around ${center.label} (${center.lat}, ${center.lng})...`);
 
-        // Nearby Search by type
-        for (const type of cat.includedTypes) {
+        // Nearby Search by type. Some categories (e.g. escape_room) aren't
+        // valid Place types in API v1 — they're handled by textQuery only.
+        for (const type of (cat.includedTypes || [])) {
           const places = await searchNearby([type], center.lat, center.lng);
           for (const p of places) {
             if (p.businessStatus === "CLOSED_PERMANENTLY") continue;

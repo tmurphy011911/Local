@@ -1,5 +1,6 @@
 package live.localapp.local.ui.navigation
 
+import kotlinx.datetime.toLocalDateTime
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
@@ -200,7 +201,15 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     // render, because we'd be reading the default mode (CURRENT) before
     // their saved "manual" preference arrived from the DB.
     live.localapp.local.platform.RequestLocationEffect(
+        // Gate on the *stored* preference, not the derived in-memory mode.
+        // HomeViewModel's corruption-repair logic can silently flip a
+        // freshly-onboarded user from MANUAL back to CURRENT_LOCATION when
+        // manualLat/manualLng arrive null (e.g. an autocomplete pick that
+        // didn't supply coords). Reading prefs.locationMode directly means
+        // the OS-prompt only fires when the user explicitly chose
+        // "Allow Location" — never when they picked Manual Address.
         active = homeState.userPreferences != null &&
+            homeState.userPreferences?.locationMode != "manual" &&
             homeState.locationMode == live.localapp.local.ui.home.LocationMode.CURRENT_LOCATION,
         onLocation = { lat, lng ->
             homeVm.setUserLocation(lat, lng)
@@ -498,9 +507,10 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             onVenueClickWithBounds = if (hasNativeHeroTransition) { venue, bounds ->
                                 val currentState = placesVm.uiState.value
                                 val isFav = venue.venue.id in currentState.favoriteVenueIds
-                                // Present the detail IMMEDIATELY with empty events — the Swift
-                                // view shows a skeleton in that case. Fetch events async and
-                                // push them in once ready.
+                                // Server now returns inline events alongside each venue
+                                // (same source as upcomingEventCount), so the detail
+                                // opens with events already populated — no race window
+                                // and no count/list disagreement.
                                 showNativeVenueDetail(
                                     venueWithMeta = venue,
                                     cardX = bounds.left / density,
@@ -513,22 +523,30 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                         placesVm.toggleVenueFavorite(venueId, venue.primaryCategory)
                                     },
                                 )
-                                scope.launch {
-                                    val events = try {
-                                        venueRepo.getUpcomingEventsForVenue(venue.venue.name, venue.venue.city)
-                                    } catch (_: Exception) {
-                                        emptyList()
+                                // Fallback: only re-query if the server gave us none.
+                                // Covers older edge function deployments and odd cases
+                                // where the count > 0 but events list is empty.
+                                if (venue.upcomingEvents.isEmpty() && venue.upcomingEventCount > 0) {
+                                    scope.launch {
+                                        val events = try {
+                                            venueRepo.getUpcomingEventsForVenue(venue.venue.name, venue.venue.city)
+                                        } catch (_: Exception) {
+                                            emptyList()
+                                        }
+                                        live.localapp.local.platform.updateNativeVenueDetailEvents(venue.venue.id, events)
                                     }
-                                    live.localapp.local.platform.updateNativeVenueDetailEvents(venue.venue.id, events)
                                 }
                             } else null,
-                            onEventClick = { event ->
+                            onEventClick = { event, bounds ->
                                 val currentState = placesVm.uiState.value
                                 val isFav = event.id in currentState.favoriteEventIds
                                 if (hasNativeHeroTransition) {
                                     showNativeEventDetail(
                                         event = event,
-                                        cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                                        cardX = bounds.left / density,
+                                        cardY = bounds.top / density,
+                                        cardW = bounds.width / density,
+                                        cardH = bounds.height / density,
                                         cardImageUrl = event.imageUrl,
                                         onDismissed = {},
                                         onFavorited = { eventId ->
@@ -657,10 +675,29 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                         onAddEvent = { dayIdx ->
                                             // Per spec: + Add event opens the per-plan Bo chat with
                                             // a prompt that names the day. Bo has plan context + edit tools.
+                                            // Append the year so Bo doesn't ask "which Thursday?" — the
+                                            // system prompt has the same anchor but doubling up here
+                                            // means the user-visible message also reads unambiguously.
                                             val dayLabel = plan.days.getOrNull(dayIdx)?.label ?: "this day"
+                                            val today = kotlin.time.Clock.System.now()
+                                                .toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault()).date
+                                            // Inline year inference — same logic as
+                                            // PlanChatViewModel.expandLabelWithYearAndIso. If the
+                                            // parsed month is already past today, assume next year.
+                                            val withYear = run {
+                                                val months = listOf("January","February","March","April","May","June",
+                                                    "July","August","September","October","November","December")
+                                                val afterComma = dayLabel.substringAfter(',', dayLabel).trim()
+                                                val parts = afterComma.split(' ').filter { it.isNotBlank() }
+                                                val monthIdx = if (parts.isNotEmpty()) months.indexOfFirst { it.equals(parts[0], ignoreCase = true) } else -1
+                                                if (monthIdx >= 0 && parts.size >= 2) {
+                                                    val year = if (monthIdx + 1 < today.monthNumber) today.year + 1 else today.year
+                                                    "$dayLabel, $year"
+                                                } else dayLabel
+                                            }
                                             live.localapp.local.platform.openPlanChatSheet(
                                                 plan = plan,
-                                                prePopulatedMessage = "Add an event to $dayLabel",
+                                                prePopulatedMessage = "Add an event to $withYear",
                                                 onDismiss = {},
                                             )
                                         },
@@ -831,6 +868,37 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                                 prePopulatedMessage = "Can you swap out $venueName as there are no $noun available?",
                                                 onDismiss = {},
                                             )
+                                        },
+                                        onSlotTap = { _, _, eventId, venueName ->
+                                            // Slot card tap → open the same native event/venue
+                                            // detail screens used elsewhere in the app. Events
+                                            // win when an event_id is present (concert / show /
+                                            // workshop), venues otherwise (restaurants / bars).
+                                            scope.launch {
+                                                if (!eventId.isNullOrBlank()) {
+                                                    val ev = try { eventRepo.getEvent(eventId) } catch (_: Throwable) { null }
+                                                    if (ev != null) {
+                                                        live.localapp.local.platform.showNativeEventDetail(
+                                                            event = ev,
+                                                            cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                                                            cardImageUrl = ev.imageUrl,
+                                                            onDismissed = {},
+                                                            onFavorited = null,
+                                                            showDirections = false,
+                                                            isFavorited = false,
+                                                        )
+                                                    }
+                                                } else if (!venueName.isNullOrBlank()) {
+                                                    val v = try { venueRepo.searchByName(venueName) } catch (_: Throwable) { null }
+                                                    if (v != null) {
+                                                        live.localapp.local.platform.showNativeVenueDetail(
+                                                            venueWithMeta = live.localapp.local.domain.repository.VenueWithMeta(venue = v),
+                                                            cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                                                            onDismissed = {},
+                                                        )
+                                                    }
+                                                }
+                                            }
                                         },
                                     )
                                 } else {

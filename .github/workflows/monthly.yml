@@ -5,6 +5,11 @@ on:
     - cron: '0 8 1 * *'  # 8am UTC / 3am EST on the 1st of each month
   workflow_dispatch: {}
 
+# Forward-compat: opt into Node 24 for the JS-based actions before the
+# June 2 2026 forced-cutoff. Removes deprecation warnings on every job.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   seed-grids:
     runs-on: ubuntu-latest
@@ -62,6 +67,10 @@ jobs:
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # FORCE re-rank — without this the script only touches null-ranked
+          # venues, so the rebalanced rubric (push community venues from 55 →
+          # 75+) never lands on the existing pre-ranked corpus.
+          FORCE: "1"
         run: node rank_venues.js
 
   backfill-photos:
@@ -79,20 +88,26 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node backfill_venue_photos.js
 
-  backfill-reservations:
-    runs-on: ubuntu-latest
-    needs: backfill-photos
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22'
-      - name: Backfill Reservation URLs (Resy / OpenTable)
-        working-directory: scripts
-        env:
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: node backfill_reservation_urls.js
+  # ── DISABLED until cross-metro haversine filter ships ─────────────────
+  # backfill_reservation_urls.js had cross-metro false positives (Union
+  # Transfer Philly → Chicago, Tree House Brewing MA → LA). The 2026-05-01
+  # run hit the 30m timeout *and* would have written bad reservation_url
+  # data even if it finished. Re-enable only after scripts/backfill_reservation_urls.js
+  # gates writes by haversine distance ≤ ~25mi from the venue's lat/lng.
+  # backfill-reservations:
+  #   runs-on: ubuntu-latest
+  #   needs: backfill-photos
+  #   timeout-minutes: 30
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with:
+  #         node-version: '22'
+  #     - name: Backfill Reservation URLs (Resy / OpenTable)
+  #       working-directory: scripts
+  #       env:
+  #         SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+  #       run: node backfill_reservation_urls.js
 
   reverify-bo-web:
     runs-on: ubuntu-latest

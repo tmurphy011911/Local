@@ -2,6 +2,7 @@ package live.localapp.local.feature.onboarding
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -61,9 +62,16 @@ fun SplashScreen(onComplete: () -> Unit) {
     var tapEnabled by remember { mutableStateOf(false) }
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
 
+    // Use FastOutSlowInEasing rather than the default linear tween — a
+    // long linear fill on Compose-iOS can read as stuttery because Skia
+    // delivers frames at uneven intervals; an eased curve hides micro
+    // stalls and reads as a deliberate "winding up" pace.
     val progress by animateFloatAsState(
         targetValue = progressTarget,
-        animationSpec = tween(if (progressTarget > 0f) 4200 else 0),
+        animationSpec = tween(
+            durationMillis = if (progressTarget > 0f) 4200 else 0,
+            easing = androidx.compose.animation.core.FastOutSlowInEasing,
+        ),
     )
 
     LaunchedEffect(Unit) {
@@ -199,15 +207,31 @@ fun SplashScreen(onComplete: () -> Unit) {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     modifier = Modifier.fillMaxWidth(0.55f),
                 ) {
-                    Text(
-                        "Finding what's on nearby...",
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 11.sp,
-                            color = AppColors.Ink3,
-                        ),
-                    )
+                    // Loading caption swaps from "Finding..." to "Let's
+                    // discover" the moment the progress bar finishes.
+                    // AnimatedContent (vs Crossfade) lets us skip the
+                    // double-overlay frame — the outgoing text fades out
+                    // first, then the incoming text fades in on top of
+                    // a clean canvas, so the eye never sees both at once.
+                    androidx.compose.animation.AnimatedContent(
+                        targetState = readyVisible,
+                        transitionSpec = {
+                            (androidx.compose.animation.fadeIn(tween(280, delayMillis = 120)))
+                                .togetherWith(androidx.compose.animation.fadeOut(tween(140)))
+                                .using(androidx.compose.animation.SizeTransform(clip = false))
+                        },
+                        label = "splashCaption",
+                    ) { ready ->
+                        Text(
+                            if (ready) "Let's discover" else "Finding what's on nearby...",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 11.sp,
+                                color = AppColors.Ink3,
+                            ),
+                        )
+                    }
 
                     Spacer(Modifier.height(8.dp))
 
@@ -231,23 +255,10 @@ fun SplashScreen(onComplete: () -> Unit) {
                         )
                     }
 
-                    Spacer(Modifier.height(14.dp))
-
-                    AnimatedVisibility(
-                        visible = readyVisible,
-                        enter = fadeIn(tween(500)),
-                    ) {
-                        Text(
-                            "Let's discover",
-                            style = TextStyle(
-                                fontFamily = AppFonts.Heading,
-                                fontWeight = FontWeight.Black,
-                                fontSize = 19.sp,
-                                fontStyle = FontStyle.Italic,
-                                color = AppColors.Coral,
-                            ),
-                        )
-                    }
+                    // The big italic "Let's discover" that used to sit
+                    // beneath the progress bar was redundant with the
+                    // top caption swap above. Removing it lets the
+                    // caption + bar carry the moment cleanly.
 
                     if (tapEnabled) {
                         Spacer(Modifier.height(18.dp))

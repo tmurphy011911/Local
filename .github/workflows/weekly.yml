@@ -10,20 +10,61 @@ on:
         required: false
         default: ''
 
+# Forward-compat: opt into Node 24 for JS-based actions before the
+# June 2 2026 forced-cutoff. Removes deprecation warnings on every job.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
+  # Compute the list of active states from the `states` table at workflow
+  # start so adding a new state (UPDATE states SET is_live=true WHERE code=…)
+  # automatically expands the crawl-venues matrix on the next weekly run —
+  # no workflow YAML edit required.
+  compute-states:
+    runs-on: ubuntu-latest
+    outputs:
+      states: ${{ steps.fetch.outputs.states }}
+    steps:
+      - id: fetch
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          STATES=$(curl -sf \
+            "https://blifubxslaucshmlphdc.supabase.co/rest/v1/states?is_live=eq.true&select=code&order=code.asc" \
+            -H "apikey: $SUPABASE_SERVICE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
+            | jq -c '[.[].code]')
+          if [ -z "$STATES" ] || [ "$STATES" = "[]" ]; then
+            echo "No active states found, falling back to MA,RI,PA"
+            STATES='["MA","RI","PA"]'
+          fi
+          echo "Active states: $STATES"
+          echo "states=$STATES" >> "$GITHUB_OUTPUT"
+
+  # crawl-venues was a single 6h+ job that hit GitHub Actions' hard 6h max
+  # every weekend, killing itself and skipping the 4 downstream jobs that
+  # depended on it. Sharding by state runs each in a parallel runner, each
+  # finishing well under 2h. fail-fast=false so one shard hitting a transient
+  # venue error doesn't cancel the others.
   crawl-venues:
     runs-on: ubuntu-latest
-    timeout-minutes: 360
+    needs: compute-states
+    timeout-minutes: 300
+    strategy:
+      fail-fast: false
+      matrix:
+        state: ${{ fromJSON(needs.compute-states.outputs.states) }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Crawl Venues
+      - name: Crawl Venues (${{ matrix.state }})
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           VENUE_NAME: ${{ github.event.inputs.venue_filter }}
+          STATE: ${{ matrix.state }}
           # Optional — falls back to DEMO_KEY if secret not set. For production
           # weekly crawls, set an NPS_API_KEY secret (free, from api.data.gov).
           NPS_API_KEY: ${{ secrets.NPS_API_KEY }}
@@ -79,7 +120,7 @@ jobs:
   sync-municipal-feeds:
     runs-on: ubuntu-latest
     needs: discover-municipal-feeds
-    timeout-minutes: 15
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

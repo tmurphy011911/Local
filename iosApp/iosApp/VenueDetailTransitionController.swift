@@ -13,12 +13,11 @@ class VenueDetailTransitionController {
     static var fromPlanContext: Bool = false
 
     // MARK: - State
-    private var hostingController: UIViewController?
+    private var hostingController: UIHostingController<VenueDetailView>?
     private var dimView: UIView?
     private var originalFrame: CGRect = .zero
     private var cachedHeroImage: UIImage?
     private var onDismissed: (() -> Void)?
-    private var hasValidCardFrame: Bool = false
 
     // MARK: - Present
 
@@ -36,15 +35,7 @@ class VenueDetailTransitionController {
         self.onDismissed = onDismissed
         self.cachedHeroImage = nil
 
-        // Always present as a slide-up-from-bottom sheet (matches the feel of
-        // the in-detail event presentation and avoids the card-morph stretch on
-        // tall venue cards). Card-morph branch kept below for potential reuse.
-        self.hasValidCardFrame = false
-
-        // Hero image for the dismiss animation. Hit URLCache synchronously first —
-        // if the image was viewed before (thumbnail OR prior detail visit), it's already
-        // decoded and we skip the blank-frame jank on dismiss. Only fall back to network
-        // if truly uncached.
+        // Pre-warm hero image cache so the dismiss path is instant.
         if let urlStr = venue.photoUrl, let url = URL(string: urlStr) {
             let request = URLRequest(url: url)
             if let cached = URLCache.shared.cachedResponse(for: request),
@@ -56,9 +47,7 @@ class VenueDetailTransitionController {
                     if let response = response {
                         URLCache.shared.storeCachedResponse(CachedURLResponse(response: response, data: data), for: request)
                     }
-                    DispatchQueue.main.async {
-                        self?.cachedHeroImage = img
-                    }
+                    DispatchQueue.main.async { self?.cachedHeroImage = img }
                 }.resume()
             }
         }
@@ -71,7 +60,6 @@ class VenueDetailTransitionController {
         window.addSubview(dim)
         self.dimView = dim
 
-        // Create the SwiftUI detail view (concrete type — no AnyView)
         let detailView = VenueDetailView(
             venue: venue,
             onDismiss: { [weak self] in self?.dismiss() },
@@ -80,60 +68,33 @@ class VenueDetailTransitionController {
         )
         let hosting = UIHostingController(rootView: detailView)
         hosting.view.backgroundColor = .white
+        hosting.view.frame = window.bounds
+        hosting.view.transform = cardTransform(cardFrame: cardFrame, windowBounds: window.bounds)
+        hosting.view.layer.cornerRadius = 18
+        hosting.view.layer.masksToBounds = true
+        hosting.view.alpha = 0
 
-        if hasValidCardFrame {
-            // Card-morph animation
-            hosting.view.frame = window.bounds
-            hosting.view.transform = cardTransform(cardFrame: cardFrame, windowBounds: window.bounds)
-            hosting.view.layer.cornerRadius = 18
-            hosting.view.layer.masksToBounds = true
-            hosting.view.alpha = 0
+        window.addSubview(hosting.view)
+        self.hostingController = hosting
 
-            window.addSubview(hosting.view)
-            self.hostingController = hosting
-
-            UIView.animate(withDuration: 0.1) {
-                hosting.view.alpha = 1
-            }
-
-            UIView.animate(
-                withDuration: 0.45,
-                delay: 0,
-                usingSpringWithDamping: 0.85,
-                initialSpringVelocity: 0.5,
-                options: [.curveEaseInOut, .allowUserInteraction],
-                animations: {
-                    hosting.view.transform = .identity
-                    hosting.view.layer.cornerRadius = 0
-                    dim.alpha = 0.5
-                },
-                completion: nil
-            )
-        } else {
-            // Slide-up animation (no card bounds)
-            hosting.view.frame = window.bounds
-            hosting.view.transform = CGAffineTransform(translationX: 0, y: window.bounds.height)
-            hosting.view.layer.cornerRadius = 18
-            hosting.view.layer.masksToBounds = true
+        // Fade in quickly, then spring to fullscreen
+        UIView.animate(withDuration: 0.1) {
             hosting.view.alpha = 1
-
-            window.addSubview(hosting.view)
-            self.hostingController = hosting
-
-            UIView.animate(
-                withDuration: 0.45,
-                delay: 0,
-                usingSpringWithDamping: 0.88,
-                initialSpringVelocity: 0.4,
-                options: [.curveEaseInOut, .allowUserInteraction],
-                animations: {
-                    hosting.view.transform = .identity
-                    hosting.view.layer.cornerRadius = 0
-                    dim.alpha = 0.5
-                },
-                completion: nil
-            )
         }
+
+        UIView.animate(
+            withDuration: 0.45,
+            delay: 0,
+            usingSpringWithDamping: 0.85,
+            initialSpringVelocity: 0.5,
+            options: [.curveEaseInOut, .allowUserInteraction],
+            animations: {
+                hosting.view.transform = .identity
+                hosting.view.layer.cornerRadius = 0
+                dim.alpha = 0.5
+            },
+            completion: nil
+        )
     }
 
     // MARK: - Dismiss
@@ -149,11 +110,62 @@ class VenueDetailTransitionController {
             return
         }
 
-        // Always use slide-down dismiss (card morph causes content stretching)
-        dismissWithSlideDown(hosting: hosting, window: window)
+        let screenBounds = window.bounds
+        let heroRect = CGRect(x: 0, y: 0, width: screenBounds.width, height: 280)
+
+        // Build fake card on window: cached hero image + white body
+        let fakeCard = UIView(frame: screenBounds)
+        fakeCard.backgroundColor = .white
+        fakeCard.layer.cornerRadius = 0
+        fakeCard.clipsToBounds = true
+
+        let heroIV = UIImageView(frame: heroRect)
+        heroIV.contentMode = .scaleAspectFill
+        heroIV.clipsToBounds = true
+        heroIV.image = cachedHeroImage
+        heroIV.backgroundColor = UIColor(red: 0.93, green: 0.96, blue: 0.94, alpha: 1)
+        fakeCard.addSubview(heroIV)
+
+        window.addSubview(fakeCard)
+
+        // Hide hosting view — fakeCard covers it
+        hosting.view.isHidden = true
+
+        // Animate fakeCard shrinking to card; image shrinks to card's image area.
+        let cardImageHeight: CGFloat = min(originalFrame.height * 0.43, 92)
+
+        UIView.animate(
+            withDuration: 0.38,
+            delay: 0,
+            usingSpringWithDamping: 0.82,
+            initialSpringVelocity: 0.2,
+            options: [.curveEaseInOut],
+            animations: { [self] in
+                fakeCard.frame = originalFrame
+                fakeCard.layer.cornerRadius = 18
+                heroIV.frame = CGRect(x: 0, y: 0, width: originalFrame.width, height: cardImageHeight)
+                dimView?.alpha = 0
+            },
+            completion: nil
+        )
+
+        // Fade out before fully reaching card size
+        UIView.animate(
+            withDuration: 0.1,
+            delay: 0.24,
+            options: [.curveEaseIn],
+            animations: {
+                fakeCard.alpha = 0
+            },
+            completion: { [self] _ in
+                fakeCard.removeFromSuperview()
+                cleanup()
+                onDismissed?()
+            }
+        )
     }
 
-    private func dismissWithCardMorph(hosting: UIViewController, window: UIView) {
+    private func dismissWithCardMorph_legacy(hosting: UIViewController, window: UIView) {
         let screenBounds = window.bounds
         let heroRect = CGRect(x: 0, y: 0, width: screenBounds.width, height: 200)
         let cardImageHeight: CGFloat = 80

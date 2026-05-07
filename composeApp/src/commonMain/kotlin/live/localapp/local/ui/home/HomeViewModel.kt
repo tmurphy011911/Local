@@ -153,11 +153,15 @@ class HomeViewModel(
                     val storedMode = if (prefs.locationMode == "manual") LocationMode.MANUAL else LocationMode.CURRENT_LOCATION
                     // If stored as "current" but we don't have permission, treat as manual
                     var mode = if (storedMode == LocationMode.CURRENT_LOCATION && !hasPermission) LocationMode.MANUAL else storedMode
-                    // Repair corrupted state: if MANUAL but saved coords are missing (e.g. a
-                    // past silent geocoding failure left only the name behind), revert to
-                    // CURRENT_LOCATION so the pill label doesn't lie about the coords we
-                    // actually query with.
-                    val manualCorrupted = mode == LocationMode.MANUAL && (prefs.manualLat == null || prefs.manualLng == null)
+                    // Coord salvage: when MANUAL is the saved mode but manualLat/Lng
+                    // weren't separately persisted (e.g. an autocomplete pick that
+                    // skipped the dedicated columns), prefs.userLat/userLng still
+                    // carry the chosen address coords from onboarding. Use those
+                    // instead of flipping the user back to CURRENT_LOCATION — that
+                    // flip silently triggered the OS GPS prompt for users who
+                    // explicitly picked Manual.
+                    val manualCoordsMissing = mode == LocationMode.MANUAL && (prefs.manualLat == null || prefs.manualLng == null)
+                    val manualCorrupted = manualCoordsMissing && prefs.userLat == null && prefs.userLng == null
                     if (manualCorrupted) mode = LocationMode.CURRENT_LOCATION
                     val effectiveLat = if (mode == LocationMode.MANUAL) prefs.manualLat ?: prefs.userLat else prefs.userLat
                     val effectiveLng = if (mode == LocationMode.MANUAL) prefs.manualLng ?: prefs.userLng else prefs.userLng
@@ -304,7 +308,12 @@ class HomeViewModel(
     }
 
     fun selectCategory(category: String) {
-        _uiState.update { it.copy(selectedCategory = category) }
+        // Skip the no-op tap so we don't blank out the current tab's content.
+        if (_uiState.value.selectedCategory == category) return
+        // Clear carousels alongside the tab change so the user sees a loading
+        // state instead of the previous tab's cards rendered under the new
+        // tab's header (briefly visible while the fetch is in flight).
+        _uiState.update { it.copy(selectedCategory = category, carousels = emptyList()) }
         loadCarousels(loadCategories = false)
     }
 
@@ -433,13 +442,31 @@ class HomeViewModel(
     private fun loadCarousels(loadCategories: Boolean = true) {
         carouselJob?.cancel()
         carouselJob = viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true, error = null) }
+            // Stale-while-revalidate: paint disk-cached carousels immediately
+            // (sub-100ms), then fire the fresh fetch. The user sees the
+            // previous session's home tab on cold open instead of a blank
+            // loading state for the 3-8s the edge function takes.
+            val state = _uiState.value
+            val category = state.selectedCategory
             try {
-                val state = _uiState.value
-                val category = state.selectedCategory
+                val cached = carouselRepository.getCachedCarouselsFromDisk(
+                    category = if (category == "foryou") null else category,
+                    userPreferences = state.userPreferences,
+                    locationName = state.locationName,
+                )
+                if (!cached.isNullOrEmpty()) {
+                    _uiState.update { s ->
+                        if (s.selectedCategory != category) s
+                        else s.copy(carousels = cached, isLoading = false, error = null)
+                    }
+                }
+            } catch (_: Throwable) { /* disk-read failure is never fatal — fresh fetch handles it */ }
 
-                val lat = state.userLat ?: state.userPreferences?.userLat ?: 42.3601
-                val lng = state.userLng ?: state.userPreferences?.userLng ?: -71.0589
+            _uiState.update { it.copy(isLoading = it.carousels.isEmpty(), error = null) }
+            try {
+                val s = _uiState.value
+                val lat = s.userLat ?: s.userPreferences?.userLat ?: 42.3601
+                val lng = s.userLng ?: s.userPreferences?.userLng ?: -71.0589
 
                 // ONE edge-function call. The carousels response includes categories, so
                 // we fetch carousels first then read cachedCategories. Previously we fired

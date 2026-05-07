@@ -5,6 +5,11 @@ on:
     - cron: '0 8 * * *'  # 8am UTC / 3am EST daily
   workflow_dispatch: {}
 
+# Forward-compat: opt into Node 24 for JS-based actions before the
+# June 2 2026 forced-cutoff. Removes deprecation warnings on every job.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   ticketmaster-sync:
     runs-on: ubuntu-latest

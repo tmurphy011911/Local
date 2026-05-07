@@ -66,6 +66,10 @@ struct PlanDetailSlot: Decodable, Equatable {
     let ticketUrl: String?
     let venueRating: Double?
     let venueAddress: String?
+    /// Venue city — set on the Kotlin side from `event.venueCity` (events)
+    /// or `venue.city` (venue stops). Subtitle fallback when venueAddress
+    /// is null/unparseable.
+    let venueCity: String?
     let venueName: String?
     let venueLat: Double?
     let venueLng: Double?
@@ -95,7 +99,7 @@ struct PlanDetailSlot: Decodable, Equatable {
     // Defaults so older JSON payloads (before Phase 2) decode cleanly.
     private enum CodingKeys: String, CodingKey {
         case id, time, emoji, name, detail, price, isFree, isReserved
-        case imageUrl, ticketUrl, venueRating, venueAddress, venueLat, venueLng
+        case imageUrl, ticketUrl, venueRating, venueAddress, venueCity, venueLat, venueLng
         case venueCategory, venueWebsite, sourceUrl, reservationUrl, eventId, venueName
         case isBoWeb = "isBoWeb"
         case boWebState = "boWebState"
@@ -116,6 +120,7 @@ struct PlanDetailSlot: Decodable, Equatable {
         ticketUrl = try? c.decode(String?.self, forKey: .ticketUrl) ?? nil
         venueRating = try? c.decode(Double?.self, forKey: .venueRating) ?? nil
         venueAddress = try? c.decode(String?.self, forKey: .venueAddress) ?? nil
+        venueCity = try? c.decode(String?.self, forKey: .venueCity) ?? nil
         venueName = try? c.decode(String?.self, forKey: .venueName) ?? nil
         venueLat = try? c.decode(Double?.self, forKey: .venueLat) ?? nil
         venueLng = try? c.decode(Double?.self, forKey: .venueLng) ?? nil
@@ -179,18 +184,25 @@ struct PlanDetailSlot: Decodable, Equatable {
             }
             return parts.joined(separator: " · ")
         }
-        // Non-restaurant: show "{Venue Name} · {Address}" beneath the event
-        // title. Skip the venue name when it's the same as the slot title
-        // (for venue-stops where slot.name IS the venue) to avoid duplicating.
+        // Non-restaurant (events): show "{Venue Name} · {City}". Prefer
+        // the dedicated `venueCity` field (set from `event.venueCity` on
+        // the Kotlin side) over parsing it out of `venueAddress`, since
+        // many events have null addresses but always carry a city.
         var parts: [String] = []
         if let v = venueName, !v.isEmpty,
            v.compare(name, options: .caseInsensitive) != .orderedSame {
             parts.append(v)
         }
-        if let addr = venueAddress, !addr.isEmpty {
-            parts.append(addr)
-        }
-        // Fallback: if neither venueName-distinct nor address is available,
+        let city: String? = {
+            if let c = venueCity, !c.isEmpty { return c }
+            // Fallback to address parse when venueCity wasn't provided
+            // (legacy slots / Bo-Web findings without explicit city).
+            guard let addr = venueAddress, !addr.isEmpty else { return nil }
+            let segs = addr.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+            return segs.count >= 2 ? segs[1] : nil
+        }()
+        if let c = city, !c.isEmpty { parts.append(c) }
+        // Fallback: if neither venueName-distinct nor city is available,
         // surface the venue name as a single line even if it duplicates the
         // title — better one redundant line than nothing useful.
         if parts.isEmpty, let v = venueName, !v.isEmpty {

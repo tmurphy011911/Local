@@ -5,6 +5,11 @@ import live.localapp.local.domain.model.PlanAttendee
 
 interface PlanRepository {
     suspend fun getPlans(): List<Plan>
+    /** Fetch a single plan by id. Used by surfaces that hold a stale plan
+     *  reference and need fresh DB state — e.g. PlanChatViewModel before
+     *  handing the plan to Bo, so slot deletes/swaps from the Plan
+     *  Detail screen are visible. */
+    suspend fun getPlan(planId: String): Plan?
     /** Insert a new plan. Returns the inserted plan's server-side id, or null on failure. */
     suspend fun savePlan(plan: Plan): String?
     suspend fun updatePlan(plan: Plan)

@@ -308,6 +308,23 @@ fun ChatScreen(
                             }
                         }
                     }
+                    is MessageContent.Structured -> {
+                        val ref = message.content as MessageContent.Structured
+                        StructuredResponseRenderer(
+                            response = ref.response,
+                            hydratedEvents = ref.hydratedEvents,
+                            tray = state.draftTray,
+                            onAddToTray = { ev -> viewModel.addToDraftTray(ev) },
+                            onOpenEvent = { ev ->
+                                if (onNativeEventClick != null) onNativeEventClick(ev.id, ev.imageUrl)
+                                else selectedEventId = ev.id
+                            },
+                            onFooterAction = { action ->
+                                viewModel.sendDraftTrayChip(footerActionToIntent(action))
+                            },
+                            onScopeChip = { intent -> viewModel.sendDraftTrayChip(intent) },
+                        )
+                    }
                 }
             }
 
@@ -319,6 +336,20 @@ fun ChatScreen(
             } else if (state.isTyping) {
                 item { TypingIndicator() }
             }
+        }
+
+        // ── Phase 6 Draft Tray ──
+        // Persistent above the input bar whenever the user has tapped [+]
+        // on at least one event from a SuggestionTray / EventBriefCard /
+        // VenueBriefCard. Hidden when the tray is empty.
+        if (state.draftTray.isNotEmpty()) {
+            DraftPlanTray(
+                tray = state.draftTray,
+                chips = state.draftTrayChips,
+                onRemove = { id -> viewModel.removeFromDraftTray(id) },
+                onChipTap = { chip -> viewModel.sendDraftTrayChip(chip.intent) },
+                onBuild = { viewModel.buildFromDraftTray() },
+            )
         }
 
         // ── Quick Replies ──
@@ -2236,3 +2267,314 @@ private fun PlanSuccessOverlay(
         }
     }
 
+
+// ── Phase 6 — structured-response inline renderer ──
+
+/**
+ * Routes any [BoStructuredResponse] subtype to its matching component.
+ * Inline in the message stream right after Bo's prose intro line.
+ */
+@Composable
+private fun StructuredResponseRenderer(
+    response: live.localapp.local.domain.model.BoStructuredResponse,
+    hydratedEvents: Map<String, live.localapp.local.domain.model.Event>,
+    tray: List<live.localapp.local.domain.model.DraftTrayEvent>,
+    onAddToTray: (live.localapp.local.domain.model.Event) -> Unit,
+    onOpenEvent: (live.localapp.local.domain.model.Event) -> Unit,
+    onFooterAction: (live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action) -> Unit,
+    onScopeChip: (String) -> Unit,
+) {
+    val trayIds = remember(tray) { tray.map { it.eventId }.toSet() }
+    when (response) {
+        is live.localapp.local.domain.model.BoStructuredResponse.Suggestions ->
+            SuggestionTray(
+                suggestions = response,
+                eventsById = hydratedEvents,
+                onAddToTray = onAddToTray,
+                onOpenEvent = onOpenEvent,
+                onFooterAction = onFooterAction,
+                isInTray = { id -> id in trayIds },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+            )
+        is live.localapp.local.domain.model.BoStructuredResponse.EventBrief -> {
+            val ev = hydratedEvents[response.eventId]
+            if (ev != null) {
+                EventBriefCard(
+                    event = ev,
+                    answerLine = response.answerLine,
+                    isInTray = response.eventId in trayIds,
+                    onAddToTray = { onAddToTray(ev) },
+                    onOpenEvent = { onOpenEvent(ev) },
+                )
+            }
+        }
+        is live.localapp.local.domain.model.BoStructuredResponse.VenueBrief -> {
+            VenueBriefCard(
+                response = response,
+                hydratedEvents = hydratedEvents,
+                trayIds = trayIds,
+                onAddToTray = onAddToTray,
+                onOpenEvent = onOpenEvent,
+            )
+        }
+        is live.localapp.local.domain.model.BoStructuredResponse.QuickFact -> {
+            QuickFactPill(
+                response = response,
+                hydratedEvents = hydratedEvents,
+                onOpenEvent = onOpenEvent,
+            )
+        }
+        is live.localapp.local.domain.model.BoStructuredResponse.ScopeRedirect -> {
+            ScopeRedirectCard(response = response, onChipTap = onScopeChip)
+        }
+    }
+}
+
+private fun footerActionToIntent(action: live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action): String = when (action) {
+    live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action.SEARCH_WIDER ->
+        "Broaden the search — increase the radius and drop any keyword filters, then show me more options"
+    live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action.DIFFERENT_CATEGORY ->
+        "Show me events in a different category"
+    live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action.LATE_NIGHT ->
+        "Show me only events starting after 9 PM"
+    live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action.DIFFERENT_DAY ->
+        "Show me events on a different day"
+    live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action.MORE_RESULTS ->
+        "Show me more results — keep the same filters but go deeper"
+}
+
+@Composable
+private fun EventBriefCard(
+    event: live.localapp.local.domain.model.Event,
+    answerLine: String,
+    isInTray: Boolean,
+    onAddToTray: () -> Unit,
+    onOpenEvent: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color.White)
+            .border(1.5.dp, AppColors.Pebble, RoundedCornerShape(16.dp))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onOpenEvent,
+            )
+            .padding(14.dp),
+    ) {
+        Text(event.title, style = TextStyle(
+            fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black,
+            fontSize = 16.sp, color = AppColors.Ink, lineHeight = 19.sp,
+        ))
+        Spacer(Modifier.height(4.dp))
+        val meta = listOfNotNull(
+            event.venueName, event.dateDisplay.takeIf { it.isNotBlank() },
+            if (event.isFree) "Free" else event.priceDisplay.takeIf { it.isNotBlank() },
+        ).joinToString(" · ")
+        if (meta.isNotBlank()) {
+            Text(meta, style = TextStyle(
+                fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold,
+                fontSize = 12.sp, color = AppColors.Ink3,
+            ))
+        }
+        Spacer(Modifier.height(8.dp))
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .background(AppColors.SkyLt)
+                .padding(horizontal = 10.dp, vertical = 6.dp),
+        ) {
+            Text(answerLine, style = TextStyle(
+                fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold,
+                fontSize = 13.sp, color = AppColors.Sky,
+            ))
+        }
+        Spacer(Modifier.height(10.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier.weight(1f).clip(RoundedCornerShape(50))
+                    .background(if (isInTray) AppColors.Sage else AppColors.Coral)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { if (!isInTray) onAddToTray() }
+                    .padding(vertical = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    if (isInTray) "✓ In your plan" else "+ Add to plan",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold,
+                        fontSize = 13.sp, color = Color.White,
+                    ),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VenueBriefCard(
+    response: live.localapp.local.domain.model.BoStructuredResponse.VenueBrief,
+    hydratedEvents: Map<String, live.localapp.local.domain.model.Event>,
+    trayIds: Set<String>,
+    onAddToTray: (live.localapp.local.domain.model.Event) -> Unit,
+    onOpenEvent: (live.localapp.local.domain.model.Event) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color.White)
+            .border(1.5.dp, AppColors.Pebble, RoundedCornerShape(16.dp))
+            .padding(14.dp),
+    ) {
+        Text(response.venueName, style = TextStyle(
+            fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black,
+            fontSize = 16.sp, color = AppColors.Ink,
+        ))
+        response.answerLine?.takeIf { it.isNotBlank() }?.let {
+            Spacer(Modifier.height(4.dp))
+            Text(it, style = TextStyle(
+                fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold,
+                fontSize = 12.sp, color = AppColors.Ink3,
+            ))
+        }
+        if (response.upcomingEventIds.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+            Text("Upcoming", style = TextStyle(
+                fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold,
+                fontSize = 11.sp, color = AppColors.Ink3, letterSpacing = 0.6.sp,
+            ))
+            Spacer(Modifier.height(4.dp))
+            response.upcomingEventIds.forEach { id ->
+                val ev = hydratedEvents[id] ?: return@forEach
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { onOpenEvent(ev) },
+                        )
+                        .padding(vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(ev.title, style = TextStyle(
+                            fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold,
+                            fontSize = 13.sp, color = AppColors.Ink,
+                        ), maxLines = 1)
+                        Text(ev.dateDisplay, style = TextStyle(
+                            fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold,
+                            fontSize = 11.sp, color = AppColors.Ink3,
+                        ))
+                    }
+                    val inTray = id in trayIds
+                    Box(
+                        modifier = Modifier.size(28.dp).clip(RoundedCornerShape(50))
+                            .background(if (inTray) AppColors.Sage else AppColors.Coral)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) { if (!inTray) onAddToTray(ev) },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            if (inTray) "✓" else "+",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black,
+                                fontSize = 14.sp, color = Color.White,
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun QuickFactPill(
+    response: live.localapp.local.domain.model.BoStructuredResponse.QuickFact,
+    hydratedEvents: Map<String, live.localapp.local.domain.model.Event>,
+    onOpenEvent: (live.localapp.local.domain.model.Event) -> Unit,
+) {
+    val ev = response.ctaEventId?.let { hydratedEvents[it] }
+    Row(
+        modifier = Modifier
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(50))
+            .background(AppColors.SkyLt)
+            .border(1.dp, AppColors.Sky, RoundedCornerShape(50))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = { ev?.let(onOpenEvent) },
+            )
+            .padding(horizontal = 14.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(response.text, style = TextStyle(
+            fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold,
+            fontSize = 13.sp, color = AppColors.Sky,
+        ), modifier = Modifier.weight(1f, fill = false))
+        if (ev != null) {
+            Spacer(Modifier.width(6.dp))
+            Text("→", style = TextStyle(
+                fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black,
+                fontSize = 14.sp, color = AppColors.Sky,
+            ))
+        }
+    }
+}
+
+@Composable
+private fun ScopeRedirectCard(
+    response: live.localapp.local.domain.model.BoStructuredResponse.ScopeRedirect,
+    onChipTap: (String) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(AppColors.SkyLt)
+            .border(1.5.dp, AppColors.Sky, RoundedCornerShape(16.dp))
+            .padding(14.dp),
+    ) {
+        Text(response.explanation, style = TextStyle(
+            fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold,
+            fontSize = 13.sp, color = AppColors.Ink, lineHeight = 18.sp,
+        ))
+        if (response.redirectChips.isNotEmpty()) {
+            Spacer(Modifier.height(8.dp))
+            response.redirectChips.forEach { chip ->
+                Box(
+                    modifier = Modifier
+                        .padding(top = 6.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(Color.White)
+                        .border(1.dp, AppColors.Sky, RoundedCornerShape(50))
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { onChipTap(chip.intent) },
+                        )
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                ) {
+                    Text(chip.label, style = TextStyle(
+                        fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp, color = AppColors.Sky,
+                    ))
+                }
+            }
+        }
+    }
+}

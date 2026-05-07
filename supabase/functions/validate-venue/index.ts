@@ -52,16 +52,87 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // 1. Check if venue already exists in DB
+    // 1. Check if venue already exists in DB. Multiple rows can match
+    // the same (name, city) because crawlers and Bo-Web both create stub
+    // rows; prefer the one that already has a photo + description so plan
+    // slots render rich data instead of placeholders.
     const { data: existing } = await supabase
       .from("venues")
       .select("*")
       .ilike("name", name)
       .ilike("city", city)
+      .order("photo_url", { ascending: true, nullsFirst: false })
+      .order("description", { ascending: true, nullsFirst: false })
+      .order("google_rating", { ascending: false, nullsFirst: false })
       .limit(1);
 
     if (existing && existing.length > 0) {
-      const venue = existing[0];
+      let venue = existing[0];
+
+      // Enrich stub rows. Crawler + Bo-Web flows can leave a venue row
+      // with null photo_url / null description; the row exists but the
+      // plan slot tile renders the green map-pin placeholder while the
+      // venue detail page (which uses the same row) has nothing to
+      // show. Backfill from Google Places once on first lookup so the
+      // next render is rich. We do NOT overwrite non-null fields —
+      // only fill the gaps.
+      const needsPhoto = !venue.photo_url;
+      const needsDescription = !venue.description;
+      const needsRating = venue.google_rating == null;
+      if (needsPhoto || needsDescription || needsRating) {
+        try {
+          const enrichQuery = `${venue.name} in ${venue.city ?? city}`.trim();
+          const enrichRes = await fetch(
+            "https://places.googleapis.com/v1/places:searchText",
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+                "X-Goog-FieldMask":
+                  "places.rating,places.photos,places.editorialSummary,places.userRatingCount",
+              },
+              body: JSON.stringify({ textQuery: enrichQuery }),
+            },
+          );
+          if (enrichRes.ok) {
+            const enrichData = await enrichRes.json();
+            const place = enrichData.places?.[0];
+            if (place) {
+              const updates: Record<string, unknown> = {};
+              if (needsPhoto && place.photos && place.photos.length > 0) {
+                const photoRef = place.photos[0].name;
+                updates.photo_url =
+                  `https://places.googleapis.com/v1/${photoRef}/media?maxHeightPx=400&maxWidthPx=400&key=${GOOGLE_PLACES_API_KEY}`;
+              }
+              if (needsDescription && place.editorialSummary?.text) {
+                updates.description = place.editorialSummary.text;
+              }
+              if (needsRating && place.rating != null) {
+                updates.google_rating = place.rating;
+              }
+              if (Object.keys(updates).length > 0) {
+                const { data: updated, error: updateError } = await supabase
+                  .from("venues")
+                  .update(updates)
+                  .eq("id", venue.id)
+                  .select()
+                  .single();
+                if (!updateError && updated) {
+                  venue = updated;
+                  console.log(
+                    `validate-venue: enriched stub row ${venue.id} (${venue.name}) — keys: ${Object.keys(updates).join(",")}`,
+                  );
+                }
+              }
+            }
+          }
+        } catch (e) {
+          console.error("validate-venue: enrichment lookup failed", e);
+          // Non-fatal: return the stub row as-is.
+        }
+      }
+
       return new Response(
         JSON.stringify({
           status: "existing",

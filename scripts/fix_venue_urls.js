@@ -35,7 +35,50 @@ const FETCH_HEADERS = {
   "Accept-Language": "en-US,en;q=0.5",
 };
 
-// ── Fetch page with timeout ──
+// ── Fetch page with timeout, with Scrapfly fallback for Cloudflare-blocked sites ──
+//
+// Direct fetch was deactivating thousands of legit venues every monthly run
+// because Cloudflare returns 403 / blocks the connection on default UA. Now
+// when the direct fetch fails (network error, 403, 503, 1020), retry through
+// Scrapfly — same trick the municipal claude_html parser uses.
+
+let SCRAPFLY_API_KEY = null;
+async function loadScrapflyKey() {
+  if (SCRAPFLY_API_KEY !== null) return;
+  try {
+    const { getSecrets } = require("./lib/secrets");
+    const s = await getSecrets(["SCRAPFLY_API_KEY"]);
+    SCRAPFLY_API_KEY = s.SCRAPFLY_API_KEY || "";
+  } catch { SCRAPFLY_API_KEY = ""; }
+}
+
+async function scrapflyFetch(url, timeoutMs = 30_000) {
+  if (!SCRAPFLY_API_KEY) return null;
+  const params = new URLSearchParams({
+    key: SCRAPFLY_API_KEY,
+    url,
+    country: "us",
+    asp: "true",
+    render_js: "false",
+  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(`https://api.scrapfly.io/scrape?${params}`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    if (!res.ok) return null;
+    const json = await res.json();
+    const html = json.result?.content;
+    const status = json.result?.status_code ?? (html ? 200 : 0);
+    if (!html || status >= 400) return null;
+    return { status, ok: true, html };
+  } catch {
+    clearTimeout(timeout);
+    return null;
+  }
+}
 
 async function fetchPage(url, timeoutMs = 15_000) {
   const controller = new AbortController();
@@ -47,9 +90,21 @@ async function fetchPage(url, timeoutMs = 15_000) {
       redirect: "follow",
     });
     clearTimeout(timeout);
-    return { status: res.status, ok: res.ok, html: res.ok ? await res.text() : null };
+    if (res.ok) return { status: res.status, ok: true, html: await res.text() };
+    // Cloudflare typically returns 403 / 503 / 1020 on bot detection. Retry via Scrapfly.
+    if ([403, 429, 503, 520, 1020].includes(res.status)) {
+      await loadScrapflyKey();
+      const sf = await scrapflyFetch(url, timeoutMs * 2);
+      if (sf) return sf;
+    }
+    return { status: res.status, ok: false, html: null };
   } catch (err) {
     clearTimeout(timeout);
+    // Network-level failure (timeout, ECONNRESET, EAI_AGAIN). Often Cloudflare
+    // killing the connection. Try Scrapfly before giving up.
+    await loadScrapflyKey();
+    const sf = await scrapflyFetch(url, timeoutMs * 2);
+    if (sf) return sf;
     return { status: 0, ok: false, html: null, error: err.message };
   }
 }

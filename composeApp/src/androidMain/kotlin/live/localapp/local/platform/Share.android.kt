@@ -20,7 +20,7 @@ actual fun presentShareSheet(text: String, url: String) {
     activity.startActivity(android.content.Intent.createChooser(intent, "Share"))
 }
 
-actual fun checkClipboardForDeepLink(): String? {
+actual suspend fun checkClipboardForDeepLink(): String? {
     val activity = live.localapp.local.ActivityProvider.activity ?: return null
     val clipboard = activity.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager ?: return null
     val clip = clipboard.primaryClip?.getItemAt(0)?.text?.toString() ?: return null

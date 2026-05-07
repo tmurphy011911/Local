@@ -12,6 +12,9 @@ on:
         description: 'Two-letter state code (e.g. NJ, CT, FL)'
         required: true
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   seed:
     runs-on: ubuntu-latest

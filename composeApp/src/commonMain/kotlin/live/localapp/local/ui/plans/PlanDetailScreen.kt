@@ -79,6 +79,8 @@ import live.localapp.local.domain.model.PlanSlot
 import live.localapp.local.platform.MapHeroStop
 import live.localapp.local.platform.MapHeroTotals
 import live.localapp.local.platform.PlanMapHero
+import live.localapp.local.ui.common.localCardSurface
+import live.localapp.local.ui.common.pressable
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 
@@ -1357,9 +1359,8 @@ private fun AddEventButton(onClick: () -> Unit) {
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
-            .clip(RoundedCornerShape(14.dp))
-            .border(1.5.dp, V5Line, RoundedCornerShape(14.dp))
-            .clickable(onClick = onClick)
+            .pressable(onClick = onClick)
+            .localCardSurface(cornerRadius = 16.dp, borderWidth = 1.dp, borderColor = V5Line)
             .padding(vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
@@ -1393,9 +1394,7 @@ private fun V5SlotCard(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(Color.White)
-            .border(1.dp, V5Line, RoundedCornerShape(16.dp))
+            .localCardSurface(cornerRadius = 16.dp, borderWidth = 1.dp, borderColor = V5Line)
             .padding(12.dp),
     ) {
         // Thumbnail

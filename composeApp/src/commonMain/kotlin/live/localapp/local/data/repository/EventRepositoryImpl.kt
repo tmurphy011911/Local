@@ -2,7 +2,12 @@ package live.localapp.local.data.repository
 
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.query.Order
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.datetime.DateTimeUnit
 import kotlinx.datetime.DayOfWeek
 import kotlinx.datetime.TimeZone
@@ -170,6 +175,10 @@ class EventRepositoryImpl(
             else -> null
         }
 
+        // Strict-filter search: callers (AddEventSheet, ManualPlanSheet,
+        // PlanSwapService) expect every result to match the keyword /
+        // category. The chat path uses `searchEventsBroad` instead, which
+        // intentionally widens the pool via the stratified RPC.
         val rawEvents = supabaseClient.from("events")
             .select {
                 filter {
@@ -178,20 +187,25 @@ class EventRepositoryImpl(
                     if (dateWindow != null) {
                         lt("start_at", dateWindow.end)
                     }
-                    // If geo search, skip city filter — we'll filter by distance after
                     if (userLat == null && !location.isNullOrBlank()) {
                         ilike("venue_city", "%${location}%")
                     }
                     if (!category.isNullOrBlank()) {
                         or {
-                            ilike("subcategory", "%${category}%")
                             ilike("category", "%${category}%")
+                            ilike("subcategory", "%${category}%")
+                            ilike("title", "%${category}%")
+                            ilike("venue_name", "%${category}%")
+                            ilike("description", "%${category}%")
                         }
                     }
                     if (!keyword.isNullOrBlank()) {
                         or {
                             ilike("title", "%${keyword}%")
                             ilike("venue_name", "%${keyword}%")
+                            ilike("description", "%${keyword}%")
+                            ilike("subcategory", "%${keyword}%")
+                            ilike("category", "%${keyword}%")
                         }
                     }
                 }
@@ -200,15 +214,12 @@ class EventRepositoryImpl(
             }
             .decodeList<EventDto>()
             .map { it.toDomain() }
+        val finalRaw = rawEvents
 
         // Backfill missing event coords from the venues table BEFORE geo
         // filtering — many crawled events have null venue_lat/venue_lng on
-        // the event row, but the venue itself has coords. Without this
-        // hydration the geo filter silently drops events whose venue is
-        // perfectly within radius (e.g. Yocal asking "what's on at Musikfest
-        // Café" returned nothing because Musikfest event rows had null
-        // coords even though the venue is 17 mi away in Bethlehem).
-        val coordHydrated = hydrateVenueCoords(rawEvents)
+        // the event row, but the venue itself has coords.
+        val coordHydrated = hydrateVenueCoords(finalRaw)
 
         val geoFiltered = if (userLat != null && userLng != null) {
             val radius = radiusMiles ?: 20.0
@@ -229,6 +240,123 @@ class EventRepositoryImpl(
         } else coordHydrated
 
         return hydrateVenueImages(geoFiltered)
+    }
+
+    override suspend fun searchEventsBroad(
+        userLat: Double,
+        userLng: Double,
+        radiusMiles: Double,
+        dateRange: String?,
+        startDate: String?,
+        endDate: String?,
+        keyword: String?,
+        limit: Int,
+    ): List<Event> {
+        val now = kotlin.time.Clock.System.now()
+        val nowIso = now.toString()
+        val tz = TimeZone.currentSystemDefault()
+        val todayLocal = now.toLocalDateTime(tz)
+        val (rangeStart, rangeEnd) = resolveDateWindow(dateRange, startDate, endDate, nowIso, todayLocal)
+
+        val params = buildJsonObject {
+            put("p_user_lat", JsonPrimitive(userLat))
+            put("p_user_lng", JsonPrimitive(userLng))
+            put("p_radius_miles", JsonPrimitive(radiusMiles))
+            put("p_start_at", JsonPrimitive(rangeStart))
+            put("p_end_at", JsonPrimitive(rangeEnd))
+            if (keyword.isNullOrBlank()) put("p_keyword", JsonNull)
+            else put("p_keyword", JsonPrimitive(keyword))
+            put("p_breadth_per_category", JsonPrimitive(25))
+            put("p_max_results", JsonPrimitive(limit.coerceIn(1, 500)))
+        }
+        val raw = try {
+            val result = supabaseClient.postgrest.rpc("search_events_stratified", params)
+            Json { ignoreUnknownKeys = true }.decodeFromString(
+                kotlinx.serialization.builtins.ListSerializer(EventDto.serializer()),
+                result.data,
+            ).map { it.toDomain() }
+        } catch (e: Throwable) {
+            println("searchEventsBroad RPC failed (${e.message}) — returning empty")
+            return emptyList()
+        }
+        return hydrateVenueImages(hydrateVenueCoords(raw))
+    }
+
+    /**
+     * Resolves the [searchEvents] date_range / start_date / end_date inputs
+     * into a concrete (rangeStart, rangeEnd) pair of ISO timestamps. Pulled
+     * out so [searchEventsBroad] can share the same DOW arithmetic instead
+     * of reimplementing it.
+     */
+    private fun resolveDateWindow(
+        dateRange: String?,
+        startDate: String?,
+        endDate: String?,
+        nowIso: String,
+        todayLocal: kotlinx.datetime.LocalDateTime,
+    ): Pair<String, String> {
+        val todayDow = todayLocal.date.dayOfWeek
+        fun daysUntilFriday(): Int = when (todayDow) {
+            DayOfWeek.FRIDAY -> 7; DayOfWeek.SATURDAY -> 6; DayOfWeek.SUNDAY -> 5
+            DayOfWeek.MONDAY -> 4; DayOfWeek.TUESDAY -> 3; DayOfWeek.WEDNESDAY -> 2
+            DayOfWeek.THURSDAY -> 1; else -> 7
+        }
+        fun daysUntilEndOfWeekend(): Int = when (todayDow) {
+            DayOfWeek.FRIDAY -> 3; DayOfWeek.SATURDAY -> 2; DayOfWeek.SUNDAY -> 1
+            DayOfWeek.MONDAY -> 7; DayOfWeek.TUESDAY -> 6; DayOfWeek.WEDNESDAY -> 5
+            DayOfWeek.THURSDAY -> 4; else -> 7
+        }
+        val resolved = when (dateRange) {
+            "today" -> {
+                val tomorrow = todayLocal.date.plus(1, DateTimeUnit.DAY)
+                nowIso to "${tomorrow}T00:00:00Z"
+            }
+            "this_weekend" -> {
+                val fridayDays = if (todayDow == DayOfWeek.FRIDAY || todayDow == DayOfWeek.SATURDAY || todayDow == DayOfWeek.SUNDAY) 0 else daysUntilFriday()
+                val friday = todayLocal.date.plus(if (fridayDays == 0) 0 else fridayDays, DateTimeUnit.DAY)
+                val monday = todayLocal.date.plus(daysUntilEndOfWeekend(), DateTimeUnit.DAY)
+                "${friday}T00:00:00Z" to "${monday}T00:00:00Z"
+            }
+            "next_weekend" -> {
+                // "Next weekend" = the weekend AFTER this one. daysUntilFriday()
+                // gives "the next Friday strictly ahead of today" — which IS
+                // the right answer on Fri/Sat/Sun (this weekend is already in
+                // progress, so the next Friday IS next weekend). On Mon-Thu
+                // we need to add 7 to skip past this weekend's Friday.
+                val skip = if (todayDow == DayOfWeek.FRIDAY || todayDow == DayOfWeek.SATURDAY || todayDow == DayOfWeek.SUNDAY) 0 else 7
+                val nextFriday = todayLocal.date.plus(daysUntilFriday() + skip, DateTimeUnit.DAY)
+                val nextMonday = nextFriday.plus(3, DateTimeUnit.DAY)
+                "${nextFriday}T00:00:00Z" to "${nextMonday}T00:00:00Z"
+            }
+            "this_week" -> {
+                val daysUntilSunday = 7 - todayDow.ordinal
+                val end = todayLocal.date.plus(daysUntilSunday + 1, DateTimeUnit.DAY)
+                nowIso to "${end}T00:00:00Z"
+            }
+            "next_week" -> {
+                val days = (DayOfWeek.MONDAY.ordinal - todayDow.ordinal + 7) % 7
+                val nextMonday = todayLocal.date.plus(if (days == 0) 7 else days, DateTimeUnit.DAY)
+                val nextSunday = nextMonday.plus(7, DateTimeUnit.DAY)
+                "${nextMonday}T00:00:00Z" to "${nextSunday}T00:00:00Z"
+            }
+            "this_month" -> {
+                val end = todayLocal.date.plus(30, DateTimeUnit.DAY)
+                nowIso to "${end}T00:00:00Z"
+            }
+            "custom" -> {
+                if (startDate != null) {
+                    val end = endDate ?: startDate
+                    "${startDate}T00:00:00Z" to "${end}T23:59:59Z"
+                } else null
+            }
+            else -> null
+        } ?: run {
+            val rangeStart = startDate?.let { "${it}T00:00:00Z" } ?: nowIso
+            val rangeEnd = endDate?.let { "${it}T23:59:59Z" }
+                ?: (todayLocal.date.plus(90, DateTimeUnit.DAY).toString() + "T00:00:00Z")
+            rangeStart to rangeEnd
+        }
+        return resolved
     }
 
     /**

@@ -61,6 +61,7 @@ private data class PlanSlotDto(
     @SerialName("ticket_url") val ticketUrl: String? = null,
     @SerialName("venue_rating") val venueRating: Double? = null,
     @SerialName("venue_address") val venueAddress: String? = null,
+    @SerialName("venue_city") val venueCity: String? = null,
     @SerialName("venue_name") val venueName: String? = null,
     @SerialName("venue_lat") val venueLat: Double? = null,
     @SerialName("venue_lng") val venueLng: Double? = null,
@@ -104,6 +105,7 @@ private fun PlanSlot.toDto() = PlanSlotDto(
     isFree = isFree, eventId = eventId, isCustom = isCustom, isBoWeb = isBoWeb,
     boWebState = boWebState, imageUrl = imageUrl,
     ticketUrl = ticketUrl, venueRating = venueRating, venueAddress = venueAddress,
+    venueCity = venueCity,
     venueName = venueName,
     venueLat = venueLat, venueLng = venueLng, priceMin = priceMin, priceMax = priceMax,
     reservationUrl = reservationUrl, sourceUrl = sourceUrl, venueWebsite = venueWebsite, venueCategory = venueCategory,
@@ -138,6 +140,7 @@ private fun PlanSlotDto.toDomain() = PlanSlot(
     ticketUrl = ticketUrl,
     venueRating = venueRating,
     venueAddress = venueAddress,
+    venueCity = venueCity,
     venueName = venueName,
     venueLat = venueLat,
     venueLng = venueLng,
@@ -208,9 +211,34 @@ private fun PlanDto.toDomain(creatorFirstName: String? = null): Plan {
 private fun buildDateDisplay(days: List<PlanDayDto>): String {
     if (days.isEmpty()) return ""
     if (days.size == 1) return days.first().label
-    val first = days.first().shortName
-    val last = days.last().shortName
+    // Prefer "Jun 1 – Jun 3" (month + day) over "SUN – TUE" (weekday).
+    // Weekday-only ranges read as ambiguous ("which Sunday?"); month+day
+    // is unambiguous and matches the plan title format. Falls back to
+    // shortName for legacy day labels we can't parse.
+    val first = formatMonthDay(days.first().label) ?: days.first().shortName
+    val last = formatMonthDay(days.last().label) ?: days.last().shortName
     return "$first – $last"
+}
+
+private fun formatMonthDay(label: String): String? {
+    // label examples: "Sunday, June 1" / "Sun, Jun 1" / "May 16" / "Day 1"
+    // Output: "Jun 1" / "May 16". Returns null when the label doesn't
+    // contain a recognizable month + day pair (e.g. "Day 1" placeholder).
+    val months = listOf(
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December",
+    )
+    val abbrs = listOf("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+    val candidate = label.substringAfter(',', label).trim()
+    val tokens = candidate.split(' ', ' ').filter { it.isNotBlank() }
+    if (tokens.size < 2) return null
+    val monthRaw = tokens[0].trim('.', ',', ' ')
+    val month = months.firstOrNull { it.equals(monthRaw, ignoreCase = true) }?.let { abbrs[months.indexOf(it)] }
+        ?: abbrs.firstOrNull { it.equals(monthRaw.take(3), ignoreCase = true) }
+        ?: return null
+    val dayDigits = tokens[1].takeWhile { it.isDigit() }
+    if (dayDigits.isEmpty()) return null
+    return "$month $dayDigits"
 }
 
 // ── Repository ──
@@ -224,6 +252,19 @@ class PlanRepositoryImpl(
         ignoreUnknownKeys = true
         isLenient = true
         encodeDefaults = true
+    }
+
+    override suspend fun getPlan(planId: String): Plan? {
+        // Reuse getPlans() so attendee + Bo-Web hydration is identical;
+        // saves a parallel hydrator that could drift. Single-plan lookup
+        // is rare (only Bo's per-plan chat refresh), so the extra cost
+        // of pulling the user's other plans isn't worth a separate path.
+        return try {
+            getPlans().firstOrNull { it.id == planId }
+        } catch (e: Throwable) {
+            println("PlanRepository.getPlan($planId) failed: ${e.message}")
+            null
+        }
     }
 
     override suspend fun getPlans(): List<Plan> {

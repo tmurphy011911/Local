@@ -63,6 +63,7 @@ import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.rememberCoroutineScope
@@ -89,7 +90,11 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import kotlinx.coroutines.launch
+import kotlinx.datetime.LocalDate
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.toLocalDateTime
+import live.localapp.local.platform.rememberNativeDateRangePicker
 import live.localapp.local.domain.model.Event
 import live.localapp.local.snakeToTitleCase
 import live.localapp.local.domain.model.Venue
@@ -109,24 +114,21 @@ import live.localapp.local.ui.theme.AppShapes
 import live.localapp.local.ui.common.pressable
 
 // ── Category gradient backgrounds ──
-private val gradientBar = Brush.linearGradient(listOf(Color(0xFF2D1B4E), Color(0xFF6B3A8A)))
-private val gradientFood = Brush.linearGradient(listOf(Color(0xFF8B3A00), Color(0xFFD4722A)))
-private val gradientMusic = Brush.linearGradient(listOf(Color(0xFF0A3D62), Color(0xFF1E7AA8)))
-private val gradientArt = Brush.linearGradient(listOf(Color(0xFF1A4A2E), Color(0xFF3D9970)))
-private val gradientSports = Brush.linearGradient(listOf(Color(0xFF3D0000), Color(0xFFC0392B)))
-private val gradientTheatre = Brush.linearGradient(listOf(Color(0xFF2C1654), Color(0xFF8E44AD)))
-private val gradientComedy = Brush.linearGradient(listOf(Color(0xFF004D40), Color(0xFF00897B)))
-private val gradientDefault = Brush.linearGradient(listOf(Color(0xFF2D2D44), Color(0xFF4A4458)))
-
-private fun gradientForCategory(cat: String?): Brush = when (cat?.lowercase()) {
-    "nightlife" -> gradientBar
-    "food" -> gradientFood
-    "music" -> gradientMusic
-    "arts" -> gradientArt
-    "sports" -> gradientSports
-    "theatre" -> gradientTheatre
-    "comedy" -> gradientComedy
-    else -> gradientDefault
+// Card-fallback gradients aligned with Home (HomeScreen.categoryGradient) and
+// iOS event detail (EventDetailView.categoryGradientColors). Pale pastels keyed
+// to category so the same event/venue gets the same wash on Explore, Home, and
+// the detail screen. Previous palette here was dark/saturated, which read as a
+// different design language from the rest of the app.
+private fun gradientForCategory(cat: String?): Brush {
+    val (start, end) = when (cat?.lowercase()) {
+        "music", "live-music", "concerts", "nightlife" -> AppColors.BgPlumStart to AppColors.BgPlumEnd
+        "food", "food-drink" -> AppColors.BgCoralStart to AppColors.BgCoralEnd
+        "comedy" -> AppColors.BgSunStart to AppColors.BgSunEnd
+        "sports" -> AppColors.BgSageStart to AppColors.BgSageEnd
+        "arts", "performing-arts", "theater", "theatre" -> AppColors.BgSkyStart to AppColors.BgSkyEnd
+        else -> AppColors.BgCoralStart to AppColors.BgCoralEnd
+    }
+    return Brush.linearGradient(listOf(start, end))
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -137,7 +139,7 @@ fun PlacesScreen(
     onLocationClick: () -> Unit = {},
     userInitial: String = "",
     onVenueClickWithBounds: ((VenueWithMeta, Rect) -> Unit)? = null,
-    onEventClick: ((live.localapp.local.domain.model.Event) -> Unit)? = null,
+    onEventClick: ((live.localapp.local.domain.model.Event, Rect) -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
@@ -179,11 +181,14 @@ fun PlacesScreen(
             when (state.activeTab) {
                 SearchTab.EVENTS -> EventDateFilterRow(
                     selected = state.dateFilter,
-                    onSelect = { viewModel.setDateFilter(it) },
+                    customStart = state.customStart,
+                    customEnd = state.customEnd,
+                    onSelectPreset = { viewModel.setDateFilter(it) },
+                    onCustomRangePicked = { start, end -> viewModel.setCustomDateRange(start, end) },
                 )
-                SearchTab.PLACES -> PlaceFilterRow(
-                    hasEventsOnly = state.hasEventsOnly,
-                    onToggleHasEvents = { viewModel.setHasEventsOnly(it) },
+                SearchTab.PLACES -> PlaceSortRow(
+                    selected = state.placeSort,
+                    onSelect = { viewModel.setPlaceSort(it) },
                 )
             }
 
@@ -198,6 +203,11 @@ fun PlacesScreen(
                         if (state.isLoading && state.venues.isEmpty()) {
                             PlacesSkeletonLoader()
                         } else {
+                            // Sort happens server-side now — the list arrives
+                            // already ordered for the active sort, paginated
+                            // across the full dataset. The scrollResetKey on
+                            // VenueGrid still snaps the user back to the top
+                            // when the sort changes.
                             VenueGrid(
                                 venues = state.filteredVenues,
                                 favoriteIds = state.favoriteVenueIds,
@@ -213,6 +223,7 @@ fun PlacesScreen(
                                 onFavoriteToggle = { venue ->
                                     viewModel.toggleVenueFavorite(venue.venue.id, venue.primaryCategory)
                                 },
+                                scrollResetKey = state.placeSort,
                             )
                         }
                     }
@@ -228,10 +239,11 @@ fun PlacesScreen(
                                 userLng = state.userLng,
                                 hasMore = state.eventsHasMore,
                                 onLoadMore = { viewModel.loadMoreEvents() },
-                                onEventClick = { event -> onEventClick?.invoke(event) },
+                                onEventClick = { event, bounds -> onEventClick?.invoke(event, bounds) },
                                 onFavoriteToggle = { event ->
                                     viewModel.toggleEventFavorite(event.id, event.subcategory ?: event.category)
                                 },
+                                scrollResetKey = Triple(state.dateFilter, state.customStart, state.customEnd),
                             )
                         }
                     }
@@ -469,7 +481,27 @@ private fun SearchBar(query: String, onQueryChange: (String) -> Unit, placeholde
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
-private fun EventDateFilterRow(selected: EventDateFilter?, onSelect: (EventDateFilter?) -> Unit) {
+private fun EventDateFilterRow(
+    selected: EventDateFilter?,
+    customStart: LocalDate?,
+    customEnd: LocalDate?,
+    onSelectPreset: (EventDateFilter?) -> Unit,
+    onCustomRangePicked: (LocalDate, LocalDate) -> Unit,
+) {
+    val pickerController = rememberNativeDateRangePicker()
+    val customActive = selected == EventDateFilter.CUSTOM && customStart != null && customEnd != null
+
+    val openPicker: () -> Unit = {
+        pickerController.show(
+            initialStartMillis = customStart?.toLocalMidnightMillis(),
+            initialEndMillis = customEnd?.toLocalMidnightMillis(),
+            onPicked = { startMs, endMs ->
+                onCustomRangePicked(epochMillisToLocalDate(startMs), epochMillisToLocalDate(endMs))
+            },
+            onCancelled = { /* keep current state */ },
+        )
+    }
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -477,35 +509,97 @@ private fun EventDateFilterRow(selected: EventDateFilter?, onSelect: (EventDateF
             .padding(horizontal = 20.dp, vertical = 4.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        FilterChip(label = "All", selected = selected == null, onClick = { onSelect(null) })
-        EventDateFilter.entries.forEach { f ->
-            FilterChip(label = f.label, selected = selected == f, onClick = { onSelect(f) })
+        if (customActive) {
+            // Active custom-range chip lives at the front with an X to clear.
+            // Replaces the "All" chip in this state — the X is the way to
+            // get back to no-filter.
+            FilterChip(
+                label = formatDateRangeShort(customStart!!, customEnd!!),
+                selected = true,
+                onClick = openPicker,
+                onDismiss = { onSelectPreset(null) },
+            )
+        } else {
+            FilterChip(label = "All", selected = selected == null, onClick = { onSelectPreset(null) })
+        }
+        FilterChip(
+            label = EventDateFilter.TODAY.label,
+            selected = selected == EventDateFilter.TODAY,
+            onClick = { onSelectPreset(EventDateFilter.TODAY) },
+        )
+        FilterChip(
+            label = EventDateFilter.TOMORROW.label,
+            selected = selected == EventDateFilter.TOMORROW,
+            onClick = { onSelectPreset(EventDateFilter.TOMORROW) },
+        )
+        FilterChip(
+            label = EventDateFilter.THIS_WEEKEND.label,
+            selected = selected == EventDateFilter.THIS_WEEKEND,
+            onClick = { onSelectPreset(EventDateFilter.THIS_WEEKEND) },
+        )
+        if (!customActive) {
+            FilterChip(
+                label = EventDateFilter.CUSTOM.label,
+                selected = false,
+                onClick = openPicker,
+            )
+        }
+    }
+}
+
+// Use the system timezone for both directions so the date the user picks in
+// the native sheet round-trips back unchanged when re-opening the picker.
+// (Round-tripping through UTC silently shifts dates by a day for users west
+// of UTC, since e.g. May 7 00:00 UTC is May 6 20:00 EDT.)
+private fun LocalDate.toLocalMidnightMillis(): Long =
+    atStartOfDayIn(TimeZone.currentSystemDefault()).toEpochMilliseconds()
+
+private fun epochMillisToLocalDate(millis: Long): LocalDate =
+    kotlinx.datetime.Instant.fromEpochMilliseconds(millis)
+        .toLocalDateTime(TimeZone.currentSystemDefault())
+        .date
+
+@Suppress("DEPRECATION") // monthNumber is the existing convention in this file
+private fun formatDateRangeShort(start: LocalDate, end: LocalDate): String {
+    val months = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    val sm = months[start.monthNumber - 1]
+    val em = months[end.monthNumber - 1]
+    return when {
+        start == end -> "$sm ${start.dayOfMonth}"
+        sm == em -> "$sm ${start.dayOfMonth}–${end.dayOfMonth}"
+        else -> "$sm ${start.dayOfMonth} – $em ${end.dayOfMonth}"
+    }
+}
+
+@Composable
+private fun PlaceSortRow(selected: PlaceSort, onSelect: (PlaceSort) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        PlaceSort.entries.forEach { sort ->
+            FilterChip(
+                label = sort.label,
+                selected = selected == sort,
+                onClick = { onSelect(sort) },
+            )
         }
     }
 }
 
 @Composable
-private fun PlaceFilterRow(hasEventsOnly: Boolean, onToggleHasEvents: (Boolean) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        FilterChip(
-            label = "Has events",
-            selected = hasEventsOnly,
-            onClick = { onToggleHasEvents(!hasEventsOnly) },
-        )
-    }
-}
-
-@Composable
-private fun FilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
+private fun FilterChip(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    onDismiss: (() -> Unit)? = null,
+) {
     val bg = if (selected) AppColors.Coral else AppColors.White
     val fg = if (selected) AppColors.White else AppColors.Ink2
-    Box(
+    Row(
         modifier = Modifier
             .clip(RoundedCornerShape(20.dp))
             .background(bg)
@@ -514,8 +608,8 @@ private fun FilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
                 indication = null,
                 onClick = onClick,
             )
-            .padding(horizontal = 14.dp, vertical = 8.dp),
-        contentAlignment = Alignment.Center,
+            .padding(start = 14.dp, end = if (onDismiss != null) 6.dp else 14.dp, top = 8.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             label,
@@ -526,6 +620,27 @@ private fun FilterChip(label: String, selected: Boolean, onClick: () -> Unit) {
                 color = fg,
             ),
         )
+        if (onDismiss != null) {
+            Spacer(Modifier.width(4.dp))
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .clip(CircleShape)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onDismiss,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.Close,
+                    contentDescription = "Clear filter",
+                    modifier = Modifier.size(14.dp),
+                    tint = fg,
+                )
+            }
+        }
     }
 }
 
@@ -541,6 +656,9 @@ private fun VenueGrid(
     onLoadMore: () -> Unit = {},
     onVenueClick: (VenueWithMeta, Rect) -> Unit,
     onFavoriteToggle: (VenueWithMeta) -> Unit,
+    /** When this changes, the list jumps to the top — pass the sort enum so
+     *  switching sort doesn't strand the user mid-list. */
+    scrollResetKey: Any? = null,
 ) {
     // Saved venues — filter from current venues list
     val savedVenues = remember(venues, favoriteIds) {
@@ -548,6 +666,9 @@ private fun VenueGrid(
     }
 
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    LaunchedEffect(scrollResetKey) {
+        if (scrollResetKey != null) listState.scrollToItem(0)
+    }
 
     LazyColumn(
         state = listState,
@@ -663,29 +784,30 @@ private fun SavedVenueAlbumCard(vm: VenueWithMeta, onClick: (Rect) -> Unit, onFa
             .localCardSurface(cornerRadius = 16.dp)
             .pressable(onClick = { onClick(cardBounds) }),
     ) {
-        // Full-card image or gradient background
-        if (v.photoUrl != null || v.imageUrl != null) {
+        // Full-card image or category-pastel gradient. The dark overlay is
+        // applied ONLY over a real photo so white name text is legible — over
+        // the pale placeholder the name swaps to ink color.
+        val hasImage = v.photoUrl != null || v.imageUrl != null
+        if (hasImage) {
             AsyncImage(
                 model = v.photoUrl ?: v.imageUrl,
                 contentDescription = v.name,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
             )
+            Box(
+                modifier = Modifier.fillMaxSize().background(
+                    Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f)), startY = 60f),
+                ),
+            )
         } else {
             Box(
                 modifier = Modifier.fillMaxSize().background(gradientForCategory(vm.primaryCategory)),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(32.dp), tint = Color.White.copy(alpha = 0.5f))
+                Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(32.dp), tint = AppColors.Ink3.copy(alpha = 0.4f))
             }
         }
-
-        // Dark gradient overlay
-        Box(
-            modifier = Modifier.fillMaxSize().background(
-                Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.75f)), startY = 60f),
-            ),
-        )
 
         // Event count badge — top left
         if (vm.upcomingEventCount > 0) {
@@ -719,13 +841,19 @@ private fun SavedVenueAlbumCard(vm: VenueWithMeta, onClick: (Rect) -> Unit, onFa
             tint = AppColors.Coral,
         )
 
-        // Name only — bottom
+        // Name only — bottom. White over the dark overlay on real photos;
+        // dark ink over the pale gradient when there's no image.
         Text(
             v.name,
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(12.dp),
-            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = Color.White),
+            style = TextStyle(
+                fontFamily = AppFonts.Heading,
+                fontWeight = FontWeight.Bold,
+                fontSize = 13.sp,
+                color = if (hasImage) Color.White else AppColors.Ink,
+            ),
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
         )
@@ -739,22 +867,23 @@ private fun SavedVenueAlbumCard(vm: VenueWithMeta, onClick: (Rect) -> Unit, onFa
 @Composable
 private fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -> Unit, onFavoriteToggle: () -> Unit) {
     val v = vm.venue
-    var cardBounds by remember { mutableStateOf(Rect.Zero) }
+    // Hero source rect = the thumbnail, not the whole row, so the detail
+    // page expands/collapses from the image.
+    var imageBounds by remember { mutableStateOf(Rect.Zero) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color.White)
-            .clickable { onClick(cardBounds) }
-            .padding(10.dp),
+            .height(92.dp)
+            .pressable(onClick = { onClick(imageBounds) })
+            .localCardSurface(cornerRadius = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Thumbnail — 72dp square to match event card
+        // Thumbnail — flush to card edge (top/left/bottom), full card height
         Box(
             modifier = Modifier
-                .size(72.dp)
-                .clip(RoundedCornerShape(10.dp))
+                .width(92.dp)
+                .fillMaxHeight()
+                .onGloballyPositioned { imageBounds = it.boundsInRoot() }
                 .background(gradientForCategory(vm.primaryCategory)),
             contentAlignment = Alignment.Center,
         ) {
@@ -763,21 +892,21 @@ private fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -
                     model = v.photoUrl ?: v.imageUrl,
                     contentDescription = v.name,
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)),
+                    modifier = Modifier.fillMaxSize(),
                 )
             } else {
                 Icon(
                     Icons.Outlined.Place,
                     contentDescription = null,
                     modifier = Modifier.size(28.dp),
-                    tint = AppColors.White.copy(alpha = 0.85f),
+                    tint = AppColors.Ink3.copy(alpha = 0.5f),
                 )
             }
         }
 
         Spacer(Modifier.width(12.dp))
 
-        Column(modifier = Modifier.weight(1f)) {
+        Column(modifier = Modifier.weight(1f).padding(vertical = 10.dp)) {
             Text(
                 v.name,
                 style = TextStyle(
@@ -839,6 +968,7 @@ private fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -
         // Heart — inline, matches EventRowCard (28dp white circle, 16dp coral icon)
         Box(
             modifier = Modifier
+                .padding(end = 12.dp)
                 .size(28.dp)
                 .clip(CircleShape)
                 .background(AppColors.White)
@@ -1036,7 +1166,7 @@ fun VenueDetailPage(
                             modifier = Modifier.fillMaxSize(),
                         )
                     } else {
-                        Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(48.dp), tint = Color.White.copy(alpha = 0.5f))
+                        Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(48.dp), tint = AppColors.Ink3.copy(alpha = 0.4f))
                     }
                 }
 
@@ -1294,7 +1424,7 @@ fun VenueDetailSheet(
                         modifier = Modifier.fillMaxSize(),
                     )
                 } else {
-                    Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(40.dp), tint = Color.White.copy(alpha = 0.5f))
+                    Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(40.dp), tint = AppColors.Ink3.copy(alpha = 0.4f))
                 }
             }
 
@@ -1551,9 +1681,17 @@ private fun EventGrid(
     userLng: Double?,
     hasMore: Boolean,
     onLoadMore: () -> Unit,
-    onEventClick: (live.localapp.local.domain.model.Event) -> Unit,
+    onEventClick: (live.localapp.local.domain.model.Event, Rect) -> Unit,
     onFavoriteToggle: (live.localapp.local.domain.model.Event) -> Unit,
+    /** When this changes, the list jumps to the top — pass the date filter
+     *  so switching filters doesn't strand the user mid-list. */
+    scrollResetKey: Any? = null,
 ) {
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    LaunchedEffect(scrollResetKey) {
+        if (scrollResetKey != null) listState.scrollToItem(0)
+    }
+
     if (events.isEmpty() && savedEvents.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
             Text(
@@ -1570,6 +1708,7 @@ private fun EventGrid(
     }
 
     androidx.compose.foundation.lazy.LazyColumn(
+        state = listState,
         contentPadding = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
         modifier = Modifier.fillMaxSize(),
@@ -1591,7 +1730,7 @@ private fun EventGrid(
                 isFavorited = events[i].id in favoriteIds,
                 userLat = userLat,
                 userLng = userLng,
-                onClick = { onEventClick(events[i]) },
+                onClick = { bounds -> onEventClick(events[i], bounds) },
                 onFavoriteToggle = { onFavoriteToggle(events[i]) },
             )
         }
@@ -1614,7 +1753,7 @@ private fun SavedEventsSection(
     events: List<live.localapp.local.domain.model.Event>,
     userLat: Double?,
     userLng: Double?,
-    onEventClick: (live.localapp.local.domain.model.Event) -> Unit,
+    onEventClick: (live.localapp.local.domain.model.Event, Rect) -> Unit,
     onFavoriteToggle: (live.localapp.local.domain.model.Event) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -1657,7 +1796,7 @@ private fun SavedEventsSection(
                 events.forEach { event ->
                     SavedAlbumEventCard(
                         event = event,
-                        onClick = { onEventClick(event) },
+                        onClick = { bounds -> onEventClick(event, bounds) },
                         onUnfavorite = { onFavoriteToggle(event) },
                     )
                 }
@@ -1674,15 +1813,17 @@ private fun SavedEventsSection(
 @Composable
 private fun SavedAlbumEventCard(
     event: live.localapp.local.domain.model.Event,
-    onClick: () -> Unit,
+    onClick: (Rect) -> Unit,
     onUnfavorite: () -> Unit,
 ) {
+    var cardBounds by remember { mutableStateOf(Rect.Zero) }
     Box(
         modifier = Modifier
             .width(156.dp)
             .height(194.dp)
-            .localCardSurface(cornerRadius = 16.dp)
-            .pressable(onClick = onClick),
+            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            .pressable(onClick = { onClick(cardBounds) })
+            .localCardSurface(cornerRadius = 16.dp),
     ) {
         // Full-bleed image or category gradient fallback
         if (!event.imageUrl.isNullOrBlank()) {
@@ -1784,23 +1925,26 @@ private fun EventRowCard(
     isFavorited: Boolean,
     userLat: Double?,
     userLng: Double?,
-    onClick: () -> Unit,
+    onClick: (Rect) -> Unit,
     onFavoriteToggle: () -> Unit,
 ) {
+    // Hero source rect = the thumbnail, not the whole row, so the detail
+    // page expands/collapses from the image.
+    var imageBounds by remember { mutableStateOf(Rect.Zero) }
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(Color.White)
-            .clickable(onClick = onClick)
-            .padding(10.dp),
+            .height(92.dp)
+            .pressable(onClick = { onClick(imageBounds) })
+            .localCardSurface(cornerRadius = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Thumbnail
+        // Thumbnail — flush to card edge (top/left/bottom), full card height
         Box(
             modifier = Modifier
-                .size(72.dp)
-                .clip(RoundedCornerShape(10.dp))
+                .width(92.dp)
+                .fillMaxHeight()
+                .onGloballyPositioned { imageBounds = it.boundsInRoot() }
                 .background(gradientForCategory(event.subcategory ?: event.category)),
             contentAlignment = Alignment.Center,
         ) {
@@ -1809,13 +1953,13 @@ private fun EventRowCard(
                     model = event.imageUrl,
                     contentDescription = event.title,
                     contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(10.dp)),
+                    modifier = Modifier.fillMaxSize(),
                 )
             } else {
                 Icon(
                     Icons.Outlined.CalendarMonth,
                     contentDescription = null,
-                    tint = AppColors.White.copy(alpha = 0.85f),
+                    tint = AppColors.Ink3.copy(alpha = 0.5f),
                     modifier = Modifier.size(28.dp),
                 )
             }
@@ -1823,7 +1967,7 @@ private fun EventRowCard(
 
         Spacer(Modifier.width(12.dp))
 
-        Column(modifier = Modifier.weight(1f)) {
+        Column(modifier = Modifier.weight(1f).padding(vertical = 10.dp)) {
             Text(
                 event.title,
                 style = TextStyle(
@@ -1901,6 +2045,7 @@ private fun EventRowCard(
         // Heart — matches venue card style (28dp white circle, 16dp coral)
         Box(
             modifier = Modifier
+                .padding(end = 12.dp)
                 .size(28.dp)
                 .clip(CircleShape)
                 .background(AppColors.White)

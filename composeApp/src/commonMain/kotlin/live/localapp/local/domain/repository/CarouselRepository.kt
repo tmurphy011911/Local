@@ -32,4 +32,16 @@ interface CarouselRepository {
 
     /** Full reset including category order — call on location change. */
     fun invalidateAll() { invalidateCaches() }
+
+    /**
+     * Disk-cached previous response, used by HomeViewModel to paint
+     * stale-while-revalidate. Returns null if no cache, or the cache is for
+     * a different location. Default no-op so non-server implementations
+     * (test fakes, in-memory mocks) don't have to implement it.
+     */
+    suspend fun getCachedCarouselsFromDisk(
+        category: String? = null,
+        userPreferences: UserPreferences? = null,
+        locationName: String = "",
+    ): List<CarouselSection>? = null
 }

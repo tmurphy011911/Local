@@ -88,6 +88,13 @@ struct PlanDetailView: View {
             pdPaper.ignoresSafeArea()
             VStack(spacing: 0) {
                 hero
+                // The "sheet" below the hero is just a ScrollView with a
+                // rounded top mask. Previously the rounded paper layer was
+                // a child .background offset upward — at the corners of
+                // the rounded mask we could see the ScrollView's default
+                // (white) background poking through. Clip the ScrollView
+                // itself instead so there's nothing behind the rounded
+                // edges to leak.
                 ScrollView {
                     VStack(spacing: 16) {
                         if plan.isPast { pastBanner }
@@ -101,13 +108,14 @@ struct PlanDetailView: View {
                         // doesn't cover the last stop / delete footer.
                         Spacer().frame(height: 110)
                     }
-                    .padding(.top, 8)
+                    // Extra top padding so the day-strip card sits with
+                    // breathing room below the rounded sheet edge instead
+                    // of jammed against the hero.
+                    .padding(.top, 20)
                 }
-                .background(
-                    pdPaper
-                        .clipShape(RoundedCorner(radius: 22, corners: [.topLeft, .topRight]))
-                        .offset(y: -12)
-                )
+                .background(pdPaper)
+                .clipShape(RoundedCorner(radius: 22, corners: [.topLeft, .topRight]))
+                .offset(y: -12)
             }
 
             // Persistent Share Plan CTA pinned to the bottom of the screen.
@@ -228,6 +236,7 @@ struct PlanDetailView: View {
                 }
             }
             overlapSlotIds = detectOverlaps(in: plan)
+            maybeAutoOpenGroupSizeSheet()
         }
         .onDisappear {
             // NOTE: do NOT nil out pushPlanState / onSwapAlternativesReady here.
@@ -237,6 +246,28 @@ struct PlanDetailView: View {
             // detail view stale when the user returns. The next onAppear of any
             // PlanDetailView re-binds these handlers anyway.
             PlanDetailBridge.shared.onDismissed?()
+        }
+    }
+
+    // MARK: - First-open group-size auto-prompt
+
+    /// One-time per plan, on the creator's first time opening the detail
+    /// screen, surface the GroupSizeSheet so they can set the count without
+    /// Bo asking in chat. Skip if:
+    /// - User isn't the creator (can't edit count anyway)
+    /// - Plan already has an explicit group size
+    /// - Plan is past (count is irrelevant)
+    /// - We've already prompted for this plan id (UserDefaults flag, set as
+    ///   soon as we open the sheet so cancelling once doesn't re-prompt)
+    private func maybeAutoOpenGroupSizeSheet() {
+        guard isCreator, !plan.isPast, plan.groupSize == nil else { return }
+        let key = "attendees_prompted_v1_\(plan.id)"
+        if UserDefaults.standard.bool(forKey: key) { return }
+        UserDefaults.standard.set(true, forKey: key)
+        // Tiny delay so the entrance transition finishes before the sheet
+        // animates up — otherwise the two animations stack and feel jittery.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+            showGroupSizeSheet = true
         }
     }
 
@@ -532,6 +563,18 @@ struct PlanDetailView: View {
                             } label: {
                                 Label("Rename Plan", systemImage: "pencil")
                             }
+                            // Add Day moved here from the day-strip "+ ADD"
+                            // cell + single-day "+ Add day" button. Keeps
+                            // the strip + stop list visually quiet and
+                            // makes Add Day discoverable alongside other
+                            // plan-level edits.
+                            if !plan.isPast && plan.days.count < kMaxDays {
+                                Button {
+                                    PlanDetailBridge.shared.onAddDay?()
+                                } label: {
+                                    Label("Add Day", systemImage: "calendar.badge.plus")
+                                }
+                            }
                             Divider()
                             Button(role: .destructive) {
                                 showDeleteConfirm = true
@@ -556,19 +599,78 @@ struct PlanDetailView: View {
                 Spacer()
             }
 
-            // Floating white title card overlapping the map's bottom.
-            titleCard(day: day, dayStops: dayStops)
-                .padding(.horizontal, 14)
+            // Floating peek-paging title-card carousel overlapping the map's
+            // bottom. Each day has its own card; the active card snaps to
+            // center and adjacent days peek from the edges (left peek for
+            // the previous day, right peek for the next). Replaces the
+            // prior single-card + DragGesture pattern so the user can see
+            // they're in a multi-day plan at a glance.
+            titleCardCarousel
                 .padding(.bottom, 14)
         }
         .frame(height: 250)
     }
 
+    // MARK: - Title card carousel (peek-paging)
+
+    @ViewBuilder
+    private var titleCardCarousel: some View {
+        if plan.days.count <= 1 {
+            // Single-day plan: keep the original single floating card —
+            // there's nothing to peek to.
+            let day = plan.days.first
+            let dayStops = day?.slots.count ?? 0
+            titleCard(day: day, dayStops: dayStops, isActive: true)
+                .padding(.horizontal, 14)
+        } else {
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 10) {
+                    ForEach(Array(plan.days.enumerated()), id: \.offset) { idx, d in
+                        let isActive = idx == selectedDayIndex
+                        titleCard(day: d, dayStops: d.slots.count, isActive: isActive)
+                            .containerRelativeFrame(.horizontal, count: 1, span: 1, spacing: 0)
+                            .id(idx)
+                    }
+                }
+                .scrollTargetLayout()
+            }
+            // 28pt margin on each side leaves 28pt of the next/prev card
+            // visible at the edges. Tune higher for more peek, lower for
+            // less. Less than ~16 reads as a layout glitch; more than ~40
+            // makes the active card feel cramped.
+            .contentMargins(.horizontal, 28, for: .scrollContent)
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: scrollDayIdBinding)
+            // Hug the card's intrinsic height. Without this, the ScrollView
+            // fills the ZStack vertically and the cards align to its top —
+            // pushing the carousel away from the hero's bottom edge.
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity)
+        }
+    }
+
+    /// Bridge between `@State selectedDayIndex: Int` and SwiftUI's
+    /// `.scrollPosition(id: Binding<Int?>)`. Keeps the day index in sync
+    /// with whichever card is snapped to center, so the map camera and
+    /// the day strip below stay aligned with the visible title card.
+    private var scrollDayIdBinding: Binding<Int?> {
+        Binding<Int?>(
+            get: { selectedDayIndex },
+            set: { newValue in
+                guard let v = newValue, v != selectedDayIndex else { return }
+                withAnimation(.easeInOut(duration: 0.25)) { selectedDayIndex = v }
+            }
+        )
+    }
+
     // MARK: - Title card (floats on the map's bottom edge)
 
-    private func titleCard(day: PlanDetailDay?, dayStops: Int) -> some View {
+    private func titleCard(day: PlanDetailDay?, dayStops: Int, isActive: Bool) -> some View {
         let dateLabel = headerDateLabel(day: day)
-        let metrics = headerMetricsLabel(dayStops: dayStops)
+        // Only the active card wears the route metrics — siblings show
+        // just the stop count, since `routeTotals` only reflects the day
+        // currently rendered by MapHeroView.
+        let metrics = headerMetricsLabel(dayStops: dayStops, includeRoute: isActive)
         let titleHeader = headerTitleLabel()
         return HStack(alignment: .top, spacing: 0) {
             VStack(alignment: .leading, spacing: 4) {
@@ -604,31 +706,10 @@ struct PlanDetailView: View {
                 .stroke(pdLine, lineWidth: 0.5)
         )
         .shadow(color: .black.opacity(0.10), radius: 8, x: 0, y: 3)
-        // Horizontal swipe on the title card switches days. Threshold of 50pt
-        // — anything less is treated as a tap. Wraps the day-index update in
-        // an animation so the map camera, title text, and metrics glide.
-        .contentShape(Rectangle())
-        .gesture(
-            DragGesture(minimumDistance: 20)
-                .onEnded { value in
-                    let dx = value.translation.width
-                    guard abs(dx) > 50, plan.days.count > 1 else { return }
-                    let newIndex: Int
-                    if dx < 0 {
-                        // Swiped left → next day
-                        newIndex = min(selectedDayIndex + 1, plan.days.count - 1)
-                    } else {
-                        // Swiped right → previous day
-                        newIndex = max(selectedDayIndex - 1, 0)
-                    }
-                    if newIndex != selectedDayIndex {
-                        withAnimation(.easeInOut(duration: 0.25)) {
-                            selectedDayIndex = newIndex
-                        }
-                    }
-                }
-        )
-        // (Stop-count badge removed — the metrics line already shows it.)
+        // Day switching is now driven by the carousel's snap-paging in
+        // `titleCardCarousel`; no per-card DragGesture needed. Inactive
+        // sibling cards dim slightly so the active one reads as primary.
+        .opacity(isActive ? 1.0 : 0.85)
     }
 
     private func headerTitleLabel() -> String {
@@ -665,12 +746,15 @@ struct PlanDetailView: View {
         return raw
     }
 
-    private func headerMetricsLabel(dayStops: Int) -> String {
-        var parts: [String] = []
-        if dayStops > 0 {
-            parts.append("\(dayStops) \(dayStops == 1 ? "stop" : "stops")")
-        }
-        if let r = routeTotals {
+    private func headerMetricsLabel(dayStops: Int, includeRoute: Bool = true) -> String {
+        // Always render the stops count, even when 0, so the title card
+        // keeps a 3-line layout (header / date / metrics) and the card's
+        // height stays constant across days.
+        // `includeRoute` is false for sibling cards in the peek-paging
+        // carousel — `routeTotals` only reflects the active day so we'd
+        // otherwise label every visible card with the active day's miles.
+        var parts: [String] = ["\(dayStops) \(dayStops == 1 ? "stop" : "stops")"]
+        if includeRoute, let r = routeTotals {
             if r.miles > 0 {
                 parts.append(String(format: "%.1f mi", r.miles))
             }
@@ -910,7 +994,11 @@ struct PlanDetailView: View {
         if plan.isEffectivelyMultiDay {
             multiDayStrip
         } else {
-            singleDayStrip
+            // Single-day plans: no header strip. The "X stops" pill +
+            // standalone "+ Add day" button were redundant with the
+            // title-card metrics line + the overflow menu's Add Day
+            // entry, and added vertical chrome below the hero.
+            EmptyView()
         }
     }
 
@@ -918,31 +1006,23 @@ struct PlanDetailView: View {
     // Active day fills with coral; inactive cells are flat ink on transparent.
     // Cells fit within the screen when there are <=4 days; >4 enables scroll.
     private var multiDayStrip: some View {
-        // Trim trailing orphan days — days with 0 stops and no real day-of-week
-        // label (e.g. just "5" or "6"). These come from upstream bugs where
-        // placeholder days slip into the plan; showing them in the strip is
-        // confusing because they look like real future days the user added.
-        // Keep a trailing empty day if it has a real date label (intentional
-        // user-added empty day waiting to be filled).
+        // Trim trailing orphan days. Add-Day moved to the overflow menu
+        // (header `⋯`) so the strip itself is just date cells now —
+        // cleaner read and the cell widths divide evenly.
         let visibleDays = trimTrailingPhantomDays(plan.days)
-        let canAdd = isCreator && !plan.isPast && visibleDays.count < kMaxDays
-        let cellCount = visibleDays.count + (canAdd ? 1 : 0)
+        let cellCount = visibleDays.count
         let fitsWithoutScroll = cellCount <= 4
 
         let row = HStack(spacing: 0) {
             ForEach(Array(visibleDays.enumerated()), id: \.offset) { idx, day in
                 dayCell(idx: idx, day: day)
                     .frame(maxWidth: .infinity)
-                if idx < visibleDays.count - 1 || canAdd {
+                if idx < visibleDays.count - 1 {
                     Rectangle()
                         .fill(pdLine)
                         .frame(width: 0.5)
                         .padding(.vertical, 10)
                 }
-            }
-            if canAdd {
-                addDayCell()
-                    .frame(maxWidth: .infinity)
             }
         }
 
@@ -1107,35 +1187,69 @@ struct PlanDetailView: View {
         }()
         if dayIdx >= 0 && dayIdx < plan.days.count {
             let day = plan.days[dayIdx]
-            VStack(spacing: 10) {
+            // VStack with 0 spacing so the per-slot timeline columns butt
+            // up against each other and form a single continuous line
+            // running through all the cards. Inter-card visual gap is
+            // produced by the card row's bottom padding instead.
+            VStack(spacing: 0) {
                 if day.slots.isEmpty {
                     emptyDayCard(dayIdx: dayIdx)
                 } else {
                     ForEach(Array(day.slots.enumerated()), id: \.element.id) { i, slot in
-                        StopCard(
-                            slot: slot,
-                            readOnly: !isCreator || plan.isPast,
-                            dayIdx: dayIdx,
-                            hasOverlapWarning: overlapSlotIds.contains(slot.id),
-                            isOverlapAcknowledged: acknowledgedOverlaps.contains(slot.id),
-                            onAcknowledgeOverlap: {
-                                acknowledgedOverlaps.insert(slot.id)
-                            },
-                            onOpenSheet: { target in activeStopSheet = target },
-                            onReplace: {
-                                PlanDetailBridge.shared.onReplaceSlot?(KotlinInt(int: Int32(dayIdx)), slot.id, slot.name)
-                            },
-                            onRemove: {
-                                PlanDetailBridge.shared.onRemoveSlot?(KotlinInt(int: Int32(dayIdx)), slot.id)
-                            },
-                            onOpenSafari: { url in safariUrl = IdentifiableURL(url: url) },
-                            onTapBoWebOverride: { boWebOverrideTarget = slot },
-                            isLocallyVerified: boWebLocallyVerified.contains(slot.id)
-                        )
-                        if i < day.slots.count - 1, let travel = day.travel?[safe: i] {
-                            TransitRow(mode: travel.mode, mins: Int(travel.mins))
-                        } else if i < day.slots.count - 1 {
-                            Spacer().frame(height: 6)
+                        let isLast = i == day.slots.count - 1
+                        HStack(alignment: .top, spacing: 10) {
+                            // Timeline column — TIME label + dot + line
+                            // continuing to the bottom of the row so the
+                            // line meets the next slot's TIME label,
+                            // making the rail visually unbroken across
+                            // the whole day.
+                            VStack(spacing: 0) {
+                                Text(slot.time.uppercased())
+                                    .font(.system(size: 10, weight: .heavy))
+                                    .foregroundColor(pdCoral)
+                                    .tracking(0.4)
+                                    .lineLimit(1)
+                                    .fixedSize()
+                                    .padding(.bottom, 5)
+                                Circle()
+                                    .fill(pdCoral)
+                                    .frame(width: 9, height: 9)
+                                if !isLast {
+                                    Rectangle()
+                                        .fill(pdCoral.opacity(0.22))
+                                        .frame(width: 1.5)
+                                        .frame(maxHeight: .infinity)
+                                        .padding(.top, 4)
+                                } else {
+                                    Spacer(minLength: 0)
+                                }
+                            }
+                            .frame(width: 56)
+
+                            StopCard(
+                                slot: slot,
+                                readOnly: !isCreator || plan.isPast,
+                                dayIdx: dayIdx,
+                                hasOverlapWarning: overlapSlotIds.contains(slot.id),
+                                isOverlapAcknowledged: acknowledgedOverlaps.contains(slot.id),
+                                onAcknowledgeOverlap: {
+                                    acknowledgedOverlaps.insert(slot.id)
+                                },
+                                onOpenSheet: { target in activeStopSheet = target },
+                                onReplace: {
+                                    PlanDetailBridge.shared.onReplaceSlot?(KotlinInt(int: Int32(dayIdx)), slot.id, slot.name)
+                                },
+                                onRemove: {
+                                    PlanDetailBridge.shared.onRemoveSlot?(KotlinInt(int: Int32(dayIdx)), slot.id)
+                                },
+                                onOpenSafari: { url in safariUrl = IdentifiableURL(url: url) },
+                                onTapBoWebOverride: { boWebOverrideTarget = slot },
+                                isLocallyVerified: boWebLocallyVerified.contains(slot.id)
+                            )
+                            .padding(.bottom, isLast ? 0 : 10)
+                        }
+                        if !isLast, let travel = day.travel?[safe: i] {
+                            HStack { Spacer().frame(width: 56); TransitRow(mode: travel.mode, mins: Int(travel.mins)); Spacer() }
                         }
                     }
                     if isCreator && !plan.isPast {
@@ -1161,11 +1275,17 @@ struct PlanDetailView: View {
                                 )
                             }
                             .buttonStyle(.plain)
+                            // Breathing room between the last stop card and
+                            // the Add Event CTA. The card list now uses
+                            // VStack(spacing: 0) so this button needs its
+                            // own explicit top inset.
+                            .padding(.top, 16)
                         } else {
                             Text("Day full — max 8 stops.")
                                 .font(.system(size: 11, weight: .semibold))
                                 .foregroundColor(pdInk4)
                                 .frame(maxWidth: .infinity)
+                                .padding(.top, 16)
                                 .padding(.vertical, 8)
                         }
                     }
@@ -1176,12 +1296,16 @@ struct PlanDetailView: View {
     }
 
     private func emptyDayCard(dayIdx: Int) -> some View {
-        VStack(spacing: 10) {
+        VStack(spacing: 12) {
+            // Bo as the empty-state icon — replaces the prior sparkle glyph.
+            // Bo sits on the soft-coral backdrop so the empty state still
+            // reads as "this is a Bo invitation" rather than a stock icon.
             ZStack {
-                Circle().fill(pdCoralSoft).frame(width: 48, height: 48)
-                Image(systemName: "sparkles")
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundColor(pdCoral)
+                Circle().fill(pdCoralSoft).frame(width: 64, height: 64)
+                Image("BoDefaultClean")
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(width: 56, height: 56)
             }
             Text("Your plan is empty")
                 .font(.system(size: 18, weight: .bold))
@@ -1274,40 +1398,24 @@ private struct StopCard: View {
     @State private var showRemoveConfirm = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            // Thumbnail
-            ZStack {
-                RoundedRectangle(cornerRadius: 12).fill(pdShade)
-                if let urlStr = slot.imageUrl, let url = URL(string: urlStr) {
-                    AsyncImage(url: url) { img in
-                        img.resizable().scaledToFill()
-                    } placeholder: {
-                        Image(systemName: "mappin.and.ellipse")
-                            .font(.system(size: 18))
-                            .foregroundColor(pdInk4)
-                    }
-                    .frame(width: 72, height: 72)
-                    .clipped()
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                } else {
-                    Image(systemName: "mappin.and.ellipse")
-                        .font(.system(size: 18))
-                        .foregroundColor(pdInk4)
-                }
-            }
-            .frame(width: 72, height: 72)
-
-            // Body
-            VStack(alignment: .leading, spacing: 4) {
+        // Body — three single-line rows. The timeline rail (TIME + dot
+        // + line) now lives in the parent stop list so it spans the
+        // full vertical span across cards instead of breaking inside
+        // each card.
+        HStack(alignment: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 5) {
+                // Row 1: name + inline status badges + overflow menu.
+                // The badge logic is unchanged from the prior layout — same
+                // Bo-Web verification states, restaurant BOOK AHEAD signal,
+                // and acknowledgeable time-conflict warning, just rendered
+                // alongside the title instead of next to the time.
                 HStack(spacing: 6) {
-                    Text(slot.time.uppercased())
-                        .font(.system(size: 11, weight: .bold))
-                        .foregroundColor(pdCoral)
-                        .tracking(0.5)
-                    // Phase 3.5: Bo-Web badge reflects current verification
-                    // state. Verified rows render no badge (slot looks like
-                    // any other event). Rejected rows show a red warning
-                    // tappable → confirmation override modal.
+                    Text(slot.name)
+                        .font(.system(size: 15, weight: .bold))
+                        .foregroundColor(pdInk)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+
                     if slot.isBoWeb {
                         let effectiveState = isLocallyVerified ? "verified" : slot.boWebState
                         switch effectiveState {
@@ -1325,33 +1433,22 @@ private struct StopCard: View {
                                 .foregroundColor(Color(red: 0.85, green: 0.40, blue: 0.20))
                             }
                             .buttonStyle(.plain)
+                            .layoutPriority(1)
                         default:
                             HStack(spacing: 3) {
                                 Image(systemName: "sparkles")
                                     .font(.system(size: 9, weight: .bold))
-                                Text("BO FOUND THIS — VERIFYING")
+                                Text("VERIFYING")
                                     .font(.system(size: 8, weight: .black))
                                     .tracking(0.5)
                             }
                             .foregroundColor(pdCoral)
+                            .layoutPriority(1)
                         }
                     }
-                    // Restaurant: amber "BOOK AHEAD" only when the venue likely
-                    // takes reservations and the user hasn't booked one yet.
-                    if slot.stopType == .restaurant
-                        && slot.reservationState == .none
-                        && (slot.venueReservable ?? true) {
-                        HStack(spacing: 3) {
-                            Image(systemName: "exclamationmark.circle.fill")
-                                .font(.system(size: 9, weight: .bold))
-                            Text("BOOK AHEAD")
-                                .font(.system(size: 8, weight: .black))
-                                .tracking(0.5)
-                        }
-                        .foregroundColor(Color(red: 0.85, green: 0.55, blue: 0.10)) // amber
-                    }
-                    // Time-conflict warning (acknowledgeable). Only visible when an
-                    // overlap was detected after a reservation time-update cascade.
+                    // BOOK AHEAD is rendered as a corner badge below
+                    // (overlay), not inline — the inline version was
+                    // truncating the venue name on narrower cards.
                     if hasOverlapWarning && !isOverlapAcknowledged {
                         Button(action: onAcknowledgeOverlap) {
                             HStack(spacing: 3) {
@@ -1364,19 +1461,16 @@ private struct StopCard: View {
                             .foregroundColor(Color(red: 0.85, green: 0.20, blue: 0.20))
                         }
                         .buttonStyle(.plain)
+                        .layoutPriority(1)
                     }
-                    Spacer()
+                    Spacer(minLength: 0)
                     if !readOnly {
                         Menu {
-                            Button {
-                                onReplace()
-                            } label: {
+                            Button { onReplace() } label: {
                                 Label("Replace this stop", systemImage: "sparkles")
                             }
                             Divider()
-                            Button(role: .destructive) {
-                                showRemoveConfirm = true
-                            } label: {
+                            Button(role: .destructive) { showRemoveConfirm = true } label: {
                                 Label("Remove from plan", systemImage: "trash")
                             }
                         } label: {
@@ -1385,28 +1479,22 @@ private struct StopCard: View {
                                 .foregroundColor(pdInk4)
                                 .frame(width: 22, height: 22)
                         }
+                        .layoutPriority(2)
                     }
                 }
 
-                Text(slot.name)
-                    .font(.system(size: 16, weight: .bold))
-                    .foregroundColor(pdInk)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-
-                // Subtitle line: "Dinner · Back Bay · ★ 4.5" — rating inline per spec.
+                // Row 2: subtitle line. For events: "Venue · City". For
+                // venues: "Type · Neighborhood · ★ Rating". Always single
+                // line — `subtitleLine` is composed by the existing helper.
                 if !subtitleLine.isEmpty {
                     Text(subtitleLine)
                         .font(.system(size: 12))
                         .foregroundColor(pdInk3)
                         .lineLimit(1)
+                        .truncationMode(.tail)
                 }
 
-                // CTA row — max 2 chips, Directions always present.
-                // Priority order for the *other* slot:
-                //   1. Reservation / Tickets / "More info" (state-driven primaryChip)
-                //   2. "Info" (was: "Website") — venueWebsite or sourceUrl
-                // If neither qualifies, Directions is the only chip.
+                // Row 3: CTA chips — Reservation/Tickets/Info + Directions.
                 FlowChips(spacing: 6) {
                     if hasPrimaryAction {
                         primaryChip
@@ -1421,13 +1509,48 @@ private struct StopCard: View {
                         }
                     }
                 }
-                .padding(.top, 4)
+                .padding(.top, 2)
             }
         }
-        .padding(12)
+        .padding(EdgeInsets(top: 12, leading: 12, bottom: 12, trailing: 12))
         .background(Color.white)
         .overlay(RoundedRectangle(cornerRadius: 16).stroke(pdLine, lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 16))
+        // BOOK AHEAD as a corner badge — flush with the top-right corner
+        // of the card so the title row never gets truncated by an inline
+        // chip. Same condition as before (restaurant + no reservation +
+        // venue reservable).
+        .overlay(alignment: .topTrailing) {
+            if slot.stopType == .restaurant
+                && slot.reservationState == .none
+                && (slot.venueReservable ?? true) {
+                Text("BOOK AHEAD")
+                    .font(.system(size: 8, weight: .black))
+                    .tracking(0.5)
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 4)
+                    .background(Color(red: 0.95, green: 0.62, blue: 0.13))
+                    .clipShape(
+                        UnevenRoundedRectangle(
+                            cornerRadii: .init(topLeading: 0, bottomLeading: 6, bottomTrailing: 0, topTrailing: 16)
+                        )
+                    )
+            }
+        }
+        // Tap → open native event/venue detail. Routes through the
+        // PlanDetailBridge so AppNavigation can wire `showNativeEventDetail`
+        // / `showNativeVenueDetail` with the same handlers used for taps
+        // from the Plans tab and Home feed.
+        .contentShape(Rectangle())
+        .onTapGesture {
+            PlanDetailBridge.shared.onSlotTap?(
+                KotlinInt(int: Int32(dayIdx)),
+                slot.id,
+                slot.eventId,
+                slot.venueName ?? slot.name
+            )
+        }
         .confirmationDialog(
             "Get directions to \(slot.name)",
             isPresented: $showDirections,
@@ -1497,7 +1620,7 @@ private struct StopCard: View {
             switch slot.reservationState {
             case .made:
                 stateBadge(
-                    label: "Reservation Made · \(slot.reservationPartySize ?? 1) \(pluralize(slot.reservationPartySize ?? 1, "person", "people"))",
+                    label: "Booked · \(slot.reservationPartySize ?? 1) \(pluralize(slot.reservationPartySize ?? 1, "person", "people"))",
                     systemIcon: "checkmark.circle.fill",
                     color: pdGreen,
                     enabled: !readOnly
@@ -2677,28 +2800,44 @@ private struct MapHeroView: View {
                     NumberedPin(idx: idx + 1)
                 }
             }
-            // Dashed route between consecutive stops.
+            // Solid thin route between consecutive stops. The previous
+            // dashed thicker stroke read as "approximate / placeholder";
+            // a clean 2-pt solid line reads as a real path.
             if coords.count >= 2 {
                 MapPolyline(coordinates: coords)
                     .stroke(
                         pdCoral,
-                        style: StrokeStyle(lineWidth: 3, lineCap: .round, dash: [6, 4])
+                        style: StrokeStyle(lineWidth: 2, lineCap: .round)
                     )
             }
-            // Travel-time pill at each leg's midpoint — shows MIN WALK or
-            // MIN DRIVE depending on the leg's distance.
+            // Travel-time pill at each leg's midpoint — SF Symbol + minutes.
+            // Hide pills for legs shorter than ~80 m: at typical zoom that
+            // puts the midpoint right on top of the adjacent numbered pins,
+            // which is the collision the user reported. The route line
+            // alone is enough signal for very short legs.
             ForEach(Array(legs.enumerated()), id: \.offset) { _, leg in
-                Annotation("", coordinate: leg.midpoint, anchor: .center) {
-                    Text("\(leg.minutes) MIN \(leg.mode.label)")
-                        .font(.system(size: 9, weight: .heavy))
-                        .tracking(0.4)
-                        .foregroundColor(pdInk2)
+                if leg.meters >= 80 {
+                    Annotation("", coordinate: leg.midpoint, anchor: .center) {
+                        HStack(spacing: 4) {
+                            Image(systemName: leg.mode == .walking ? "figure.walk" : "car.fill")
+                                .font(.system(size: 10, weight: .bold))
+                                .foregroundColor(pdInk2)
+                            Text("\(leg.minutes) MIN")
+                                .font(.system(size: 9, weight: .heavy))
+                                .tracking(0.4)
+                                .foregroundColor(pdInk2)
+                        }
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
                         .background(.white)
                         .clipShape(Capsule())
                         .overlay(Capsule().stroke(pdLine, lineWidth: 0.5))
                         .shadow(color: .black.opacity(0.18), radius: 2, x: 0, y: 1)
+                        // Shift the pill upward in screen space so it sits
+                        // above the route line and clear of numbered pins
+                        // when the map is zoomed out and stops are close.
+                        .offset(y: -16)
+                    }
                 }
             }
         }

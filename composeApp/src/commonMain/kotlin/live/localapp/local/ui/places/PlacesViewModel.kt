@@ -9,6 +9,10 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.datetime.LocalDate
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toInstant
+import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.repository.CommunityInterestRepository
 import live.localapp.local.domain.repository.ExploreRepository
@@ -22,15 +26,30 @@ import live.localapp.local.domain.repository.VenueWithMeta
 enum class SearchTab { EVENTS, PLACES }
 
 /**
+ * Server-side sort for the Places tab. The slug is sent to `explore-places`
+ * via the `sort` query param; the server sorts the FULL scored list before
+ * paginating, so non-popularity sorts don't get capped to the popularity
+ * top-N that's already on screen.
+ */
+enum class PlaceSort(val label: String, val slug: String) {
+    POPULAR("Most Popular", "popular"),
+    CLOSEST("Closest", "closest"),
+    MOST_EVENTS("Most events", "most_events"),
+}
+
+/**
  * Date-range filter for the Events tab. Server receives the enum's `slug` as
  * the `date_filter` query param; null means no filter (default 60-day window).
+ *
+ * `CUSTOM` is paired with `customStart` / `customEnd` on [PlacesUiState] —
+ * the slug "custom" tells the server to use the explicit `date_start` /
+ * `date_end` query params instead of a preset window.
  */
 enum class EventDateFilter(val label: String, val slug: String) {
     TODAY("Today", "today"),
     TOMORROW("Tomorrow", "tomorrow"),
     THIS_WEEKEND("This Weekend", "this_weekend"),
-    NEXT_7_DAYS("Next 7 days", "next_7_days"),
-    NEXT_30_DAYS("Next 30 days", "next_30_days"),
+    CUSTOM("Select Date", "custom"),
 }
 
 data class PlacesUiState(
@@ -64,8 +83,13 @@ data class PlacesUiState(
     val radiusFilter: Double? = null,
     // Events tab — date range filter; null = default 60-day window.
     val dateFilter: EventDateFilter? = null,
+    // Populated only when [dateFilter] == CUSTOM. Inclusive on both ends.
+    val customStart: LocalDate? = null,
+    val customEnd: LocalDate? = null,
     // Places tab — limit to venues that have upcoming events.
     val hasEventsOnly: Boolean = false,
+    // Places tab — client-side sort over the loaded venue list.
+    val placeSort: PlaceSort = PlaceSort.POPULAR,
     val favoriteVenueIds: Set<String> = emptySet(),
     val favoriteEventIds: Set<String> = emptySet(),
     val savedEvents: List<Event> = emptyList(),
@@ -178,13 +202,43 @@ class PlacesViewModel(
 
     fun setDateFilter(filter: EventDateFilter?) {
         if (_uiState.value.dateFilter == filter) return
-        _uiState.update { it.copy(dateFilter = filter) }
+        // Switching away from CUSTOM clears the picked range; the next CUSTOM
+        // tap will re-open the picker fresh.
+        _uiState.update {
+            if (filter == EventDateFilter.CUSTOM) {
+                it.copy(dateFilter = filter)
+            } else {
+                it.copy(dateFilter = filter, customStart = null, customEnd = null)
+            }
+        }
+        loadEvents(reset = true)
+    }
+
+    /** Apply an inclusive [start, end] custom date range and switch to CUSTOM. */
+    fun setCustomDateRange(start: LocalDate, end: LocalDate) {
+        val (a, b) = if (start <= end) start to end else end to start
+        _uiState.update {
+            it.copy(
+                dateFilter = EventDateFilter.CUSTOM,
+                customStart = a,
+                customEnd = b,
+            )
+        }
         loadEvents(reset = true)
     }
 
     fun setHasEventsOnly(enabled: Boolean) {
         if (_uiState.value.hasEventsOnly == enabled) return
         _uiState.update { it.copy(hasEventsOnly = enabled) }
+        loadPlaces(reset = true)
+    }
+
+    fun setPlaceSort(sort: PlaceSort) {
+        if (_uiState.value.placeSort == sort) return
+        _uiState.update { it.copy(placeSort = sort) }
+        // Server-side sort — refetch from offset 0 with the new sort slug
+        // so non-popularity sorts pull the best venues across the full list,
+        // not just the popularity top-N already loaded.
         loadPlaces(reset = true)
     }
 
@@ -224,6 +278,7 @@ class PlacesViewModel(
                     category = category,
                     radiusMiles = state.radiusFilter,
                     hasEventsOnly = state.hasEventsOnly,
+                    sort = state.placeSort.slug,
                     cursor = cursor,
                     limit = 50,
                 )
@@ -268,6 +323,24 @@ class PlacesViewModel(
                 val category = state.selectedFilter.takeIf { it != "All" }
                     ?.let { filterToServerCategory(it) }
 
+                // Only send the slug when CUSTOM has both endpoints picked,
+                // otherwise CUSTOM-with-no-range would render an empty list.
+                val activeSlug = when (state.dateFilter) {
+                    EventDateFilter.CUSTOM -> if (state.customStart != null && state.customEnd != null) "custom" else null
+                    null -> null
+                    else -> state.dateFilter.slug
+                }
+                // (local − UTC) in minutes — server uses this to align the
+                // today/tomorrow/weekend windows to the user's local midnight
+                // instead of UTC midnight. kotlinx-datetime 0.7's `offsetAt`
+                // moved, so we compute via a UTC↔local round-trip diff.
+                val tzOffsetMin = run {
+                    val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
+                    val instant = kotlinx.datetime.Instant.fromEpochMilliseconds(nowMs)
+                    val localDt = instant.toLocalDateTime(TimeZone.currentSystemDefault())
+                    val asUtcMs = localDt.toInstant(TimeZone.UTC).toEpochMilliseconds()
+                    ((asUtcMs - nowMs) / 60_000L).toInt()
+                }
                 val page = exploreRepository.fetchEvents(
                     userLat = lat,
                     userLng = lng,
@@ -275,7 +348,10 @@ class PlacesViewModel(
                     query = state.searchQuery,
                     category = category,
                     radiusMiles = state.radiusFilter,
-                    dateFilter = state.dateFilter?.slug,
+                    dateFilter = activeSlug,
+                    dateStart = state.customStart?.toString(),
+                    dateEnd = state.customEnd?.toString(),
+                    tzOffsetMinutes = tzOffsetMin,
                     cursor = cursor,
                     limit = 50,
                 )

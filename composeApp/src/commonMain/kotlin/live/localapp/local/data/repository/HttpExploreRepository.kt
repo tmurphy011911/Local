@@ -46,6 +46,9 @@ class HttpExploreRepository : ExploreRepository {
         category: String?,
         radiusMiles: Double?,
         dateFilter: String?,
+        dateStart: String?,
+        dateEnd: String?,
+        tzOffsetMinutes: Int?,
         cursor: String?,
         limit: Int,
     ): EventPage {
@@ -58,6 +61,9 @@ class HttpExploreRepository : ExploreRepository {
             category?.takeIf { it.isNotBlank() && it != "foryou" }?.let { parameter("category", it) }
             radiusMiles?.let { parameter("radius", it) }
             dateFilter?.takeIf { it.isNotBlank() }?.let { parameter("date_filter", it) }
+            dateStart?.takeIf { it.isNotBlank() }?.let { parameter("date_start", it) }
+            dateEnd?.takeIf { it.isNotBlank() }?.let { parameter("date_end", it) }
+            tzOffsetMinutes?.let { parameter("tz_offset_min", it) }
             cursor?.let { parameter("cursor", it) }
             parameter("limit", limit)
         }
@@ -79,6 +85,7 @@ class HttpExploreRepository : ExploreRepository {
         category: String?,
         radiusMiles: Double?,
         hasEventsOnly: Boolean,
+        sort: String?,
         cursor: String?,
         limit: Int,
     ): PlacePage {
@@ -91,6 +98,7 @@ class HttpExploreRepository : ExploreRepository {
             category?.takeIf { it.isNotBlank() && it != "foryou" }?.let { parameter("category", it) }
             radiusMiles?.let { parameter("radius", it) }
             if (hasEventsOnly) parameter("has_events", "true")
+            sort?.takeIf { it.isNotBlank() }?.let { parameter("sort", it) }
             cursor?.let { parameter("cursor", it) }
             parameter("limit", limit)
         }
@@ -193,6 +201,10 @@ private data class ExplorePlaceDto(
     val upcomingEventCount: Int = 0,
     val publicInterestRank: Int? = null,
     val isFeatured: Boolean = false,
+    /** Inline events from the same server query that produced upcomingEventCount,
+     *  so the venue detail uses the exact same source as the card. Capped
+     *  server-side at MAX_EVENTS_PER_VENUE. */
+    val upcomingEvents: List<ExploreEventDto> = emptyList(),
 ) {
     fun toDomain(): VenueWithMeta = VenueWithMeta(
         venue = Venue(
@@ -216,7 +228,7 @@ private data class ExplorePlaceDto(
         ),
         distanceMiles = distanceMiles,
         upcomingEventCount = upcomingEventCount,
-        upcomingEvents = emptyList(),
+        upcomingEvents = upcomingEvents.map { it.toDomain() },
         primaryCategory = category,
         tags = tags,
         isFeatured = isFeatured,

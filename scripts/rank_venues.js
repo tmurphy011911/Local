@@ -5,7 +5,7 @@
  *   ANTHROPIC_API_KEY=sk-... SUPABASE_SERVICE_KEY=ey... node scripts/rank_venues.js
  *
  * Optional:
- *   STATE=MA             (default; only rank venues in this state)
+ *   STATE=MA             (optional; restrict to one state — applied as venues.state=eq.STATE)
  *   BATCH_SIZE=30        (venues per Claude call, default 30)
  *   CONCURRENCY=2        (parallel Claude calls, default 2)
  *   DRY_RUN=1            (preview without writing to Supabase)
@@ -16,7 +16,9 @@ const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
 
 let ANTHROPIC_API_KEY, SUPABASE_SERVICE_KEY;
 
-const STATE = process.env.STATE || "MA";
+// STATE is optional — when set, restricts to one state. Default empty so the
+// monthly workflow ranks across ALL active states (MA + RI + PA + future).
+const STATE = (process.env.STATE || "").trim() || null;
 const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "30", 10);
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || "2", 10);
 const DRY_RUN = process.env.DRY_RUN === "1";
@@ -28,6 +30,9 @@ async function fetchVenues() {
   let url = `${SUPABASE_URL}/rest/v1/venues?is_active=eq.true&select=id,name,city,state,category,website`;
   if (!FORCE) {
     url += "&public_interest_rank=is.null";
+  }
+  if (STATE) {
+    url += `&state=eq.${STATE}`;
   }
 
   const allVenues = [];
@@ -174,7 +179,7 @@ async function main() {
   SUPABASE_SERVICE_KEY = secrets.SUPABASE_SERVICE_KEY;
 
   console.log("=== Venue Public Interest Ranking ===\n");
-  console.log(`State: ${STATE}`);
+  console.log(`State: ${STATE || "ALL active states"}`);
   console.log(`Batch size: ${BATCH_SIZE}, Concurrency: ${CONCURRENCY}`);
   if (DRY_RUN) console.log("MODE: DRY RUN");
   if (FORCE) console.log("MODE: FORCE (re-ranking all)");

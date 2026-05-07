@@ -186,8 +186,10 @@ fun EventDetailScreen(
                 val recurrenceLabel = detectRecurrence(event)
                 val isRecurring = recurrenceLabel != null
 
-                // Countdown — only for non-recurring events with a date
-                if (countdown.hasDate && !isRecurring) {
+                // Countdown — only for non-recurring events with a known time.
+                // TBD-time events have a placeholder noon-UTC start_at; ticking
+                // down to it would be misleading.
+                if (countdown.hasDate && !isRecurring && event.timeKnown) {
                     CountdownBanner(countdown)
                     Spacer(Modifier.height(16.dp))
                 }
