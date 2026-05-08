@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -183,15 +184,25 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
         )
     }
 
-    // Radius-filtered carousel list — memoized so it's not rebuilt every recomposition
-    val displayCarousels = remember(state.carousels, state.radiusFilter) {
+    // Radius-filtered carousel list — memoized so it's not rebuilt every recomposition.
+    // Also strips the "Top X This Week" carousel on the Experiences tab — there's no
+    // sensible "Top Experiences" cohort, the rolled-up title reads awkwardly there.
+    val displayCarousels = remember(state.carousels, state.radiusFilter, state.selectedCategory) {
         val radius = state.radiusFilter
-        if (radius == null) {
+        val radiusFiltered = if (radius == null) {
             state.carousels
         } else {
             state.carousels
                 .map { section -> section.copy(events = section.events.filter { (it.distanceMiles ?: 999.0) <= radius }) }
                 .filter { it.events.isNotEmpty() }
+        }
+        if (state.selectedCategory.equals("experiences", ignoreCase = true)) {
+            radiusFiltered.filterNot { section ->
+                val t = section.title.trim()
+                t.startsWith("Top ", ignoreCase = true) && t.endsWith("This Week", ignoreCase = true)
+            }
+        } else {
+            radiusFiltered
         }
     }
 
@@ -231,7 +242,13 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                     .padding(bottom = 80.dp),
             ) {
                 item { GreetingSection(state) }
-                item { AiConciergeCard(prompts = state.yocalPrompts, onSend = onConciergeSend) }
+                item {
+                    AiConciergeCard(
+                        prompts = state.yocalPrompts,
+                        selectedCategory = state.selectedCategory,
+                        onSend = onConciergeSend,
+                    )
+                }
 
                 // "Your Events This Week" album carousel
                 if (state.savedThisWeek.isNotEmpty()) {
@@ -533,15 +550,22 @@ private fun CategoryTileItem(
 
         Spacer(Modifier.height(5.dp))
 
+        // 11sp + tightened letter spacing fits "Experiences" (the longest label) inside
+        // the 64dp tile. wrapContentWidth(unbounded) + Visible overflow prevents the
+        // trailing letter from being clipped if a future label sneaks just over.
         Text(
             tile.label,
             style = TextStyle(
                 fontFamily = AppFonts.Body,
                 fontWeight = if (isActive) FontWeight.ExtraBold else FontWeight.Bold,
-                fontSize = 12.sp,
+                fontSize = 11.sp,
+                letterSpacing = (-0.2).sp,
                 color = if (isActive) AppColors.Ink else AppColors.Ink3,
             ),
             maxLines = 1,
+            softWrap = false,
+            overflow = TextOverflow.Visible,
+            modifier = Modifier.wrapContentWidth(unbounded = true),
         )
 
         Spacer(Modifier.height(10.dp))
@@ -1335,19 +1359,28 @@ private fun GreetingSection(state: HomeUiState) {
 @Composable
 private fun AiConciergeCard(
     prompts: List<String> = emptyList(),
+    selectedCategory: String = "foryou",
     onSend: (String) -> Unit = {},
 ) {
     val haptic = LocalHapticFeedback.current
 
-    // Shuffle once so cycling/random selection mixes venues (the edge function
-    // returns 4–6 prompts per venue grouped together, which would otherwise
-    // surface 5 Fenway prompts in a row before moving on to Symphony Hall).
-    val activePrompts = remember(prompts) {
-        val source = if (prompts.isNotEmpty()) prompts else FALLBACK_YOCAL_PROMPTS
+    // For "foryou" we use the location-specific prompts from the edge function
+    // (or the generic fallback). For any other category we swap to a curated
+    // category-specific pool so the blurb matches what the user is browsing.
+    // Shuffle so cycling mixes venues (the edge function returns prompts
+    // grouped 4–6 per venue, which would otherwise surface 5 Fenway prompts
+    // in a row).
+    val activePrompts = remember(prompts, selectedCategory) {
+        val categorySpecific = categoryPromptsFor(selectedCategory)
+        val source = when {
+            categorySpecific != null -> categorySpecific
+            prompts.isNotEmpty() -> prompts
+            else -> FALLBACK_YOCAL_PROMPTS
+        }
         source.shuffled()
     }
-    // Pick ONE random prompt for the lifetime of this composition. Re-rolls
-    // when the composable re-enters composition (tab switch, far scroll-out).
+    // Re-rolls when activePrompts changes (composition re-entry, OR the user
+    // switches category — which gives a fresh typewriter run on tap).
     val displayPrompt = remember(activePrompts) { activePrompts.random() }
 
     var input by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }

@@ -25,6 +25,7 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import live.localapp.local.platform.hapticSelection
 
 /**
  * Placeholder that animates a typed prompt:
@@ -59,13 +60,16 @@ fun TypewriterPlaceholder(
         }
     }
 
-    // Typewriter sequence.
+    // Typewriter sequence. Fires a light selection haptic on each non-whitespace
+    // character so it feels like typing on a real keyboard. Whitespace is skipped
+    // to keep the rhythm tight (otherwise long phrases feel buzzy).
     LaunchedEffect(fullText) {
         typed = ""
         blinking = true
         delay(startDelayMs)
         for (i in 1..fullText.length) {
             typed = fullText.substring(0, i)
+            if (!fullText[i - 1].isWhitespace()) hapticSelection()
             delay(charDelayMs)
         }
         delay(holdAfterMs)
@@ -122,3 +126,92 @@ val FALLBACK_YOCAL_PROMPTS = listOf(
     "Visitors in town — what to do",
     "Last-minute plans for tonight",
 )
+
+/**
+ * Category-specific prompt pools used when a non-"foryou" category is selected
+ * on the home screen. Returning null means "use the generic For-You list".
+ *
+ * Keep prompts short enough that the typewriter fits on a phone screen without
+ * scrolling far (≤ ~45 chars).
+ */
+fun categoryPromptsFor(categoryId: String): List<String>? = when (categoryId.lowercase()) {
+    "music" -> listOf(
+        "Live music this week",
+        "Concerts tonight",
+        "Best venues for indie shows",
+        "Free outdoor concerts",
+        "Jazz spots nearby",
+        "Open mic nights this week",
+        "Rooftop DJ sets",
+        "Where's the best live blues",
+    )
+    "arts" -> listOf(
+        "Gallery openings this week",
+        "Museums to visit on a rainy day",
+        "First Friday gallery night",
+        "Theater shows nearby",
+        "Live painting events",
+        "Art walks this weekend",
+        "Best independent galleries",
+        "Performing arts this weekend",
+    )
+    "food", "food-drink" -> listOf(
+        "Best brunch spots nearby",
+        "Food festivals this weekend",
+        "Where to grab a great cocktail",
+        "New restaurants to try",
+        "Late-night eats",
+        "Outdoor dining nearby",
+        "Best taco spots in town",
+        "Hidden-gem dinner spots",
+    )
+    "experiences", "experience" -> listOf(
+        "Hidden gems nearby",
+        "Most unique date ideas",
+        "Things to do tonight",
+        "Adventures within an hour",
+        "Indoor activities this weekend",
+        "Last-minute plans for tonight",
+        "Something I haven't done before",
+        "Bucket-list activities nearby",
+    )
+    "for-kids", "kids" -> listOf(
+        "Free events for kids this weekend",
+        "Family-friendly things today",
+        "Best playgrounds nearby",
+        "Indoor kid activities",
+        "Story times this week",
+        "Kid-friendly restaurants",
+        "Toddler-friendly outings",
+        "Rainy-day plans with kids",
+    )
+    "sports" -> listOf(
+        "Games this week",
+        "Where to watch the game",
+        "Pickup games nearby",
+        "Best sports bars",
+    )
+    "outdoors" -> listOf(
+        "Outdoor things this weekend",
+        "Hikes within an hour",
+        "Best parks for a picnic",
+        "Beach days this weekend",
+    )
+    "comedy" -> listOf(
+        "Comedy shows this week",
+        "Open mic comedy nearby",
+        "Stand-up tonight",
+    )
+    "nightlife" -> listOf(
+        "Where to go out tonight",
+        "Best rooftop bars",
+        "Late-night spots nearby",
+        "Where to dance this weekend",
+    )
+    "museums" -> listOf(
+        "Museums to visit this weekend",
+        "Free museum days nearby",
+        "New exhibits this month",
+    )
+    else -> null
+}
