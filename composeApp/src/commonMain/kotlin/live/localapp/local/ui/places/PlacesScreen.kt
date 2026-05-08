@@ -977,7 +977,7 @@ private fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -
                                 fontFamily = AppFonts.Body,
                                 fontWeight = FontWeight.ExtraBold,
                                 fontSize = 11.sp,
-                                color = AppColors.Coral,
+                                color = AppColors.Ink2,
                             ),
                         )
                     }
@@ -2045,7 +2045,7 @@ private fun EventRowCard(
                                 fontFamily = AppFonts.Body,
                                 fontWeight = FontWeight.ExtraBold,
                                 fontSize = 11.sp,
-                                color = AppColors.Coral,
+                                color = AppColors.Ink2,
                             ),
                         )
                     }
