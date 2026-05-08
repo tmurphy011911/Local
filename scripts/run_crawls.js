@@ -14,11 +14,12 @@
  */
 
 const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
+const { fetchHtml: scrapflyFetchHtml } = require("./lib/scrapfly_fetch");
 
 const MODEL = "claude-haiku-4-5-20251001";
 const MAX_HTML_CHARS = 50_000;
 
-let ANTHROPIC_API_KEY, SUPABASE_SERVICE_KEY;
+let ANTHROPIC_API_KEY, SUPABASE_SERVICE_KEY, SCRAPFLY_API_KEY;
 const CATEGORY_FILTER = process.env.CATEGORY
   ? process.env.CATEGORY.split(",").map((s) => s.trim())
   : null;
@@ -446,7 +447,24 @@ const FETCH_HEADERS = {
   "Accept-Encoding": "gzip, deflate, br",
 };
 
-async function fetchPage(url) {
+async function fetchPage(url, { stealth = false } = {}) {
+  // Stealth path: route through Scrapfly with JS rendering. Used for venues
+  // flagged needs_stealth=true (Cloudflare, Datadome, JS-rendered SPAs like
+  // Squarespace event lists). Falls through to direct fetch if Scrapfly key
+  // is missing or the Scrapfly request itself errors.
+  if (stealth && SCRAPFLY_API_KEY) {
+    try {
+      const { html } = await scrapflyFetchHtml(url, {
+        scrapflyKey: SCRAPFLY_API_KEY,
+        renderJs: true,
+        timeoutMs: 60_000,
+      });
+      return html;
+    } catch (err) {
+      console.warn(`    Scrapfly failed for ${url} (${err.message}) — falling back to direct fetch`);
+    }
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
   try {
@@ -1470,8 +1488,10 @@ async function crawlVenue(venue) {
     const platformResult = await detectAndCrawlPlatform(venue);
     if (platformResult) return platformResult;
 
-    // Fetch HTML
-    const rawHtml = await fetchPage(venue.events_url);
+    // Fetch HTML — venues flagged needs_stealth (Squarespace SPAs, Cloudflare-
+    // protected sites, etc.) go through Scrapfly with JS rendering so the event
+    // list actually appears in the response.
+    const rawHtml = await fetchPage(venue.events_url, { stealth: !!venue.needs_stealth });
     const cleanedHtml = stripHtml(rawHtml);
 
     if (cleanedHtml.length < 100) {
@@ -1595,9 +1615,11 @@ async function crawlWithConcurrency(venues, concurrency) {
 // ── Main ──
 
 async function main() {
-  const secrets = await getSecrets(["ANTHROPIC_API_KEY"]);
+  const secrets = await getSecrets(["ANTHROPIC_API_KEY", "SCRAPFLY_API_KEY"]);
   ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
   SUPABASE_SERVICE_KEY = secrets.SUPABASE_SERVICE_KEY;
+  SCRAPFLY_API_KEY = secrets.SCRAPFLY_API_KEY || null;
+  console.log(`Scrapfly: ${SCRAPFLY_API_KEY ? "available — needs_stealth venues will JS-render" : "NOT configured — needs_stealth venues will fall back to direct fetch"}`);
 
   console.log("=== Venue-Driven Event Crawls ===\n");
   console.log(`Model: ${MODEL}`);
