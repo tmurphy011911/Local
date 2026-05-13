@@ -109,6 +109,12 @@ async function fetchVenues(
 ): Promise<VenueRow[]> {
   const latDelta = radiusMiles / 55;
   const lngDelta = radiusMiles / 45;
+  // Tighter candidate pool when typing a search — see explore-events for
+  // rationale. Trigram GIN indexes on venues.name + venues.city
+  // (migration 20260424120000) make the ilike match index-scannable, but
+  // the post-fetch limit still matters for payload size.
+  const hasQuery = !!(query && query.trim());
+  const candidateLimit = hasQuery ? 100 : 500;
 
   let q = supabase
     .from("venues")
@@ -124,10 +130,10 @@ async function fetchVenues(
     .lte("lat", lat + latDelta)
     .gte("lng", lng - lngDelta)
     .lte("lng", lng + lngDelta)
-    .limit(500);
+    .limit(candidateLimit);
 
-  if (query && query.trim()) {
-    const safe = query.trim().replace(/%/g, "").replace(/,/g, " ");
+  if (hasQuery) {
+    const safe = query!.trim().replace(/%/g, "").replace(/,/g, " ");
     q = q.or(`name.ilike.%${safe}%,city.ilike.%${safe}%`);
   }
   if (category) {

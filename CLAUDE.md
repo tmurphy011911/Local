@@ -133,10 +133,13 @@ Platform-specific crawlers auto-detect and use structured APIs before falling ba
 ## TODO
 
 - [x] Deploy `carousels` edge function — done 2026-04-24.
-- [ ] Deploy `explore-events` edge function to pick up the subcategory-first category filter from branch `claude/explore-page-fixes` (fixes comedy events showing under the Art filter):
-  ```bash
-  npx supabase functions deploy explore-events --project-ref blifubxslaucshmlphdc
-  ```
+- [ ] After merging `claude/explore-page-fixes`, ship the backend pieces:
+  1. **Run migration** `20260424120000_search_trigram_indexes.sql` — enables `pg_trgm` + GIN indexes on `events.title`, `events.venue_name`, `venues.name`, `venues.city`. Without it, search stays slow because `ilike '%query%'` does seq scans. Apply via Supabase dashboard SQL editor or `supabase db push`.
+  2. **Deploy the edge functions** (both — `explore-events` for the category-filter + limit fix, `explore-places` for the limit fix):
+     ```bash
+     npx supabase functions deploy explore-events --project-ref blifubxslaucshmlphdc
+     npx supabase functions deploy explore-places --project-ref blifubxslaucshmlphdc
+     ```
 - [ ] Yocal punts on venue/opening-hours questions instead of trying. Repro: "When does Dorney Park open?" → Yocal responds "I don't have real-time access…" and lists generic "check their website / call ahead" advice without calling any tool. Root causes and options:
   1. **Fundamental gap**: Yocal's tools (`search_events`, `search_venues`, `get_event_details`, `recommend_and_save_venue`, `present_plan`, `update_plan` in `ClaudeApiService.kt:193-367`) include no web search / fetch, and seasonal hours aren't columns on `events` / `venues`.
   2. **Prompt gap**: even so, Yocal should call `search_events` + `search_venues` for the subject before disclaiming. Add a rule: *"Before saying 'I don't have real-time info,' always run `search_events` and `search_venues` first. Only disclaim if both return nothing."*

@@ -208,6 +208,13 @@ async function fetchEvents(
   const lngDelta = radiusMiles / 45;
   const { startIso: nowIso, endIso } = resolveDateWindow(dateFilter);
 
+  // Tight candidate pool when the user is typing a search — 100 trigram-index
+  // matches is plenty to find the right hit and keeps the request snappy.
+  // For unfiltered browsing we keep the wider 500 window so post-fetch
+  // category / interleave logic has room to pick from.
+  const hasQuery = !!(query && query.trim());
+  const candidateLimit = hasQuery ? 100 : 500;
+
   let q = supabase
     .from("events")
     .select(
@@ -224,10 +231,10 @@ async function fetchEvents(
     // These are tagged by classify_events.js and shouldn't surface on Explore.
     .or("subcategory.is.null,subcategory.neq.no-public-interest")
     .order("start_at", { ascending: true })
-    .limit(500);
+    .limit(candidateLimit);
 
-  if (query && query.trim()) {
-    const safe = query.trim().replace(/%/g, "").replace(/,/g, " ");
+  if (hasQuery) {
+    const safe = query!.trim().replace(/%/g, "").replace(/,/g, " ");
     q = q.or(`title.ilike.%${safe}%,venue_name.ilike.%${safe}%`);
   }
   if (category && category !== "foryou") {
