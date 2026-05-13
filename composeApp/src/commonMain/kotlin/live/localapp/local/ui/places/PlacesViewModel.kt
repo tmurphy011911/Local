@@ -43,6 +43,13 @@ data class PlacesUiState(
     val filteredVenues: List<VenueWithMeta> = emptyList(),
     val events: List<Event> = emptyList(),
     val filteredEvents: List<Event> = emptyList(),
+    // "Pool" lists — the most recent unfiltered server response. Local search
+    // filters these in-memory on every keystroke so the user sees instant
+    // results before the debounced server fetch lands. Updated only when a
+    // server fetch returns with a blank query (otherwise we'd cache a
+    // query-narrowed set as our "unfiltered" pool).
+    val unfilteredVenuesPool: List<VenueWithMeta> = emptyList(),
+    val unfilteredEventsPool: List<Event> = emptyList(),
     val selectedFilter: String = "All",
     val selectedSubFilter: String? = null,
     val searchQuery: String = "",
@@ -190,32 +197,62 @@ class PlacesViewModel(
 
     private var searchDebounceJob: Job? = null
     fun setSearchQuery(query: String) {
-        _uiState.update { it.copy(searchQuery = query) }
+        val trimmed = query.trim().lowercase()
+        _uiState.update { state ->
+            // Apply a client-side filter to the cached unfiltered pool so the
+            // user sees instant matches on every keystroke. The debounced
+            // server call below will replace these with the canonical set
+            // (including items not currently in the pool) once it lands.
+            val locallyFilteredVenues = if (trimmed.isBlank()) {
+                state.unfilteredVenuesPool
+            } else {
+                state.unfilteredVenuesPool.filter { vm ->
+                    val v = vm.venue
+                    v.name.lowercase().contains(trimmed) ||
+                        (v.city?.lowercase()?.contains(trimmed) == true)
+                }
+            }
+            val locallyFilteredEvents = if (trimmed.isBlank()) {
+                state.unfilteredEventsPool
+            } else {
+                state.unfilteredEventsPool.filter { e ->
+                    e.title.lowercase().contains(trimmed) ||
+                        (e.venueName?.lowercase()?.contains(trimmed) == true)
+                }
+            }
+            state.copy(
+                searchQuery = query,
+                filteredVenues = locallyFilteredVenues,
+                venues = locallyFilteredVenues,
+                filteredEvents = locallyFilteredEvents,
+                events = locallyFilteredEvents,
+            )
+        }
         searchDebounceJob?.cancel()
         searchDebounceJob = viewModelScope.launch {
-            delay(180)
-            loadPlaces(reset = true)
-            loadEvents(reset = true)
+            delay(220)
+            loadPlaces(reset = true, isSearchUpdate = true)
+            loadEvents(reset = true, isSearchUpdate = true)
         }
     }
 
     // ══════ Places ══════
 
     private var placesLoadJob: Job? = null
-    private fun loadPlaces(reset: Boolean) {
+    private fun loadPlaces(reset: Boolean, isSearchUpdate: Boolean = false) {
         placesLoadJob?.cancel()
         placesLoadJob = viewModelScope.launch {
             if (reset) {
-                // Clear stale items immediately so the skeleton loader takes over
-                // instead of showing the previous filter's results while the new
-                // query is in flight (caused the "items appear above" + "filter
-                // doesn't reload" feel).
+                // On filter / tab changes we clear stale items so the skeleton
+                // takes over. On search-triggered reloads we keep the local
+                // pre-filter results visible — clearing here would flash empty
+                // between every keystroke and the server response.
                 _uiState.update {
                     it.copy(
                         isLoading = true,
                         error = null,
-                        filteredVenues = emptyList(),
-                        venues = emptyList(),
+                        filteredVenues = if (isSearchUpdate) it.filteredVenues else emptyList(),
+                        venues = if (isSearchUpdate) it.venues else emptyList(),
                         venueCursor = null,
                         hasMore = false,
                     )
@@ -245,9 +282,14 @@ class PlacesViewModel(
 
                 _uiState.update {
                     val merged = if (reset) page.items else it.filteredVenues + page.items
+                    // Only refresh the unfiltered pool when this fetch was for
+                    // the blank-query baseline. A query-narrowed response is
+                    // not a valid "everything we have" pool to filter against.
+                    val nextPool = if (it.searchQuery.isBlank()) merged else it.unfilteredVenuesPool
                     it.copy(
                         filteredVenues = merged,
                         venues = merged,
+                        unfilteredVenuesPool = nextPool,
                         venueCursor = page.cursor,
                         hasMore = page.hasMore,
                         isLoading = false,
@@ -269,16 +311,17 @@ class PlacesViewModel(
     // ══════ Events ══════
 
     private var eventsLoadJob: Job? = null
-    private fun loadEvents(reset: Boolean) {
+    private fun loadEvents(reset: Boolean, isSearchUpdate: Boolean = false) {
         eventsLoadJob?.cancel()
         eventsLoadJob = viewModelScope.launch {
             if (reset) {
-                // Same reset behavior as loadPlaces — drop stale list immediately
-                // so users see a skeleton during the reload, not yesterday's data.
+                // Same split as loadPlaces — filter/tab resets clear so a
+                // skeleton shows; search-triggered resets keep the local
+                // pre-filter results visible while the server is in flight.
                 _uiState.update {
                     it.copy(
                         isEventsLoading = true,
-                        filteredEvents = emptyList(),
+                        filteredEvents = if (isSearchUpdate) it.filteredEvents else emptyList(),
                         eventCursor = null,
                     )
                 }
@@ -308,9 +351,13 @@ class PlacesViewModel(
                     val merged = if (reset) page.items else it.filteredEvents + page.items
                     val favs = it.favoriteEventIds
                     val saved = merged.filter { e -> e.id in favs }
+                    // Same pool-update rule as loadPlaces — only refresh when
+                    // this fetch was the blank-query baseline.
+                    val nextPool = if (it.searchQuery.isBlank()) merged else it.unfilteredEventsPool
                     it.copy(
                         filteredEvents = merged,
                         events = merged,
+                        unfilteredEventsPool = nextPool,
                         eventCursor = page.cursor,
                         eventsHasMore = page.hasMore,
                         savedEvents = saved,
