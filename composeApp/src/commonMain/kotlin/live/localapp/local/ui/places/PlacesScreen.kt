@@ -47,6 +47,7 @@ import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.FavoriteBorder
+import androidx.compose.material.icons.outlined.SearchOff
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
@@ -536,6 +537,17 @@ private fun VenueGrid(
 
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
 
+    // Empty state when no venues match the current filters (and we're not still
+    // loading). Mirrors the "No events found" state on the Events tab so users
+    // don't see a confusing blank page after applying a narrow filter.
+    if (venues.isEmpty() && savedVenues.isEmpty()) {
+        ExploreEmptyState(
+            headline = "No places found",
+            body = "Try a different category or widen your radius.",
+        )
+        return
+    }
+
     LazyColumn(
         state = listState,
         contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 10.dp, bottom = 80.dp),
@@ -728,16 +740,39 @@ private fun SavedVenueAlbumCard(vm: VenueWithMeta, onClick: (Rect) -> Unit, onFa
 private fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -> Unit, onFavoriteToggle: () -> Unit) {
     val v = vm.venue
     var cardBounds by remember { mutableStateOf(Rect.Zero) }
-    Row(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
             .onGloballyPositioned { cardBounds = it.boundsInRoot() }
             .clip(RoundedCornerShape(14.dp))
             .background(Color.White)
-            .clickable { onClick(cardBounds) }
-            .padding(10.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .clickable { onClick(cardBounds) },
     ) {
+        // Event count badge — top-right, flush with the card edge.
+        // Lives outside the inner Row so it overlays the card corner.
+        if (vm.upcomingEventCount > 0) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .background(AppColors.Coral, RoundedCornerShape(bottomStart = 10.dp, topEnd = 14.dp))
+                    .padding(horizontal = 8.dp, vertical = 4.dp),
+            ) {
+                Text(
+                    "${vm.upcomingEventCount} event${if (vm.upcomingEventCount == 1) "" else "s"}",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 10.sp,
+                        color = Color.White,
+                    ),
+                )
+            }
+        }
+
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(10.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
         // Thumbnail — 72dp square to match event card
         Box(
             modifier = Modifier
@@ -780,43 +815,30 @@ private fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -
             )
             Spacer(Modifier.height(3.dp))
             VenueMeta(vm)
-            // Third line mirrors event-card price/date row: rating + event count.
+            // Third line: rating only — event count moved to the top-right
+            // corner badge on the outer Box.
             val ratingShown = (v.googleRating ?: 0.0) > 0
-            val eventsShown = vm.upcomingEventCount > 0
-            if (ratingShown || eventsShown) {
+            if (ratingShown) {
                 Spacer(Modifier.height(3.dp))
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (ratingShown) {
-                        Icon(
-                            Icons.Filled.Star,
-                            contentDescription = null,
-                            modifier = Modifier.size(11.dp),
-                            tint = AppColors.Sun,
-                        )
-                        Spacer(Modifier.width(3.dp))
-                        val r = v.googleRating!!
-                        val ratingText = "${r.toInt()}.${((r - r.toInt()) * 10).toInt()}"
-                        Text(
-                            ratingText,
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 11.sp,
-                                color = AppColors.Ink,
-                            ),
-                        )
-                    }
-                    if (ratingShown && eventsShown) Spacer(Modifier.width(8.dp))
-                    if (eventsShown) {
-                        Text(
-                            "${vm.upcomingEventCount} event${if (vm.upcomingEventCount == 1) "" else "s"}",
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 11.sp,
-                                color = AppColors.Coral,
-                            ),
-                        )
+                    Icon(
+                        Icons.Filled.Star,
+                        contentDescription = null,
+                        modifier = Modifier.size(11.dp),
+                        tint = AppColors.Sun,
+                    )
+                    Spacer(Modifier.width(3.dp))
+                    val r = v.googleRating!!
+                    val ratingText = "${r.toInt()}.${((r - r.toInt()) * 10).toInt()}"
+                    Text(
+                        ratingText,
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp,
+                            color = AppColors.Ink,
+                        ),
+                    )
                     }
                 }
             }
@@ -844,8 +866,9 @@ private fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -
                 tint = if (isFavorited) AppColors.Coral else AppColors.Ink3,
             )
         }
-    }
-}
+        }  // close inner Row
+    }      // close outer Box
+}          // close VenueCard
 
 @Composable
 private fun VenueMeta(vm: VenueWithMeta) {
@@ -1527,6 +1550,58 @@ private fun parseWeekday(startAt: String?): String {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Shared empty state for Explore Places + Events. Used when filters
+// narrow the result set to zero — beats a blank list or a one-line
+// "No results" because it tells users what to do next.
+// ═══════════════════════════════════════════════════════════════════
+
+@Composable
+private fun ExploreEmptyState(headline: String, body: String) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(horizontal = 40.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .clip(CircleShape)
+                .background(AppColors.Mist),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Outlined.SearchOff,
+                contentDescription = null,
+                tint = AppColors.Ink3,
+                modifier = Modifier.size(28.dp),
+            )
+        }
+        Spacer(Modifier.height(14.dp))
+        Text(
+            headline,
+            style = TextStyle(
+                fontFamily = AppFonts.Heading,
+                fontWeight = FontWeight.Bold,
+                fontSize = 17.sp,
+                color = AppColors.Ink,
+            ),
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            body,
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 13.sp,
+                color = AppColors.Ink3,
+                lineHeight = 18.sp,
+            ),
+            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+        )
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Events list — mirrors VenueGrid visually (72dp thumbnail + meta row).
 // ═══════════════════════════════════════════════════════════════════
 
@@ -1543,17 +1618,10 @@ private fun EventGrid(
     onFavoriteToggle: (live.localapp.local.domain.model.Event) -> Unit,
 ) {
     if (events.isEmpty() && savedEvents.isEmpty()) {
-        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(
-                "No events found",
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp,
-                    color = AppColors.Ink3,
-                ),
-            )
-        }
+        ExploreEmptyState(
+            headline = "No events found",
+            body = "Try a different date range or category, or widen your radius.",
+        )
         return
     }
 

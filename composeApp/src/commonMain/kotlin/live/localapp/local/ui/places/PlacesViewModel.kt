@@ -206,7 +206,20 @@ class PlacesViewModel(
         placesLoadJob?.cancel()
         placesLoadJob = viewModelScope.launch {
             if (reset) {
-                _uiState.update { it.copy(isLoading = true, error = null) }
+                // Clear stale items immediately so the skeleton loader takes over
+                // instead of showing the previous filter's results while the new
+                // query is in flight (caused the "items appear above" + "filter
+                // doesn't reload" feel).
+                _uiState.update {
+                    it.copy(
+                        isLoading = true,
+                        error = null,
+                        filteredVenues = emptyList(),
+                        venues = emptyList(),
+                        venueCursor = null,
+                        hasMore = false,
+                    )
+                }
             }
             try {
                 val state = _uiState.value
@@ -215,6 +228,8 @@ class PlacesViewModel(
                 val cursor = if (reset) null else state.venueCursor
                 val category = state.selectedFilter.takeIf { it != "All" }
                     ?.let { filterToServerCategory(it) }
+                // Smaller page size while searching — keeps first results visible faster.
+                val limit = if (state.searchQuery.isNotBlank()) 20 else 50
 
                 val page = exploreRepository.fetchPlaces(
                     userLat = lat,
@@ -225,7 +240,7 @@ class PlacesViewModel(
                     radiusMiles = state.radiusFilter,
                     hasEventsOnly = state.hasEventsOnly,
                     cursor = cursor,
-                    limit = 50,
+                    limit = limit,
                 )
 
                 _uiState.update {
@@ -258,7 +273,15 @@ class PlacesViewModel(
         eventsLoadJob?.cancel()
         eventsLoadJob = viewModelScope.launch {
             if (reset) {
-                _uiState.update { it.copy(isEventsLoading = true) }
+                // Same reset behavior as loadPlaces — drop stale list immediately
+                // so users see a skeleton during the reload, not yesterday's data.
+                _uiState.update {
+                    it.copy(
+                        isEventsLoading = true,
+                        filteredEvents = emptyList(),
+                        eventCursor = null,
+                    )
+                }
             }
             try {
                 val state = _uiState.value
@@ -267,6 +290,7 @@ class PlacesViewModel(
                 val cursor = if (reset) null else state.eventCursor
                 val category = state.selectedFilter.takeIf { it != "All" }
                     ?.let { filterToServerCategory(it) }
+                val limit = if (state.searchQuery.isNotBlank()) 20 else 50
 
                 val page = exploreRepository.fetchEvents(
                     userLat = lat,
@@ -277,7 +301,7 @@ class PlacesViewModel(
                     radiusMiles = state.radiusFilter,
                     dateFilter = state.dateFilter?.slug,
                     cursor = cursor,
-                    limit = 50,
+                    limit = limit,
                 )
 
                 _uiState.update {

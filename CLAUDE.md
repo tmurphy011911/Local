@@ -132,9 +132,10 @@ Platform-specific crawlers auto-detect and use structured APIs before falling ba
 
 ## TODO
 
-- [ ] Deploy `carousels` edge function to pick up city/state filtering added in commit `1230676` on `claude/mobile-editing-support-BDTIO` (stops MA-only carousels from leaking to out-of-market users):
+- [x] Deploy `carousels` edge function — done 2026-04-24.
+- [ ] Deploy `explore-events` edge function to pick up the subcategory-first category filter from branch `claude/explore-page-fixes` (fixes comedy events showing under the Art filter):
   ```bash
-  npx supabase functions deploy carousels --project-ref blifubxslaucshmlphdc
+  npx supabase functions deploy explore-events --project-ref blifubxslaucshmlphdc
   ```
 - [ ] Yocal punts on venue/opening-hours questions instead of trying. Repro: "When does Dorney Park open?" → Yocal responds "I don't have real-time access…" and lists generic "check their website / call ahead" advice without calling any tool. Root causes and options:
   1. **Fundamental gap**: Yocal's tools (`search_events`, `search_venues`, `get_event_details`, `recommend_and_save_venue`, `present_plan`, `update_plan` in `ClaudeApiService.kt:193-367`) include no web search / fetch, and seasonal hours aren't columns on `events` / `venues`.

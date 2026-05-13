@@ -231,7 +231,15 @@ async function fetchEvents(
     q = q.or(`title.ilike.%${safe}%,venue_name.ilike.%${safe}%`);
   }
   if (category && category !== "foryou") {
-    q = q.or(`category.eq.${category},subcategory.eq.${category}`);
+    // Prefer subcategory (event-level type) over category (often venue-level
+    // umbrella). A comedy show hosted at an art gallery has
+    // category="art", subcategory="comedy" — the old or(category, subcategory)
+    // filter incorrectly surfaced it under the Art filter. Now Art only
+    // returns events whose subcategory is "art", OR (as a fallback) events
+    // whose subcategory is unset and whose top-level category is "art".
+    q = q.or(
+      `subcategory.eq.${category},and(subcategory.is.null,category.eq.${category})`,
+    );
   }
 
   const { data, error } = await q;
