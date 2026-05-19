@@ -88,7 +88,28 @@ async function upsertCache(latBucket, lngBucket, category, payloadJson) {
   return { eventCount, carouselCount };
 }
 
-const CATEGORIES = ["foryou", "music", "arts", "sports", "food", "experience", "outdoors", "kids", "libraries"];
+// Must match `parentCategories` in supabase/functions/carousels/index.ts
+// (line ~1746) plus the special "foryou" tab and the dynamically-injected
+// "experiences" tab (curated events). Drift between these two lists
+// caused 7 category tabs to hit the 30-second slow path on every tap
+// because their keys ("for-kids", "experiences", "nightlife", "theatre",
+// "comedy", "museums", "tours") were missing or misspelled here.
+const CATEGORIES = [
+  "foryou",
+  "music",
+  "sports",
+  "arts",
+  "nightlife",
+  "theatre",
+  "comedy",
+  "food",
+  "outdoors",
+  "museums",
+  "tours",
+  "libraries",
+  "for-kids",
+  "experiences",
+];
 
 async function main() {
   console.log("=== Refreshing carousel_cache ===");
