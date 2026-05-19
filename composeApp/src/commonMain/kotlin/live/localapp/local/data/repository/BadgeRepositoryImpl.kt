@@ -45,6 +45,13 @@ class BadgeRepositoryImpl(
             val city: String? = null,
         )
 
+        // Row from plan_attendees scoped to plans the current user owns. Used
+        // to compute creator-side INVITE_ACCEPTED / GROUP_N_CONFIRMED counts.
+        @Serializable
+        data class CreatorAttendeeRow(
+            @SerialName("plan_id") val planId: String,
+        )
+
         val result = mutableMapOf<String, MutableMap<String, Int>>()
 
         try {
@@ -96,17 +103,36 @@ class BadgeRepositoryImpl(
                 .decodeList<PlanStateRow>()
             global["plan_created"] = plans.size
 
-            // Plan shares
-            val planShares = supabaseClient.from("community_interactions")
-                .select {
-                    filter {
-                        eq("user_id", userId)
-                        eq("interaction_type", "share")
-                        eq("item_type", "plan")
-                    }
+            // PLAN_SHARED was removed from the points system — sharing is too
+            // easily farmable (system share sheet, copy-link to self).
+
+            // Creator-side: count confirmed non-creator attendees across the
+            // user's owned plans. Drives the deferred toasts that fire the next
+            // time the creator opens a plan with new accepts.
+            //   invite_accepted     = total confirmed accepts across owned plans
+            //   group_5_confirmed   = 1 if any owned plan has >=5 confirmed accepts
+            //   group_10_confirmed  = 1 if any owned plan has >=10 confirmed accepts
+            val ownedPlanIds = plans.map { it.id }
+            val creatorAttendees = if (ownedPlanIds.isNotEmpty()) {
+                ownedPlanIds.chunked(100).flatMap { chunk ->
+                    supabaseClient.from("plan_attendees")
+                        .select {
+                            filter {
+                                isIn("plan_id", chunk)
+                                eq("is_creator", false)
+                                eq("confirmed", true)
+                            }
+                        }
+                        .decodeList<CreatorAttendeeRow>()
                 }
-                .decodeList<InteractionRow>()
-            global["plan_shared"] = planShares.size
+            } else emptyList()
+            global["invite_accepted"] = creatorAttendees.size
+            val maxPerPlan = creatorAttendees.groupingBy { it.planId }
+                .eachCount()
+                .values
+                .maxOrNull() ?: 0
+            global["group_5_confirmed"] = if (maxPerPlan >= 5) 1 else 0
+            global["group_10_confirmed"] = if (maxPerPlan >= 10) 1 else 0
         } catch (e: Throwable) {
             println("BadgeRepo.getActionCounts error: ${e.message}")
         }

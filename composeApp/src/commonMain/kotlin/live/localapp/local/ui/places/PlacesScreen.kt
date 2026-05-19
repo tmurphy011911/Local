@@ -219,6 +219,10 @@ fun PlacesScreen(
                                 hasMore = state.hasMore,
                                 onLoadMore = { viewModel.loadMore() },
                                 onVenueClick = { venue, bounds ->
+                                    // Drop the keyboard so the detail screen
+                                    // doesn't open behind a soft keyboard the
+                                    // user left up after typing in the search.
+                                    focusManager.clearFocus()
                                     if (onVenueClickWithBounds != null) {
                                         onVenueClickWithBounds(venue, bounds)
                                     } else {
@@ -244,7 +248,13 @@ fun PlacesScreen(
                                 userLng = state.userLng,
                                 hasMore = state.eventsHasMore,
                                 onLoadMore = { viewModel.loadMoreEvents() },
-                                onEventClick = { event, bounds -> onEventClick?.invoke(event, bounds) },
+                                onEventClick = { event, bounds ->
+                                    // Drop the keyboard so the detail screen
+                                    // doesn't open behind a soft keyboard the
+                                    // user left up after typing in the search.
+                                    focusManager.clearFocus()
+                                    onEventClick?.invoke(event, bounds)
+                                },
                                 onFavoriteToggle = { event ->
                                     viewModel.toggleEventFavorite(event.id, event.subcategory ?: event.category)
                                 },

@@ -5,10 +5,21 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import live.localapp.local.data.sync.ChangeKind
+import live.localapp.local.data.sync.MutationLog
+import live.localapp.local.data.sync.PlanMutation
+import live.localapp.local.data.sync.PlanRealtimeWatcher
+import live.localapp.local.data.sync.PlanReconciler
+import live.localapp.local.data.sync.PlanSyncer
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.model.Plan
+import live.localapp.local.domain.model.PlanDay
+import live.localapp.local.domain.model.PlanSlot
+import live.localapp.local.domain.model.ReservationState
+import live.localapp.local.domain.model.TicketState
 import live.localapp.local.domain.model.Venue
 import live.localapp.local.domain.repository.CommunityInterestRepository
 import live.localapp.local.domain.repository.EventRepository
@@ -31,15 +42,38 @@ data class PlansUiState(
      *  observes this and routes through its normal onPlanClick path so the
      *  full plan-detail wiring fires; cleared after consumption. */
     val pendingOpenPlanId: String? = null,
+    /** Number of pending plan mutations the syncer hasn't yet flushed.
+     *  Surfaced for an unobtrusive "syncing N changes" affordance. */
+    val pendingSyncCount: Int = 0,
+    /** Most recent error from the syncer, if any op exhausted retries. */
+    val syncError: String? = null,
 )
 
+/**
+ * Owns the user's plans + saved events/venues for the Plans tab. Every
+ * mutation is appended to the persistent [MutationLog] and applied
+ * optimistically to local state; the [PlanSyncer] flushes the log to
+ * Supabase in the background. `loadPlans()` reconciles the server snapshot
+ * against any still-pending ops via [PlanReconciler] so a refresh never
+ * overwrites an unsynced edit.
+ */
 class PlansViewModel(
     private val planRepository: PlanRepository,
     private val eventRepository: EventRepository,
     private val venueRepository: VenueRepository,
     private val communityInterestRepository: CommunityInterestRepository,
     private val userPreferencesRepository: UserPreferencesRepository,
+    private val mutationLog: MutationLog,
+    private val syncer: PlanSyncer,
+    private val realtime: PlanRealtimeWatcher,
 ) : ViewModel() {
+
+    /**
+     * Server snapshot, before reconciliation. We hold this separately so that
+     * when the pending-ops log changes (an op syncs, an op gets enqueued),
+     * we can recompute the user-visible plans without going back to Supabase.
+     */
+    private val _serverPlans = MutableStateFlow<List<Plan>>(emptyList())
 
     private val _uiState = MutableStateFlow(PlansUiState())
     val uiState: StateFlow<PlansUiState> = _uiState.asStateFlow()
@@ -47,6 +81,77 @@ class PlansViewModel(
     init {
         loadPlans()
         loadSavedItems()
+        observeReconciliation()
+        observeSyncerState()
+        observeRealtime()
+    }
+
+    /**
+     * Apply Supabase Realtime row updates to [_serverPlans] so a write from
+     * another device (or a Bo edit on the web someday) appears here without
+     * a manual refresh. The reconciler then folds local pending ops on top.
+     */
+    private fun observeRealtime() {
+        // Subscribe to row changes for the current user. If userId isn't set
+        // yet (pre-onboarding splash), skip — the next refresh after login
+        // will re-instantiate this VM with auth ready.
+        userPreferencesRepository.getLocalUserId()?.let { realtime.start(it) }
+
+        viewModelScope.launch {
+            realtime.changes.collect { change ->
+                when (change.kind) {
+                    ChangeKind.DELETE -> {
+                        _serverPlans.update { plans -> plans.filter { it.id != change.planId } }
+                    }
+                    ChangeKind.INSERT, ChangeKind.UPDATE -> {
+                        val fresh = try { planRepository.getPlan(change.planId) } catch (_: Throwable) { null }
+                            ?: return@collect
+                        _serverPlans.update { plans ->
+                            val without = plans.filter { it.id != change.planId }
+                            without + fresh
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Recompute upcoming/past plans whenever either the server snapshot or
+     * the pending-op log changes. Single source of truth for what the UI
+     * sees: `reconcile(server, pending)`.
+     */
+    private fun observeReconciliation() {
+        viewModelScope.launch {
+            combine(_serverPlans, mutationLog.pending) { server, pending ->
+                PlanReconciler.reconcile(server, pending.map { it })
+            }.collect { reconciled ->
+                _uiState.update {
+                    it.copy(
+                        upcomingPlans = reconciled.filter { p -> !p.isPast }.sortedBy { p -> p.createdAt },
+                        pastPlans = reconciled.filter { p -> p.isPast }.sortedByDescending { p -> p.createdAt },
+                    )
+                }
+            }
+        }
+    }
+
+    private fun observeSyncerState() {
+        viewModelScope.launch {
+            combine(mutationLog.pending, syncer.state) { pending, sync ->
+                PlansUiState(
+                    pendingSyncCount = pending.size,
+                    syncError = sync.lastError ?: pending.firstOrNull { it.attempts >= 5 }?.lastError,
+                )
+            }.collect { snippet ->
+                _uiState.update {
+                    it.copy(
+                        pendingSyncCount = snippet.pendingSyncCount,
+                        syncError = snippet.syncError,
+                    )
+                }
+            }
+        }
     }
 
     /** Set the pending-open plan id. Consumed by PlansScreen on observation. */
@@ -68,211 +173,43 @@ class PlansViewModel(
         }
         loadPlans()
         loadSavedItems()
+        // Also kick the syncer in case retries are pending — refresh is
+        // the user's "try again" affordance.
+        syncer.kick()
     }
+
+    // ── Slot-level mutations ───────────────────────────────────────────
 
     fun removeSlotFromPlan(planId: String, dayIndex: Int, slotId: String) {
-        // Optimistic UI update — remove the slot from the plan in state.
-        // Empty days are kept; the UI asks the user if they want to remove them.
-        _uiState.update { state ->
-            fun updatePlans(plans: List<Plan>) = plans.map { plan ->
-                if (plan.id != planId) return@map plan
-                val updatedDays = plan.days.mapIndexed { i, day ->
-                    if (i != dayIndex) day
-                    else day.copy(slots = day.slots.filter { it.id != slotId })
-                }
-                plan.copy(days = updatedDays)
-            }
-            state.copy(
-                upcomingPlans = updatePlans(state.upcomingPlans),
-                pastPlans = updatePlans(state.pastPlans),
-            )
-        }
-
-        // Persist the updated plan to the DB
-        viewModelScope.launch {
-            val allPlans = _uiState.value.upcomingPlans + _uiState.value.pastPlans
-            val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
-            planRepository.updatePlan(updatedPlan)
-        }
+        enqueue(PlanMutation.RemoveSlot(newOpId(), planId, nowMillis(), dayIndex, slotId))
     }
 
-    /** Remove an entire day from the plan. */
-    fun removeDayFromPlan(planId: String, dayIndex: Int) {
-        _uiState.update { state ->
-            fun updatePlans(plans: List<Plan>) = plans.map { plan ->
-                if (plan.id != planId) return@map plan
-                plan.copy(days = plan.days.filterIndexed { i, _ -> i != dayIndex })
-            }
-            state.copy(
-                upcomingPlans = updatePlans(state.upcomingPlans),
-                pastPlans = updatePlans(state.pastPlans),
-            )
-        }
-        viewModelScope.launch {
-            val allPlans = _uiState.value.upcomingPlans + _uiState.value.pastPlans
-            val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
-            planRepository.updatePlan(updatedPlan)
-        }
-    }
-
-    /** Add a blank day to the plan. */
-    fun addDayToPlan(planId: String) {
-        _uiState.update { state ->
-            fun updatePlans(plans: List<Plan>) = plans.map { plan ->
-                if (plan.id != planId) return@map plan
-                val nextIndex = plan.days.size + 1
-                val label = "Day $nextIndex"
-                val shortName = "Day $nextIndex"
-                val newDay = live.localapp.local.domain.model.PlanDay(label = label, shortName = shortName, slots = emptyList())
-                plan.copy(days = plan.days + newDay)
-            }
-            state.copy(
-                upcomingPlans = updatePlans(state.upcomingPlans),
-                pastPlans = updatePlans(state.pastPlans),
-            )
-        }
-        viewModelScope.launch {
-            val allPlans = _uiState.value.upcomingPlans + _uiState.value.pastPlans
-            val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
-            planRepository.updatePlan(updatedPlan)
-        }
-    }
-
-    /** Toggle a slot's reservation-confirmed flag (creator-only, set via the per-stop overflow). */
     fun setSlotReserved(planId: String, dayIndex: Int, slotId: String, reserved: Boolean) {
-        _uiState.update { state ->
-            fun updatePlans(plans: List<Plan>) = plans.map { plan ->
-                if (plan.id != planId) return@map plan
-                val updatedDays = plan.days.mapIndexed { i, day ->
-                    if (i != dayIndex) day
-                    else day.copy(slots = day.slots.map { s ->
-                        if (s.id == slotId) s.copy(
-                            reservationState = if (reserved) live.localapp.local.domain.model.ReservationState.MADE
-                                else live.localapp.local.domain.model.ReservationState.NONE,
-                        ) else s
-                    })
-                }
-                plan.copy(days = updatedDays)
-            }
-            state.copy(
-                upcomingPlans = updatePlans(state.upcomingPlans),
-                pastPlans = updatePlans(state.pastPlans),
-            )
-        }
-        viewModelScope.launch {
-            val allPlans = _uiState.value.upcomingPlans + _uiState.value.pastPlans
-            val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
-            planRepository.updatePlan(updatedPlan)
-        }
+        enqueue(PlanMutation.SetSlotReserved(newOpId(), planId, nowMillis(), dayIndex, slotId, reserved))
     }
 
-    /**
-     * Save reservation details from the Reservation Details Sheet.
-     * Promotes the slot to ReservationState.MADE with party_size + reservation_time.
-     * Per spec §3.1.4 — if reservation_time differs from slot.time, [time] is updated
-     * to the new reservation time so the day re-sorts correctly. Caller is responsible
-     * for surfacing any overlap warning that results.
-     */
     fun setReservationDetails(planId: String, dayIndex: Int, slotId: String, partySize: Int, reservationTime: String) {
-        mutateSlot(planId, dayIndex, slotId) { s ->
-            val newTime = if (reservationTime.isNotBlank() && reservationTime != s.time) reservationTime else s.time
-            s.copy(
-                reservationState = live.localapp.local.domain.model.ReservationState.MADE,
-                reservationPartySize = partySize,
-                reservationTime = reservationTime,
-                ticketState = live.localapp.local.domain.model.TicketState.NONE,
-                ticketCount = null,
-                time = newTime,
-            )
-        }
+        enqueue(PlanMutation.SetReservationDetails(newOpId(), planId, nowMillis(), dayIndex, slotId, partySize, reservationTime))
     }
 
-    /** Mark a restaurant slot as `No reservations available` (State C). Triggers Swap flow at the UI layer. */
     fun setReservationUnavailable(planId: String, dayIndex: Int, slotId: String) {
-        mutateSlot(planId, dayIndex, slotId) { s ->
-            s.copy(
-                reservationState = live.localapp.local.domain.model.ReservationState.UNAVAILABLE,
-                reservationPartySize = null,
-                reservationTime = null,
-            )
-        }
+        enqueue(PlanMutation.SetReservationUnavailable(newOpId(), planId, nowMillis(), dayIndex, slotId))
     }
 
-    /** Clear reservation — return to State A. */
     fun clearReservation(planId: String, dayIndex: Int, slotId: String) {
-        mutateSlot(planId, dayIndex, slotId) { s ->
-            s.copy(
-                reservationState = live.localapp.local.domain.model.ReservationState.NONE,
-                reservationPartySize = null,
-                reservationTime = null,
-            )
-        }
+        enqueue(PlanMutation.ClearReservation(newOpId(), planId, nowMillis(), dayIndex, slotId))
     }
 
-    /** Save ticket details from the Ticket Details Sheet. State B (BOUGHT) with ticket_count. */
     fun setTicketDetails(planId: String, dayIndex: Int, slotId: String, ticketCount: Int) {
-        mutateSlot(planId, dayIndex, slotId) { s ->
-            s.copy(
-                ticketState = live.localapp.local.domain.model.TicketState.BOUGHT,
-                ticketCount = ticketCount,
-                reservationState = live.localapp.local.domain.model.ReservationState.NONE,
-                reservationPartySize = null,
-                reservationTime = null,
-            )
-        }
+        enqueue(PlanMutation.SetTicketDetails(newOpId(), planId, nowMillis(), dayIndex, slotId, ticketCount))
     }
 
-    /** Mark a ticketed slot as `No tickets available` (State C). Triggers Swap flow at the UI layer. */
     fun setTicketsUnavailable(planId: String, dayIndex: Int, slotId: String) {
-        mutateSlot(planId, dayIndex, slotId) { s ->
-            s.copy(
-                ticketState = live.localapp.local.domain.model.TicketState.UNAVAILABLE,
-                ticketCount = null,
-            )
-        }
+        enqueue(PlanMutation.SetTicketsUnavailable(newOpId(), planId, nowMillis(), dayIndex, slotId))
     }
 
-    /** Clear tickets — return to State A. */
     fun clearTickets(planId: String, dayIndex: Int, slotId: String) {
-        mutateSlot(planId, dayIndex, slotId) { s ->
-            s.copy(
-                ticketState = live.localapp.local.domain.model.TicketState.NONE,
-                ticketCount = null,
-            )
-        }
-    }
-
-    /** Apply a per-slot mutation, persist to the backend. Re-sorts the day by time
-     *  when the slot's `time` field changes (handles the reservation time-update cascade). */
-    private fun mutateSlot(
-        planId: String,
-        dayIndex: Int,
-        slotId: String,
-        block: (live.localapp.local.domain.model.PlanSlot) -> live.localapp.local.domain.model.PlanSlot,
-    ) {
-        _uiState.update { state ->
-            fun updatePlans(plans: List<Plan>) = plans.map { plan ->
-                if (plan.id != planId) return@map plan
-                val updatedDays = plan.days.mapIndexed { i, day ->
-                    if (i != dayIndex) day
-                    else {
-                        val updatedSlots = day.slots.map { if (it.id == slotId) block(it) else it }
-                            .sortedBy { parseSlotTimeMinutes(it.time) } // chronological — see [parseSlotTimeMinutes]
-                        day.copy(slots = updatedSlots)
-                    }
-                }
-                plan.copy(days = updatedDays)
-            }
-            state.copy(
-                upcomingPlans = updatePlans(state.upcomingPlans),
-                pastPlans = updatePlans(state.pastPlans),
-            )
-        }
-        viewModelScope.launch {
-            val allPlans = _uiState.value.upcomingPlans + _uiState.value.pastPlans
-            val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
-            planRepository.updatePlan(updatedPlan)
-        }
+        enqueue(PlanMutation.ClearTickets(newOpId(), planId, nowMillis(), dayIndex, slotId))
     }
 
     /**
@@ -280,65 +217,63 @@ class PlansViewModel(
      * the original time is kept (per spec §3.4 — diners want their reserved
      * time slot). For events, the alternative event's actual start time is used.
      */
-    fun swapSlot(
-        planId: String,
-        dayIndex: Int,
-        oldSlotId: String,
-        newSlot: live.localapp.local.domain.model.PlanSlot,
-    ) {
-        _uiState.update { state ->
-            fun updatePlans(plans: List<Plan>) = plans.map { plan ->
-                if (plan.id != planId) return@map plan
-                val updatedDays = plan.days.mapIndexed { i, day ->
-                    if (i != dayIndex) day
-                    else {
-                        val replaced = day.slots.map { existing ->
-                            if (existing.id != oldSlotId) existing
-                            else newSlot.copy(id = newSlot.id.ifBlank { existing.id })
-                        }
-                        day.copy(slots = replaced.sortedBy { parseSlotTimeMinutes(it.time) })
-                    }
-                }
-                plan.copy(days = updatedDays)
-            }
-            state.copy(
-                upcomingPlans = updatePlans(state.upcomingPlans),
-                pastPlans = updatePlans(state.pastPlans),
-            )
-        }
-        viewModelScope.launch {
-            val allPlans = _uiState.value.upcomingPlans + _uiState.value.pastPlans
-            val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
-            planRepository.updatePlan(updatedPlan)
-        }
+    fun swapSlot(planId: String, dayIndex: Int, oldSlotId: String, newSlot: PlanSlot) {
+        enqueue(PlanMutation.SwapSlot(newOpId(), planId, nowMillis(), dayIndex, oldSlotId, newSlot))
     }
 
-    /** Add a slot to a specific day. */
-    fun addSlotToDay(planId: String, dayIndex: Int, slot: live.localapp.local.domain.model.PlanSlot) {
-        _uiState.update { state ->
-            fun updatePlans(plans: List<Plan>) = plans.map { plan ->
-                if (plan.id != planId) return@map plan
-                val updatedDays = plan.days.mapIndexed { i, day ->
-                    if (i != dayIndex) day
-                    else day.copy(slots = day.slots + slot)
-                }
-                plan.copy(days = updatedDays)
-            }
-            state.copy(
-                upcomingPlans = updatePlans(state.upcomingPlans),
-                pastPlans = updatePlans(state.pastPlans),
-            )
-        }
-        viewModelScope.launch {
-            val allPlans = _uiState.value.upcomingPlans + _uiState.value.pastPlans
-            val updatedPlan = allPlans.find { it.id == planId } ?: return@launch
-            planRepository.updatePlan(updatedPlan)
-        }
+    fun addSlotToDay(planId: String, dayIndex: Int, slot: PlanSlot) {
+        enqueue(PlanMutation.AddSlot(newOpId(), planId, nowMillis(), dayIndex, slot))
     }
+
+    // ── Day-level mutations ────────────────────────────────────────────
+
+    fun removeDayFromPlan(planId: String, dayIndex: Int) {
+        enqueue(PlanMutation.RemoveDay(newOpId(), planId, nowMillis(), dayIndex))
+    }
+
+    fun addDayToPlan(planId: String) {
+        // Compute the next index from the *currently visible* state (server +
+        // pending ops already applied), so consecutive add-day taps don't
+        // collide on the same label.
+        val current = (_uiState.value.upcomingPlans + _uiState.value.pastPlans)
+            .find { it.id == planId } ?: return
+        val nextIndex = current.days.size + 1
+        val newDay = PlanDay(
+            label = "Day $nextIndex",
+            shortName = "Day $nextIndex",
+            slots = emptyList(),
+        )
+        enqueue(PlanMutation.AddDay(newOpId(), planId, nowMillis(), newDay))
+    }
+
+    // ── Plan-level mutations ───────────────────────────────────────────
+
+    fun setGroupSize(planId: String, size: Int) {
+        enqueue(PlanMutation.SetGroupSize(newOpId(), planId, nowMillis(), size))
+    }
+
+    fun setPlanName(planId: String, newName: String) {
+        enqueue(PlanMutation.SetPlanName(newOpId(), planId, nowMillis(), newName))
+    }
+
+    fun setAttendeesCanEdit(planId: String, canEdit: Boolean) {
+        enqueue(PlanMutation.SetAttendeesCanEdit(newOpId(), planId, nowMillis(), canEdit))
+    }
+
+    fun deletePlan(planId: String) {
+        enqueue(PlanMutation.DeletePlan(newOpId(), planId, nowMillis()))
+    }
+
+    /** Hand a typed mutation to the syncer. The reconciler picks it up via
+     *  the [MutationLog.pending] flow and re-renders the UI immediately. */
+    private fun enqueue(mutation: PlanMutation) {
+        viewModelScope.launch { syncer.enqueue(mutation) }
+    }
+
+    // ── Invites (unchanged — go through dedicated repo paths) ───────────
 
     fun addPendingInvite(plan: Plan) {
         _uiState.update { state ->
-            // Don't add duplicates
             if (state.pendingInvites.any { it.id == plan.id }) return
             state.copy(pendingInvites = state.pendingInvites + plan)
         }
@@ -352,7 +287,6 @@ class PlansViewModel(
 
     fun acceptInvite(plan: Plan) {
         viewModelScope.launch {
-            // Record the accept via RPC (awards points to creator, prevents duplicates)
             val shareToken = plan.shareToken
             if (shareToken != null) {
                 val result = planRepository.acceptPlanInvite(shareToken)
@@ -366,21 +300,13 @@ class PlansViewModel(
                     }
                     return@launch
                 }
-                // Badge: INVITE_ACCEPTED for the accepting user
-                if (result.success) {
-                    val badgeService = org.koin.mp.KoinPlatform.getKoin().get<live.localapp.local.domain.service.BadgeService>()
-                    badgeService.recordAction(live.localapp.local.domain.model.BadgeAction.INVITE_ACCEPTED, "global")
-                    // Check group thresholds
-                    if (result.acceptCount >= 5) {
-                        badgeService.recordAction(live.localapp.local.domain.model.BadgeAction.GROUP_5_CONFIRMED, "global")
-                    }
-                    if (result.acceptCount >= 10) {
-                        badgeService.recordAction(live.localapp.local.domain.model.BadgeAction.GROUP_10_CONFIRMED, "global")
-                    }
-                }
+                // INVITE_ACCEPTED / GROUP_5_CONFIRMED / GROUP_10_CONFIRMED points
+                // belong to the *plan creator*, not the accepter — and the creator
+                // is usually offline at the moment of accept. They're claimed
+                // (and toasted) on the creator's device the next time they open
+                // the affected plan; see PlanDetailScreen + BadgeService.claimCreatorBadges.
             }
 
-            // Save a copy to the user's plans
             planRepository.savePlan(plan)
             _uiState.update { state ->
                 state.copy(
@@ -406,78 +332,15 @@ class PlansViewModel(
     /** Get the current user ID (for isCreator checks). */
     fun currentUserId(): String? = userPreferencesRepository.getLocalUserId()
 
-    /** Update group size: optimistic local state + DB persist. */
-    fun setGroupSize(planId: String, size: Int) {
-        _uiState.update { state ->
-            fun updatePlans(plans: List<Plan>) = plans.map { p ->
-                if (p.id == planId) p.copy(groupSize = size) else p
-            }
-            state.copy(
-                upcomingPlans = updatePlans(state.upcomingPlans),
-                pastPlans = updatePlans(state.pastPlans),
-            )
-        }
-        viewModelScope.launch { planRepository.updateGroupSize(planId, size) }
-    }
-
-    /** Update plan name: optimistic local state + DB persist. */
-    fun setPlanName(planId: String, newName: String) {
-        _uiState.update { state ->
-            fun updatePlans(plans: List<Plan>) = plans.map { p ->
-                if (p.id == planId) p.copy(title = newName) else p
-            }
-            state.copy(
-                upcomingPlans = updatePlans(state.upcomingPlans),
-                pastPlans = updatePlans(state.pastPlans),
-            )
-        }
-        viewModelScope.launch { planRepository.updatePlanName(planId, newName) }
-    }
-
-    /** Toggle whether attendees can edit: optimistic local state + DB persist. */
-    fun setAttendeesCanEdit(planId: String, canEdit: Boolean) {
-        _uiState.update { state ->
-            fun updatePlans(plans: List<Plan>) = plans.map { p ->
-                if (p.id == planId) p.copy(attendeesCanEdit = canEdit) else p
-            }
-            state.copy(
-                upcomingPlans = updatePlans(state.upcomingPlans),
-                pastPlans = updatePlans(state.pastPlans),
-            )
-        }
-        viewModelScope.launch { planRepository.updateAttendeesCanEdit(planId, canEdit) }
-    }
-
-    fun deletePlan(planId: String) {
-        viewModelScope.launch {
-            planRepository.deletePlan(planId)
-            // Optimistic remove from UI
-            _uiState.update { state ->
-                state.copy(
-                    upcomingPlans = state.upcomingPlans.filter { it.id != planId },
-                    pastPlans = state.pastPlans.filter { it.id != planId },
-                )
-            }
-        }
-    }
+    // ── Loading ────────────────────────────────────────────────────────
 
     private fun loadPlans() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
             val rawPlans = planRepository.getPlans()
-            // Backfill venueCity on slots that have an eventId but no city
-            // — happens for plans saved before PlanSlotDto added the field.
-            // Without this, the plan-detail subtitle row stays blank
-            // ("KIMCHILI KOREAN RESTAURANT" with no city beneath it).
             val plans = backfillSlotVenueCities(rawPlans)
-            _uiState.update {
-                it.copy(
-                    upcomingPlans = plans.filter { p -> !p.isPast }.sortedBy { p -> p.createdAt },
-                    pastPlans = plans.filter { p -> p.isPast }.sortedByDescending { p -> p.createdAt },
-                    isLoading = false,
-                    isRefreshing = false,
-                )
-            }
+            _serverPlans.value = plans
+            _uiState.update { it.copy(isLoading = false, isRefreshing = false) }
         }
     }
 
@@ -488,7 +351,7 @@ class PlansViewModel(
      * Slots without an `eventId` (venue stops) are left alone — the city
      * for those is captured at venue lookup time, not from event rows.
      */
-    private suspend fun backfillSlotVenueCities(plans: List<live.localapp.local.domain.model.Plan>): List<live.localapp.local.domain.model.Plan> {
+    private suspend fun backfillSlotVenueCities(plans: List<Plan>): List<Plan> {
         val needsFill = plans.flatMap { p ->
             p.days.flatMap { d -> d.slots }
         }.filter { s ->
@@ -523,28 +386,22 @@ class PlansViewModel(
         viewModelScope.launch {
             try {
                 val userId = userPreferencesRepository.getLocalUserId()
-                println("PlansVM.loadSavedItems: userId=$userId")
                 if (userId == null) return@launch
 
                 val eventIds = communityInterestRepository.getFavoriteEventIds(userId)
                 val venueIds = communityInterestRepository.getFavoriteVenueIds(userId)
-                println("PlansVM.loadSavedItems: ${eventIds.size} fav events, ${venueIds.size} fav venues")
 
                 val now = kotlin.time.Clock.System.now().toString()
                 val events = if (eventIds.isNotEmpty()) {
                     eventRepository.getEventsByIds(eventIds).filter {
-                        val startAt = it.startAt ?: return@filter true // keep always-on
+                        val startAt = it.startAt ?: return@filter true
                         startAt >= now
                     }
                 } else emptyList()
                 val venues = if (venueIds.isNotEmpty()) venueRepository.getVenuesByIds(venueIds) else emptyList()
-                println("PlansVM.loadSavedItems: loaded ${events.size} events, ${venues.size} venues")
 
                 _uiState.update {
-                    it.copy(
-                        savedEvents = events,
-                        savedVenues = venues,
-                    )
+                    it.copy(savedEvents = events, savedVenues = venues)
                 }
             } catch (e: Throwable) {
                 println("PlansVM.loadSavedItems error: ${e::class.simpleName}: ${e.message}")
@@ -553,29 +410,10 @@ class PlansViewModel(
     }
 }
 
-/**
- * Parse a slot's `time` field (e.g. "7:00 PM", "8 PM", "19:00") into total
- * minutes since midnight so day-sort comparisons are chronological. String
- * comparison is wrong — "11:23 PM" sorts before "6:30 PM" alphabetically.
- * Returns Int.MAX_VALUE for unparseable strings so they sink to the end.
- */
-private fun parseSlotTimeMinutes(s: String): Int {
-    if (s.isBlank()) return Int.MAX_VALUE
-    val cleaned = s.trim().uppercase()
-    val isPm = cleaned.contains("PM")
-    val isAm = cleaned.contains("AM")
-    val withoutMeridiem = cleaned
-        .replace("PM", "")
-        .replace("AM", "")
-        .replace(".", "")
-        .trim()
-    val parts = withoutMeridiem.split(":")
-    val hour = parts.getOrNull(0)?.trim()?.toIntOrNull() ?: return Int.MAX_VALUE
-    val minute = parts.getOrNull(1)?.trim()?.toIntOrNull() ?: 0
-    val h24 = when {
-        isPm && hour < 12 -> hour + 12
-        isAm && hour == 12 -> 0
-        else -> hour
-    }
-    return h24 * 60 + minute
-}
+// ── Helpers ────────────────────────────────────────────────────────────
+
+private fun newOpId(): String =
+    "op_" + kotlin.time.Clock.System.now().toEpochMilliseconds().toString(36) +
+        "_" + kotlin.random.Random.nextLong().toString(36)
+
+private fun nowMillis(): Long = kotlin.time.Clock.System.now().toEpochMilliseconds()

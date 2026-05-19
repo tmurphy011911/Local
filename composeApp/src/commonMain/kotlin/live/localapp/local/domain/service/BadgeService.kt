@@ -78,75 +78,116 @@ class BadgeService(
      * @param action The type of action performed
      * @param state The US state abbreviation (e.g. "MA")
      * @param newCount The updated total count for this action in this state
+     *
+     * Fire-and-forget — body runs on [scope]. For multi-action sequences where
+     * order and the [totalPointsCache] read/write must be serialized, use a
+     * single coroutine that calls [recordActionImpl] in series (see
+     * [claimCreatorBadges]).
      */
     fun recordAction(action: BadgeAction, state: String, newCount: Int = 0) {
         val userId = userPrefsRepo.getLocalUserId() ?: return
+        scope.launch { recordActionImpl(userId, action, state, newCount) }
+    }
 
-        scope.launch {
-            val previousTotal = totalPointsCache
-            val previousTier = statusTierForPoints(previousTotal)
+    /**
+     * Suspending core of [recordAction]. Extracted so multiple actions can be
+     * processed sequentially without racing on [totalPointsCache] or interleaving
+     * celebration emissions in non-deterministic order.
+     */
+    private suspend fun recordActionImpl(
+        userId: String,
+        action: BadgeAction,
+        state: String,
+        newCount: Int,
+    ) {
+        val previousTotal = totalPointsCache
+        val previousTier = statusTierForPoints(previousTotal)
 
-            // Get existing milestones for this action (across all states)
-            val existing = try {
-                badgeRepository.getMilestones(userId)
-                    .filter { it.actionType == action.name.lowercase() }
-                    .map { it.milestone }
-                    .toSet()
-            } catch (_: Throwable) { emptySet() }
+        // Get existing milestones for this action (across all states)
+        val existing = try {
+            badgeRepository.getMilestones(userId)
+                .filter { it.actionType == action.name.lowercase() }
+                .map { it.milestone }
+                .toSet()
+        } catch (_: Throwable) { emptySet() }
 
-            // If caller didn't provide a count, fetch from DB (sum across ALL states)
-            val actualCount = if (newCount > 0) newCount else {
-                try {
-                    val counts = badgeRepository.getActionCounts(userId)
-                    val actionKey = action.name.lowercase()
-                    counts.values.sumOf { it[actionKey] ?: 0 }
-                } catch (_: Throwable) { 0 }
+        // If caller didn't provide a count, fetch from DB (sum across ALL states)
+        val actualCount = if (newCount > 0) newCount else {
+            try {
+                val counts = badgeRepository.getActionCounts(userId)
+                val actionKey = action.name.lowercase()
+                counts.values.sumOf { it[actionKey] ?: 0 }
+            } catch (_: Throwable) { 0 }
+        }
+
+        var earnedPoints = 0
+        var latestMilestone: Int? = null
+
+        for (threshold in thresholdsFor(action)) {
+            if (actualCount >= threshold && threshold !in existing) {
+                val pts = pointsForMilestone(action, threshold)
+                badgeRepository.awardMilestone(
+                    userId = userId,
+                    state = state,
+                    actionType = action.name.lowercase(),
+                    milestone = threshold,
+                    points = pts,
+                )
+                earnedPoints += pts
+                latestMilestone = threshold
             }
+        }
 
-            var earnedPoints = 0
-            var latestMilestone: Int? = null
+        if (latestMilestone != null) {
+            totalPointsCache += earnedPoints
 
-            for (threshold in thresholdsFor(action)) {
-                if (actualCount >= threshold && threshold !in existing) {
-                    val pts = pointsForMilestone(action, threshold)
-                    badgeRepository.awardMilestone(
-                        userId = userId,
-                        state = state,
-                        actionType = action.name.lowercase(),
-                        milestone = threshold,
-                        points = pts,
-                    )
-                    earnedPoints += pts
-                    latestMilestone = threshold
-                }
-            }
+            _celebrations.emit(
+                BadgeCelebration.MilestoneEarned(
+                    action = action,
+                    milestone = latestMilestone,
+                    points = earnedPoints,
+                    state = state,
+                )
+            )
 
-            if (latestMilestone != null) {
-                totalPointsCache += earnedPoints
-
+            // Check for level up
+            val newTier = statusTierForPoints(totalPointsCache)
+            if (newTier != previousTier) {
                 _celebrations.emit(
-                    BadgeCelebration.MilestoneEarned(
-                        action = action,
-                        milestone = latestMilestone,
-                        points = earnedPoints,
-                        state = state,
+                    BadgeCelebration.StatusLevelUp(
+                        newTier = newTier,
+                        totalPoints = totalPointsCache,
                     )
                 )
-
-                // Check for level up
-                val newTier = statusTierForPoints(totalPointsCache)
-                if (newTier != previousTier) {
-                    _celebrations.emit(
-                        BadgeCelebration.StatusLevelUp(
-                            newTier = newTier,
-                            totalPoints = totalPointsCache,
-                        )
-                    )
-                }
             }
+        }
 
-            // Always notify so profile refreshes counts
-            _dataChanged.emit(Unit)
+        // Always notify so profile refreshes counts
+        _dataChanged.emit(Unit)
+    }
+
+    /**
+     * Award any pending creator-side badges based on confirmed accepts across
+     * the user's owned plans. Call this when the creator opens a plan they own
+     * — the count of new accepts since the last open will typically push them
+     * across a milestone, surfacing a toast via the existing celebration flow.
+     *
+     * The three actions run sequentially in a single coroutine so that:
+     *   1. [totalPointsCache] reads/writes don't race across actions.
+     *   2. Celebration emissions arrive in a deterministic crescendo order —
+     *      INVITE_ACCEPTED milestone → GROUP_5 milestone → GROUP_10 milestone,
+     *      with any StatusLevelUp interleaved at the exact action that crossed
+     *      the tier. The ProgressViewModel queue then plays them back in order.
+     *
+     * Safe to call repeatedly: each call is idempotent — only crossings of
+     * previously-unawarded thresholds emit.
+     */
+    fun claimCreatorBadges() {
+        val userId = userPrefsRepo.getLocalUserId() ?: return
+        scope.launch {
+            recordActionImpl(userId, BadgeAction.INVITE_ACCEPTED, "global", 0)
+            recordActionImpl(userId, BadgeAction.GROUP_5_CONFIRMED, "global", 0)
+            recordActionImpl(userId, BadgeAction.GROUP_10_CONFIRMED, "global", 0)
         }
     }
 }

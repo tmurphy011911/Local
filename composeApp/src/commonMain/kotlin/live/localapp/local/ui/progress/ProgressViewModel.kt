@@ -69,7 +69,14 @@ data class ProgressUiState(
     // Segment control
     val selectedSegment: Int = 0, // 0 = Progress, 1 = Earn
     // Celebrations
+    //  - `celebration` is the one currently rendered by the global overlay.
+    //  - `pendingCelebrations` is a FIFO queue of additional celebrations that
+    //    fired while one was already on screen. They drain in order each time
+    //    `dismissCelebration` is called. Lets a single action burst (e.g.
+    //    "+12,500 PTS for invites" → "+5,000 PTS for 5+ Group Plan" → "LEVEL UP
+    //    to Insider!") play through without earlier toasts being clobbered.
     val celebration: CelebrationEvent? = null,
+    val pendingCelebrations: List<CelebrationEvent> = emptyList(),
     // Loading
     val isLoaded: Boolean = false,
 )
@@ -110,7 +117,15 @@ class ProgressViewModel(
                         state = celebration.state,
                     )
                 }
-                _uiState.update { it.copy(celebration = event) }
+                _uiState.update { state ->
+                    if (state.celebration == null) {
+                        // Nothing on screen — show this one immediately.
+                        state.copy(celebration = event)
+                    } else {
+                        // Toast already in flight — queue this one for next dismiss.
+                        state.copy(pendingCelebrations = state.pendingCelebrations + event)
+                    }
+                }
                 loadBadgeData()
                 loadStats()
             }
@@ -196,7 +211,13 @@ class ProgressViewModel(
     }
 
     fun dismissCelebration() {
-        _uiState.update { it.copy(celebration = null) }
+        _uiState.update { state ->
+            val next = state.pendingCelebrations.firstOrNull()
+            state.copy(
+                celebration = next,
+                pendingCelebrations = if (next != null) state.pendingCelebrations.drop(1) else emptyList(),
+            )
+        }
     }
 
     private fun loadProfile() {
@@ -294,7 +315,6 @@ class ProgressViewModel(
                             BadgeAction.EVENT_SAVED -> "event_saved"
                             BadgeAction.EVENT_SHARED -> "event_shared"
                             BadgeAction.PLAN_CREATED -> "plan_created"
-                            BadgeAction.PLAN_SHARED -> "plan_shared"
                             BadgeAction.INVITE_ACCEPTED -> "invite_accepted"
                             BadgeAction.GROUP_5_CONFIRMED -> "group_5_confirmed"
                             BadgeAction.GROUP_10_CONFIRMED -> "group_10_confirmed"

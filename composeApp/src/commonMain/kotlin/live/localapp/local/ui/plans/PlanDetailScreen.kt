@@ -140,6 +140,27 @@ fun PlanDetailScreen(
     var addEventDayIndex by remember { mutableStateOf<Int?>(null) }
     var selectedDayIndex by remember { mutableStateOf(0) }
 
+    // Creator-side badge claim. INVITE_ACCEPTED / GROUP_5_CONFIRMED /
+    // GROUP_10_CONFIRMED milestones belong to the plan creator, awarded the
+    // next time they open a plan that's accumulated accepts.
+    //
+    // Gated on `confirmedCount > 1` so the claim only fires for the specific
+    // plan that received an accept — opening an empty Plan B shouldn't toast
+    // just because Plan A pushed the global counter past a threshold.
+    // (`confirmedCount` includes the creator self-row, so > 1 means at least
+    // one non-creator has confirmed on THIS plan.)
+    //
+    // recordAction is idempotent — re-opens of the same plan after the toast
+    // has already fired are no-ops. The toast surfaces via the global
+    // celebration overlay in AppNavigation that observes BadgeService.celebrations.
+    if (isCreator && plan.confirmedCount > 1) {
+        LaunchedEffect(plan.id) {
+            val badgeService = org.koin.mp.KoinPlatform.getKoin()
+                .get<live.localapp.local.domain.service.BadgeService>()
+            badgeService.claimCreatorBadges()
+        }
+    }
+
     Box(modifier = Modifier.fillMaxSize().background(V5Paper)) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Hero — 250dp map (or gradient fallback) with floating title card

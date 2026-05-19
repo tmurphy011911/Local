@@ -4,7 +4,7 @@ CREATE TABLE IF NOT EXISTS user_badges (
     id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
     user_id UUID NOT NULL,
     state TEXT NOT NULL,             -- e.g. "MA", "ME", "NY"
-    action_type TEXT NOT NULL,       -- "event_saved", "event_shared", "plan_created", "plan_shared", "group_plan_confirmed"
+    action_type TEXT NOT NULL,       -- "event_saved", "event_shared", "plan_created", "invite_accepted", "group_5_confirmed", "group_10_confirmed"
     milestone INT NOT NULL,          -- 1, 5, 10, 25, 50, 100, 250, 500, 1000
     points INT NOT NULL,             -- points awarded for this milestone
     earned_at TIMESTAMPTZ DEFAULT now(),

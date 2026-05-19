@@ -112,6 +112,8 @@ fun ProgressScreen(
     isLoggedIn: Boolean = true,
     locationName: String = "",
     streakDays: Int = 0,
+    isUnsupportedState: Boolean = false,
+    radiusFilter: Double? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
     var showNameDialog by remember { mutableStateOf(false) }
@@ -247,14 +249,15 @@ fun ProgressScreen(
                 .background(AppColors.Snow),
         ) {
             AppHeader(
-                title = "profile",
+                title = "local",
                 locationName = locationName,
-                radiusFilter = null,
+                radiusFilter = radiusFilter,
                 streakDays = streakDays,
                 userInitial = state.userInitial,
                 onProfileClick = {},
                 onLocationClick = onLocationClick,
                 isLoggedIn = isLoggedIn,
+                isUnsupportedState = isUnsupportedState,
             )
 
             if (!isLoggedIn) {
@@ -1308,7 +1311,6 @@ private fun MilestoneRow(progress: ActionProgress, lastSeenCount: Int = progress
         BadgeAction.EVENT_SAVED -> Icons.Rounded.BookmarkBorder
         BadgeAction.EVENT_SHARED -> Icons.Rounded.Share
         BadgeAction.PLAN_CREATED -> Icons.Rounded.CalendarMonth
-        BadgeAction.PLAN_SHARED -> Icons.Rounded.Send
         BadgeAction.INVITE_ACCEPTED -> Icons.Rounded.Check
         BadgeAction.GROUP_5_CONFIRMED -> Icons.Rounded.Groups
         BadgeAction.GROUP_10_CONFIRMED -> Icons.Rounded.Celebration
