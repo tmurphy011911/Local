@@ -19,7 +19,12 @@ env:
 jobs:
   refresh:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Raised 15 → 30 after CATEGORIES list grew from 9 to 14 and two
+    # consecutive runs cancelled at the 15-minute timeout. Post-MV-cutover
+    # each bake should complete in ~2-3 s (was 10-30 s pre-cutover), so
+    # 112 bakes ≈ 4-5 min. 30 min gives generous headroom for Boston's
+    # heavy assembly and any future category additions.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

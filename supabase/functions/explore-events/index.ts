@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { jsonCompressed, corsPreflight } from "../_shared/compress.ts";
 
 // ════════════════════════════════════════════════════════════════
 // Explore > Events feed
@@ -209,6 +210,13 @@ function resolveDateWindow(
       return {
         startIso: new Date(Math.max(now, fri)).toISOString(),
         endIso: new Date(mon).toISOString(),
+      };
+    }
+    case "next_30_days": {
+      const end = startOfTodayUtcMs + 30 * DAY;
+      return {
+        startIso: new Date(Math.max(now, startOfTodayUtcMs)).toISOString(),
+        endIso: new Date(end).toISOString(),
       };
     }
     case "custom": {
@@ -458,13 +466,10 @@ function decodeCursor(cursor: string | null): number {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: CORS_HEADERS });
+    return corsPreflight();
   }
   if (req.method !== "GET") {
-    return new Response(JSON.stringify({ error: "Method not allowed" }), {
-      status: 405,
-      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
-    });
+    return jsonCompressed(req, { error: "Method not allowed" }, { status: 405 });
   }
 
   try {
@@ -575,29 +580,22 @@ Deno.serve(async (req) => {
       description: e.description,
     }));
 
-    return new Response(
-      JSON.stringify({
+    return jsonCompressed(
+      req,
+      {
         items,
         cursor: hasMore ? encodeCursor(offset + limit) : null,
         hasMore,
         total: scored.length,
-      }),
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "Cache-Control": "public, max-age=60", // CDN may cache anonymous requests briefly
-          ...CORS_HEADERS,
-        },
       },
+      { extraHeaders: { "Cache-Control": "public, max-age=60" } },
     );
   } catch (err) {
     console.error("explore-events error:", err);
-    return new Response(
-      JSON.stringify({ error: err instanceof Error ? err.message : "Unknown error" }),
-      {
-        status: 500,
-        headers: { "Content-Type": "application/json", ...CORS_HEADERS },
-      },
+    return jsonCompressed(
+      req,
+      { error: err instanceof Error ? err.message : "Unknown error" },
+      { status: 500 },
     );
   }
 });

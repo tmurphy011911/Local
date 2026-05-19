@@ -2,6 +2,7 @@ package live.localapp.local.data.repository
 
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.compression.ContentEncoding
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -84,6 +85,13 @@ class ServerCarouselRepository : CarouselRepository {
         install(ContentNegotiation) {
             json(json)
         }
+        // Latency sprint Day 5: advertise gzip/deflate, decode transparently.
+        // Carousels payload ~50 KB raw → ~10 KB gzip; saves ~250 ms of LTE
+        // transfer time per response.
+        install(ContentEncoding) {
+            gzip()
+            deflate()
+        }
         install(HttpTimeout) {
             requestTimeoutMillis = 30_000
             connectTimeoutMillis = 15_000
@@ -125,9 +133,9 @@ class ServerCarouselRepository : CarouselRepository {
      * Home tab can render instantly on cold open. Returns null when there's
      * no cache OR when location changed (cache shouldn't carry across cities).
      *
-     * Note: no TTL gate here — even an old cache is better than a blank
-     * loading screen. Stale data shows for the ~1-3s it takes the fresh
-     * fetch to land, then gets replaced silently.
+     * No age-based TTL gate — even a multi-day-old cache paints faster than
+     * the 3-8s edge function. Past events ARE filtered out on read though, so
+     * if the fresh fetch fails the user still doesn't see yesterday's games.
      */
     override suspend fun getCachedCarouselsFromDisk(
         category: String?,
@@ -145,12 +153,28 @@ class ServerCarouselRepository : CarouselRepository {
             return null
         }
         val parsed = try { json.decodeFromString<CarouselResponse>(payload) } catch (_: Throwable) { return null }
-        // Hydrate in-memory caches too so subsequent calls in this process
-        // don't re-read disk. Categories: hydrate only if we don't already
-        // have them (a fresh response in a different tab wins).
+        // Drop events whose start_at has passed. Mirrors the server's
+        // `gte("start_at", now)` filter so a stale cache can't paint events
+        // from last week. Null start_at = always-on, always kept. Carousels
+        // that empty out get dropped entirely.
+        val nowIso = kotlin.time.Clock.System.now().toString()
+        val carousels = parsed.carousels
+            .map { section ->
+                section.copy(events = section.events.filter { e ->
+                    e.startAt == null || e.startAt >= nowIso
+                })
+            }
+            .filter { it.events.isNotEmpty() }
+            .map { it.toDomain() }
+        if (carousels.isEmpty()) return null
+        // Hydrate categories so the tab strip can paint instantly from disk;
+        // getCarousels()'s fresh fetch will overwrite it shortly. Do NOT
+        // hydrate `carouselCache` here — getCarousels() short-circuits on
+        // any in-memory entry, so hydrating from disk would skip the fresh
+        // fetch entirely and the cache would never refresh (manifests as
+        // missing weekend rails + shrinking carousels as their events age
+        // past `now`).
         if (cachedCategories == null) cachedCategories = parsed.categories.map { it.toDomain() }
-        val carousels = parsed.carousels.map { it.toDomain() }
-        carouselCache["$tab:$uid"] = carousels
         return carousels
     }
 
@@ -229,6 +253,8 @@ class ServerCarouselRepository : CarouselRepository {
         )
         return cachedCategories ?: emptyList()
     }
+
+    override fun peekCachedCategories(): List<CategoryInfo> = cachedCategories.orEmpty()
 
     override fun invalidateCaches() {
         cachedCategories = null

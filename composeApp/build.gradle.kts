@@ -74,6 +74,7 @@ kotlin {
             // Ktor
             implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.content.negotiation)
+            implementation(libs.ktor.client.encoding)
             implementation(libs.ktor.serialization.json)
 
             // Settings (local key-value storage)
@@ -82,6 +83,7 @@ kotlin {
             // Supabase
             implementation(libs.supabase.postgrest)
             implementation(libs.supabase.auth)
+            implementation(libs.supabase.realtime)
 
             // Koin
             implementation(libs.koin.core)
@@ -109,8 +111,8 @@ android {
         applicationId = "live.localapp.local"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 3
+        versionName = "1.0.2"
         // Used by AndroidManifest's <meta-data android:value="${MAPS_API_KEY}" />
         // and read at runtime by the Directions API client.
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey

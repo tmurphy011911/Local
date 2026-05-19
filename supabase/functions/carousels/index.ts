@@ -1,5 +1,6 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { jsonCompressed, corsPreflight } from "../_shared/compress.ts";
 
 // ════════════════════════════════════════════════════════════════
 // Types
@@ -119,12 +120,12 @@ interface ScoreWeights {
 // Constants
 // ════════════════════════════════════════════════════════════════
 
-// Default per-carousel event cap. The home feed has ~17 carousels × this
-// many events per request. Users see 3–5 cards horizontally before
-// scrolling, and the "See all" sheet has its own dedicated query — so
-// loading 30 per niche carousel paid for cards no one looks at. 12 covers
-// a couple full horizontal swipes; "See all" handles the long tail.
-const CAROUSEL_DISPLAY_LIMIT = 12;
+// Default per-carousel event cap. Raised from 12 → 25 because the
+// previous cap, combined with cross-rail deduplication, made topical
+// rails look starved when the underlying DB had plenty of matches. 25
+// covers several horizontal swipes while still leaving the "See all"
+// sheet for the long tail.
+const CAROUSEL_DISPLAY_LIMIT = 25;
 
 // Hero carousels (Picked For You, Buzzing Right Now) get a much larger
 // budget. These are the primary discovery surface — users actually swipe
@@ -1135,10 +1136,8 @@ function buildRecurringCarousels(
   venueCache: Map<string, VenueInfo>,
   communityScores: Map<string, CommunityScore>,
   affinityMap: Map<string, number>,
-  displayName: string | null = null,
 ): CarouselSection[] {
   const result: CarouselSection[] = [];
-  const prefix = displayName ? `${displayName}: ` : "";
 
   let pool = allEvents;
   if (subcategoryFilter) {
@@ -1161,7 +1160,7 @@ function buildRecurringCarousels(
     dailyEvents.forEach(e => seenEventIds.add(e.id));
     result.push({
       slug: `daily-${subcategoryFilter ?? "all"}`,
-      title: `${prefix}Happens Every Day`,
+      title: `Happens Every Day`,
       subtitle: null,
       filter_type: "daily",
       events: dailyEvents,
@@ -1177,7 +1176,7 @@ function buildRecurringCarousels(
     weeklyEvents.forEach(e => seenEventIds.add(e.id));
     result.push({
       slug: `weekly-${subcategoryFilter ?? "all"}`,
-      title: `${prefix}Weekly Happenings`,
+      title: `Weekly Happenings`,
       subtitle: null,
       filter_type: "weekly",
       events: weeklyEvents,
@@ -1193,7 +1192,7 @@ function buildRecurringCarousels(
     monthlyEvents.forEach(e => seenEventIds.add(e.id));
     result.push({
       slug: `monthly-${subcategoryFilter ?? "all"}`,
-      title: `${prefix}Once a Month`,
+      title: `Once a Month`,
       subtitle: null,
       filter_type: "monthly",
       events: monthlyEvents,
@@ -1337,7 +1336,7 @@ function resolveCarouselFromPool(
     }
     case "tag":
       return carousel.filter_value === "free" ? pool.filter(e => e.is_free) : pool;
-    case "top10_weekly": {
+    case "top_weekly": {
       const cutoff = daysFromNowIso(7);
       const weekPool = pool.filter(e => (e.start_at ?? "") <= cutoff);
       return rankForColdStart(weekPool, prefs, CAROUSEL_DISPLAY_LIMIT, affinityMap);
@@ -1398,11 +1397,13 @@ function buildCarousels(
     const personalizedEvents = backfillToMinimum(ranked, seenEventIds, filtered, HERO_CAROUSEL_DISPLAY_LIMIT);
 
     // Pool: Weekend
+    // Topical rails are independent of "Picked for You" — we used to dedupe
+    // against the hero pool, which left "Your Weekend Lineup" with ~5 events
+    // when the hero ate the rest. Now each rail just shows its top matches.
     const weekendStart = startOfNextFridayIso();
     const weekendEnd = endOfNextSundayIso();
     const weekendEvents = filtered
-      .filter(e => { const s = e.start_at ?? ""; return s >= weekendStart && s < weekendEnd; })
-      .filter(e => !seenEventIds.has(e.id));
+      .filter(e => { const s = e.start_at ?? ""; return s >= weekendStart && s < weekendEnd; });
 
     // Pool: Favorite categories
     const favCatCarousels: CarouselSection[] = [];
@@ -1516,12 +1517,15 @@ function buildCarousels(
       .slice(0, CAROUSEL_DISPLAY_LIMIT);
 
     // ── Interleave: build the final ordered feed ──
-    // Fixed positions 1-2
+    // Topical rails (weekend, popular, free, favCat, neighborhoods, affinity,
+    // DB-driven rails like "The Boston Scene" / "Live Music") are independent.
+    // Cross-rail dedup was the main cause of underpopulated carousels — the
+    // hero would consume the best events and downstream rails would show 2–5
+    // when the DB had 20+. Some overlap across rails is desired (a discovery
+    // feed should feel abundant). seenEventIds remains for buildRecurringCarousels
+    // and "This Month" rails which have their own internal dedup contracts.
     function addCarousel(c: CarouselSection) {
-      // Dedupe events against seenEventIds
-      c.events = c.events.filter(e => !seenEventIds.has(e.id));
       if (c.events.length === 0) return;
-      c.events.forEach(e => seenEventIds.add(e.id));
       result.push(c);
     }
 
@@ -1573,10 +1577,8 @@ function buildCarousels(
           show_saves: true,
         });
       } else if (slot === "free" && freeEvents.length > 0) {
-        // Free intentionally allows dupes
         const freeFiltered = freeEvents.slice(0, CAROUSEL_DISPLAY_LIMIT);
         if (freeFiltered.length > 0) {
-          freeFiltered.forEach(e => seenEventIds.add(e.id));
           result.push({
             slug: "free-events",
             title: "No Cover, No Problem",
@@ -1638,17 +1640,24 @@ function buildCarousels(
     if (carousel.filter_type === "date_range" && filter.type === "category") {
       continue;
     }
+    // Skip "This Weekend" on the For You tab — it duplicates the hardcoded
+    // "Your Weekend Lineup" rail. (On category tabs the title gets rewritten
+    // to "<Category> This Weekend" below, which is meaningfully different.)
+    if (filter.type === "none" && carousel.title.trim().toLowerCase() === "this weekend") {
+      continue;
+    }
     const events = resolveCarouselFromPool(filtered, carousel, filter, prefs, affinityMap)
-      .filter(e => !seenEventIds.has(e.id))
       .slice(0, CAROUSEL_DISPLAY_LIMIT);
     if (events.length === 0) continue;
-    events.forEach(e => seenEventIds.add(e.id));
 
     let title = carousel.title;
     if (filter.type === "category") {
       const catName = categoryDisplayName(filter.value);
+      // The category is implied by the page the user is on, so titles on
+      // category tabs render bare ("Top Events This Week", not "Kids: Top
+      // Events This Week"). Kept "This Weekend" / "Trending Now" qualified
+      // because they originally were — flag if those should also strip.
       title = title
-        .replace("Top 10 This Week", `Top ${catName} Events This Week`)
         .replace("This Weekend", `${catName} This Weekend`)
         .replace("Trending Now", `Trending ${catName}`);
     }
@@ -1677,10 +1686,9 @@ function buildCarousels(
 
   // Daily / Weekly / Monthly on subcategory tabs
   if (filter.type === "category") {
-    const subcatName = categoryDisplayName(filter.value);
     result.push(...buildRecurringCarousels(
       allEvents, filter.value, maxRadius, userLat, userLng, prefs, seenEventIds,
-      weights, venueCache, communityScores, affinityMap, subcatName,
+      weights, venueCache, communityScores, affinityMap,
     ));
   }
 
@@ -1735,6 +1743,11 @@ const subcategoryToParent: Record<string, string> = {
 };
 
 // The allowed parent categories for the tab row
+// IMPORTANT: when you add/rename/remove an entry here, ALSO update the
+// CATEGORIES array in scripts/refresh_carousel_cache.js. Drift between
+// the two caused all 7 non-overlapping tabs to hit the 30 s slow path
+// on every tap until the cron caught up to the edge fn's vocabulary
+// (incident 2026-05-19).
 const parentCategories = new Set([
   "music", "sports", "arts", "nightlife", "theatre", "comedy",
   "food", "outdoors", "museums", "tours", "libraries", "for-kids",
@@ -1801,33 +1814,21 @@ async function fetchAllEvents(
   lng: number,
   radiusMiles: number,
 ): Promise<ProcessedEvent[]> {
-  const now = nowIso();
-  const pageSize = 1000;
-
-  // Bounding box filter (~1 degree lat ≈ 69 miles, 1 degree lng ≈ 50 miles at mid-latitudes)
+  // Latency sprint cutover: upcoming events come from mv_carousel_payload
+  // via mv_events_for_geo() — single RPC call replaces the 7×1000 paginated
+  // scan of `events`. The MV is refreshed every 5 min by pg_cron
+  // (mv_carousel_payload_refresh) and pre-joins the best-ranked active
+  // venue per event. Removes the 30 s cold-isolate slow path.
+  //
+  // always_on events are NOT in the MV (no future start_at), so we still
+  // fetch them directly — small set (~hundreds), runs in parallel.
   const latDelta = radiusMiles / 69.0;
   const lngDelta = radiusMiles / 50.0;
   const minLat = lat - latDelta;
   const maxLat = lat + latDelta;
   const minLng = lng - lngDelta;
   const maxLng = lng + lngDelta;
-
-  async function fetchUpcomingPage(page: number): Promise<EventRow[]> {
-    const { data, error } = await supabase
-      .from("events")
-      .select("*")
-      .eq("is_active", true)
-      .gte("start_at", now)
-      .lte("start_at", daysFromNowIso(31))
-      .gte("venue_lat", minLat)
-      .lte("venue_lat", maxLat)
-      .gte("venue_lng", minLng)
-      .lte("venue_lng", maxLng)
-      .order("start_at", { ascending: true })
-      .range(page * pageSize, (page + 1) * pageSize - 1);
-    if (error) throw error;
-    return data ?? [];
-  }
+  const pageSize = 1000;
 
   async function fetchAlwaysOnPage(page: number): Promise<EventRow[]> {
     const { data, error } = await supabase
@@ -1845,16 +1846,32 @@ async function fetchAllEvents(
     return data ?? [];
   }
 
-  // Fetch upcoming (7 pages) and always-on (3 pages) in parallel
-  const promises = [
-    ...Array.from({ length: 7 }, (_, i) => fetchUpcomingPage(i)),
+  const [mvResp, ...alwaysOnPages] = await Promise.all([
+    supabase.rpc("mv_events_for_geo", {
+      p_lat: lat,
+      p_lng: lng,
+      p_radius_miles: radiusMiles,
+      p_max_results: 7000,
+    }),
     ...Array.from({ length: 3 }, (_, i) => fetchAlwaysOnPage(i)),
-  ];
-  const results = await Promise.all(promises);
-  const allRows = results.flat();
+  ]);
+  if (mvResp.error) throw mvResp.error;
 
-  // Precise distance filter
-  return allRows
+  const mvRows = (mvResp.data ?? []) as Array<EventRow & {
+    rank_score: number | null;
+    distance_miles: number | null;
+    venue_description: string | null;
+  }>;
+  const mvProcessed: ProcessedEvent[] = mvRows
+    .map(row => ({
+      ...row,
+      distance_miles: row.distance_miles,
+      venue_description: row.venue_description ?? null,
+    }))
+    .filter(e => e.distance_miles == null || e.distance_miles <= radiusMiles);
+
+  const alwaysOnRows = alwaysOnPages.flat();
+  const alwaysOnProcessed: ProcessedEvent[] = alwaysOnRows
     .map(row => ({
       ...row,
       distance_miles: (row.venue_lat != null && row.venue_lng != null)
@@ -1863,87 +1880,34 @@ async function fetchAllEvents(
       venue_description: null,
     }))
     .filter(e => e.distance_miles == null || e.distance_miles <= radiusMiles);
+
+  return [...mvProcessed, ...alwaysOnProcessed];
 }
 
-async function fetchRawSportsEvents(
-  supabase: ReturnType<typeof createClient>,
-  lat: number,
-  lng: number,
-  radiusMiles: number,
-): Promise<ProcessedEvent[]> {
-  const now = nowIso();
-  const pageSize = 1000;
+// fetchRawSportsEvents removed — rawSportsEvents is now derived inline
+// in the slow-path handler block by filtering the MV-backed fetchAllEvents
+// result. Same row set, no second 7×1000 paginated scan.
 
-  const latDelta = radiusMiles / 69.0;
-  const lngDelta = radiusMiles / 50.0;
-
-  // Accept both the classified shape (subcategory = "sports") and the
-  // unclassified Ticketmaster shape where raw genre ends up in subcategory
-  // (hockey, baseball, basketball, football, soccer, etc.). Without this
-  // inclusion only a handful of properly-classified events match.
-  const sportSubcategories = [
-    "sports", "hockey", "baseball", "basketball", "football", "soccer",
-    "rugby", "lacrosse", "college-sports", "minor-league",
-  ];
-
-  const promises = Array.from({ length: 7 }, async (_, page) => {
-    const { data, error } = await supabase
-      .from("events")
-      .select("*")
-      .eq("is_active", true)
-      .in("subcategory", sportSubcategories)
-      .gte("start_at", now)
-      .gte("venue_lat", lat - latDelta)
-      .lte("venue_lat", lat + latDelta)
-      .gte("venue_lng", lng - lngDelta)
-      .lte("venue_lng", lng + lngDelta)
-      .order("start_at", { ascending: true })
-      .range(page * pageSize, (page + 1) * pageSize - 1);
-    if (error) throw error;
-    return (data ?? []) as EventRow[];
-  });
-
-  const results = await Promise.all(promises);
-  return results.flat()
-    .sort((a, b) => (a.start_at ?? "").localeCompare(b.start_at ?? ""))
-    .map(row => ({
-      ...row,
-      distance_miles: (row.venue_lat != null && row.venue_lng != null)
-        ? distanceMiles(lat, lng, row.venue_lat, row.venue_lng)
-        : null,
-      venue_description: null,
-    }))
-    .filter(e => e.distance_miles == null || e.distance_miles <= radiusMiles);
-}
-
-async function fetchVenueCache(
+async function fetchVenueCacheLite(
   supabase: ReturnType<typeof createClient>,
 ): Promise<Map<string, VenueInfo>> {
-  // PostgREST enforces the project's max_rows cap (1000 at time of writing)
-  // but we have ~9k active venues. Without pagination, major stadiums like
-  // Fenway and TD Garden can fall outside the window, which breaks the
-  // rank-based sort in buildSportsCarousels. Page through in 1000-row chunks.
+  // Single RPC call → ALL active venues. The RPC bypasses PostgREST's
+  // max_rows=1000 cap so no pagination needed. ~1 MB payload at current
+  // venue count (~9k), single round-trip, sub-second.
+  //
+  // Was 9 sequential paginated PostgREST calls (~13 s of slow-path
+  // latency). Each prior page depended on the previous offset, so they
+  // couldn't be parallelized.
+  const { data, error } = await supabase.rpc("get_active_venues_lite");
   const cache = new Map<string, VenueInfo>();
-  const pageSize = 1000;
-  let offset = 0;
-  while (true) {
-    const { data, error } = await supabase
-      .from("venues")
-      .select("name, public_interest_rank, photo_url, description")
-      .eq("is_active", true)
-      .order("id", { ascending: true })
-      .range(offset, offset + pageSize - 1);
-    if (error) break;
-    const rows = data ?? [];
-    for (const v of rows) {
-      cache.set(v.name.toLowerCase(), {
-        rank: v.public_interest_rank,
-        photo_url: v.photo_url,
-        description: v.description,
-      });
-    }
-    if (rows.length < pageSize) break;
-    offset += pageSize;
+  if (error || !data) return cache;
+  for (const v of data as Array<{ name: string | null; public_interest_rank: number | null; photo_url: string | null; description: string | null }>) {
+    if (!v.name) continue;
+    cache.set(v.name.toLowerCase(), {
+      rank: v.public_interest_rank,
+      photo_url: v.photo_url,
+      description: v.description,
+    });
   }
   return cache;
 }
@@ -2081,14 +2045,11 @@ function isCacheValid(): boolean {
 Deno.serve(async (req) => {
   // CORS preflight
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: CORS_HEADERS });
+    return corsPreflight();
   }
 
   if (req.method !== "GET") {
-    return new Response(JSON.stringify({ error: "Method not allowed" }), {
-      status: 405,
-      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
-    });
+    return jsonCompressed(req, { error: "Method not allowed" }, { status: 405 });
   }
 
   try {
@@ -2163,12 +2124,9 @@ Deno.serve(async (req) => {
           // affinity scoring on top here. For v1 we return the precomputed
           // anonymous payload — same fidelity as the previous foryou cache.
           const isFallback = (row as any).lat_bucket !== latBucket || (row as any).lng_bucket !== lngBucket;
-          return new Response(JSON.stringify(row.payload), {
-            status: 200,
-            headers: {
-              "Content-Type": "application/json",
+          return jsonCompressed(req, row.payload, {
+            extraHeaders: {
               "X-Cache": `precomputed-${Math.round(ageMs / 1000)}s${isFallback ? "-nearest" : ""}`,
-              ...CORS_HEADERS,
             },
           });
         }
@@ -2189,16 +2147,33 @@ Deno.serve(async (req) => {
       venueCache = dataCache!.venueCache;
       carouselsConfig = dataCache!.carouselsConfig;
     } else {
-      // Heavy fetch — only happens every 15 minutes (or on location change)
-      const [rawEvents, rawSports, venues, config] = await Promise.all([
+      // Slow path (Deno isolate cold or in-memory cache expired). All
+      // remaining fetches go through the MV-backed paths or single-call
+      // RPCs — no more 7-page paginated scans.
+      //
+      // 1. fetchAllEvents → mv_events_for_geo() single call (was 7×1000)
+      // 2. fetchVenueCache → get_active_venues_lite() single call (was
+      //    9 sequential paginated calls — the previous long pole)
+      // 3. rawSports → JS filter over fetchAllEvents result (was a
+      //    second 7×1000 scan; same source data, just a different filter)
+      const [rawEvents, venues, config] = await Promise.all([
         fetchAllEvents(supabase, lat, lng, radiusMiles),
-        fetchRawSportsEvents(supabase, lat, lng, radiusMiles),
-        fetchVenueCache(supabase),
+        fetchVenueCacheLite(supabase),
         fetchCarouselsConfig(supabase, lat, lng),
       ]);
       const deduped = deduplicateCrossSource(rawEvents);
       allEvents = cleanEvents(deduped, venues);
-      rawSportsEvents = rawSports;
+      // Sports rail derived from fetchAllEvents result. Same row set the
+      // old fetchRawSportsEvents() would have produced (MV's 90-day
+      // window is broader than the old query's no-upper-bound, with the
+      // only edge case being events 91+ days out — accepted tradeoff).
+      rawSportsEvents = rawEvents.filter(e => {
+        const sc = (e.subcategory ?? "").toLowerCase();
+        return sc === "sports" || sc === "hockey" || sc === "baseball"
+          || sc === "basketball" || sc === "football" || sc === "soccer"
+          || sc === "rugby" || sc === "lacrosse" || sc === "college-sports"
+          || sc === "minor-league";
+      });
       venueCache = venues;
       carouselsConfig = config;
       dataCache = { allEvents, rawSportsEvents, venueCache, carouselsConfig, timestamp: Date.now(), geoKey: cacheGeoKey } as any;
@@ -2264,15 +2239,30 @@ Deno.serve(async (req) => {
       cached_at: new Date().toISOString(),
     };
 
-    return new Response(JSON.stringify(response), {
-      status: 200,
-      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
-    });
+    return jsonCompressed(req, response, { extraHeaders: { "X-Cache": "slow-path" } });
   } catch (error) {
-    console.error("Carousel edge function error:", error);
-    return new Response(
-      JSON.stringify({ error: "Internal server error", details: String(error) }),
-      { status: 500, headers: { "Content-Type": "application/json", ...CORS_HEADERS } },
+    // Render PostgrestError / Error / unknown objects to a useful string.
+    // Without this, `String(err)` on a structured error returns
+    // "[object Object]" and the actual cause is lost.
+    let details: string;
+    if (error && typeof error === "object") {
+      const e = error as Record<string, unknown>;
+      details = JSON.stringify({
+        message: e.message,
+        code: e.code,
+        hint: e.hint,
+        details: e.details,
+        name: e.name,
+        stack: typeof e.stack === "string" ? e.stack.split("\n").slice(0, 4).join(" | ") : undefined,
+      });
+    } else {
+      details = String(error);
+    }
+    console.error("Carousel edge function error:", details);
+    return jsonCompressed(
+      req,
+      { error: "Internal server error", details },
+      { status: 500 },
     );
   }
 });

@@ -2,6 +2,7 @@ package live.localapp.local.data.repository
 
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.compression.ContentEncoding
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -14,6 +15,7 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import live.localapp.local.Config
+import live.localapp.local.decodeHtmlEntities
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.model.Venue
 import live.localapp.local.domain.repository.EventPage
@@ -30,6 +32,10 @@ class HttpExploreRepository : ExploreRepository {
 
     private val httpClient = HttpClient {
         install(ContentNegotiation) { json(json) }
+        install(ContentEncoding) {
+            gzip()
+            deflate()
+        }
         install(HttpTimeout) {
             requestTimeoutMillis = 30_000
             connectTimeoutMillis = 15_000
@@ -166,10 +172,16 @@ private data class ExploreEventDto(
     val sourceUrl: String? = null,
     val distanceMiles: Double? = null,
 ) {
+    // Decode HTML entities at the DTO boundary — without this, raw `&#8211;`
+    // / `&amp;` / `&hellip;` from municipal-feed and crawler-sourced titles
+    // leak through to the iOS native event detail (which receives the
+    // domain `Event` and renders `event.title` directly). EventDto.toDomain
+    // has the same decode; this DTO is a separate explore-only path that
+    // was missing it.
     fun toDomain() = Event(
         id = id,
-        title = title,
-        description = description,
+        title = title.decodeHtmlEntities(),
+        description = description?.decodeHtmlEntities(),
         category = category,
         subcategory = subcategory,
         subSubcategory = null,
@@ -180,7 +192,7 @@ private data class ExploreEventDto(
         priceMin = priceMin,
         priceMax = priceMax,
         ticketUrl = ticketUrl,
-        venueName = venueName,
+        venueName = venueName?.decodeHtmlEntities(),
         venueAddress = null,
         venueCity = venueCity,
         venueState = null,
@@ -230,7 +242,11 @@ private data class ExplorePlaceDto(
     fun toDomain(): VenueWithMeta = VenueWithMeta(
         venue = Venue(
             id = id,
-            name = name,
+            // Decode HTML entities at the DTO boundary. VenueDto.toDomain
+            // already does this; the explore-tab DTO was missing it, so raw
+            // `&amp;` / `&#8211;` etc. leaked into the Places UI and into
+            // event detail screens that read venue.name from this path.
+            name = name.decodeHtmlEntities(),
             address = address,
             city = city,
             state = state,
@@ -239,7 +255,7 @@ private data class ExplorePlaceDto(
             longitude = lng,
             imageUrl = photoUrl,
             photoUrl = photoUrl,
-            description = description,
+            description = description?.decodeHtmlEntities(),
             publicInterestRank = publicInterestRank,
             category = category,
             placeType = null,

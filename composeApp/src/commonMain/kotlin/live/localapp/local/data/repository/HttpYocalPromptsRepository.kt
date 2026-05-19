@@ -2,6 +2,7 @@ package live.localapp.local.data.repository
 
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.compression.ContentEncoding
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.header
@@ -38,6 +39,10 @@ class HttpYocalPromptsRepository : YocalPromptsRepository {
 
     private val httpClient = HttpClient {
         install(ContentNegotiation) { json(json) }
+        install(ContentEncoding) {
+            gzip()
+            deflate()
+        }
         install(HttpTimeout) {
             // Generating 200 prompts through Claude Haiku takes ~15–30s cold.
             // 20s was too tight and was timing out before Claude responded —

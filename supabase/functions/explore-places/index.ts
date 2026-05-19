@@ -1,4 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { jsonCompressed, corsPreflight } from "../_shared/compress.ts";
 
 // ════════════════════════════════════════════════════════════════
 // Explore > Places feed
@@ -197,7 +198,14 @@ async function fetchEventsByVenue(
         "id,title,description,category,subcategory,start_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,source_url",
       )
       .eq("is_active", true)
-      .neq("subcategory", "no-public-interest") // skip auto-excluded events
+      // Exclude events flagged "no-public-interest" BUT keep events with
+      // null subcategory. PostgREST `.neq(col, x)` translates to SQL
+      // `col <> x`, which evaluates to NULL (not TRUE) when col IS NULL —
+      // so it silently dropped every event without a subcategory. That's
+      // most crawler-sourced events, including all of Sellersville Theater,
+      // Brookline Booksmith, Gore Place, etc. Result: their venue cards
+      // showed 0 events even though the Events tab found dozens.
+      .or("subcategory.is.null,subcategory.neq.no-public-interest")
       .gte("start_at", nowIso)
       .gte("venue_lat", lat - latDelta)
       .lte("venue_lat", lat + latDelta)
@@ -396,13 +404,10 @@ function decodeCursor(cursor: string | null): number {
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
-    return new Response(null, { headers: CORS_HEADERS });
+    return corsPreflight();
   }
   if (req.method !== "GET") {
-    return new Response(JSON.stringify({ error: "Method not allowed" }), {
-      status: 405,
-      headers: { "Content-Type": "application/json", ...CORS_HEADERS },
-    });
+    return jsonCompressed(req, { error: "Method not allowed" }, { status: 405 });
   }
 
   try {
@@ -519,29 +524,22 @@ Deno.serve(async (req) => {
       })),
     }));
 
-    return new Response(
-      JSON.stringify({
+    return jsonCompressed(
+      req,
+      {
         items,
         cursor: hasMore ? encodeCursor(offset + limit) : null,
         hasMore,
         total: filtered.length,
-      }),
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "Cache-Control": "public, max-age=60",
-          ...CORS_HEADERS,
-        },
       },
+      { extraHeaders: { "Cache-Control": "public, max-age=60" } },
     );
   } catch (err) {
     console.error("explore-places error:", err);
-    return new Response(
-      JSON.stringify({ error: err instanceof Error ? err.message : "Unknown error" }),
-      {
-        status: 500,
-        headers: { "Content-Type": "application/json", ...CORS_HEADERS },
-      },
+    return jsonCompressed(
+      req,
+      { error: err instanceof Error ? err.message : "Unknown error" },
+      { status: 500 },
     );
   }
 });
