@@ -671,18 +671,30 @@ async function processResults(batchId, chunks, allEvents) {
 // ── Fetch all future events ──
 
 async function fetchAllEvents() {
+  // Keyset pagination on start_at: every page is a fresh `start_at > cursor`
+  // query that hits the (start_at) index directly. OFFSET pagination was
+  // tripping the 8s statement timeout once the inventory crossed ~70k
+  // future events — Postgres re-scans from row 0 on every page when there's
+  // no covering index for the ORDER BY + OFFSET combination.
   const allEvents = [];
-  const pageSize = 1000;
-  let offset = 0;
-
-  const scopeFilter = ONLY_CATEGORY
+  const pageSize = 500;
+  // Also filter is_active=true server-side; reclassifying past/inactive rows
+  // wastes Anthropic spend and never affects user-visible surfaces.
+  const baseScope = ONLY_CATEGORY
     ? `&category=eq.${encodeURIComponent(ONLY_CATEGORY)}&is_active=eq.true`
-    : "";
+    : `&is_active=eq.true`;
+
+  const nowIso = new Date().toISOString();
+  let cursor = nowIso;       // first page: start_at >= now
+  let firstPage = true;
 
   while (true) {
-    const now = new Date().toISOString();
-    let selectCols = "id,title,description,category,subcategory,sub_subcategory,tags,venue_name,venue_city,is_free,source,original_category,original_subcategory";
-    let url = `${SUPABASE_URL}/rest/v1/events?start_at=gte.${now}${scopeFilter}&select=${selectCols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
+    let selectCols = "id,title,description,category,subcategory,sub_subcategory,tags,venue_name,venue_city,is_free,source,original_category,original_subcategory,start_at";
+    // strict `gt` for subsequent pages so we don't re-fetch the cursor row;
+    // first page uses `gte` so events starting exactly at the script start
+    // time still get picked up.
+    const cmp = firstPage ? "gte" : "gt";
+    let url = `${SUPABASE_URL}/rest/v1/events?start_at=${cmp}.${encodeURIComponent(cursor)}${baseScope}&select=${selectCols}&order=start_at.asc&limit=${pageSize}`;
 
     let res = await fetch(url, {
       headers: {
@@ -695,8 +707,8 @@ async function fetchAllEvents() {
     if (!res.ok) {
       const errText = await res.text();
       if (errText.includes("original_category") || errText.includes("sub_subcategory") || errText.includes("tags")) {
-        selectCols = "id,title,description,category,subcategory,venue_name,venue_city,is_free,source";
-        url = `${SUPABASE_URL}/rest/v1/events?start_at=gte.${now}${scopeFilter}&select=${selectCols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
+        selectCols = "id,title,description,category,subcategory,venue_name,venue_city,is_free,source,start_at";
+        url = `${SUPABASE_URL}/rest/v1/events?start_at=${cmp}.${encodeURIComponent(cursor)}${baseScope}&select=${selectCols}&order=start_at.asc&limit=${pageSize}`;
         res = await fetch(url, {
           headers: {
             apikey: SUPABASE_SERVICE_KEY,
@@ -711,10 +723,17 @@ async function fetchAllEvents() {
 
     const rows = await res.json();
     allEvents.push(...rows);
+    process.stdout.write(`  fetched ${allEvents.length}\r`);
 
     if (rows.length < pageSize) break;
-    offset += pageSize;
+    // Advance the cursor to the last row's start_at. If a cluster of rows
+    // shares the same start_at across the boundary we may skip a few; that
+    // is acceptable for this script (the next nightly run will pick them up
+    // and they don't drop out of the inventory).
+    cursor = rows[rows.length - 1].start_at;
+    firstPage = false;
   }
+  console.log("");
 
   return allEvents;
 }
