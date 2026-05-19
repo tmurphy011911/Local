@@ -24,6 +24,10 @@
  *   POLL_INTERVAL=60      — seconds between status checks (default: 60)
  *   PREFILTER_ONLY=1      — only run pattern-based auto-exclusion, skip Claude
  *   TEAM_NAME_BACKFILL=1  — only backfill team_name on sports events where it's null
+ *   ONLY_CATEGORY=other   — scope the run to events with category=<value> AND
+ *                           is_active=true, ignoring the default unclassified-only
+ *                           filter so already-tagged rows still get reclassified.
+ *                           Used to clean up legacy invalid categories.
  */
 
 const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
@@ -45,6 +49,11 @@ const PREFILTER_ONLY = process.env.PREFILTER_ONLY === "1";
 // Skips auto-exclusion + reclassification; writes only team_name (not category
 // / subcategory / tags). Used to hydrate the server-side dynamic team carousels.
 const TEAM_NAME_BACKFILL = process.env.TEAM_NAME_BACKFILL === "1";
+// When set, scope the fetch to events with category=<value> AND is_active=true,
+// and override the default "skip already-classified" filter so rows that already
+// have sub_subcategory/tags still go through Claude. Used to repair events
+// stuck at invalid parent categories like "other".
+const ONLY_CATEGORY = process.env.ONLY_CATEGORY || null;
 
 // ── Rule-based auto-exclusion ─────────────────────────────────────────
 //
@@ -439,6 +448,7 @@ async function main() {
   console.log(`Event Classifier (Batch API) — all metros, batch size: ${BATCH_SIZE}`);
   if (DRY_RUN) console.log("DRY RUN — no API calls\n");
   if (FORCE) console.log("FORCE — re-classifying all events\n");
+  if (ONLY_CATEGORY) console.log(`ONLY_CATEGORY=${ONLY_CATEGORY} — scoping to active events with category="${ONLY_CATEGORY}", overriding unclassified-only filter\n`);
 
   // 1. Fetch events to classify
   const events = await fetchAllEvents();
@@ -462,12 +472,15 @@ async function main() {
     return;
   }
 
-  // 3. Filter to unclassified events (unless FORCE), minus auto-excluded ones.
+  // 3. Filter to unclassified events (unless FORCE / ONLY_CATEGORY), minus
+  //    auto-excluded ones. ONLY_CATEGORY implies the caller knows the rows are
+  //    misclassified despite already having sub_subcategory/tags, so we bypass
+  //    the unclassified-only filter the same way FORCE does.
   const remaining = events.filter((e) => !autoExcludedIds.has(e.id));
-  const toClassify = FORCE
+  const toClassify = (FORCE || ONLY_CATEGORY)
     ? remaining
     : remaining.filter((e) => !e.sub_subcategory && (!e.tags || e.tags.length === 0));
-  console.log(`${toClassify.length} events need Claude classification${FORCE ? " (forced)" : ""}\n`);
+  console.log(`${toClassify.length} events need Claude classification${FORCE ? " (forced)" : ONLY_CATEGORY ? ` (scoped to category=${ONLY_CATEGORY})` : ""}\n`);
   if (toClassify.length === 0) return;
 
   // 3. Build batch requests — one per chunk of BATCH_SIZE events
@@ -662,10 +675,14 @@ async function fetchAllEvents() {
   const pageSize = 1000;
   let offset = 0;
 
+  const scopeFilter = ONLY_CATEGORY
+    ? `&category=eq.${encodeURIComponent(ONLY_CATEGORY)}&is_active=eq.true`
+    : "";
+
   while (true) {
     const now = new Date().toISOString();
     let selectCols = "id,title,description,category,subcategory,sub_subcategory,tags,venue_name,venue_city,is_free,source,original_category,original_subcategory";
-    let url = `${SUPABASE_URL}/rest/v1/events?start_at=gte.${now}&select=${selectCols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
+    let url = `${SUPABASE_URL}/rest/v1/events?start_at=gte.${now}${scopeFilter}&select=${selectCols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
 
     let res = await fetch(url, {
       headers: {
@@ -679,7 +696,7 @@ async function fetchAllEvents() {
       const errText = await res.text();
       if (errText.includes("original_category") || errText.includes("sub_subcategory") || errText.includes("tags")) {
         selectCols = "id,title,description,category,subcategory,venue_name,venue_city,is_free,source";
-        url = `${SUPABASE_URL}/rest/v1/events?start_at=gte.${now}&select=${selectCols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
+        url = `${SUPABASE_URL}/rest/v1/events?start_at=gte.${now}${scopeFilter}&select=${selectCols}&order=start_at.asc&limit=${pageSize}&offset=${offset}`;
         res = await fetch(url, {
           headers: {
             apikey: SUPABASE_SERVICE_KEY,

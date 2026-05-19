@@ -63,14 +63,41 @@ function findFeedLink(html) {
   return candidates.find((c) => /event/i.test(c.title)) || candidates[0];
 }
 
+// Decode HTML/XML entities. Looped up to 5 times so double-encoded values
+// like `&amp;#8211;` unwind fully in one call (pass 1: &amp; → &, pass 2:
+// &#8211; → en-dash). Without the loop, the original single-pass version
+// left `&#8211;` literal in titles like "Veteran Grave Flagging &#8211;
+// Melrose Cemetery". Also handles hex numeric (&#x201C;) and the common
+// named entities municipal feeds emit.
 function decodeXmlEntities(s) {
-  return String(s)
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(parseInt(n, 10)));
+  let result = String(s);
+  for (let i = 0; i < 5; i++) {
+    const before = result;
+    result = result
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&mdash;/g, "—")
+      .replace(/&ndash;/g, "–")
+      .replace(/&hellip;/g, "…")
+      .replace(/&lsquo;/g, "‘")
+      .replace(/&rsquo;/g, "’")
+      .replace(/&ldquo;/g, "“")
+      .replace(/&rdquo;/g, "”")
+      .replace(/&#(\d+);/g, (_, n) => {
+        const code = parseInt(n, 10);
+        return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+      })
+      .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => {
+        const code = parseInt(n, 16);
+        return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+      });
+    if (result === before) break;
+  }
+  return result;
 }
 
 function extractXmlField(xml, field) {
@@ -326,50 +353,6 @@ module.exports.enrichDescriptions = enrichDescriptions;
 
 // ── Category mapping from venue category to event category ──
 
-const VENUE_TO_EVENT_CATEGORY = {
-  music_venue: "music",
-  theater: "arts",
-  museum: "arts",
-  library: "arts",
-  comedy_club: "comedy",
-  sports_venue: "sports",
-  community_center: "other",
-  college: "other",
-  bar_events: "nightlife",
-  outdoor_amphitheater: "outdoors",
-  arts_center: "arts",
-  bar: "nightlife",
-  brewery: "food",
-  winery: "food",
-  restaurant: "food",
-  cafe: "food",
-  bakery: "food",
-  stadium: "sports",
-  park: "outdoors",
-  public_space: "other",
-  tour: "other",
-};
-
-const VENUE_TO_SUBCATEGORY = {
-  museum: "museum",
-  library: "library",
-  theater: "theatre",
-  comedy_club: "comedy",
-  sports_venue: "sports",
-  outdoor_amphitheater: "outdoor",
-  college: "college",
-  bar: "bar",
-  brewery: "brewery",
-  winery: "winery",
-  restaurant: "restaurant",
-  cafe: "cafe",
-  bakery: "bakery",
-  stadium: "stadium",
-  park: "park",
-  public_space: "community",
-  tour: "tour",
-};
-
 // ── Fetch venues from Supabase ──
 
 async function fetchVenues() {
@@ -554,6 +537,12 @@ Return a JSON object with an "events" array. Each event:
 - source_url (string or null — link to this specific event)
 - confidence (number 0.0-1.0)
 
+STRICT — Only extract events that take place AT "${venue.name}". Some venues (independent bookstores, gallery hubs, multi-venue community calendars) cross-promote shows at other venues on their own events page. Skip those entries:
+- Skip events where the listed location, room, or address is a different named venue (e.g. "at The Wilbur", "at City Winery", "Off-site:", "@ Partner Venue").
+- Skip sections titled "Also happening", "Upcoming at our partners", "Around town", "Friends of ${venue.name}", "Other venues", or similar cross-promotion blocks.
+- Skip rows whose title prefixes a different venue's name (e.g. "CANCELLED Venue: ...", "At The Wilbur:", "Off-site —").
+- When in doubt, prefer to skip rather than include — a cross-venue event tagged to the wrong host poisons the user's distance + venue surfaces. False negatives are recoverable on the next crawl; false positives are not.
+
 IMPORTANT — Recurring events: If the page mentions recurring events (e.g. "Every Sunday", "Weekly on Tuesdays", "First Friday of every month", "Daily"), expand each one into individual entries for every occurrence over the next 6 weeks from ${TODAY}. Each entry needs its own specific start_date and a date-specific title (e.g. "Open Mic Night - April 1", "Open Mic Night - April 8"). Do NOT output a single entry for a recurring event.
 
 Scraped content:
@@ -633,7 +622,13 @@ function normalizeEvent(event, venue) {
   // "Pattern & Place" produce the same dedupe_hash across crawl paths.
   const title = decodeXmlEntities(event.title || "").trim();
   const description = event.description ? decodeXmlEntities(event.description).trim() : null;
-  const sourceId = `crawl-${venueCity}-${Buffer.from(title + event.start_date + venue.name).toString("base64url").slice(0, 40)}`;
+  // Normalize the title for hashing only — lowercase, alphanumeric, first
+  // 30 chars. Without this, week-over-week LLM extraction variation
+  // ("Farm to Form: A Garden Dinner" vs "Farm to Form — Garden Dinner")
+  // hashed differently and produced 3-4 duplicate rows per event.
+  // Stored event.title still keeps the original casing & punctuation.
+  const titleKey = title.toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 30);
+  const sourceId = `crawl-${venueCity}-${Buffer.from(titleKey + event.start_date + venue.name).toString("base64url").slice(0, 40)}`;
 
   // True when the upstream source provided a real time component (HH:MM
   // in start_date that isn't 00:00). False when the crawler only had a
@@ -648,8 +643,12 @@ function normalizeEvent(event, venue) {
   return {
     title,
     description: description || null,
-    category: VENUE_TO_EVENT_CATEGORY[venue.category] || "other",
-    subcategory: VENUE_TO_SUBCATEGORY[venue.category] || null,
+    // Don't inherit from venue.category — too coarse. Sellersville Theatre's
+    // restaurant's "Wine Flights" used to land under arts because the venue
+    // row is arts_center. classify_events.js owns per-event taxonomy now;
+    // we just emit a neutral default.
+    category: "other",
+    subcategory: null,
     start_at: tagEasternTime(event.start_date),
     end_at: tagEasternTime(event.end_date),
     time_known: startHasTime,
@@ -657,7 +656,9 @@ function normalizeEvent(event, venue) {
     price_min: event.price_min ?? null,
     price_max: event.price_max ?? null,
     ticket_url: event.ticket_url || null,
-    image_url: null,
+    // No adapter extracts a per-event image today, so default to the
+    // venue's photo. The migration backfill query handles existing rows.
+    image_url: event.image_url || venue.photo_url || null,
     status: "active",
     venue_name: venue.name,
     venue_address: null,
@@ -1419,6 +1420,79 @@ async function crawlLiveWhale(venue, baseUrl) {
   }
 }
 
+// ── Squarespace events crawler ──
+//
+// Squarespace exposes the entire collection as JSON by appending
+// `?format=json` to any collection URL. For event collections, the response
+// includes an `upcomingEvents` array with start/end epoch ms, full body
+// HTML, and a CDN image URL — no scraping needed.
+//
+// This unblocks venues like Gore Place, where the Claude HTML fallback was
+// only catching whatever fit in the first viewport (~3-4 events) and
+// missing the rest of the calendar.
+
+async function crawlSquarespace(venue, baseUrl) {
+  try {
+    const separator = baseUrl.includes("?") ? "&" : "?";
+    const jsonUrl = `${baseUrl}${separator}format=json`;
+
+    const res = await fetch(jsonUrl, {
+      headers: { Accept: "application/json", "User-Agent": "Mozilla/5.0" },
+    });
+    if (!res.ok) {
+      console.log(`    Squarespace API error: ${res.status}`);
+      return null;
+    }
+
+    const data = await res.json();
+    // upcomingEvents is what Squarespace returns for event-collection pages.
+    // Fall back to items for non-event collections that nonetheless live at
+    // the events URL.
+    const items = Array.isArray(data.upcomingEvents) && data.upcomingEvents.length
+      ? data.upcomingEvents
+      : (Array.isArray(data.items) ? data.items : []);
+    if (items.length === 0) return null;
+
+    const events = [];
+    for (const it of items) {
+      const startMs = it.startDate || it.publishOn;
+      if (!startMs || !it.title) continue;
+      const endMs = it.endDate || null;
+      const start_date = new Date(startMs).toISOString();
+      const end_date = endMs ? new Date(endMs).toISOString() : null;
+      const fullUrl = it.fullUrl
+        ? new URL(it.fullUrl, baseUrl).href
+        : baseUrl;
+      const body = (it.excerpt || it.body || "")
+        .replace(/<[^>]+>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 300);
+
+      events.push({
+        title: it.title,
+        start_date,
+        end_date,
+        description: body || null,
+        source_url: fullUrl,
+        image_url: it.assetUrl || null,
+        is_free: false,
+        confidence: 0.95,
+      });
+    }
+
+    if (events.length === 0) return null;
+
+    const rows = events.map((e) => normalizeEvent(e, venue));
+    if (rows.length > 0) await upsertEvents(rows);
+    await updateVenueCrawlStatus(venue.id, true, venue.crawl_success_rate);
+    return { venue: venue.name, events: rows.length, status: "ok (squarespace)" };
+  } catch (err) {
+    console.log(`    Squarespace crawl error: ${err.message}`);
+    return null;
+  }
+}
+
 // ── Platform detection helper ──
 
 async function detectAndCrawlPlatform(venue) {
@@ -1524,6 +1598,17 @@ async function crawlVenue(venue) {
     if (htmlLc.includes("ticketure")) {
       const ticketureResult = await crawlTicketure(venue, venue.events_url);
       if (ticketureResult) return ticketureResult;
+    }
+
+    // Squarespace detection — both 7.0 and 7.1 sites embed these markers.
+    // The ?format=json adapter pulls the entire upcomingEvents collection,
+    // which beats the viewport-limited Claude HTML fallback.
+    if (htmlLc.includes("static.squarespace.com") ||
+        htmlLc.includes("static1.squarespace.com") ||
+        htmlLc.includes("squarespace.com/universal") ||
+        htmlLc.includes("usesquarespace")) {
+      const sqsResult = await crawlSquarespace(venue, venue.events_url);
+      if (sqsResult) return sqsResult;
     }
 
     // Tessitura detection

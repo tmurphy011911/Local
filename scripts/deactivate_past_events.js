@@ -1,17 +1,20 @@
 /**
  * deactivate_past_events.js — Mark past events as inactive
  *
- * Updates events where start_at < NOW() and is_active = true → is_active = false.
+ * Deactivates events whose run window has fully ended:
+ *   start_at < NOW() AND (end_at IS NULL OR end_at < NOW())
  *
- * Why this is paged: previously the script issued one bulk PATCH on the entire
+ * The end_at clause matters for multi-day / long-running events (museum
+ * exhibitions, seasonal programs, gallery installs). Previously only start_at
+ * was checked, so a 2-month exhibition got deactivated the day after it
+ * opened. ~992 such rows were wrongly hidden as of 2026-05-17.
+ *
+ * Paging note: previously the script issued one bulk PATCH on the entire
  * matching set with `Prefer: return=representation`. Postgres ran an UPDATE
- * across thousands of rows AND then a SELECT-back of every updated row in the
- * same transaction, which trips Supabase's 8s statement timeout. Failed every
- * day from 2026-04-27 onward.
- *
- * Fix: select IDs in batches via the indexed start_at filter, PATCH each batch
- * with `Prefer: return=minimal` so Postgres skips the read-back. Each
- * iteration is bounded; loop until the SELECT returns 0 rows.
+ * across thousands of rows AND then a SELECT-back of every updated row in
+ * the same transaction, which trips Supabase's 8s statement timeout.
+ * Fix: select IDs in batches via the indexed start_at filter, PATCH each
+ * batch with `Prefer: return=minimal` so Postgres skips the read-back.
  *
  * Usage:
  *   SUPABASE_SERVICE_KEY=ey... node scripts/deactivate_past_events.js
@@ -26,13 +29,17 @@ let SUPABASE_SERVICE_KEY;
 
 async function fetchPastIds(now) {
   // Indexed by (start_at) and filtered by is_active so the SELECT is bounded.
+  // The or= clause keeps multi-day events alive while their end_at is still in
+  // the future — without it, an exhibition opening today gets killed tomorrow.
   // We page implicitly: every loop returns the OLDEST batch still active, the
   // PATCH flips them, the next loop returns the next batch.
+  const encodedNow = encodeURIComponent(now);
   const url =
     `${SUPABASE_URL}/rest/v1/events` +
     `?select=id` +
-    `&start_at=lt.${encodeURIComponent(now)}` +
+    `&start_at=lt.${encodedNow}` +
     `&is_active=eq.true` +
+    `&or=(end_at.is.null,end_at.lt.${encodedNow})` +
     `&order=start_at.asc` +
     `&limit=${BATCH_SIZE}`;
   const res = await fetch(url, {

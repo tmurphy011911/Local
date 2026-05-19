@@ -34,7 +34,7 @@ async function extractEventsFromHtml({ html, sourceUrl, anthropicKey, city, stat
     `Return ONLY a JSON array. Each event is an object with fields:\n` +
     `  - title: string (the event name)\n` +
     `  - description: string|null (1–2 sentences if shown; do NOT invent)\n` +
-    `  - start_at: ISO 8601 datetime string with timezone offset (e.g. "2026-05-15T19:00:00-04:00"). If only a date is present, use "T12:00:00-04:00" and set time_known=false.\n` +
+    `  - start_at: ISO 8601 datetime string with timezone offset (e.g. "2026-05-15T19:00:00-04:00"). If only a date is present, use "T00:00:00-04:00" (midnight Eastern) and set time_known=false. NEVER use "T12:00:00-04:00" as a placeholder for unknown time — that's a real noon Eastern timestamp, and using it for TBD events makes them indistinguishable from genuine noon events (e.g. "Fridays 12-1 PM" walks, lunch programs, midday concerts). Reserve T12:00:00-04:00 for events whose source page actually says they start at 12 PM Eastern, and emit time_known=true for those.\n` +
     `  - end_at: ISO 8601 or null\n` +
     `  - time_known: boolean (true if a specific start time is shown, false for date-only or "TBD")\n` +
     `  - venue_name: string|null (the actual venue if listed; null when the city itself is the location)\n` +
