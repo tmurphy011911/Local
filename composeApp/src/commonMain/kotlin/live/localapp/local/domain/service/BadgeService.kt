@@ -93,6 +93,11 @@ class BadgeService(
      * Suspending core of [recordAction]. Extracted so multiple actions can be
      * processed sequentially without racing on [totalPointsCache] or interleaving
      * celebration emissions in non-deterministic order.
+     *
+     * Updates the lifetime counter in `user_action_counts` first, then uses
+     * the resulting count for milestone checks. The counter is monotonic — it
+     * never decreases when the user unsaves an event or deletes a plan — so
+     * Profile-screen counts stay stable across undo actions.
      */
     private suspend fun recordActionImpl(
         userId: String,
@@ -102,22 +107,26 @@ class BadgeService(
     ) {
         val previousTotal = totalPointsCache
         val previousTier = statusTierForPoints(previousTotal)
+        val actionKey = action.name.lowercase()
 
         // Get existing milestones for this action (across all states)
         val existing = try {
             badgeRepository.getMilestones(userId)
-                .filter { it.actionType == action.name.lowercase() }
+                .filter { it.actionType == actionKey }
                 .map { it.milestone }
                 .toSet()
         } catch (_: Throwable) { emptySet() }
 
-        // If caller didn't provide a count, fetch from DB (sum across ALL states)
-        val actualCount = if (newCount > 0) newCount else {
-            try {
-                val counts = badgeRepository.getActionCounts(userId)
-                val actionKey = action.name.lowercase()
-                counts.values.sumOf { it[actionKey] ?: 0 }
-            } catch (_: Throwable) { 0 }
+        // Update the lifetime counter and read back the new value.
+        //   newCount == 0 → per-action call (EVENT_SAVED, EVENT_SHARED,
+        //                   PLAN_CREATED) — increment by 1.
+        //   newCount  > 0 → snapshot call (INVITE_ACCEPTED, GROUP_*_CONFIRMED
+        //                   via claimCreatorBadges) — ratchet up to the
+        //                   snapshot, never down.
+        val actualCount = if (newCount > 0) {
+            badgeRepository.bumpActionCountTo(userId, actionKey, newCount)
+        } else {
+            badgeRepository.incrementActionCount(userId, actionKey)
         }
 
         var earnedPoints = 0
@@ -129,7 +138,7 @@ class BadgeService(
                 badgeRepository.awardMilestone(
                     userId = userId,
                     state = state,
-                    actionType = action.name.lowercase(),
+                    actionType = actionKey,
                     milestone = threshold,
                     points = pts,
                 )
@@ -172,6 +181,16 @@ class BadgeService(
      * — the count of new accepts since the last open will typically push them
      * across a milestone, surfacing a toast via the existing celebration flow.
      *
+     * Reads a live snapshot from [BadgeRepository.getCreatorAcceptSnapshot]
+     * (queries `plan_attendees`) and ratchets the lifetime counters in
+     * `user_action_counts` up to that snapshot via [recordActionImpl]'s
+     * bumpActionCountTo path. Deleting an owned plan can reduce the live
+     * snapshot, but the stored counter never goes down.
+     *
+     * Snapshot zeros short-circuit — calling recordActionImpl with newCount=0
+     * would trigger the per-action increment path, which is wrong for these
+     * snapshot-driven actions.
+     *
      * The three actions run sequentially in a single coroutine so that:
      *   1. [totalPointsCache] reads/writes don't race across actions.
      *   2. Celebration emissions arrive in a deterministic crescendo order —
@@ -185,9 +204,19 @@ class BadgeService(
     fun claimCreatorBadges() {
         val userId = userPrefsRepo.getLocalUserId() ?: return
         scope.launch {
-            recordActionImpl(userId, BadgeAction.INVITE_ACCEPTED, "global", 0)
-            recordActionImpl(userId, BadgeAction.GROUP_5_CONFIRMED, "global", 0)
-            recordActionImpl(userId, BadgeAction.GROUP_10_CONFIRMED, "global", 0)
+            val snapshot = try {
+                badgeRepository.getCreatorAcceptSnapshot(userId)
+            } catch (_: Throwable) { return@launch }
+
+            if (snapshot.totalAccepts > 0) {
+                recordActionImpl(userId, BadgeAction.INVITE_ACCEPTED, "global", snapshot.totalAccepts)
+            }
+            if (snapshot.qualifiesForGroup5) {
+                recordActionImpl(userId, BadgeAction.GROUP_5_CONFIRMED, "global", 1)
+            }
+            if (snapshot.qualifiesForGroup10) {
+                recordActionImpl(userId, BadgeAction.GROUP_10_CONFIRMED, "global", 1)
+            }
         }
     }
 }

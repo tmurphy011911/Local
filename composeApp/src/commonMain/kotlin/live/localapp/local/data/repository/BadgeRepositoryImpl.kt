@@ -2,12 +2,16 @@ package live.localapp.local.data.repository
 
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.postgrest.postgrest
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
 import live.localapp.local.data.remote.dto.BadgeMilestoneDto
 import live.localapp.local.data.remote.dto.toDomain
 import live.localapp.local.domain.model.BadgeMilestone
 import live.localapp.local.domain.repository.BadgeRepository
+import live.localapp.local.domain.repository.CreatorAcceptSnapshot
 
 class BadgeRepositoryImpl(
     private val supabaseClient: SupabaseClient,
@@ -23,121 +27,113 @@ class BadgeRepositoryImpl(
     }
 
     override suspend fun getActionCounts(userId: String): Map<String, Map<String, Int>> {
-        // Returns: state -> (actionType -> count)
-        // We count from community_interactions joined with events for state info
-        // For now, count from user_badges milestones as proxy
-        // Actual counts should come from community_interactions + plans tables
+        // Reads the lifetime monotonic counters from `user_action_counts`.
+        // Counts never decrement when the user unsaves an event, deletes a
+        // plan, etc. — see the user_action_counts migration for the rationale.
+        //
+        // The legacy queries against community_interactions / plans /
+        // plan_attendees that used to live here were the source of the
+        // "counts drop when you undo" bug. They're replaced by a single read
+        // from the counter table; writes happen via incrementActionCount /
+        // bumpActionCountTo from BadgeService.
         @Serializable
-        data class InteractionRow(
-            @SerialName("interaction_type") val interactionType: String,
-            @SerialName("item_id") val itemId: String,
+        data class ActionCountRow(
+            @SerialName("action_type") val actionType: String,
+            val count: Int,
         )
 
-        @Serializable
-        data class EventStateRow(
-            val id: String,
-            @SerialName("venue_state") val venueState: String? = null,
-        )
+        return try {
+            val rows = supabaseClient.from("user_action_counts")
+                .select {
+                    filter { eq("user_id", userId) }
+                }
+                .decodeList<ActionCountRow>()
+            // Counts are tracked globally; preserve the outer
+            // state -> action -> count shape for backward compat.
+            mapOf("global" to rows.associate { it.actionType to it.count })
+        } catch (e: Throwable) {
+            println("BadgeRepo.getActionCounts error: ${e.message}")
+            emptyMap()
+        }
+    }
 
-        @Serializable
-        data class PlanStateRow(
-            val id: String,
-            val city: String? = null,
-        )
+    override suspend fun incrementActionCount(userId: String, actionType: String): Int {
+        return try {
+            val params = buildJsonObject {
+                put("p_user_id", JsonPrimitive(userId))
+                put("p_action_type", JsonPrimitive(actionType))
+            }
+            val result = supabaseClient.postgrest.rpc("increment_action_count", params)
+            result.data.trim().trim('"').toIntOrNull() ?: 0
+        } catch (e: Throwable) {
+            println("BadgeRepo.incrementActionCount($actionType) error: ${e.message}")
+            0
+        }
+    }
 
-        // Row from plan_attendees scoped to plans the current user owns. Used
-        // to compute creator-side INVITE_ACCEPTED / GROUP_N_CONFIRMED counts.
+    override suspend fun bumpActionCountTo(userId: String, actionType: String, snapshot: Int): Int {
+        return try {
+            val params = buildJsonObject {
+                put("p_user_id", JsonPrimitive(userId))
+                put("p_action_type", JsonPrimitive(actionType))
+                put("p_snapshot", JsonPrimitive(snapshot))
+            }
+            val result = supabaseClient.postgrest.rpc("bump_action_count_to", params)
+            result.data.trim().trim('"').toIntOrNull() ?: 0
+        } catch (e: Throwable) {
+            println("BadgeRepo.bumpActionCountTo($actionType, $snapshot) error: ${e.message}")
+            0
+        }
+    }
+
+    override suspend fun getCreatorAcceptSnapshot(userId: String): CreatorAcceptSnapshot {
+        // Live computation from `plan_attendees`, scoped to plans the user
+        // owns. Used by BadgeService.claimCreatorBadges to compute the value
+        // it then passes to bumpActionCountTo — so the lifetime counters
+        // ratchet up from the all-time-high snapshot, never down.
+        @Serializable
+        data class PlanIdRow(val id: String)
         @Serializable
         data class CreatorAttendeeRow(
             @SerialName("plan_id") val planId: String,
         )
 
-        val result = mutableMapOf<String, MutableMap<String, Int>>()
-
-        try {
-            // Get favorites (event_saved)
-            val favorites = supabaseClient.from("community_interactions")
-                .select {
-                    filter {
-                        eq("user_id", userId)
-                        eq("interaction_type", "favorite")
-                        eq("item_type", "event")
-                    }
-                }
-                .decodeList<InteractionRow>()
-
-            // Get shares (event_shared)
-            val shares = supabaseClient.from("community_interactions")
-                .select {
-                    filter {
-                        eq("user_id", userId)
-                        eq("interaction_type", "share")
-                        eq("item_type", "event")
-                    }
-                }
-                .decodeList<InteractionRow>()
-
-            // Get event states for all relevant event IDs
-            val eventIds = (favorites.map { it.itemId } + shares.map { it.itemId }).distinct()
-            val eventStates = if (eventIds.isNotEmpty()) {
-                eventIds.chunked(100).flatMap { chunk ->
-                    supabaseClient.from("events")
-                        .select {
-                            filter { isIn("id", chunk) }
-                        }
-                        .decodeList<EventStateRow>()
-                }
-                    .associate { it.id to (it.venueState ?: "MA") }
-            } else emptyMap()
-
-            // Count everything globally (no per-state breakdown)
-            val global = result.getOrPut("global") { mutableMapOf() }
-            global["event_saved"] = favorites.size
-            global["event_shared"] = shares.size
-
-            // Count plans created
+        return try {
             val plans = supabaseClient.from("plans")
                 .select {
                     filter { eq("user_id", userId) }
                 }
-                .decodeList<PlanStateRow>()
-            global["plan_created"] = plans.size
-
-            // PLAN_SHARED was removed from the points system — sharing is too
-            // easily farmable (system share sheet, copy-link to self).
-
-            // Creator-side: count confirmed non-creator attendees across the
-            // user's owned plans. Drives the deferred toasts that fire the next
-            // time the creator opens a plan with new accepts.
-            //   invite_accepted     = total confirmed accepts across owned plans
-            //   group_5_confirmed   = 1 if any owned plan has >=5 confirmed accepts
-            //   group_10_confirmed  = 1 if any owned plan has >=10 confirmed accepts
+                .decodeList<PlanIdRow>()
             val ownedPlanIds = plans.map { it.id }
-            val creatorAttendees = if (ownedPlanIds.isNotEmpty()) {
-                ownedPlanIds.chunked(100).flatMap { chunk ->
-                    supabaseClient.from("plan_attendees")
-                        .select {
-                            filter {
-                                isIn("plan_id", chunk)
-                                eq("is_creator", false)
-                                eq("confirmed", true)
-                            }
+            if (ownedPlanIds.isEmpty()) {
+                return CreatorAcceptSnapshot(0, qualifiesForGroup5 = false, qualifiesForGroup10 = false)
+            }
+
+            val attendees = ownedPlanIds.chunked(100).flatMap { chunk ->
+                supabaseClient.from("plan_attendees")
+                    .select {
+                        filter {
+                            isIn("plan_id", chunk)
+                            eq("is_creator", false)
+                            eq("confirmed", true)
                         }
-                        .decodeList<CreatorAttendeeRow>()
-                }
-            } else emptyList()
-            global["invite_accepted"] = creatorAttendees.size
-            val maxPerPlan = creatorAttendees.groupingBy { it.planId }
+                    }
+                    .decodeList<CreatorAttendeeRow>()
+            }
+            val maxPerPlan = attendees.groupingBy { it.planId }
                 .eachCount()
                 .values
                 .maxOrNull() ?: 0
-            global["group_5_confirmed"] = if (maxPerPlan >= 5) 1 else 0
-            global["group_10_confirmed"] = if (maxPerPlan >= 10) 1 else 0
-        } catch (e: Throwable) {
-            println("BadgeRepo.getActionCounts error: ${e.message}")
-        }
 
-        return result
+            CreatorAcceptSnapshot(
+                totalAccepts = attendees.size,
+                qualifiesForGroup5 = maxPerPlan >= 5,
+                qualifiesForGroup10 = maxPerPlan >= 10,
+            )
+        } catch (e: Throwable) {
+            println("BadgeRepo.getCreatorAcceptSnapshot error: ${e.message}")
+            CreatorAcceptSnapshot(0, qualifiesForGroup5 = false, qualifiesForGroup10 = false)
+        }
     }
 
     override suspend fun awardMilestone(
