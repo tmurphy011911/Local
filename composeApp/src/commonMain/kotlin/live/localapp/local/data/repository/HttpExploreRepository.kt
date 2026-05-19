@@ -6,7 +6,9 @@ import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.parameter
+import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
+import io.ktor.http.isSuccess
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -67,7 +69,7 @@ class HttpExploreRepository : ExploreRepository {
             cursor?.let { parameter("cursor", it) }
             parameter("limit", limit)
         }
-        val body = res.bodyAsText()
+        val body = res.requireSuccess("explore-events")
         val parsed = json.decodeFromString<EventPageDto>(body)
         return EventPage(
             items = parsed.items.map { it.toDomain() },
@@ -102,7 +104,7 @@ class HttpExploreRepository : ExploreRepository {
             cursor?.let { parameter("cursor", it) }
             parameter("limit", limit)
         }
-        val body = res.bodyAsText()
+        val body = res.requireSuccess("explore-places")
         val parsed = json.decodeFromString<PlacePageDto>(body)
         return PlacePage(
             items = parsed.items.map { it.toDomain() },
@@ -111,6 +113,25 @@ class HttpExploreRepository : ExploreRepository {
             total = parsed.total,
         )
     }
+}
+
+/**
+ * Read the response body, but only after asserting a 2xx status. Without
+ * this guard, a non-2xx body (`{"message":"..."}`, an HTML error page,
+ * etc.) decodes silently into a default-constructed `EventPageDto` /
+ * `PlacePageDto` — every field defaulted to empty — and the UI renders
+ * "Nothing here yet" instead of surfacing the real error. Throwing here
+ * routes the failure through the existing `catch` in PlacesViewModel,
+ * which flips `state.error` so the empty-state shows the "Couldn't load
+ * this list" + Retry path.
+ */
+private suspend fun HttpResponse.requireSuccess(label: String): String {
+    val body = bodyAsText()
+    if (!status.isSuccess()) {
+        val snippet = body.take(200)
+        throw IllegalStateException("$label HTTP ${status.value}: $snippet")
+    }
+    return body
 }
 
 // ── DTOs ──

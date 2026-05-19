@@ -207,6 +207,16 @@ class PlacesViewModel(
         _uiState.update { it.copy(userLat = lat, userLng = lng) }
         loadedLat = null
         loadedLng = null
+        // Reload immediately when coords actually change. Previously this
+        // relied on ensureLoaded() firing on next tab visit, which meant
+        // changing location from the LocationSettingsSheet while sitting on
+        // the Explore tab updated the pill but left stale results in place
+        // until the user bounced off the tab and back. Cached per-filter
+        // pages are invalidated above (loadedLat/Lng null'd) so this re-fetch
+        // hits the network with the new coords.
+        clearCaches()
+        loadPlaces(reset = true)
+        loadEvents(reset = true)
     }
 
     fun setLocationName(name: String) {
