@@ -34,18 +34,52 @@ function hashEvent(source, sourceId) {
   return `${source}:${sourceId}`;
 }
 
+// Decode HTML/XML entities. Used both inside stripHtml and standalone in
+// buildEvent for titles (which don't go through stripHtml in any parser).
+// Loops up to 5 times so double-encoded values like `&amp;#8211;` unwind
+// fully — pass 1: &amp; → &, pass 2: &#8211; → en-dash. Without the loop,
+// raw `&#8211;` leaked through municipal-feed titles like "Veteran Grave
+// Flagging &#8211; Melrose Cemetery".
+function decodeEntities(s) {
+  let result = String(s || "");
+  for (let i = 0; i < 5; i++) {
+    const before = result;
+    result = result
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"')
+      .replace(/&apos;/g, "'")
+      .replace(/&#39;/g, "'")
+      .replace(/&nbsp;/g, " ")
+      .replace(/&mdash;/g, "—")
+      .replace(/&ndash;/g, "–")
+      .replace(/&hellip;/g, "…")
+      .replace(/&lsquo;/g, "‘")
+      .replace(/&rsquo;/g, "’")
+      .replace(/&ldquo;/g, "“")
+      .replace(/&rdquo;/g, "”")
+      .replace(/&#(\d+);/g, (_, n) => {
+        const code = parseInt(n, 10);
+        return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+      })
+      .replace(/&#x([0-9a-fA-F]+);/g, (_, n) => {
+        const code = parseInt(n, 16);
+        return Number.isFinite(code) ? String.fromCodePoint(code) : "";
+      });
+    if (result === before) break;
+  }
+  return result;
+}
+
 function stripHtml(html) {
   if (!html) return "";
-  return html
-    .replace(/<[^>]+>/g, " ")
-    .replace(/&amp;/g, "&")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  // Tag-strip first, then run the full entity decoder, then collapse
+  // whitespace. The previous implementation handled only 6 named entities
+  // (amp/lt/gt/quot/#39/nbsp) and missed numeric/hex/curly-quote entities,
+  // which is why description bodies still contained raw `&mdash;` and
+  // `&#8211;`.
+  return decodeEntities(html.replace(/<[^>]+>/g, " ")).replace(/\s+/g, " ").trim();
 }
 
 function detectCategory(title, body) {
@@ -69,7 +103,111 @@ function detectCategory(title, body) {
 // `(distance_miles ?? 999) <= maxRadius` and get silently dropped.
 const METRO_COORDS = new Map(); // metro slug → {lat, lng}
 
-function buildEvent(feed, raw) {
+// Cache for resolveVenueCoords lookups. Key: lowercase "name|city|state".
+// Many municipal-feed entries reference the same venue dozens of times
+// (a museum running 50 events). Without the cache we'd hit Supabase /
+// Claude once per event; with it, once per unique venue.
+const VENUE_COORDS_CACHE = new Map();
+
+/**
+ * Resolve venue coordinates with a 3-step fallback chain:
+ *   1. venues table — exact-ish match by name (cheap, accurate when we know it).
+ *   2. Claude — for unknown venues. Strict confidence gate so ambiguous names
+ *      ("Lincoln Park" could be many places) don't ship wrong coords.
+ *   3. null — caller decides what to do (drop the event or fall back further).
+ *
+ * Returns {lat, lng} or null. Cached for the lifetime of the run.
+ */
+async function resolveVenueCoords(name, city, state) {
+  if (!name) return null;
+  const key = `${name.toLowerCase()}|${(city || "").toLowerCase()}|${(state || "").toLowerCase()}`;
+  if (VENUE_COORDS_CACHE.has(key)) return VENUE_COORDS_CACHE.get(key);
+
+  let coords = null;
+
+  // 1. venues table lookup. Match on name + optionally city. Reject venue
+  //    rows without coords. PostgREST `ilike` is case-insensitive.
+  try {
+    let url = `${SUPABASE_URL}/rest/v1/venues?name=ilike.${encodeURIComponent(name)}&lat=not.is.null&lng=not.is.null&select=lat,lng,city&limit=5`;
+    const res = await fetch(url, {
+      headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` },
+    });
+    if (res.ok) {
+      const rows = await res.json();
+      // Prefer a row whose city matches; fall back to any row with coords.
+      let pick = null;
+      if (city) {
+        pick = rows.find((r) => (r.city || "").toLowerCase() === city.toLowerCase());
+      }
+      pick = pick || rows[0];
+      if (pick && pick.lat != null && pick.lng != null) {
+        coords = { lat: pick.lat, lng: pick.lng };
+      }
+    }
+  } catch (err) {
+    console.log(`    venues lookup error for "${name}": ${err.message}`);
+  }
+
+  // 2. Claude fallback. Only when we have an API key AND the lookup missed.
+  //    Restrict scope to {city, state} for disambiguation. Reject low
+  //    confidence — better to ship null than a Lincoln, NE event tagged in
+  //    Lincoln, MA.
+  if (!coords && ANTHROPIC_API_KEY) {
+    coords = await askClaudeForCoords(name, city, state);
+  }
+
+  VENUE_COORDS_CACHE.set(key, coords);
+  return coords;
+}
+
+async function askClaudeForCoords(name, city, state) {
+  const ctx = [city, state].filter(Boolean).join(", ");
+  const prompt =
+    `What are the approximate latitude and longitude of the venue "${name}"${ctx ? ` in ${ctx}` : ""}?\n\n` +
+    `Return ONLY a JSON object: {"lat": <number>, "lng": <number>, "confidence": <0..1>}.\n` +
+    `Confidence reflects how sure you are this is the correct venue — drop below 0.6 if the name is ambiguous (multiple places could share it, you can't tell which).\n` +
+    `If the venue truly doesn't exist or you have no idea, return {"lat": 0, "lng": 0, "confidence": 0}.`;
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 200,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    if (!res.ok) {
+      console.log(`    Claude geocode ${name}: HTTP ${res.status}`);
+      return null;
+    }
+    const data = await res.json();
+    const text = data.content?.[0]?.text || "";
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    const obj = JSON.parse(match[0]);
+    if (typeof obj.lat !== "number" || typeof obj.lng !== "number") return null;
+    const conf = typeof obj.confidence === "number" ? obj.confidence : 0;
+    if (conf < 0.8) {
+      console.log(`    Claude geocode "${name}" in ${ctx || "?"}: conf=${conf.toFixed(2)} — rejected`);
+      return null;
+    }
+    // Sanity-check: coords within plausible lat/lng range, not 0/0.
+    if (Math.abs(obj.lat) < 0.01 && Math.abs(obj.lng) < 0.01) return null;
+    if (Math.abs(obj.lat) > 90 || Math.abs(obj.lng) > 180) return null;
+    console.log(`    Claude geocoded "${name}" → ${obj.lat.toFixed(4)},${obj.lng.toFixed(4)} (conf ${conf.toFixed(2)})`);
+    return { lat: obj.lat, lng: obj.lng };
+  } catch (err) {
+    console.log(`    Claude geocode error for "${name}": ${err.message}`);
+    return null;
+  }
+}
+
+async function buildEvent(feed, raw) {
   // raw is { title, description, startAt, endAt, sourceId, sourceUrl,
   //          venueName, venueAddress, venueCity, venueState, isFree, imageUrl,
   //          venueLat, venueLng }
@@ -77,11 +215,52 @@ function buildEvent(feed, raw) {
   // should geocode venue_address through Google for true accuracy, but
   // metro-center is enough to land the event in the right radius bucket.
   const metro = METRO_COORDS.get(feed.metro);
+  // Decode entities on title + venue_name + description here so every
+  // parser path (Drupal / Localist / iCal / RSS / claude_html) writes
+  // clean strings, regardless of whether the parser ran stripHtml. The
+  // description is double-decoded defensively — if stripHtml already
+  // handled it, decodeEntities is idempotent and no-ops. Detection
+  // (detectCategory) also benefits from a clean title.
+  const title = decodeEntities(raw.title);
+  const description = raw.description ? decodeEntities(raw.description) : null;
+  const venueName = raw.venueName ? decodeEntities(raw.venueName) : null;
+
+  // Coordinate resolution chain — the old `raw.venueLat ?? metro?.lat`
+  // fallback caused the MASS MoCA bug: a Boston municipal feed cross-promotes
+  // events at the Berkshires, but when the feed entry omits coords the row
+  // gets STAMPED with downtown Boston (42.36, -71.06) instead of the real
+  // venue location 150 miles away. New order:
+  //   1. raw.venueLat / raw.venueLng if the feed provided them (best).
+  //   2. resolveVenueCoords(): venues table lookup → Claude fallback (gated
+  //      at confidence ≥ 0.8 with sanity checks).
+  //   3. Metro center ONLY when venue_name is null (truly at-large civic
+  //      events — e.g. a city-wide block party with no specific venue).
+  //   4. Null — better to drop a far-away event from radius queries than
+  //      to ship it stamped 150 miles from where it actually is.
+  let venueLat = raw.venueLat ?? null;
+  let venueLng = raw.venueLng ?? null;
+  if ((venueLat == null || venueLng == null) && venueName) {
+    const resolved = await resolveVenueCoords(
+      venueName,
+      raw.venueCity || feed.city,
+      raw.venueState || feed.state,
+    );
+    if (resolved) {
+      if (venueLat == null) venueLat = resolved.lat;
+      if (venueLng == null) venueLng = resolved.lng;
+    }
+  }
+  if ((venueLat == null || venueLng == null) && !venueName) {
+    // At-large event with no named venue — metro center is the right default.
+    venueLat = venueLat ?? metro?.lat ?? null;
+    venueLng = venueLng ?? metro?.lng ?? null;
+  }
+
   return {
-    title: raw.title,
-    description: raw.description || null,
-    category: detectCategory(raw.title, raw.description || ""),
-    subcategory: detectCategory(raw.title, raw.description || "") === "community" ? "civic" : null,
+    title,
+    description,
+    category: detectCategory(title, description || ""),
+    subcategory: detectCategory(title, description || "") === "community" ? "civic" : null,
     start_at: raw.startAt,
     end_at: raw.endAt || null,
     is_free: raw.isFree ?? true,
@@ -90,12 +269,12 @@ function buildEvent(feed, raw) {
     ticket_url: raw.sourceUrl || null,
     image_url: raw.imageUrl || null,
     status: "active",
-    venue_name: raw.venueName || null,
+    venue_name: venueName,
     venue_address: raw.venueAddress || null,
     venue_city: raw.venueCity || feed.city,
     venue_state: raw.venueState || feed.state,
-    venue_lat: raw.venueLat ?? metro?.lat ?? null,
-    venue_lng: raw.venueLng ?? metro?.lng ?? null,
+    venue_lat: venueLat,
+    venue_lng: venueLng,
     source: `municipal_${feed.metro}`,
     source_id: raw.sourceId,
     source_url: raw.sourceUrl || null,
@@ -130,7 +309,7 @@ async function fetchDrupalJsonApi(feed) {
       const addr = a.field_address || {};
       const detailsLink = a.field_details_link?.uri || null;
       const eventPath = a.path?.alias ? `https://${new URL(feed.url).host}${a.path.alias}` : null;
-      events.push(buildEvent(feed, {
+      events.push(await buildEvent(feed, {
         title: a.title,
         description: stripHtml(a.body?.value || "").slice(0, 2000),
         startAt,
@@ -165,7 +344,7 @@ async function fetchLocalist(feed) {
       const inst = (ev.event_instances || [])[0]?.event_instance;
       const startAt = inst?.start || ev.first_date;
       if (!startAt || new Date(startAt) < new Date()) continue;
-      events.push(buildEvent(feed, {
+      events.push(await buildEvent(feed, {
         title: ev.title,
         description: stripHtml(ev.description_text || ev.description || "").slice(0, 2000),
         startAt,
@@ -194,7 +373,7 @@ async function fetchIcal(feed) {
   return parseIcal(text, feed);
 }
 
-function parseIcal(text, feed) {
+async function parseIcal(text, feed) {
   // Minimal iCal parser. Handles VEVENT blocks, unfolds line continuations,
   // ignores recurring expansions (we take the DTSTART as-is).
   const unfolded = text.replace(/\r?\n[ \t]/g, "");
@@ -216,7 +395,7 @@ function parseIcal(text, feed) {
     if (!map.SUMMARY) continue;
     const startAt = parseIcalDate(map.DTSTART);
     if (!startAt || new Date(startAt) < new Date()) continue;
-    events.push(buildEvent(feed, {
+    events.push(await buildEvent(feed, {
       title: map.SUMMARY.replace(/\\,/g, ",").replace(/\\n/g, " "),
       description: (map.DESCRIPTION || "").replace(/\\,/g, ",").replace(/\\n/g, " ").slice(0, 2000),
       startAt,
@@ -261,7 +440,7 @@ async function fetchWpTribe(feed) {
     for (const ev of items) {
       const startAt = ev.utc_start_date || ev.start_date;
       if (!startAt || new Date(startAt) < new Date()) continue;
-      events.push(buildEvent(feed, {
+      events.push(await buildEvent(feed, {
         title: ev.title,
         description: stripHtml(ev.description || "").slice(0, 2000),
         startAt,
@@ -288,7 +467,7 @@ async function fetchRss(feed) {
   return parseRss(text, feed);
 }
 
-function parseRss(text, feed) {
+async function parseRss(text, feed) {
   // Lightweight RSS/Atom parser. Captures <item> or <entry> blocks and pulls
   // title, description, link, pubDate. Date parsing is permissive: tries
   // pubDate, dc:date, published in that order.
@@ -312,7 +491,7 @@ function parseRss(text, feed) {
       : get("link");
     const guid = get("guid") || get("id") || link || title;
     const description = stripHtml(get("description") || get("summary") || get("content") || "").slice(0, 2000);
-    events.push(buildEvent(feed, {
+    events.push(await buildEvent(feed, {
       title,
       description,
       startAt,
@@ -354,7 +533,7 @@ async function fetchClaudeHtml(feed) {
       .update(`${e.title}|${e.start_at}|${e.venue_name || feed.city}`)
       .digest("hex")
       .slice(0, 24);
-    events.push(buildEvent(feed, {
+    events.push(await buildEvent(feed, {
       title: e.title,
       description: e.description || null,
       startAt: e.start_at,

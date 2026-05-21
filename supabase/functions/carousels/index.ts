@@ -36,6 +36,7 @@ interface EventRow {
 interface ProcessedEvent extends EventRow {
   distance_miles: number | null;
   venue_description: string | null;
+  venue_photo_url: string | null;
 }
 
 interface VenueInfo {
@@ -534,13 +535,33 @@ function cleanEvents(
     })
     .filter(e => !isLivestreamDuplicate(e, reclassified));
   const deduped = distinctByBaseTitle(filtered);
-  // Apply venue photo fallback and venue description
+  // Apply venue photo fallback and venue description.
+  //
+  // Two things happen here:
+  //  1. If event.image_url is null, collapse venue photo INTO image_url
+  //     (legacy backstop — old clients without venue_photo_url support
+  //     still see the venue photo on cards/detail).
+  //  2. Always populate venue_photo_url on the response if we can find
+  //     one in the cache. New clients use this as a last-resort fallback
+  //     before the category gradient, covering the edge case where
+  //     image_url is set but to a stale/broken URL that fails to load.
   return deduped.map(e => {
     const venueLc = (e.venue_name ?? "").toLowerCase();
     const info = venueCache.get(venueLc);
     let result = e;
+    if (info?.photo_url && !result.venue_photo_url) {
+      result = { ...result, venue_photo_url: info.photo_url };
+    }
     if (!result.image_url && info?.photo_url) {
       result = { ...result, image_url: info.photo_url };
+    }
+    // Google Places photo URLs expire (return HTTP 400 once the embedded
+    // photo-reference token is invalidated — usually within hours of
+    // generation). When we have a stable Supabase-storage venue photo,
+    // swap. This catches events that were backfilled with a Places URL
+    // before the venues.photo_url column was migrated to Supabase storage.
+    if (result.image_url?.includes("places.googleapis.com") && result.venue_photo_url) {
+      result = { ...result, image_url: result.venue_photo_url };
     }
     if (info?.description) {
       result = { ...result, venue_description: info.description };
@@ -1861,12 +1882,14 @@ async function fetchAllEvents(
     rank_score: number | null;
     distance_miles: number | null;
     venue_description: string | null;
+    venue_photo_url: string | null;
   }>;
   const mvProcessed: ProcessedEvent[] = mvRows
     .map(row => ({
       ...row,
       distance_miles: row.distance_miles,
       venue_description: row.venue_description ?? null,
+      venue_photo_url: row.venue_photo_url ?? null,
     }))
     .filter(e => e.distance_miles == null || e.distance_miles <= radiusMiles);
 
@@ -1878,6 +1901,7 @@ async function fetchAllEvents(
         ? distanceMiles(lat, lng, row.venue_lat, row.venue_lng)
         : null,
       venue_description: null,
+      venue_photo_url: null,
     }))
     .filter(e => e.distance_miles == null || e.distance_miles <= radiusMiles);
 
@@ -2230,6 +2254,7 @@ Deno.serve(async (req) => {
         distance_miles: e.distance_miles,
         description: e.description ? e.description.slice(0, 200) : null,
         time_known: e.time_known ?? true,
+        venue_photo_url: e.venue_photo_url,
       })),
     }));
 

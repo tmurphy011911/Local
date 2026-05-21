@@ -42,7 +42,13 @@ data class HomeUiState(
     val streakDays: Int = 0,
     val selectedCategory: String = "foryou",
     val availableCategories: List<CategoryInfo> = emptyList(),
-    val carousels: List<CarouselSection> = emptyList(),
+    // Per-category carousel storage. Switching tabs no longer clears the prior
+    // tab's data — returning to a category renders its cached carousels
+    // immediately (and re-fetches in the background). Keeping the section
+    // composables alive across tab swaps is what lets `rememberSaveable` in
+    // EventCardRow preserve each carousel's scroll position per (category,
+    // carousel slug). LRU-capped via putWithLru below.
+    val carouselsByCategory: Map<String, List<CarouselSection>> = emptyMap(),
     val isLoading: Boolean = false,
     val isRefreshing: Boolean = false,
     val error: String? = null,
@@ -64,7 +70,29 @@ data class HomeUiState(
     // per location from the yocal-prompts edge function. Empty until loaded;
     // the card falls back to FALLBACK_YOCAL_PROMPTS in the meantime.
     val yocalPrompts: List<String> = emptyList(),
-)
+) {
+    /** Carousels visible for the currently-selected category. Derived so all
+     *  existing reads of `state.carousels` keep working unchanged after the
+     *  per-category reshape. Excluded from equals/hashCode (not a ctor prop). */
+    val carousels: List<CarouselSection> get() = carouselsByCategory[selectedCategory].orEmpty()
+}
+
+private const val CAROUSEL_CACHE_CAP = 8
+
+/** Insert-or-update with LRU semantics: the touched key moves to the most-
+ *  recent slot, oldest entries are evicted past [cap]. Keeps the per-category
+ *  map bounded across long sessions of tab-swiping. */
+private fun Map<String, List<CarouselSection>>.putWithLru(
+    key: String,
+    value: List<CarouselSection>,
+    cap: Int = CAROUSEL_CACHE_CAP,
+): Map<String, List<CarouselSection>> {
+    val next = LinkedHashMap<String, List<CarouselSection>>(this.size + 1)
+    for ((k, v) in this) if (k != key) next[k] = v
+    next[key] = value
+    while (next.size > cap) next.remove(next.keys.first())
+    return next
+}
 
 enum class LocationMode { CURRENT_LOCATION, MANUAL }
 
@@ -310,10 +338,14 @@ class HomeViewModel(
     fun selectCategory(category: String) {
         // Skip the no-op tap so we don't blank out the current tab's content.
         if (_uiState.value.selectedCategory == category) return
-        // Clear carousels alongside the tab change so the user sees a loading
-        // state instead of the previous tab's cards rendered under the new
-        // tab's header (briefly visible while the fetch is in flight).
-        _uiState.update { it.copy(selectedCategory = category, carousels = emptyList()) }
+        // Don't clear prior data — keep it in carouselsByCategory so it renders
+        // instantly if cached, preserving each carousel's scroll position via
+        // rememberSaveable on EventCardRow. Show the skeleton only when there's
+        // nothing cached for the new tab.
+        val hasCached = _uiState.value.carouselsByCategory[category]?.isNotEmpty() == true
+        _uiState.update {
+            it.copy(selectedCategory = category, isLoading = !hasCached, error = null)
+        }
         loadCarousels(loadCategories = false)
     }
 
@@ -455,9 +487,26 @@ class HomeViewModel(
                     locationName = state.locationName,
                 )
                 if (!cached.isNullOrEmpty()) {
+                    // Disk read also hydrates the in-memory categories cache —
+                    // pull it into state so the tab strip renders alongside the
+                    // carousels. Otherwise the strip stays at "For You" only
+                    // until the fresh fetch returns (or forever, if it fails).
+                    val cachedCats = carouselRepository.peekCachedCategories()
                     _uiState.update { s ->
-                        if (s.selectedCategory != category) s
-                        else s.copy(carousels = cached, isLoading = false, error = null)
+                        val nextMap = s.carouselsByCategory.putWithLru(category, cached)
+                        val nextCats = if (cachedCats.isNotEmpty()) cachedCats else s.availableCategories
+                        if (s.selectedCategory != category) {
+                            // User switched while disk read was in flight — stash
+                            // the data but don't touch the visible loading state.
+                            s.copy(carouselsByCategory = nextMap, availableCategories = nextCats)
+                        } else {
+                            s.copy(
+                                carouselsByCategory = nextMap,
+                                availableCategories = nextCats,
+                                isLoading = false,
+                                error = null,
+                            )
+                        }
                     }
                 }
             } catch (_: Throwable) { /* disk-read failure is never fatal — fresh fetch handles it */ }
@@ -486,19 +535,27 @@ class HomeViewModel(
                         userLng = lng,
                     )
                 } else state.availableCategories
-                // Guard against racing category switches — if the user tapped a new
-                // category while our fetch was in flight, the cancel may not have
-                // interrupted us in time (no suspension point between the await and
-                // this update). Writing state unconditionally was the reason Music's
-                // carousels appeared briefly on the For You tab after a quick tap.
+                // With per-category storage, a slow fetch arriving after the
+                // user switched tabs writes safely into its own slot — the
+                // visible tab is derived from `selectedCategory`, so there's
+                // no chance of Music's data flashing on For You. We still
+                // guard the visible loading/refresh flags so they only flip
+                // when the response matches what the user is looking at.
                 _uiState.update { s ->
-                    if (s.selectedCategory != category) s
-                    else s.copy(
-                        availableCategories = categories,
-                        carousels = carousels,
-                        isLoading = false,
-                        isRefreshing = false,
-                    )
+                    val nextMap = s.carouselsByCategory.putWithLru(category, carousels)
+                    if (s.selectedCategory != category) {
+                        s.copy(
+                            carouselsByCategory = nextMap,
+                            availableCategories = categories,
+                        )
+                    } else {
+                        s.copy(
+                            carouselsByCategory = nextMap,
+                            availableCategories = categories,
+                            isLoading = false,
+                            isRefreshing = false,
+                        )
+                    }
                 }
             } catch (e: Exception) {
                 // Auto-retry once after a short delay (handles race on first load after onboarding)
@@ -516,8 +573,18 @@ class HomeViewModel(
                         )
                         val cats = carouselRepository.getAvailableCategories(s.userPreferences, retryLat, retryLng)
                         _uiState.update { cur ->
-                            if (cur.selectedCategory != retryCategory) cur
-                            else cur.copy(availableCategories = cats, carousels = carousels, isLoading = false, isRefreshing = false, error = null)
+                            val nextMap = cur.carouselsByCategory.putWithLru(retryCategory, carousels)
+                            if (cur.selectedCategory != retryCategory) {
+                                cur.copy(carouselsByCategory = nextMap, availableCategories = cats)
+                            } else {
+                                cur.copy(
+                                    carouselsByCategory = nextMap,
+                                    availableCategories = cats,
+                                    isLoading = false,
+                                    isRefreshing = false,
+                                    error = null,
+                                )
+                            }
                         }
                         return@launch
                     } catch (_: Exception) {}

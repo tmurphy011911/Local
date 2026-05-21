@@ -1,5 +1,28 @@
 import SwiftUI
 import ComposeApp
+import MapKit
+
+// MARK: - Typewriter Completion Store
+//
+// `ChatView` is built fresh every time the chat sheet is presented. Its
+// `@State private var typedMessageIds` therefore resets to empty on every
+// open — which meant every prior AI message failed the "already typed"
+// check and replayed its TypewritingAiBubble animation. The chat looked
+// like it was re-streaming the entire conversation on every reopen.
+//
+// This singleton outlives any single `ChatView` instance, so once a
+// message's typewriter finishes we record it here. On reopen, `.onAppear`
+// hydrates the local `@State` set from this store, so previously-typed
+// messages render via the static `aiMessageBubble` path immediately.
+//
+// Cleared by "Start over" alongside the in-view set so a reset chat
+// animates from scratch.
+@MainActor
+final class TypewriterCompletionStore {
+    static let shared = TypewriterCompletionStore()
+    var completed: Set<String> = []
+    private init() {}
+}
 
 // MARK: - Observable State
 
@@ -21,6 +44,14 @@ class ChatState: ObservableObject {
     /// ID of the just-saved plan — used by the celebration's "View Plan"
     /// link to deep-link to the plan detail page after switching tabs.
     @Published var lastSavedPlanId: String = ""
+    /// Canonical search scope — drives the editable location banner in the
+    /// chat header.
+    @Published var currentLocationName: String = ""
+    /// Geocoded coordinates for the named scope. nil when the name didn't
+    /// resolve — the editor falls back to a Boston-area default region.
+    @Published var currentCoord: CLLocationCoordinate2D? = nil
+    /// Radius in miles. Drives the slider + the MapCircle overlay.
+    @Published var searchRadiusMiles: Double = 20.0
 
     func update(from snapshot: ChatStateSnapshot) {
         DispatchQueue.main.async { [weak self] in
@@ -36,6 +67,11 @@ class ChatState: ObservableObject {
             self?.weather = snapshot.weather
             self?.planAttendeeCount = Int(snapshot.planAttendeeCount)
             self?.lastSavedPlanId = snapshot.lastSavedPlanId
+            self?.currentLocationName = snapshot.currentLocationName
+            self?.currentCoord = snapshot.hasLocationCoords
+                ? CLLocationCoordinate2D(latitude: snapshot.currentLat, longitude: snapshot.currentLng)
+                : nil
+            self?.searchRadiusMiles = snapshot.searchRadiusMiles
         }
     }
 }
@@ -50,8 +86,10 @@ private enum C {
     static let pebble  = Color(hex2: 0xE0DCE8)
     static let mist    = Color(hex2: 0xF0EDF6)
     static let coral   = Color(hex2: 0xFF6B6B)
+    static let coralLt = Color(hex2: 0xFFF0F0)
     static let sage    = Color(hex2: 0x4ECBA0)
     static let sky     = Color(hex2: 0x5B9CF6)
+    static let skyLt   = Color(hex2: 0xE8F1FE)
     static let sun     = Color(hex2: 0xFFB347)
 }
 
@@ -168,6 +206,22 @@ struct ChatView: View {
     /// messages reveal char-by-char on first appearance; once typed, they
     /// stay static so re-renders / scrolling don't replay the animation.
     @State private var typedMessageIds: Set<String> = []
+
+    /// Editable location chip — opens a sheet when tapped, lets the user
+    /// change the search scope. The chip value is the canonical scope Bo
+    /// uses on every search.
+    @State private var showLocationEditor: Bool = false
+
+    /// Live measurement of the "content height below the latest user bubble's
+    /// top edge" inside the chat ScrollView — i.e. the latest user bubble's
+    /// own height plus any AI items rendered below it. Driven by a
+    /// PreferenceKey attached to the latest user message AND to the content
+    /// end sentinel; the spacer subtracts this from the viewport to size
+    /// itself exactly. With this, scrollTo(.top) on the latest user bubble
+    /// places it at the viewport top with NO over-scroll room beyond.
+    @State private var heightBelowLatestUser: CGFloat = 0
+    @State private var latestUserBubbleY: CGFloat = 0
+    @State private var contentEndY: CGFloat = 0
     let onDismiss: () -> Void
     let showUpgradeBanner: Bool
     let onUpgrade: () -> Void
@@ -178,6 +232,23 @@ struct ChatView: View {
         self.onUpgrade = onUpgrade
     }
 
+    /// ID of the most recent USER message, or nil if the user hasn't sent
+    /// anything yet. Drives the ChatGPT-style scroll anchor: whenever this
+    /// changes, we scroll so the corresponding bubble sits at the top of
+    /// the viewport.
+    private var lastUserMessageId: String? {
+        state.messages.last(where: { $0.isUser })?.id
+    }
+
+    // Trailing-spacer height is now a constant fraction of viewport. The
+    // earlier "dynamic collapse" logic (tall while Bo is in-flight, 16pt
+    // once Bo finished) caused the prior exchange to snap back into view
+    // when Bo's response settled: the spacer shrinking dropped total
+    // content height below the viewport, so the ScrollView had no choice
+    // but to re-clamp scroll position to the natural top — undoing the
+    // anchor. A constant moderate-height spacer keeps the anchor stable
+    // AND limits over-scroll to roughly half a viewport, not infinity.
+
     var body: some View {
         VStack(spacing: 0) {
             chatHeader
@@ -186,62 +257,147 @@ struct ChatView: View {
                 upgradeBanner
             }
 
-            // Messages
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 12) {
-                        ForEach(state.messages, id: \.id) { message in
-                            Group {
-                                if message.isPlanCard {
-                                    planCardRow(message)
-                                } else if let suggestions = message.structured {
-                                    suggestionTrayRow(messageId: message.id, suggestions: suggestions)
-                                } else {
-                                    messageRow(message)
+            // Messages — ChatGPT-style scroll anchor.
+            //
+            // Previous behavior auto-scrolled to .bottom on every state
+            // change (new message, streaming text, isSearching, quickReplies).
+            // That kept the WHOLE thread visible at the bottom of the
+            // viewport, so prior history stayed on screen forever and the
+            // current exchange never "owned" the screen.
+            //
+            // New behavior: on a new USER message we scroll so that user
+            // bubble sits at the TOP of the viewport. Prior history scrolls
+            // off the top (still reachable by swiping up). Bo's response
+            // streams in below the anchored user bubble. We do NOT re-scroll
+            // on streaming text, isSearching, isTyping, or quickReplies —
+            // those would yank the user's bubble out from under their gaze.
+            //
+            // The trailing spacer (`Color.clear.frame(height: viewport)`)
+            // gives the ScrollView enough scrollable room for a short user
+            // bubble to actually anchor at the top — without it, SwiftUI
+            // clamps the scroll to the natural content height and the bubble
+            // lands wherever it can.
+            // 16pt gap between the location banner's bottom divider and the
+            // top of the ScrollView viewport. Padding goes on the OUTER
+            // container (not on the LazyVStack inside the ScrollView) —
+            // padding inside the ScrollView scrolls off the top when the
+            // anchored user bubble snaps to .top.
+            GeometryReader { geo in
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 12) {
+                            ForEach(state.messages, id: \.id) { message in
+                                Group {
+                                    if message.isPlanCard {
+                                        planCardRow(message)
+                                    } else if let suggestions = message.structured {
+                                        suggestionTrayRow(messageId: message.id, suggestions: suggestions)
+                                    } else {
+                                        messageRow(message)
+                                    }
                                 }
+                                .id(message.id)
+                                // Measure the latest user bubble's top-edge Y
+                                // in scroll coordinates. We only attach to THE
+                                // latest user message so only one geometry
+                                // reader contributes to the preference key.
+                                .background(
+                                    Group {
+                                        if message.isUser && message.id == lastUserMessageId {
+                                            GeometryReader { proxy in
+                                                Color.clear
+                                                    .onGeometryChange(for: CGFloat.self) { p in
+                                                        p.frame(in: .named("chatScroll")).minY
+                                                    } action: { newY in
+                                                        latestUserBubbleY = newY
+                                                    }
+                                            }
+                                        }
+                                    }
+                                )
+                                .transition(.asymmetric(
+                                    insertion: .opacity.combined(with: .move(edge: .bottom)),
+                                    removal: .opacity
+                                ))
                             }
-                            .transition(.asymmetric(
-                                insertion: .opacity.combined(with: .move(edge: .bottom)),
-                                removal: .opacity
-                            ))
-                        }
-                        .animation(.easeOut(duration: 0.22), value: state.messages.count)
+                            .animation(.easeOut(duration: 0.22), value: state.messages.count)
 
-                        // Mutually exclusive, matching Compose priority:
-                        // searching (idiom) > streaming text > typing dots.
-                        if state.isSearching {
-                            searchingIndicator.id("searching")
-                        } else if !state.streamingText.isEmpty {
-                            aiMessageBubble(state.streamingText)
-                                .id("streaming")
-                        } else if state.isTyping {
-                            typingIndicator.id("typing")
-                        }
+                            // Mutually exclusive, matching Compose priority:
+                            // searching (idiom) > streaming text > typing dots.
+                            if state.isSearching {
+                                searchingIndicator.id("searching")
+                            } else if !state.streamingText.isEmpty {
+                                aiMessageBubble(state.streamingText)
+                                    .id("streaming")
+                            } else if state.isTyping {
+                                typingIndicator.id("typing")
+                            }
 
-                        // Bottom anchor
-                        Color.clear.frame(height: 1).id("bottom")
+                            // Sentinel that measures the bottom edge of all
+                            // content above the trailing spacer. Combined
+                            // with latestUserBubbleY, we know exactly how
+                            // much real content sits below the latest user
+                            // bubble's top, so the spacer can be sized to
+                            // (viewport - that height) — giving the anchor
+                            // enough scroll range with ZERO over-scroll past
+                            // the natural end of content.
+                            Color.clear
+                                .frame(height: 0)
+                                .onGeometryChange(for: CGFloat.self) { p in
+                                    p.frame(in: .named("chatScroll")).minY
+                                } action: { newY in
+                                    contentEndY = newY
+                                }
+
+                            // Dynamic trailing spacer. Math:
+                            //   heightBelowBubble = contentEndY - latestUserBubbleY
+                            //   spacer = viewport - heightBelowBubble
+                            // Result: max scroll position = latestUserBubbleY,
+                            // meaning the user can scroll the bubble exactly
+                            // to viewport top and no further.
+                            // While we're still measuring (first layout pass
+                            // or pre-first-message), fall back to a viewport-
+                            // tall spacer so the anchor works.
+                            Color.clear
+                                .frame(height: {
+                                    let v = geo.size.height
+                                    let below = contentEndY - latestUserBubbleY
+                                    if latestUserBubbleY <= 0 || below <= 0 { return v }
+                                    return max(16, v - below)
+                                }())
+                                .id("trailingSpacer")
+                        }
+                        .padding(.horizontal, 14)
+                        .padding(.top, 4)
+                        .padding(.bottom, 8)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.top, 4)
-                    .padding(.bottom, 8)
-                }
-                .onChange(of: state.messages.count) { _ in
-                    withAnimation(.easeOut(duration: 0.2)) {
-                        proxy.scrollTo("bottom", anchor: .bottom)
-                    }
-                    // Collapse the keyboard as soon as a plan card arrives so the
-                    // generated plan is fully visible without the user dismissing.
-                    if state.messages.last?.isPlanCard == true {
+                    .coordinateSpace(name: "chatScroll")
+                    .onChange(of: lastUserMessageId) { newId in
+                        guard let id = newId else { return }
+                        // Wait one frame so SwiftUI has laid out the new row
+                        // before we ask the ScrollView to anchor to it.
+                        DispatchQueue.main.async {
+                            withAnimation(.easeOut(duration: 0.25)) {
+                                proxy.scrollTo(id, anchor: .top)
+                            }
+                        }
+                        // Collapse the keyboard so Bo's reply is fully visible.
                         inputFocused = false
                     }
-                }
-                .onChange(of: state.streamingText) { _ in
-                    proxy.scrollTo("bottom", anchor: .bottom)
-                }
-                .onChange(of: state.isSearching) { _ in
-                    proxy.scrollTo("bottom", anchor: .bottom)
+                    .onChange(of: state.messages.count) { _ in
+                        // ONLY purpose now: dismiss keyboard when a plan card
+                        // arrives. No scroll-to-bottom — that fought the anchor.
+                        if state.messages.last?.isPlanCard == true {
+                            inputFocused = false
+                        }
+                    }
                 }
             }
+            // 16pt OUTSIDE the ScrollView so the viewport itself starts
+            // below the banner with breathing room. Padding inside the
+            // ScrollView would scroll off-screen when the user bubble
+            // anchors to .top.
+            .padding(.top, 16)
 
             // Create plan CTA (hidden during celebration). Shown when the
             // user has tapped [+] on 1+ events in a SuggestionTray.
@@ -306,6 +462,35 @@ struct ChatView: View {
                     }
                 }
             }
+            // Hydrate the typewriter-completed set from the app-lifetime
+            // store. Without this, every reopen of the chat sheet replays
+            // the typewriter animation for every prior AI message because
+            // `@State private var typedMessageIds` resets to empty on view
+            // recreation. The store survives the view, so previously-typed
+            // messages render statically immediately.
+            typedMessageIds = TypewriterCompletionStore.shared.completed
+        }
+        .sheet(isPresented: $showLocationEditor) {
+            SearchScopeEditorSheet(
+                currentName: state.currentLocationName,
+                currentCoord: state.currentCoord,
+                currentRadiusMiles: state.searchRadiusMiles,
+                onConfirm: { name, lat, lng, radius in
+                    // Send the geocoded coords too — Kotlin's hardcoded
+                    // geocodeCity only knows ~30 metros and silently fails
+                    // on arbitrary places like "Concord, MA". Apple's
+                    // CLGeocoder handles those; we just forward its result.
+                    // Kotlin/Native erases Double in lambda params, so wrap.
+                    ChatBridge.shared.setSearchScopeWithCoords?(
+                        name,
+                        KotlinDouble(value: lat),
+                        KotlinDouble(value: lng),
+                        KotlinDouble(value: radius),
+                    )
+                    showLocationEditor = false
+                },
+                onCancel: { showLocationEditor = false }
+            )
         }
     }
 
@@ -341,6 +526,10 @@ struct ChatView: View {
                 Button(action: {
                     selectedEventIds.removeAll()
                     typedMessageIds.removeAll()
+                    // Clear the app-lifetime store too — without this,
+                    // post-reset messages with reused IDs (if any) would
+                    // incorrectly start in the "already typed" state.
+                    TypewriterCompletionStore.shared.completed.removeAll()
                     ChatBridge.shared.resetChat?()
                 }) {
                     Text("Start over")
@@ -353,6 +542,49 @@ struct ChatView: View {
             .padding(.horizontal, 18)
             .padding(.top, 12)
             .padding(.bottom, 10)
+
+            Divider().background(C.pebble.opacity(0.5))
+
+            // Search-scope banner — styled to match the home tab's location
+            // pill (sky-blue palette, mappin + chevron.down). Single line of
+            // text: "Searching {City} · Within {N} miles". Always strips the
+            // state/country suffix so "Ipswich, MA, United States" reads as
+            // just "Ipswich". Tap anywhere to open the editor.
+            Button(action: { showLocationEditor = true }) {
+                HStack(spacing: 8) {
+                    // Match the lobby pill's teardrop-marker shape. Material's
+                    // `Icons.Outlined.Place` used there has no exact SF Symbol
+                    // twin; `mappin.circle.fill` is the closest stable match.
+                    Image(systemName: "mappin.circle.fill")
+                        .font(.system(size: 14, weight: .regular))
+                        .foregroundColor(C.sky)
+                    if state.currentLocationName.isEmpty {
+                        Text("Set search location")
+                            .font(F.body(13, .bold))
+                            .foregroundColor(C.sky)
+                    } else {
+                        // Bold "Searching {City}" + lighter "· Within N miles"
+                        // on the same line. F.body returns a Font, not a
+                        // Text — combine via `+` so we get inline weight mix.
+                        let city = state.currentLocationName
+                            .split(separator: ",")
+                            .first
+                            .map(String.init) ?? state.currentLocationName
+                        (Text("Searching \(city) ").font(F.body(13, .bold))
+                         + Text("· Within \(Int(state.searchRadiusMiles)) miles").font(F.body(13, .semibold)))
+                            .foregroundColor(C.sky)
+                            .lineLimit(1)
+                    }
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundColor(C.sky)
+                }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .background(C.skyLt)
+            }
+            .buttonStyle(.plain)
 
             Divider().background(C.pebble.opacity(0.5))
         }
@@ -405,6 +637,9 @@ struct ChatView: View {
             } else {
                 TypewritingAiBubble(text: message.text) {
                     typedMessageIds.insert(message.id)
+                    // Mirror into the app-lifetime store so reopens of the
+                    // sheet skip the animation for this message.
+                    TypewriterCompletionStore.shared.completed.insert(message.id)
                 }
             }
 
@@ -414,18 +649,19 @@ struct ChatView: View {
 
     private func aiMessageBubble(_ text: String) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("Bo")
-                .font(F.body(11, .bold))
-                .foregroundColor(C.coral)
-                .padding(.leading, 28) // line up with text after the avatar
-            HStack(alignment: .top, spacing: 8) {
+            // "Bo" label with the avatar inline to its right — the avatar
+            // is visually paired with the name, not stacked next to the
+            // body text.
+            HStack(spacing: 6) {
+                Text("Bo")
+                    .font(F.body(11, .bold))
+                    .foregroundColor(C.coral)
                 Image("BoTiny")
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(width: 20, height: 20)
-                    .padding(.top, 1)
-                markdownText(text)
+                    .frame(width: 16, height: 16)
             }
+            markdownText(text)
         }
     }
 
@@ -543,21 +779,38 @@ struct ChatView: View {
     /// has tapped [+] on at least one event from a SuggestionTray. Mirrors
     /// the Compose `DraftPlanTray` Build CTA. Sends Bo the canonical Build
     /// message — see `ChatViewModel.buildFromDraftTray` for the format.
+    /// True once Bo has already produced at least one plan card in this
+    /// chat. When the user selects more events after that, the CTA shifts
+    /// from "Create plan from X events" to "Add X events to my plan" so
+    /// the action label matches their intent (update the existing plan,
+    /// not start a new one). ViewModel-side, `buildPlanFromSelections`
+    /// branches on the same signal and tells Bo to call `update_plan`
+    /// instead of `present_plan`.
+    private var hasActivePlan: Bool {
+        state.messages.contains { $0.isPlanCard }
+    }
+
     private var createPlanBar: some View {
         let count = selectedEventIds.count
+        let addingToPlan = hasActivePlan
         return VStack(spacing: 0) {
             Divider().background(C.pebble.opacity(0.5))
             Button {
                 let ids = Array(selectedEventIds)
                 ChatBridge.shared.buildPlanFromSelections?(ids)
-                withAnimation(.easeOut(duration: 0.18)) {
-                    selectedEventIds.removeAll()
-                }
+                // Keep selectedEventIds populated so the green checkmarks
+                // stay visible on the cards the user just submitted — they
+                // want to see at a glance what they picked. Re-tapping a
+                // card still toggles selection off; tapping again with the
+                // same set is a no-op for Bo (idempotent intent). Cleared
+                // on Start over via resetChat.
             } label: {
                 HStack(spacing: 8) {
-                    Image(systemName: "sparkles")
+                    Image(systemName: addingToPlan ? "plus.circle.fill" : "sparkles")
                         .font(.system(size: 14, weight: .bold))
-                    Text("Create plan from \(count) event\(count == 1 ? "" : "s")")
+                    Text(addingToPlan
+                         ? "Add \(count) event\(count == 1 ? "" : "s") to my plan"
+                         : "Create plan from \(count) event\(count == 1 ? "" : "s")")
                         .font(F.body(15, .black))
                 }
                 .foregroundColor(.white)
@@ -1310,29 +1563,34 @@ private struct TypewritingAiBubble: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text("Bo")
-                .font(F.body(11, .bold))
-                .foregroundColor(C.coral)
-                .padding(.leading, 28)
-            HStack(alignment: .top, spacing: 8) {
+            // "Bo" label with avatar inline to its right.
+            HStack(spacing: 6) {
+                Text("Bo")
+                    .font(F.body(11, .bold))
+                    .foregroundColor(C.coral)
                 Image("BoTiny")
                     .resizable()
                     .aspectRatio(contentMode: .fit)
-                    .frame(width: 20, height: 20)
-                    .padding(.top, 1)
-                HStack(alignment: .firstTextBaseline, spacing: 1) {
-                    Text(revealed)
-                        .font(F.body(15))
-                        .foregroundColor(C.ink)
-                        .multilineTextAlignment(.leading)
-                    if !isComplete {
-                        Text("▍")
-                            .font(F.body(15, .semibold))
-                            .foregroundColor(C.coral)
-                            .opacity(caretOn ? 1 : 0)
-                    }
-                }
+                    .frame(width: 16, height: 16)
             }
+            // Concatenate the caret onto the Text via `+` so it becomes
+            // inline content that wraps with the rest. Putting the caret
+            // in an HStack pinned its baseline to the first line of the
+            // wrapping Text — so as the typewriter wrapped to line 2, 3,
+            // …, the caret stayed stuck at the end of line 1. Hide it via
+            // a clear color (rather than removing) when blinked off so the
+            // character flow doesn't reflow per blink.
+            (
+                Text(revealed)
+                    .font(F.body(15))
+                    .foregroundColor(C.ink)
+                +
+                Text(isComplete ? "" : "▍")
+                    .font(F.body(15, .semibold))
+                    .foregroundColor(caretOn ? C.coral : Color.clear)
+            )
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
         }
         .task {
             // Char reveal — slight per-char jitter so it doesn't feel mechanical.
@@ -1443,12 +1701,14 @@ struct SuggestionTrayView: View {
                                 )
                                 .frame(width: cardWidth)
                             }
-                            if canFindMore {
+                            if !groupKey.isEmpty {
                                 FindMoreTile(
                                     isLoading: isGroupLoading(groupKey),
+                                    isExhausted: isGroupExhausted(groupKey),
+                                    groupLabel: group.label,
                                     onTap: { onFindMore(group.dayKey, group.categoryKey) }
                                 )
-                                .frame(width: 140)
+                                .frame(width: 180)
                             }
                         }
                         .scrollTargetLayout()
@@ -1505,52 +1765,45 @@ private struct SuggestionCardView: View {
     let onTap: () -> Void
     let onToggleSelected: () -> Void
 
+    /// Fixed card height — every card in a tray is the same height so the
+    /// row reads as a clean uniform strip. Two lines (title + metadata),
+    /// no wrap, truncate-on-overflow.
+    private static let cardHeight: CGFloat = 72
+
     var body: some View {
         Button(action: onTap) {
-            VStack(alignment: .leading, spacing: 4) {
-                // Title shares its row with the [+] toggle so a 2-line title
-                // never collides with the button — they wrap around each
-                // other naturally, and the trailing 8pt spacing keeps a
-                // breath of air between them.
-                HStack(alignment: .top, spacing: 8) {
+            HStack(alignment: .center, spacing: 8) {
+                VStack(alignment: .leading, spacing: 4) {
+                    // Line 1 — title. Always 1 line, truncates if it
+                    // approaches the + button.
                     Text(event.title)
                         .font(STF.display(15, .bold))
                         .foregroundColor(STC.ink)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                    Button(action: onToggleSelected) {
-                        Image(systemName: isSelected ? "checkmark" : "plus")
-                            .font(.system(size: 11, weight: .black))
-                            .foregroundColor(.white)
-                            .frame(width: 22, height: 22)
-                            .background(isSelected ? STC.sage : STC.coral)
-                            .clipShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(isSelected ? "Remove from plan selection" : "Add to plan selection")
-                }
-                if !timeAndVenue.isEmpty {
-                    Text(timeAndVenue)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    // Line 2 — Time · Distance · Place. Always 1 line,
+                    // truncates if too long.
+                    Text(metaLine)
                         .font(STF.body(12, .semibold))
                         .foregroundColor(STC.ink3)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
-                if let rationale = event.rationale, !rationale.isEmpty {
-                    Text(rationale)
-                        .font(STF.body(12, .medium))
-                        .foregroundColor(STC.coral)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Button(action: onToggleSelected) {
+                    Image(systemName: isSelected ? "checkmark" : "plus")
+                        .font(.system(size: 11, weight: .black))
+                        .foregroundColor(.white)
+                        .frame(width: 22, height: 22)
+                        .background(isSelected ? STC.sage : STC.coral)
+                        .clipShape(Circle())
                 }
-                Spacer(minLength: 0)
+                .buttonStyle(.plain)
+                .accessibilityLabel(isSelected ? "Remove from plan selection" : "Add to plan selection")
             }
             .padding(.horizontal, 12)
-            .padding(.top, 10)
-            .padding(.bottom, 10)
-            .frame(maxWidth: .infinity, minHeight: 86, alignment: .topLeading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(height: Self.cardHeight)
             .background(STC.skyLt.opacity(0.35))
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).stroke(STC.pebble, lineWidth: 1))
@@ -1558,10 +1811,22 @@ private struct SuggestionCardView: View {
         .buttonStyle(.plain)
     }
 
-    private var timeAndVenue: String {
-        [event.timeLabel, event.venueName]
-            .filter { !$0.isEmpty }
-            .joined(separator: " · ")
+    /// "10am · 2.3 mi · Naukabout Brewery" — filters out empty parts and a
+    /// negative-sentinel distance (Kotlin sends -1.0 when no coord).
+    private var metaLine: String {
+        var parts: [String] = []
+        if !event.timeLabel.isEmpty { parts.append(event.timeLabel) }
+        // distanceMiles is a non-nullable Kotlin Double → bridges to Swift
+        // Double directly; -1.0 is the "unknown" sentinel.
+        let d = event.distanceMiles
+        if d.isFinite && d >= 0 {
+            let formatted: String
+            if d < 10 { formatted = String(format: "%.1f mi", d) }
+            else { formatted = "\(Int(d.rounded())) mi" }
+            parts.append(formatted)
+        }
+        if !event.venueName.isEmpty { parts.append(event.venueName) }
+        return parts.joined(separator: " · ")
     }
 }
 
@@ -1569,31 +1834,426 @@ private struct SuggestionCardView: View {
 /// events for that day/category inline (no chat round-trip with Bo).
 private struct FindMoreTile: View {
     let isLoading: Bool
+    let isExhausted: Bool
+    /// Group label from Bo's suggestion tray ("Music", "Outdoor",
+    /// "Community", etc.). Used in the exhausted-state copy: "No more
+    /// music events". Empty for ungrouped trays — falls back to a generic
+    /// "No more events".
+    let groupLabel: String
     let onTap: () -> Void
+
+    /// Match SuggestionCardView's fixed card height so every tile in the
+    /// horizontal carousel is the same height.
+    private static let tileHeight: CGFloat = 72
 
     var body: some View {
         Button(action: onTap) {
-            VStack(spacing: 8) {
+            HStack(spacing: 8) {
                 if isLoading {
                     ProgressView()
                         .progressViewStyle(.circular)
                         .tint(STC.sky)
+                } else if isExhausted {
+                    Image(systemName: "checkmark.circle")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundColor(STC.ink3)
                 } else {
                     Image(systemName: "arrow.right.circle.fill")
-                        .font(.system(size: 26, weight: .bold))
+                        .font(.system(size: 20, weight: .bold))
                         .foregroundColor(STC.sky)
                 }
-                Text(isLoading ? "Looking…" : "Find more")
+                Text(label)
                     .font(STF.body(13, .bold))
-                    .foregroundColor(STC.sky)
+                    .foregroundColor(isExhausted ? STC.ink3 : STC.sky)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
-            .frame(maxWidth: .infinity, minHeight: 86, alignment: .center)
-            .background(STC.skyLt.opacity(0.5))
+            .padding(.horizontal, 12)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .frame(height: Self.tileHeight)
+            .background((isExhausted ? STC.pebble.opacity(0.25) : STC.skyLt.opacity(0.5)))
             .clipShape(RoundedRectangle(cornerRadius: 14))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(STC.sky.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .stroke(
+                        (isExhausted ? STC.pebble : STC.sky).opacity(0.5),
+                        style: StrokeStyle(lineWidth: 1, dash: [4, 3])
+                    )
+            )
         }
         .buttonStyle(.plain)
-        .disabled(isLoading)
-        .accessibilityLabel(isLoading ? "Loading more events" : "Find more events")
+        .disabled(isLoading || isExhausted)
+        .accessibilityLabel(
+            isLoading ? "Loading more events" :
+            isExhausted ? "No more events in this group" :
+            "Find more events"
+        )
+    }
+
+    private var label: String {
+        if isLoading { return "Looking…" }
+        if isExhausted { return "No more events" }
+        return "Find more"
+    }
+}
+
+// MARK: - Search Scope Editor Sheet
+
+/// Modal sheet for editing the chat's search scope — both the named location
+/// and the radius. The map updates as the user types (CLGeocoder) and the
+/// MapCircle overlay scales with the slider. On Confirm, fires both values
+/// up to the bridge in one call.
+private struct SearchScopeEditorSheet: View {
+    let currentName: String
+    let currentCoord: CLLocationCoordinate2D?
+    let currentRadiusMiles: Double
+    let onConfirm: (String, Double, Double, Double) -> Void
+    let onCancel: () -> Void
+
+    @State private var text: String = ""
+    @State private var radiusMiles: Double = 20.0
+    @State private var center: CLLocationCoordinate2D = CLLocationCoordinate2D(latitude: 42.3601, longitude: -71.0589)
+    @State private var cameraPosition: MapCameraPosition = .automatic
+    @State private var geocodeWorkItem: DispatchWorkItem? = nil
+    /// True once we've geocoded the user's current text. The Set button
+    /// stays disabled until this lands so we never send stale coords.
+    @State private var hasGeocodedCurrentText: Bool = false
+    @StateObject private var autocompleter = LocationAutocompleter()
+    /// Set to true when the user picks an autocomplete suggestion. While
+    /// true, `text`-change events suppress the suggestion list (otherwise
+    /// setting `text = picked.title + subtitle` programmatically would
+    /// immediately re-trigger a fresh query and the list would reappear).
+    @State private var suppressNextQuery: Bool = false
+    @FocusState private var isFocused: Bool
+
+    init(
+        currentName: String,
+        currentCoord: CLLocationCoordinate2D?,
+        currentRadiusMiles: Double,
+        onConfirm: @escaping (String, Double, Double, Double) -> Void,
+        onCancel: @escaping () -> Void,
+    ) {
+        self.currentName = currentName
+        self.currentCoord = currentCoord
+        self.currentRadiusMiles = currentRadiusMiles
+        self.onConfirm = onConfirm
+        self.onCancel = onCancel
+        _text = State(initialValue: currentName)
+        _radiusMiles = State(initialValue: currentRadiusMiles)
+        if let c = currentCoord {
+            _center = State(initialValue: c)
+        }
+    }
+
+    /// Radius in meters for the MapCircle overlay. 1 mi = 1609.34 m.
+    private var radiusMeters: CLLocationDistance {
+        radiusMiles * 1609.34
+    }
+
+    /// Map span that comfortably contains the circle — a bit more than 2×
+    /// the radius so the circle sits inside the visible region with margin.
+    private var fittingRegion: MKCoordinateRegion {
+        let degreesPerMile = 1.0 / 69.0
+        let delta = max(radiusMiles * degreesPerMile * 2.4, 0.05)
+        return MKCoordinateRegion(
+            center: center,
+            span: MKCoordinateSpan(latitudeDelta: delta, longitudeDelta: delta),
+        )
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Where should Bo search?")
+                .font(F.display(22, .black))
+                .foregroundColor(C.ink)
+                .padding(.top, 20)
+
+            Text("Bo pins every search to this scope until you change it.")
+                .font(F.body(13, .regular))
+                .foregroundColor(C.ink3)
+                .padding(.top, 6)
+
+            TextField("e.g. Brookline, Cambridge, Hyannis", text: $text)
+                .textInputAutocapitalization(.words)
+                .autocorrectionDisabled(true)
+                .submitLabel(.done)
+                .focused($isFocused)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 14)
+                .background(Color.white)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(isFocused ? C.coral : C.pebble, lineWidth: 1)
+                )
+                .padding(.top, 16)
+                .onChange(of: text) { _, newValue in
+                    // Don't requery right after the user PICKED a suggestion
+                    // (we just programmatically set text to the picked label).
+                    if suppressNextQuery {
+                        suppressNextQuery = false
+                        return
+                    }
+                    autocompleter.update(query: newValue)
+                    scheduleGeocode(newValue)
+                }
+                .onSubmit { submit() }
+
+            // Autocomplete suggestion list — disambiguates ambiguous names
+            // ("Concord, MA" vs "Concord, NH"). User taps to pick exact
+            // coords from MKLocalSearch, instead of letting CLGeocoder
+            // guess. Hidden when there's no input or after a pick.
+            if !autocompleter.results.isEmpty {
+                VStack(spacing: 0) {
+                    ForEach(autocompleter.results, id: \.self) { suggestion in
+                        Button(action: { pickSuggestion(suggestion) }) {
+                            HStack(alignment: .center, spacing: 10) {
+                                Image(systemName: "mappin.circle.fill")
+                                    .font(.system(size: 16))
+                                    .foregroundColor(C.coral)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(suggestion.title)
+                                        .font(F.body(15, .semibold))
+                                        .foregroundColor(C.ink)
+                                        .lineLimit(1)
+                                    if !suggestion.subtitle.isEmpty {
+                                        Text(suggestion.subtitle)
+                                            .font(F.body(12, .regular))
+                                            .foregroundColor(C.ink3)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                Spacer()
+                            }
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        if suggestion != autocompleter.results.last {
+                            Divider().padding(.leading, 40)
+                        }
+                    }
+                }
+                .background(Color.white)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(C.pebble, lineWidth: 1)
+                )
+                .padding(.top, 8)
+            }
+
+            // Map preview — the radius circle visibly scales with the
+            // slider so the user sees the scope.
+            Map(position: $cameraPosition, interactionModes: []) {
+                MapCircle(center: center, radius: radiusMeters)
+                    .foregroundStyle(C.coral.opacity(0.18))
+                    .stroke(C.coral, lineWidth: 2)
+                Annotation("", coordinate: center, anchor: .center) {
+                    Circle()
+                        .fill(C.coral)
+                        .frame(width: 12, height: 12)
+                        .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                }
+            }
+            .frame(height: 200)
+            .clipShape(RoundedRectangle(cornerRadius: 16))
+            .padding(.top, 14)
+            .onChange(of: radiusMiles) { _, _ in
+                cameraPosition = .region(fittingRegion)
+            }
+            .onChange(of: center.latitude) { _, _ in
+                cameraPosition = .region(fittingRegion)
+            }
+
+            HStack(spacing: 12) {
+                Text("Radius")
+                    .font(F.body(13, .bold))
+                    .foregroundColor(C.ink2)
+                Spacer()
+                Text("\(Int(radiusMiles)) mi")
+                    .font(F.body(13, .bold))
+                    .foregroundColor(C.coral)
+            }
+            .padding(.top, 16)
+
+            Slider(value: $radiusMiles, in: 2...50, step: 1)
+                .tint(C.coral)
+                .padding(.top, 6)
+
+            HStack(spacing: 12) {
+                Button(action: onCancel) {
+                    Text("Cancel")
+                        .font(F.body(15, .bold))
+                        .foregroundColor(C.ink)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(C.pebble.opacity(0.25))
+                        .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Button(action: submit) {
+                    Text("Set scope")
+                        .font(F.body(15, .bold))
+                        .foregroundColor(.white)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 50)
+                        .background(C.coral)
+                        .clipShape(Capsule())
+                        .opacity(text.trimmingCharacters(in: .whitespaces).isEmpty ? 0.3 : 1.0)
+                }
+                .buttonStyle(.plain)
+                .disabled(text.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            .padding(.top, 18)
+
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 24)
+        .padding(.bottom, 24)
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .background(C.snow)
+        .onAppear {
+            cameraPosition = .region(fittingRegion)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { isFocused = true }
+        }
+    }
+
+    /// Debounce geocode requests by ~400ms so we don't fire on every
+    /// keystroke. Apple's CLGeocoder is rate-limited; spamming throws.
+    private func scheduleGeocode(_ raw: String) {
+        geocodeWorkItem?.cancel()
+        hasGeocodedCurrentText = false
+        let trimmed = raw.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        let item = DispatchWorkItem {
+            CLGeocoder().geocodeAddressString(trimmed) { placemarks, _ in
+                guard let coord = placemarks?.first?.location?.coordinate else { return }
+                DispatchQueue.main.async {
+                    center = coord
+                    cameraPosition = .region(fittingRegion)
+                    hasGeocodedCurrentText = true
+                }
+            }
+        }
+        geocodeWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: item)
+    }
+
+    /// User tapped an autocomplete suggestion — resolve to coords and
+    /// commit the picked label to the text field. Coords are stored in
+    /// `center`, and `hasGeocodedCurrentText` is set so `submit()` ships
+    /// these exact coords without re-geocoding. Clears the suggestion
+    /// list so it doesn't reappear immediately.
+    private func pickSuggestion(_ suggestion: MKLocalSearchCompletion) {
+        let label: String
+        if suggestion.subtitle.isEmpty {
+            label = suggestion.title
+        } else {
+            label = "\(suggestion.title), \(suggestion.subtitle)"
+        }
+        // Suppress the next text-change query so the list doesn't reappear.
+        suppressNextQuery = true
+        text = label
+        autocompleter.clear()
+        isFocused = false
+        // Resolve to exact coords via MKLocalSearch (the completer only
+        // gives us a title/subtitle pair; the search gets the lat/lng).
+        autocompleter.resolve(suggestion) { coord in
+            guard let coord = coord else { return }
+            center = coord
+            cameraPosition = .region(fittingRegion)
+            hasGeocodedCurrentText = true
+        }
+    }
+
+    /// Synchronous one-shot geocode for the Set button — runs when the user
+    /// taps Set before the debounce timer has fired. Falls back to the
+    /// current map center (which is either the initial value or a result
+    /// from an earlier geocode pass).
+    private func submit() {
+        let trimmed = text.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return }
+        // If we've already geocoded current text, ship the coords now.
+        if hasGeocodedCurrentText {
+            onConfirm(trimmed, center.latitude, center.longitude, radiusMiles)
+            return
+        }
+        // Otherwise force a fresh lookup before submitting so we never send
+        // stale coords. Confirm fires from the completion handler.
+        CLGeocoder().geocodeAddressString(trimmed) { placemarks, _ in
+            DispatchQueue.main.async {
+                if let coord = placemarks?.first?.location?.coordinate {
+                    onConfirm(trimmed, coord.latitude, coord.longitude, radiusMiles)
+                } else {
+                    // Geocode failed — send the current center as a fallback
+                    // (it may still be reasonable if the user only tweaked
+                    // the text slightly). Kotlin will fall back to its
+                    // in-memory geocoder for this case.
+                    onConfirm(trimmed, center.latitude, center.longitude, radiusMiles)
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Location Autocompleter (MapKit)
+
+/// Wraps MKLocalSearchCompleter as an ObservableObject so SwiftUI can react
+/// to suggestions. Pure Apple Maps — no API key required. Disambiguates
+/// place names ("Concord, MA" vs "Concord, NH") so users pick exactly the
+/// place they meant instead of relying on CLGeocoder to guess.
+@MainActor
+private final class LocationAutocompleter: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
+    @Published var results: [MKLocalSearchCompletion] = []
+    private let completer = MKLocalSearchCompleter()
+
+    override init() {
+        super.init()
+        completer.resultTypes = [.address, .pointOfInterest]
+        completer.delegate = self
+    }
+
+    /// Update the query string. Apple coalesces rapid changes internally so
+    /// we don't need our own debounce.
+    func update(query: String) {
+        let trimmed = query.trimmingCharacters(in: .whitespaces)
+        if trimmed.count < 2 {
+            results = []
+            return
+        }
+        completer.queryFragment = trimmed
+    }
+
+    func clear() {
+        results = []
+        completer.queryFragment = ""
+    }
+
+    /// Resolve a completion to a real coordinate via MKLocalSearch.
+    func resolve(_ completion: MKLocalSearchCompletion, _ done: @escaping (CLLocationCoordinate2D?) -> Void) {
+        let request = MKLocalSearch.Request(completion: completion)
+        MKLocalSearch(request: request).start { resp, _ in
+            DispatchQueue.main.async {
+                done(resp?.mapItems.first?.placemark.coordinate)
+            }
+        }
+    }
+
+    nonisolated func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        Task { @MainActor in
+            // Cap at 5 — anything more dwarfs the rest of the sheet.
+            self.results = Array(completer.results.prefix(5))
+        }
+    }
+
+    nonisolated func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
+        Task { @MainActor in
+            self.results = []
+        }
     }
 }

@@ -17,11 +17,49 @@ actual fun presentShareSheet(text: String, url: String) {
         type = "text/plain"
         putExtra(android.content.Intent.EXTRA_TEXT, "$text\n$url")
     }
+    // Attempt to attach the app icon for richer share previews (mirrors iOS UIActivityViewController).
+    // Falls back to text-only share if FileProvider isn't configured or any step fails.
+    try {
+        val bitmap = android.graphics.BitmapFactory.decodeResource(
+            activity.resources,
+            live.localapp.local.R.mipmap.ic_launcher,
+        )
+        if (bitmap != null) {
+            val cacheDir = java.io.File(activity.cacheDir, "share")
+            if (!cacheDir.exists()) cacheDir.mkdirs()
+            val iconFile = java.io.File(cacheDir, "app_icon.png")
+            java.io.FileOutputStream(iconFile).use { out ->
+                bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, out)
+            }
+            val authority = "${activity.packageName}.fileprovider"
+            val uri = androidx.core.content.FileProvider.getUriForFile(activity, authority, iconFile)
+            intent.putExtra(android.content.Intent.EXTRA_STREAM, uri)
+            intent.setType("image/*")
+            intent.addFlags(android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+    } catch (t: Throwable) {
+        // TODO: add FileProvider declaration to AndroidManifest.xml + res/xml/file_paths.xml
+        // so we can attach the app icon to share previews like iOS does.
+        println("Share: icon attachment failed, falling back to text-only share: $t")
+        // Reset to text-only in case partial mutation occurred above.
+        intent.removeExtra(android.content.Intent.EXTRA_STREAM)
+        intent.type = "text/plain"
+    }
     activity.startActivity(android.content.Intent.createChooser(intent, "Share"))
 }
 
+// One-shot gate; mirrors iOS. See Share.ios.kt for rationale. Android's clipboard
+// read doesn't surface a system prompt, but the read is still only useful for
+// deferred deep linking on first launch, so we gate for parity and to avoid
+// repeated no-op work on every cold start.
+private const val CLIPBOARD_GATE_KEY = "clipboard_deeplink_checked_v1"
+
 actual suspend fun checkClipboardForDeepLink(): String? {
     val activity = live.localapp.local.ActivityProvider.activity ?: return null
+    val prefs = activity.getSharedPreferences("local_app_prefs", android.content.Context.MODE_PRIVATE)
+    if (prefs.getBoolean(CLIPBOARD_GATE_KEY, false)) return null
+    prefs.edit().putBoolean(CLIPBOARD_GATE_KEY, true).apply()
+
     val clipboard = activity.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager ?: return null
     val clip = clipboard.primaryClip?.getItemAt(0)?.text?.toString() ?: return null
     if (!clip.contains("localapp.live/")) return null
@@ -38,8 +76,8 @@ actual fun clearClipboardDeepLink() {
     }
 }
 
-actual fun setDeepLinkCallback(onPlanToken: (String) -> Unit) {
-    live.localapp.local.DeepLinkHandler.callback = onPlanToken
+actual fun setDeepLinkCallback(onDeepLinkPath: (String) -> Unit) {
+    live.localapp.local.DeepLinkHandler.callback = onDeepLinkPath
 }
 
 actual fun purchaseSubscription(isAnnual: Boolean, onResult: (Boolean) -> Unit) {

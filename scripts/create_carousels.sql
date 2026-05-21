@@ -6,7 +6,7 @@ CREATE TABLE IF NOT EXISTS carousels (
   slug         TEXT NOT NULL,
   title        TEXT NOT NULL,
   subtitle     TEXT,
-  filter_type  TEXT NOT NULL,  -- 'category', 'date_range', 'tag', 'top10_weekly', 'trending'
+  filter_type  TEXT NOT NULL,  -- 'category', 'date_range', 'tag', 'top_weekly', 'trending'
   filter_value TEXT,           -- e.g. 'music', 'this_weekend', 'free'
   sort_order   TEXT DEFAULT 'start_at',
   position     INT DEFAULT 0,
@@ -16,7 +16,7 @@ CREATE TABLE IF NOT EXISTS carousels (
 );
 
 INSERT INTO carousels (city, slug, title, subtitle, filter_type, filter_value, sort_order, position) VALUES
-  ('boston', 'top10_weekly',  'Top 10 This Week',  'The best things to do this week', 'top10_weekly', NULL,           'start_at',   0),
+  ('boston', 'top_weekly',    'Top Events This Week', 'The best things to do this week', 'top_weekly', NULL,         'start_at',   0),
   ('boston', 'this_weekend',  'This Weekend',      'Events happening soon',           'date_range',  'this_weekend', 'start_at',   1),
   ('boston', 'music',         'Live Music',        'Concerts and shows',              'category',    'music',        'start_at',   2),
   ('boston', 'arts',          'Arts & Culture',    'Museums, galleries, theatre',     'category',    'arts',         'start_at',   3),

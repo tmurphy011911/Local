@@ -1,7 +1,14 @@
 package live.localapp.local.di
 
+import com.russhwolf.settings.Settings
 import live.localapp.local.data.remote.SupabaseClientFactory
 import live.localapp.local.data.repository.HttpExploreRepository
+import live.localapp.local.data.bo.BoTools
+import live.localapp.local.data.sync.MutationLog
+import live.localapp.local.data.sync.MutationLogImpl
+import live.localapp.local.data.sync.PlanMutationRpc
+import live.localapp.local.data.sync.PlanRealtimeWatcher
+import live.localapp.local.data.sync.PlanSyncer
 import live.localapp.local.data.repository.ServerCarouselRepository
 import live.localapp.local.data.repository.CommunityInterestRepositoryImpl
 import live.localapp.local.data.repository.EventRepositoryImpl
@@ -52,14 +59,24 @@ val appModule = module {
     single { BadgeService(get(), get()) }
     single { ClaudeApiService() }
     single { live.localapp.local.domain.service.PlanSwapService(get(), get()) }
+    single<MutationLog> { MutationLogImpl(Settings()) }
+    single { BoTools(get(), get()) }
+    single { PlanMutationRpc(get(), get()) }
+    // PlanSyncer starts its drain loop in its constructor — `createAtStart`
+    // would run it eagerly, but Koin invokes the factory lazily on first
+    // `get()`. We resolve it from `App.kt` at startup so the loop is alive
+    // for the whole session even if no ViewModel has touched it yet.
+    single { PlanSyncer(get(), get(), get()) }
+    single { PlanRealtimeWatcher(get()) }
     single<live.localapp.local.domain.repository.YocalPromptsRepository> { live.localapp.local.data.repository.HttpYocalPromptsRepository() }
+    single<live.localapp.local.domain.repository.BoChipsRepository> { live.localapp.local.data.repository.HttpBoChipsRepository() }
     single { HomeViewModel(get(), get(), get(), get(), get(), get(), get()) }
-    single { ChatViewModel(get(), get(), get(), get(), get(), get(), get()) }
+    single { ChatViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get()) }
     single { PlacesViewModel(get(), get(), get(), get()) }
-    single { PlansViewModel(get(), get(), get(), get(), get()) }
+    single { PlansViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
     single { ProgressViewModel(get(), get(), get(), get()) }
     single { TasteProfileViewModel(get(), get()) }
     factory { OnboardingViewModel(get(), get()) }
     factory { PhoneAuthViewModel(get(), get()) }
-    factory { (plan: live.localapp.local.domain.model.Plan) -> PlanChatViewModel(plan, get(), get(), get(), get(), get(), get()) }
+    factory { (plan: live.localapp.local.domain.model.Plan) -> PlanChatViewModel(plan, get(), get(), get(), get(), get(), get(), get(), get(), get()) }
 }

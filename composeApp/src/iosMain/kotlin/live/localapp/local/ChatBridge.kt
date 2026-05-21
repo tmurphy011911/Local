@@ -111,6 +111,24 @@ object ChatBridge {
      *  conversation history only. */
     var buildPlanFromSelections: ((eventIds: List<String>) -> Unit)? = null
 
+    /** Editable location chip — Swift calls this when the user picks a new
+     *  scope in the location editor sheet. ChatViewModel geocodes the name
+     *  and updates currentLat/Lng/currentLocationName; the next push of the
+     *  snapshot will reflect the new value. */
+    var setLocationByName: ((String) -> Unit)? = null
+
+    /** Full scope edit — name + radius miles. Set from the new banner
+     *  editor sheet that includes a radius slider + map preview. */
+    var setSearchScope: ((String, Double) -> Unit)? = null
+
+    /** Same as [setSearchScope] but the caller has already geocoded the
+     *  location and provides explicit coordinates. Preferred path: iOS uses
+     *  Apple's CLGeocoder which handles arbitrary place names ("Concord, MA",
+     *  "South End", "94110"), where the Kotlin-side geocodeCity only knows
+     *  a hardcoded list of metros. Pass null lat/lng to fall back to
+     *  Kotlin geocoding. */
+    var setSearchScopeWithCoords: ((String, Double, Double, Double) -> Unit)? = null
+
     /** Push a state snapshot to Swift */
     fun pushState(state: ChatUiState) {
         val messages = state.messages.map { msg ->
@@ -170,6 +188,11 @@ object ChatBridge {
             weather = state.weather.mapValues { (_, w) -> WeatherSnapshot(w.tempHigh, w.description) },
             planAttendeeCount = state.planAttendeeCount,
             lastSavedPlanId = state.lastSavedPlanId.orEmpty(),
+            currentLocationName = state.currentLocationName,
+            currentLat = state.currentLat ?: 0.0,
+            currentLng = state.currentLng ?: 0.0,
+            hasLocationCoords = state.currentLat != null && state.currentLng != null,
+            searchRadiusMiles = state.searchRadiusMiles,
         )
 
         lastSnapshot = snapshot
@@ -200,6 +223,19 @@ data class ChatStateSnapshot(
      *  "View Plan" CTA to deep-link straight to its detail page after
      *  switching tabs. Empty string when nothing has been saved yet. */
     val lastSavedPlanId: String = "",
+    /** Canonical search scope — drives the editable location banner in the
+     *  chat header. Empty string when the user hasn't set one yet. */
+    val currentLocationName: String = "",
+    /** Geocoded coordinates for [currentLocationName], used by the scope
+     *  editor map to center on the named place. When [hasLocationCoords] is
+     *  false these are placeholder zeros — Swift should fall back to a
+     *  client-side geocode or a default region. */
+    val currentLat: Double = 0.0,
+    val currentLng: Double = 0.0,
+    val hasLocationCoords: Boolean = false,
+    /** Search radius in miles — drives the radius slider + the bbox query
+     *  in Bo's search tools. */
+    val searchRadiusMiles: Double = 20.0,
 )
 
 data class WeatherSnapshot(
@@ -250,6 +286,9 @@ data class SuggestionEventSnapshot(
     val priceLabel: String,
     val imageUrl: String?,
     val rationale: String?,
+    /** Distance from the user's current location in miles. Null when the
+     *  user's coords aren't available or the event has no venue coords. */
+    val distanceMiles: Double = -1.0,
 )
 
 data class SuggestionFooterSnapshot(
@@ -334,13 +373,19 @@ private fun BoStructuredResponse.Suggestions.EventRef.toEventSnapshot(
     val ev = hydrated[eventId] ?: return null
     return SuggestionEventSnapshot(
         eventId = eventId,
-        title = ev.title,
-        venueName = ev.venueName.orEmpty(),
+        // Defensive cleanup at the bridge boundary — DTO-level decode should
+        // have already handled this, but events created before the decode
+        // path was added, or saved from web_search via a different route,
+        // can still arrive with raw entities/tags in their title. Idempotent
+        // so re-cleaning a clean title is a no-op.
+        title = ev.title.decodeHtmlEntities(),
+        venueName = ev.venueName.orEmpty().decodeHtmlEntities(),
         timeLabel = eventTimeLabel(ev),
         dateDisplay = ev.dateDisplay,
         priceLabel = if (ev.isFree) "Free" else ev.priceDisplay.orEmpty(),
         imageUrl = ev.imageUrl,
         rationale = rationale,
+        distanceMiles = ev.distanceMiles ?: -1.0,
     )
 }
 
@@ -354,7 +399,11 @@ private fun eventTimeLabel(ev: Event): String {
         val local = Instant.parse(s).toLocalDateTime(TimeZone.currentSystemDefault())
         val hour = local.hour
         val minute = local.minute
-        if (!ev.timeKnown || (hour == 0 && minute == 0)) "TBD"
+        // Date-only events return empty so the card's metaLine filters
+        // them out (no "TBD" filler). The midnight-local guard catches
+        // legacy rows ingested with a 00:00 sentinel before time_known
+        // was set correctly upstream.
+        if (!ev.timeKnown || (hour == 0 && minute == 0)) ""
         else {
             val ampm = if (hour < 12) "am" else "pm"
             val displayHour = when {
@@ -448,22 +497,51 @@ private fun computeCategoryKey(
     ev: Event,
     tbdKey: String,
 ): Triple<String, Int, String> {
-    // Order matches the canonical category vocabulary in the app's
-    // schema + tool description. Subcategory is checked first for the
-    // narrower buckets (museums/theatre/etc.) so a Music event tagged
-    // "musical" surfaces under Theatre, not Music.
-    val sub = (ev.subcategory ?: "").lowercase()
-    val cat = (ev.category ?: "").lowercase()
+    // Order matters: subcategory wins over category whenever it names a
+    // recognizable domain. The DB's `events.category` field is loose
+    // residue from the ingest classifier — Shane Gillis stand-up gets
+    // tagged category="arts" / subcategory="comedy", and the event-detail
+    // screen renders the subcategory pill, so the tray must match.
+    // `arts` as a category is a catch-all and must lose to any specific
+    // subcategory above.
+    val sub = (ev.subcategory ?: "").lowercase().trim()
+    val cat = (ev.category ?: "").lowercase().trim()
+    val venue = (ev.venueName ?: "").lowercase()
+    val title = ev.title.lowercase()
     return when {
-        sub == "museum" || sub == "gallery" -> Triple("museums", 30, "Museums")
-        sub == "theatre" || sub == "musical" -> Triple("theatre", 40, "Theatre")
-        sub == "library" -> Triple("libraries", 70, "Libraries")
-        sub == "tour" -> Triple("tours", 60, "Tours")
+        // Subcategory takes priority for every domain we recognize.
+        sub == "comedy" || sub.contains("stand-up") || sub.contains("standup") -> Triple("comedy", 50, "Comedy")
+        // Heuristic fallback: many comedy-club + stand-up events have
+        // category="arts" with no subcategory. Catch them by venue name
+        // ("Comedy Connection", "Wilbur", "Laugh Boston") or title text
+        // ("stand-up", "Live"). Better to occasionally over-route to
+        // Comedy than to keep dumping comedians into Arts.
+        venue.contains("comedy connection") || venue.contains("laugh boston") ||
+            venue.contains("nick's comedy") || venue.contains("the wilbur") ||
+            venue.endsWith(" comedy club") || venue.contains("comedy studio") -> Triple("comedy", 50, "Comedy")
+        title.contains("stand-up") || title.contains("standup") || title.contains("comedy night") -> Triple("comedy", 50, "Comedy")
+        sub == "museum" || sub == "museums" || sub == "gallery" || sub == "galleries" -> Triple("museums", 30, "Museums")
+        sub == "theatre" || sub == "theater" || sub == "musical" || sub == "play" -> Triple("theatre", 40, "Theatre")
+        sub == "library" || sub == "libraries" -> Triple("libraries", 70, "Libraries")
+        sub == "tour" || sub == "tours" -> Triple("tours", 60, "Tours")
+        sub == "music" || sub == "concert" || sub == "rock" || sub == "jazz" || sub == "pop" ||
+            sub == "country" || sub == "folk" || sub == "alternative" ||
+            sub.contains("hip-hop") || sub.contains("hip hop") || sub.contains("rap") ||
+            sub.contains("dance") || sub.contains("electronic") || sub.contains("dj") -> Triple("music", 10, "Music")
+        sub == "sports" || sub == "baseball" || sub == "basketball" || sub == "hockey" ||
+            sub == "football" || sub == "soccer" -> Triple("sports", 20, "Sports")
+        sub == "outdoor" || sub == "outdoors" || sub == "hiking" || sub == "park" -> Triple("outdoors", 25, "Outdoor")
+        sub == "for-kids" || sub == "kids" || sub == "family" -> Triple("for-kids", 65, "For Kids")
+        sub == "nightlife" || sub == "bar" || sub == "club" -> Triple("nightlife", 80, "Nightlife")
+        sub == "food" || sub == "restaurant" || sub == "brewery" || sub == "winery" || sub == "cafe" -> Triple("food", 55, "Food & Drink")
+        sub == "lecture/seminar" || sub == "lecture" || sub == "seminar" || sub == "book talk" -> Triple("lectures", 45, "Lectures & Talks")
+        sub == "community" || sub == "community/civic" -> Triple("community", 75, "Community")
+        sub == "performance art" || sub == "exhibit" || sub == "exhibits" -> Triple("arts", 35, "Arts")
+        // Fall back to category only when subcategory was uninformative.
         cat == "music" -> Triple("music", 10, "Music")
         cat == "sports" -> Triple("sports", 20, "Sports")
-        cat == "arts" -> Triple("arts", 35, "Arts")
-        cat == "theatre" -> Triple("theatre", 40, "Theatre")
         cat == "comedy" -> Triple("comedy", 50, "Comedy")
+        cat == "theatre" -> Triple("theatre", 40, "Theatre")
         cat == "food" -> Triple("food", 55, "Food & Drink")
         cat == "outdoors" || cat == "outdoor" -> Triple("outdoors", 25, "Outdoor")
         cat == "for-kids" || cat == "kids" -> Triple("for-kids", 65, "For Kids")
@@ -471,6 +549,10 @@ private fun computeCategoryKey(
         cat == "museums" -> Triple("museums", 30, "Museums")
         cat == "tours" -> Triple("tours", 60, "Tours")
         cat == "libraries" -> Triple("libraries", 70, "Libraries")
+        // Loose residue last — `arts` is the catch-all bucket events get
+        // dumped into during ingest, so it must lose to any recognizable
+        // subcategory above.
+        cat == "arts" -> Triple("arts", 35, "Arts")
         else -> Triple(tbdKey, 999, "Other")
     }
 }
@@ -500,28 +582,35 @@ private fun BoStructuredResponse.Suggestions.Action.label(): String = when (this
     BoStructuredResponse.Suggestions.Action.LATE_NIGHT -> "Late night"
     BoStructuredResponse.Suggestions.Action.DIFFERENT_DAY -> "Different day"
     BoStructuredResponse.Suggestions.Action.MORE_RESULTS -> "More results"
+    BoStructuredResponse.Suggestions.Action.BUILD_FROM_WEB -> "Build a plan"
 }
 
 /** Mirrors `footerActionToIntent` in ChatScreen.kt. Kept in sync manually —
  *  if you change one, change both. */
 private fun BoStructuredResponse.Suggestions.Action.intent(): String = when (this) {
     BoStructuredResponse.Suggestions.Action.SEARCH_WIDER ->
-        "Broaden the search — increase the radius and drop any keyword filters, then show me more options"
+        "Cast a wider net, Bo"
     BoStructuredResponse.Suggestions.Action.DIFFERENT_CATEGORY ->
-        "Show me events in a different category"
+        "Try something different"
     BoStructuredResponse.Suggestions.Action.LATE_NIGHT ->
-        "Show me only events starting after 9 PM"
+        "What's open late night?"
     BoStructuredResponse.Suggestions.Action.DIFFERENT_DAY ->
-        "Show me events on a different day"
+        "How about another day?"
     BoStructuredResponse.Suggestions.Action.MORE_RESULTS ->
-        "Show me more results — keep the same filters but go deeper"
+        "Show me more results, Bo!"
+    BoStructuredResponse.Suggestions.Action.BUILD_FROM_WEB ->
+        "Build a plan from the web findings you just surfaced. For each promising event, call save_web_finding(kind='event') to stage it, then call present_plan with the returned bo_web_events ids as the slot event_ids (with is_bo_web: true). Don't ask another question first — just build the plan."
 }
 
 private fun ItinerarySlot.toSnapshot() = SlotSnapshot(
     id = id,
     time = time,
-    name = name,
-    detail = detail,
+    // Defensive HTML cleanup — same belt-and-suspenders as the suggestion
+    // snapshot. Plan-slot names are usually copied from a search result's
+    // title, so anything that arrived with raw entities/tags would propagate
+    // into Plan Detail cards otherwise.
+    name = name.decodeHtmlEntities(),
+    detail = detail.decodeHtmlEntities(),
     price = price,
     isFree = isFree,
     imageUrl = imageUrl,

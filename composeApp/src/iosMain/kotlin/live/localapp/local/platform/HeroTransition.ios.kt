@@ -67,6 +67,11 @@ actual fun openChatSheet(onReady: () -> Unit) {
     ChatBridge.sendMessage = { msg -> chatVm.sendMessage(msg) }
     ChatBridge.resetChat = { chatVm.resetChat() }
     ChatBridge.buildPlanFromSelections = { ids -> chatVm.buildPlanFromSelections(ids) }
+    ChatBridge.setLocationByName = { name -> chatVm.setChatSearchLocationByName(name) }
+    ChatBridge.setSearchScope = { name, radius -> chatVm.setChatSearchScope(name, radius) }
+    ChatBridge.setSearchScopeWithCoords = { name, lat, lng, radius ->
+        chatVm.setChatSearchScopeWithCoords(name, lat, lng, radius)
+    }
     ChatBridge.loadMoreSuggestions = { messageId, dayKey, categoryKey ->
         chatVm.loadMoreSuggestionsForGroup(messageId, dayKey, categoryKey)
     }
@@ -137,6 +142,9 @@ actual fun openChatSheet(onReady: () -> Unit) {
                     venueWithMeta = live.localapp.local.domain.repository.VenueWithMeta(venue = venue),
                     cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
                     onDismissed = {},
+                    // Hide Reserve / Visit Website CTAs — the user is mid-planning
+                    // in chat, not ready to book or leave the app.
+                    hidesPrimaryCTAs = true,
                 )
             }
         }
@@ -251,6 +259,7 @@ actual fun showNativeEventDetail(
         event.description,
         event.venueDescription,
         event.imageUrl,
+        event.venueImageUrl,
         event.startAt,
         event.venueName,
         event.venueAddress,
@@ -511,6 +520,7 @@ actual fun showNativeVenueDetail(
     onDismissed: () -> Unit,
     isFavorited: Boolean,
     onFavorited: ((String) -> Unit)?,
+    hidesPrimaryCTAs: Boolean,
 ) {
     val v = venueWithMeta.venue
     VenueDetailBridge.onDismissed = onDismissed
@@ -556,6 +566,7 @@ actual fun showNativeVenueDetail(
         v.reservationUrl,
         isFavorited,
         cardX, cardY, cardW, cardH,
+        hidesPrimaryCTAs,
     )
 }
 

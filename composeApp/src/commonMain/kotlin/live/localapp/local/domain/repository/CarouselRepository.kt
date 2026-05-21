@@ -44,4 +44,12 @@ interface CarouselRepository {
         userPreferences: UserPreferences? = null,
         locationName: String = "",
     ): List<CarouselSection>? = null
+
+    /**
+     * Non-suspending snapshot of the in-memory categories cache. Used by the
+     * SWR disk-paint path so the tab strip can render alongside the carousels
+     * without waiting for the (potentially slow/failing) fresh fetch. Returns
+     * empty when nothing is cached yet.
+     */
+    fun peekCachedCategories(): List<CategoryInfo> = emptyList()
 }

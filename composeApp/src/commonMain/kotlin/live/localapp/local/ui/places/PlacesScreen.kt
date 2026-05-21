@@ -1,14 +1,23 @@
 package live.localapp.local.ui.places
 
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.clickable
@@ -32,8 +41,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.CircleShape
@@ -82,6 +94,8 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
@@ -100,8 +114,10 @@ import live.localapp.local.platform.rememberNativeDateRangePicker
 import live.localapp.local.domain.model.Event
 import live.localapp.local.snakeToTitleCase
 import live.localapp.local.domain.model.Venue
+import live.localapp.local.domain.repository.CategoryInfo
 import live.localapp.local.domain.repository.VenueWithMeta
 import live.localapp.local.domain.repository.CommunityInterestRepository
+import live.localapp.local.ui.home.HomeViewModel
 import live.localapp.local.domain.repository.InteractionType
 import live.localapp.local.ui.detail.EventDetailScreen
 import live.localapp.local.ui.home.isLocationInSupportedState
@@ -144,6 +160,8 @@ fun PlacesScreen(
     onEventClick: ((live.localapp.local.domain.model.Event, Rect) -> Unit)? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
+    val homeViewModel = remember { KoinPlatform.getKoin().get<HomeViewModel>() }
+    val homeState by homeViewModel.uiState.collectAsState()
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val cityLabel = state.locationName.split(",").firstOrNull()?.trim().orEmpty()
 
@@ -154,7 +172,7 @@ fun PlacesScreen(
         Column(modifier = Modifier.fillMaxSize()) {
             // ── Header ──
             AppHeader(
-                    title = "explore",
+                    title = "local",
                     locationName = state.locationName,
                     radiusFilter = state.radiusFilter,
                     streakDays = state.streakDays,
@@ -181,15 +199,24 @@ fun PlacesScreen(
                     placeholder = searchPlaceholder(state.activeTab, cityLabel),
                 )
             }
-
+ 
             // ── Per-tab filter chips ──
             when (state.activeTab) {
                 SearchTab.EVENTS -> EventDateFilterRow(
                     selected = state.dateFilter,
                     customStart = state.customStart,
                     customEnd = state.customEnd,
+                    selectedCategoryId = state.selectedFilter,
+                    // Drop "experiences" — it's a Home-feed concept (always-on
+                    // / curated rails) that doesn't make sense as an Events-tab
+                    // filter. Date-ranged event search is the wrong shape for
+                    // anytime/flexible items, and the chip just confused users.
+                    categories = homeState.availableCategories.filterNot {
+                        it.id.equals("experiences", ignoreCase = true)
+                    },
                     onSelectPreset = { viewModel.setDateFilter(it) },
                     onCustomRangePicked = { start, end -> viewModel.setCustomDateRange(start, end) },
+                    onSelectCategory = { viewModel.setFilter(it) },
                 )
                 SearchTab.PLACES -> PlaceSortRow(
                     selected = state.placeSort,
@@ -207,6 +234,15 @@ fun PlacesScreen(
                     SearchTab.PLACES -> {
                         if (state.isLoading && state.venues.isEmpty()) {
                             PlacesSkeletonLoader()
+                        } else if (state.filteredVenues.isEmpty()) {
+                            // Don't paint a silently blank grid — surface
+                            // empty-or-error state with a retry. Covers
+                            // server-returned-zero, fetch failure, and the
+                            // empty-cached-page paths.
+                            ExploreEmptyState(
+                                hasError = state.error != null,
+                                onRetry = { viewModel.refresh() },
+                            )
                         } else {
                             // Sort happens server-side now — the list arrives
                             // already ordered for the active sort, paginated
@@ -239,6 +275,11 @@ fun PlacesScreen(
                     SearchTab.EVENTS -> {
                         if (state.isEventsLoading && state.filteredEvents.isEmpty()) {
                             EventsSkeletonLoader()
+                        } else if (state.filteredEvents.isEmpty()) {
+                            ExploreEmptyState(
+                                hasError = state.error != null,
+                                onRetry = { viewModel.refresh() },
+                            )
                         } else {
                             EventGrid(
                                 events = state.filteredEvents,
@@ -457,6 +498,70 @@ private fun EventsSkeletonLoader() {
 }
 
 @Composable
+private fun ExploreEmptyState(
+    hasError: Boolean,
+    onRetry: () -> Unit,
+) {
+    val (headline, sub) = if (hasError) {
+        "Couldn't load this list" to "Check your connection and try again."
+    } else {
+        "Nothing here yet" to "Try a different filter, or pull to refresh."
+    }
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = 32.dp, vertical = 48.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Outlined.Search,
+            contentDescription = null,
+            tint = AppColors.Ink3,
+            modifier = Modifier.size(40.dp),
+        )
+        Spacer(Modifier.height(16.dp))
+        Text(
+            text = headline,
+            style = TextStyle(
+                fontFamily = AppFonts.Heading,
+                fontWeight = FontWeight.SemiBold,
+                fontSize = 18.sp,
+                color = AppColors.Ink,
+            ),
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = sub,
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = FontWeight.Normal,
+                fontSize = 14.sp,
+                color = AppColors.Ink3,
+            ),
+        )
+        Spacer(Modifier.height(20.dp))
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(50))
+                .background(AppColors.Coral)
+                .clickable { onRetry() }
+                .padding(horizontal = 24.dp, vertical = 12.dp),
+        ) {
+            Text(
+                text = "Retry",
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 14.sp,
+                    color = Color.White,
+                ),
+            )
+        }
+    }
+}
+
+@Composable
 private fun SearchBar(query: String, onQueryChange: (String) -> Unit, placeholder: String) {
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     TextField(
@@ -500,11 +605,15 @@ private fun EventDateFilterRow(
     selected: EventDateFilter?,
     customStart: LocalDate?,
     customEnd: LocalDate?,
+    selectedCategoryId: String,
+    categories: List<CategoryInfo>,
     onSelectPreset: (EventDateFilter?) -> Unit,
     onCustomRangePicked: (LocalDate, LocalDate) -> Unit,
+    onSelectCategory: (String) -> Unit,
 ) {
     val pickerController = rememberNativeDateRangePicker()
     val customActive = selected == EventDateFilter.CUSTOM && customStart != null && customEnd != null
+    val anyDateActive = selected != null && (selected != EventDateFilter.CUSTOM || customActive)
 
     val openPicker: () -> Unit = {
         pickerController.show(
@@ -517,47 +626,169 @@ private fun EventDateFilterRow(
         )
     }
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        if (customActive) {
-            // Active custom-range chip lives at the front with an X to clear.
-            // Replaces the "All" chip in this state — the X is the way to
-            // get back to no-filter.
-            FilterChip(
-                label = formatDateRangeShort(customStart!!, customEnd!!),
-                selected = true,
-                onClick = openPicker,
-                onDismiss = { onSelectPreset(null) },
-            )
-        } else {
-            FilterChip(label = "All", selected = selected == null, onClick = { onSelectPreset(null) })
+    // Cache the last non-null selection so the AnimatedContent exit
+    // branch can keep rendering the original chip while it slides out.
+    // When the user taps X, outer state flips to null IMMEDIATELY but
+    // the outgoing "selected" content keeps composing for the duration
+    // of its exit animation — without this cache, that closure would
+    // dereference a null `selected` and NPE.
+    var lastSelected by remember { mutableStateOf<EventDateFilter?>(null) }
+    var lastCustomStart by remember { mutableStateOf<LocalDate?>(null) }
+    var lastCustomEnd by remember { mutableStateOf<LocalDate?>(null) }
+    LaunchedEffect(selected, customStart, customEnd) {
+        if (selected != null) {
+            lastSelected = selected
+            lastCustomStart = customStart
+            lastCustomEnd = customEnd
         }
-        FilterChip(
-            label = EventDateFilter.TODAY.label,
-            selected = selected == EventDateFilter.TODAY,
-            onClick = { onSelectPreset(EventDateFilter.TODAY) },
-        )
-        FilterChip(
-            label = EventDateFilter.TOMORROW.label,
-            selected = selected == EventDateFilter.TOMORROW,
-            onClick = { onSelectPreset(EventDateFilter.TOMORROW) },
-        )
-        FilterChip(
-            label = EventDateFilter.THIS_WEEKEND.label,
-            selected = selected == EventDateFilter.THIS_WEEKEND,
-            onClick = { onSelectPreset(EventDateFilter.THIS_WEEKEND) },
-        )
-        if (!customActive) {
-            FilterChip(
-                label = EventDateFilter.CUSTOM.label,
-                selected = false,
-                onClick = openPicker,
-            )
+    }
+
+    AnimatedContent(
+        targetState = anyDateActive,
+        transitionSpec = {
+            // Selecting → categories slide in from the right, dates slide
+            // out to the left. Deselecting → mirror.
+            if (targetState) {
+                (slideInHorizontally(tween(220)) { it / 3 } + fadeIn(tween(180))) togetherWith
+                    (slideOutHorizontally(tween(220)) { -it / 3 } + fadeOut(tween(140)))
+            } else {
+                (slideInHorizontally(tween(220)) { -it / 3 } + fadeIn(tween(180))) togetherWith
+                    (slideOutHorizontally(tween(220)) { it / 3 } + fadeOut(tween(140)))
+            }
+        },
+        label = "DateFilterRowSwap",
+    ) { isActive ->
+        if (!isActive) {
+            // Default state — all date-preset chips, scrollable. No "All".
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                FilterChip(
+                    label = EventDateFilter.TODAY.label,
+                    selected = false,
+                    onClick = { onSelectPreset(EventDateFilter.TODAY) },
+                )
+                FilterChip(
+                    label = EventDateFilter.TOMORROW.label,
+                    selected = false,
+                    onClick = { onSelectPreset(EventDateFilter.TOMORROW) },
+                )
+                FilterChip(
+                    label = EventDateFilter.THIS_WEEKEND.label,
+                    selected = false,
+                    onClick = { onSelectPreset(EventDateFilter.THIS_WEEKEND) },
+                )
+                FilterChip(
+                    label = EventDateFilter.NEXT_30_DAYS.label,
+                    selected = false,
+                    onClick = { onSelectPreset(EventDateFilter.NEXT_30_DAYS) },
+                )
+                FilterChip(
+                    label = EventDateFilter.CUSTOM.label,
+                    selected = false,
+                    onClick = openPicker,
+                )
+            }
+        } else {
+            // Date selected — pin the active date chip to the left, scroll
+            // category chips behind it. Read from the lastSelected cache
+            // so this branch can keep rendering during AnimatedContent's
+            // exit animation, after outer state has already flipped to
+            // null on user dismissal.
+            val effectiveSelected = selected ?: lastSelected
+            val effectiveStart = customStart ?: lastCustomStart
+            val effectiveEnd = customEnd ?: lastCustomEnd
+            if (effectiveSelected == null) return@AnimatedContent
+            val effectiveCustomActive = effectiveSelected == EventDateFilter.CUSTOM &&
+                effectiveStart != null && effectiveEnd != null
+            val pinnedLabel = if (effectiveCustomActive) {
+                formatDateRangeShort(effectiveStart!!, effectiveEnd!!)
+            } else {
+                effectiveSelected.label
+            }
+            val pinnedOnClick: () -> Unit = if (effectiveCustomActive) openPicker else ({ /* no-op */ })
+
+            // Two-column row: pinned chip + pipe on the left at natural
+            // width, scrollable categories on the right filling the rest.
+            // Avoids the dynamic-width-measurement Box overlay that was
+            // mismatching across recompositions and clipping the first
+            // category against the pipe.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FilterChip(
+                    label = pinnedLabel,
+                    selected = true,
+                    onClick = pinnedOnClick,
+                    onDismiss = { onSelectPreset(null) },
+                    dismissOnLeft = true,
+                )
+                Spacer(Modifier.width(14.dp))
+                Box(
+                    modifier = Modifier
+                        .height(22.dp)
+                        .width(1.5.dp)
+                        .background(AppColors.Ink3.copy(alpha = 0.35f))
+                )
+                Spacer(Modifier.width(14.dp))
+                // LazyRow + centering — when the user picks a category chip,
+                // scroll it to the visual center of the row so the active
+                // chip is always discoverable. Mirrors the same idiom on the
+                // Home tab's category tile rail. LazyRow gives us measured
+                // item positions/widths via layoutInfo, which we need
+                // because category chips are variable-width text capsules.
+                val categoryListState = rememberLazyListState()
+                val selectedCategoryIndex = categories.indexOfFirst { it.id == selectedCategoryId }
+                androidx.compose.runtime.LaunchedEffect(selectedCategoryIndex) {
+                    if (selectedCategoryIndex < 0) return@LaunchedEffect
+                    val info = categoryListState.layoutInfo
+                    val viewport = info.viewportEndOffset - info.viewportStartOffset
+                    val visible = info.visibleItemsInfo.firstOrNull { it.index == selectedCategoryIndex }
+                    if (visible != null && viewport > 0) {
+                        // Common path — user tapped a chip that's already on
+                        // screen. ONE smooth scroll to center. Computes the
+                        // delta from the measured item offset, then animates
+                        // directly to the target. No intermediate "jump to
+                        // left" the user saw before.
+                        val itemCenter = visible.offset + visible.size / 2
+                        val nudge = itemCenter - viewport / 2
+                        if (nudge != 0) categoryListState.animateScrollBy(nudge.toFloat())
+                    } else if (viewport > 0) {
+                        // Fallback — chip off-screen (categories list grew,
+                        // external state change). Single animation to bring
+                        // it into view; don't try to also center, that's
+                        // what caused the double-animation glitch.
+                        categoryListState.animateScrollToItem(selectedCategoryIndex)
+                    }
+                }
+                LazyRow(
+                    state = categoryListState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    items(categories, key = { it.id }) { cat ->
+                        FilterChip(
+                            label = cat.label,
+                            selected = selectedCategoryId == cat.id,
+                            onClick = {
+                                // Toggle off when re-tapping the active category.
+                                if (selectedCategoryId == cat.id) onSelectCategory("All")
+                                else onSelectCategory(cat.id)
+                            },
+                        )
+                    }
+                }
+            }
         }
     }
 }
@@ -611,13 +842,20 @@ private fun FilterChip(
     selected: Boolean,
     onClick: () -> Unit,
     onDismiss: (() -> Unit)? = null,
+    dismissOnLeft: Boolean = false,
 ) {
     val bg = if (selected) AppColors.Coral else AppColors.White
     val fg = if (selected) AppColors.White else AppColors.Ink2
+    val shape = RoundedCornerShape(20.dp)
+    val hasDismiss = onDismiss != null
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(20.dp))
+            .clip(shape)
             .background(bg)
+            .then(
+                if (selected) Modifier
+                else Modifier.border(width = 1.dp, color = AppColors.Coral, shape = shape)
+            )
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -630,9 +868,35 @@ private fun FilterChip(
                     onClick()
                 },
             )
-            .padding(start = 14.dp, end = if (onDismiss != null) 6.dp else 14.dp, top = 8.dp, bottom = 8.dp),
+            .padding(
+                start = if (hasDismiss && dismissOnLeft) 6.dp else 14.dp,
+                end = if (hasDismiss && !dismissOnLeft) 6.dp else 14.dp,
+                top = 8.dp,
+                bottom = 8.dp,
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (hasDismiss && dismissOnLeft) {
+            Box(
+                modifier = Modifier
+                    .size(18.dp)
+                    .clip(CircleShape)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onDismiss!!,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Outlined.Close,
+                    contentDescription = "Clear filter",
+                    modifier = Modifier.size(14.dp),
+                    tint = fg,
+                )
+            }
+            Spacer(Modifier.width(4.dp))
+        }
         Text(
             label,
             style = TextStyle(
@@ -642,7 +906,7 @@ private fun FilterChip(
                 color = fg,
             ),
         )
-        if (onDismiss != null) {
+        if (hasDismiss && !dismissOnLeft) {
             Spacer(Modifier.width(4.dp))
             Box(
                 modifier = Modifier
@@ -651,7 +915,7 @@ private fun FilterChip(
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                        onClick = onDismiss,
+                        onClick = onDismiss!!,
                     ),
                 contentAlignment = Alignment.Center,
             ) {
@@ -910,13 +1174,20 @@ private fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -
             .localCardSurface(cornerRadius = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Thumbnail — flush to card edge (top/left/bottom), full card height
+        // Thumbnail — flush to card edge (top/left/bottom), full card height.
+        // Fallback gradient mirrors the venue detail page's placeholder hero
+        // (iosApp/iosApp/VenueDetailView.swift placeholderGradient) so a
+        // photo-less venue looks the same in the list and on its own page.
         Box(
             modifier = Modifier
                 .width(92.dp)
                 .fillMaxHeight()
                 .onGloballyPositioned { imageBounds = it.boundsInRoot() }
-                .background(gradientForCategory(vm.primaryCategory)),
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(Color(0xFFFFE8E0), Color(0xFFFFF0E8)),
+                    ),
+                ),
             contentAlignment = Alignment.Center,
         ) {
             if (v.photoUrl != null || v.imageUrl != null) {
@@ -1116,7 +1387,40 @@ fun VenueDetailPage(
     val communityInterestRepo = remember { KoinPlatform.getKoin().get<CommunityInterestRepository>() }
     val v = venueWithMeta.venue
 
-    Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
+    // Enter animation — approximates the iOS card-to-fullscreen morph
+    // (EventDetailTransitionController.swift). Scale 0.92 -> 1, alpha 0 -> 1,
+    // corner radius 18 -> 0, all driven by a spring. No exit animation —
+    // dismissal is handled by the parent AnimatedVisibility in AppNavigation.
+    var enterVisible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { enterVisible = true }
+    val enterScale by animateFloatAsState(
+        targetValue = if (enterVisible) 1f else 0.92f,
+        animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow),
+        label = "venueEnterScale",
+    )
+    val enterAlpha by animateFloatAsState(
+        targetValue = if (enterVisible) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow),
+        label = "venueEnterAlpha",
+    )
+    val enterCorner by animateDpAsState(
+        targetValue = if (enterVisible) 0.dp else 18.dp,
+        animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow),
+        label = "venueEnterCorner",
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                scaleX = enterScale
+                scaleY = enterScale
+                alpha = enterAlpha
+                clip = true
+                shape = RoundedCornerShape(enterCorner)
+            }
+            .background(AppColors.Snow),
+    ) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Header
             Row(
@@ -1880,19 +2184,12 @@ private fun SavedAlbumEventCard(
                 contentScale = ContentScale.Crop,
             )
         } else {
+            // No-image events: gradient only, no calendar icon.
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(gradientForCategory(event.subcategory ?: event.category)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Outlined.CalendarMonth,
-                    contentDescription = null,
-                    modifier = Modifier.size(48.dp),
-                    tint = AppColors.Ink3.copy(alpha = 0.3f),
-                )
-            }
+            )
         }
 
         // Date pill top-left
@@ -2001,14 +2298,9 @@ private fun EventRowCard(
                     contentScale = ContentScale.Crop,
                     modifier = Modifier.fillMaxSize(),
                 )
-            } else {
-                Icon(
-                    Icons.Outlined.CalendarMonth,
-                    contentDescription = null,
-                    tint = AppColors.Ink3.copy(alpha = 0.5f),
-                    modifier = Modifier.size(28.dp),
-                )
             }
+            // No-image events show only the gradient — the calendar icon was
+            // removed because it didn't add information beyond the colored tile.
         }
 
         Spacer(Modifier.width(12.dp))

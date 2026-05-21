@@ -3,7 +3,7 @@ const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
 let SUPABASE_SERVICE_KEY;
 
 const carousels = [
-  { city: "boston", slug: "top10_weekly",  title: "Top 10 This Week",  subtitle: "The best things to do this week", filter_type: "top10_weekly", filter_value: null,           sort_order: "start_at", position: 0, is_active: true },
+  { city: "boston", slug: "top_weekly",    title: "Top Events This Week", subtitle: "The best things to do this week", filter_type: "top_weekly", filter_value: null,         sort_order: "start_at", position: 0, is_active: true },
   { city: "boston", slug: "this_weekend",  title: "This Weekend",      subtitle: "Events happening soon",           filter_type: "date_range",  filter_value: "this_weekend", sort_order: "start_at", position: 1, is_active: true },
   { city: "boston", slug: "music",         title: "Live Music",        subtitle: "Concerts and shows",              filter_type: "category",    filter_value: "music",        sort_order: "start_at", position: 2, is_active: true },
   { city: "boston", slug: "arts",          title: "Arts & Culture",    subtitle: "Museums, galleries, theatre",     filter_type: "category",    filter_value: "arts",         sort_order: "start_at", position: 3, is_active: true },

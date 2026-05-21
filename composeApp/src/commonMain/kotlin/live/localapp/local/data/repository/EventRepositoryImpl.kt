@@ -10,7 +10,9 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.datetime.DateTimeUnit
 import kotlinx.datetime.DayOfWeek
+import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
+import kotlinx.datetime.atStartOfDayIn
 import kotlinx.datetime.plus
 import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.data.remote.dto.EventDto
@@ -287,6 +289,18 @@ class EventRepositoryImpl(
      * into a concrete (rangeStart, rangeEnd) pair of ISO timestamps. Pulled
      * out so [searchEventsBroad] can share the same DOW arithmetic instead
      * of reimplementing it.
+     *
+     * IMPORTANT: every boundary is the user's LOCAL midnight expressed as a
+     * UTC instant. Treating "2026-05-15" as `2026-05-15T00:00:00Z` (literal
+     * UTC) would shift the window by tz-offset hours: for a US East Coast
+     * user that means the search window for "May 15" is actually
+     * May 14 8 PM ET → May 15 8 PM ET, which leaks May-14-evening events in
+     * and culls May-15-evening events out — and Bo (correctly) notices the
+     * mismatch and (incorrectly) concludes the data is broken.
+     *
+     * The RPC's filter is `start_at >= p_start_at AND start_at < p_end_at`
+     * (strict less-than on the upper bound), so for a single calendar day
+     * the upper bound is the *start* of the next local day.
      */
     private fun resolveDateWindow(
         dateRange: String?,
@@ -295,6 +309,12 @@ class EventRepositoryImpl(
         nowIso: String,
         todayLocal: kotlinx.datetime.LocalDateTime,
     ): Pair<String, String> {
+        val tz = TimeZone.currentSystemDefault()
+        fun localDayStart(d: kotlinx.datetime.LocalDate): String =
+            d.atStartOfDayIn(tz).toString()
+        fun localDayEndExclusive(d: kotlinx.datetime.LocalDate): String =
+            d.plus(1, DateTimeUnit.DAY).atStartOfDayIn(tz).toString()
+
         val todayDow = todayLocal.date.dayOfWeek
         fun daysUntilFriday(): Int = when (todayDow) {
             DayOfWeek.FRIDAY -> 7; DayOfWeek.SATURDAY -> 6; DayOfWeek.SUNDAY -> 5
@@ -309,13 +329,13 @@ class EventRepositoryImpl(
         val resolved = when (dateRange) {
             "today" -> {
                 val tomorrow = todayLocal.date.plus(1, DateTimeUnit.DAY)
-                nowIso to "${tomorrow}T00:00:00Z"
+                nowIso to localDayStart(tomorrow)
             }
             "this_weekend" -> {
                 val fridayDays = if (todayDow == DayOfWeek.FRIDAY || todayDow == DayOfWeek.SATURDAY || todayDow == DayOfWeek.SUNDAY) 0 else daysUntilFriday()
                 val friday = todayLocal.date.plus(if (fridayDays == 0) 0 else fridayDays, DateTimeUnit.DAY)
                 val monday = todayLocal.date.plus(daysUntilEndOfWeekend(), DateTimeUnit.DAY)
-                "${friday}T00:00:00Z" to "${monday}T00:00:00Z"
+                localDayStart(friday) to localDayStart(monday)
             }
             "next_weekend" -> {
                 // "Next weekend" = the weekend AFTER this one. daysUntilFriday()
@@ -326,34 +346,35 @@ class EventRepositoryImpl(
                 val skip = if (todayDow == DayOfWeek.FRIDAY || todayDow == DayOfWeek.SATURDAY || todayDow == DayOfWeek.SUNDAY) 0 else 7
                 val nextFriday = todayLocal.date.plus(daysUntilFriday() + skip, DateTimeUnit.DAY)
                 val nextMonday = nextFriday.plus(3, DateTimeUnit.DAY)
-                "${nextFriday}T00:00:00Z" to "${nextMonday}T00:00:00Z"
+                localDayStart(nextFriday) to localDayStart(nextMonday)
             }
             "this_week" -> {
                 val daysUntilSunday = 7 - todayDow.ordinal
                 val end = todayLocal.date.plus(daysUntilSunday + 1, DateTimeUnit.DAY)
-                nowIso to "${end}T00:00:00Z"
+                nowIso to localDayStart(end)
             }
             "next_week" -> {
                 val days = (DayOfWeek.MONDAY.ordinal - todayDow.ordinal + 7) % 7
                 val nextMonday = todayLocal.date.plus(if (days == 0) 7 else days, DateTimeUnit.DAY)
                 val nextSunday = nextMonday.plus(7, DateTimeUnit.DAY)
-                "${nextMonday}T00:00:00Z" to "${nextSunday}T00:00:00Z"
+                localDayStart(nextMonday) to localDayStart(nextSunday)
             }
             "this_month" -> {
                 val end = todayLocal.date.plus(30, DateTimeUnit.DAY)
-                nowIso to "${end}T00:00:00Z"
+                nowIso to localDayStart(end)
             }
             "custom" -> {
                 if (startDate != null) {
-                    val end = endDate ?: startDate
-                    "${startDate}T00:00:00Z" to "${end}T23:59:59Z"
+                    val start = LocalDate.parse(startDate)
+                    val end = endDate?.let { LocalDate.parse(it) } ?: start
+                    localDayStart(start) to localDayEndExclusive(end)
                 } else null
             }
             else -> null
         } ?: run {
-            val rangeStart = startDate?.let { "${it}T00:00:00Z" } ?: nowIso
-            val rangeEnd = endDate?.let { "${it}T23:59:59Z" }
-                ?: (todayLocal.date.plus(90, DateTimeUnit.DAY).toString() + "T00:00:00Z")
+            val rangeStart = startDate?.let { localDayStart(LocalDate.parse(it)) } ?: nowIso
+            val rangeEnd = endDate?.let { localDayEndExclusive(LocalDate.parse(it)) }
+                ?: localDayStart(todayLocal.date.plus(90, DateTimeUnit.DAY))
             rangeStart to rangeEnd
         }
         return resolved

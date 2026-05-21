@@ -1,5 +1,8 @@
 package live.localapp.local.ui.plans
 
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -26,6 +29,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.ClickableText
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
@@ -45,11 +49,18 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import live.localapp.local.ui.theme.AppColors
@@ -66,6 +77,63 @@ private fun colorForUser(userId: String): Color {
     val hash = userId.hashCode()
     val idx = ((hash % AVATAR_PALETTE.size) + AVATAR_PALETTE.size) % AVATAR_PALETTE.size
     return AVATAR_PALETTE[idx]
+}
+
+private val RICH_PATTERN = Regex("""\[([^\]]+)\]\(([^)]+)\)|\*\*([^*]+)\*\*|\*([^*]+)\*""")
+
+@Composable
+private fun RichBoText(
+    text: String,
+    color: Color,
+    linkColor: Color = AppColors.Coral,
+    modifier: Modifier = Modifier,
+) {
+    val uriHandler = LocalUriHandler.current
+    val annotated = remember(text) {
+        buildAnnotatedString {
+            var cursor = 0
+            for (match in RICH_PATTERN.findAll(text)) {
+                if (match.range.first > cursor) {
+                    append(text.substring(cursor, match.range.first))
+                }
+                val groups = match.groupValues
+                when {
+                    groups[1].isNotEmpty() -> {
+                        pushStringAnnotation(tag = "URL", annotation = groups[2])
+                        withStyle(SpanStyle(color = linkColor, textDecoration = TextDecoration.Underline)) {
+                            append(groups[1])
+                        }
+                        pop()
+                    }
+                    groups[3].isNotEmpty() -> {
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(groups[3]) }
+                    }
+                    groups[4].isNotEmpty() -> {
+                        withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(groups[4]) }
+                    }
+                }
+                cursor = match.range.last + 1
+            }
+            if (cursor < text.length) {
+                append(text.substring(cursor))
+            }
+        }
+    }
+    ClickableText(
+        text = annotated,
+        modifier = modifier,
+        style = TextStyle(
+            fontFamily = AppFonts.Body,
+            fontWeight = FontWeight.SemiBold,
+            fontSize = 14.sp,
+            color = color,
+            lineHeight = 19.sp,
+        ),
+        onClick = { offset ->
+            annotated.getStringAnnotations(tag = "URL", start = offset, end = offset)
+                .firstOrNull()?.let { uriHandler.openUri(it.item) }
+        },
+    )
 }
 
 @Composable
@@ -86,9 +154,21 @@ fun PlanChatScreen(
         }
     }
 
+    // Approximation of iOS sheet open transition: subtle scale-up + corner-radius fade
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { visible = true }
+    val scale by animateFloatAsState(if (visible) 1f else 0.94f, animationSpec = spring(dampingRatio = 0.9f))
+    val sheetRadius by animateDpAsState(if (visible) 0.dp else 16.dp)
+
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                clip = true
+                shape = RoundedCornerShape(sheetRadius)
+            }
             .background(AppColors.Snow)
             .imePadding(),
     ) {
@@ -326,16 +406,20 @@ private fun MessageRow(
                         )
                         .padding(horizontal = 12.dp, vertical = 10.dp),
                 ) {
-                    Text(
-                        msg.text,
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 14.sp,
-                            color = if (msg.isCurrentUser) Color.White else AppColors.Ink,
-                            lineHeight = 19.sp,
-                        ),
-                    )
+                    if (msg.isYocal) {
+                        RichBoText(text = msg.text, color = AppColors.Ink)
+                    } else {
+                        Text(
+                            msg.text,
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 14.sp,
+                                color = if (msg.isCurrentUser) Color.White else AppColors.Ink,
+                                lineHeight = 19.sp,
+                            ),
+                        )
+                    }
                 }
 
                 // Emoji picker (shown on long-press)

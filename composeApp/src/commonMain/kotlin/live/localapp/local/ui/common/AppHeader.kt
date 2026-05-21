@@ -15,10 +15,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.ExpandMore
 import androidx.compose.material.icons.outlined.Person
+import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -108,7 +109,9 @@ fun AppHeader(
                     ),
             )
 
-            Spacer(Modifier.width(10.dp))
+            // Push pill + streak + avatar to the right edge — pill now lives next
+            // to the avatar so users always know where the location lives.
+            Spacer(Modifier.weight(1f))
 
             // Location pill — hidden when logged out
             if (showLocationPill && isLoggedIn) {
@@ -129,11 +132,8 @@ fun AppHeader(
                         .padding(horizontal = 8.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (isUnsupportedState) {
-                        Icon(Icons.Outlined.Warning, contentDescription = null, modifier = Modifier.size(12.dp), tint = pillText)
-                    } else {
-                        Box(modifier = Modifier.size(5.dp).background(pillBorder, CircleShape))
-                    }
+                    val leadingIcon = if (isUnsupportedState) Icons.Outlined.Warning else Icons.Outlined.Place
+                    Icon(leadingIcon, contentDescription = null, modifier = Modifier.size(12.dp), tint = pillText)
                     Spacer(Modifier.width(4.dp))
                     Text(
                         "$locationName$radiusLabel",
@@ -145,10 +145,16 @@ fun AppHeader(
                         ),
                         maxLines = 1,
                     )
+                    Spacer(Modifier.width(2.dp))
+                    Icon(
+                        Icons.Outlined.ExpandMore,
+                        contentDescription = null,
+                        modifier = Modifier.size(12.dp),
+                        tint = pillText,
+                    )
                 }
+                Spacer(Modifier.width(8.dp))
             }
-
-            Spacer(Modifier.weight(1f))
 
             // Streak badge — hidden until feature is finalized
             val showStreakBadge = false

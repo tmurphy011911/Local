@@ -5,8 +5,10 @@ import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
@@ -42,6 +44,10 @@ fun Modifier.pressable(
     val animatable = remember { Animatable(1f) }
     val scope = rememberCoroutineScope()
     val hapticFeedback = LocalHapticFeedback.current
+    // pointerInput(enabled) captures its block once and only re-launches when `enabled` flips,
+    // so an `onClick` reference captured directly inside detectTapGestures goes stale across
+    // recompositions (sticky until app restart). rememberUpdatedState routes through the latest.
+    val currentOnClick by rememberUpdatedState(onClick)
     return this
         .graphicsLayer {
             scaleX = animatable.value
@@ -58,7 +64,7 @@ fun Modifier.pressable(
                     }
                     if (released) {
                         if (haptic) hapticFeedback.performHapticFeedback(HapticFeedbackType.LongPress)
-                        onClick()
+                        currentOnClick()
                     }
                 },
             )

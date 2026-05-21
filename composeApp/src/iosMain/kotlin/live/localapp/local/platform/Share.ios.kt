@@ -4,8 +4,15 @@ import kotlinx.cinterop.ExperimentalForeignApi
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 import live.localapp.local.ShareBridge
+import platform.Foundation.NSUserDefaults
 import platform.UIKit.UIPasteboard
 import platform.UIKit.UIPasteboardDetectionPatternProbableWebURL
+
+// One-shot gate: after first launch, never read the pasteboard again. The read
+// is only useful for deferred deep linking (App Store install path), which by
+// definition is first-launch-only. Universal Links route via DeepLinkBridge
+// without touching the pasteboard. Bump the suffix to re-arm.
+private const val CLIPBOARD_GATE_KEY = "clipboard_deeplink_checked_v1"
 
 @OptIn(ExperimentalForeignApi::class)
 actual fun presentShareSheet(text: String, url: String) {
@@ -14,9 +21,15 @@ actual fun presentShareSheet(text: String, url: String) {
 
 @OptIn(ExperimentalForeignApi::class)
 actual suspend fun checkClipboardForDeepLink(): String? {
-    // Probe the pasteboard silently for a URL pattern. detectPatternsForPatterns
-    // does not trigger the iOS 14+ "would like to paste" system prompt — only
-    // reading .string does. So we only read the string if a URL is detected.
+    val defaults = NSUserDefaults.standardUserDefaults
+    if (defaults.boolForKey(CLIPBOARD_GATE_KEY)) {
+        println("DeepLink: clipboard gate set, skipping pasteboard read")
+        return null
+    }
+    // Set the flag before reading so we can never re-prompt on this install
+    // even if the read below crashes or the user dismisses.
+    defaults.setBool(true, forKey = CLIPBOARD_GATE_KEY)
+
     val pasteboard = UIPasteboard.generalPasteboard
     val hasUrlPattern = suspendCoroutine<Boolean> { cont ->
         pasteboard.detectPatternsForPatterns(
@@ -30,7 +43,6 @@ actual suspend fun checkClipboardForDeepLink(): String? {
 
     val clip = pasteboard.string ?: return null
     if (!clip.contains("localapp.live/")) return null
-    // Extract path: /p/token, /e/id, /v/id
     val regex = Regex("localapp\\.live(/[pev]/[A-Za-z0-9_-]+)")
     val match = regex.find(clip) ?: return null
     return match.groupValues[1]
@@ -43,8 +55,8 @@ actual fun clearClipboardDeepLink() {
     }
 }
 
-actual fun setDeepLinkCallback(onPlanToken: (String) -> Unit) {
-    live.localapp.local.DeepLinkBridge.onPlanShareTokenReceived = onPlanToken
+actual fun setDeepLinkCallback(onDeepLinkPath: (String) -> Unit) {
+    live.localapp.local.DeepLinkBridge.registerCallback(onDeepLinkPath)
 }
 
 actual fun purchaseSubscription(isAnnual: Boolean, onResult: (Boolean) -> Unit) {

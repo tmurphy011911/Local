@@ -37,7 +37,7 @@ private data class PlanDto(
 )
 
 @Serializable
-private data class PlanDayDto(
+internal data class PlanDayDto(
     val label: String,
     @SerialName("short_name") val shortName: String,
     val slots: List<PlanSlotDto> = emptyList(),
@@ -45,7 +45,7 @@ private data class PlanDayDto(
 )
 
 @Serializable
-private data class PlanSlotDto(
+internal data class PlanSlotDto(
     val id: String,
     val time: String,
     val emoji: String = "",
@@ -81,7 +81,7 @@ private data class PlanSlotDto(
 )
 
 @Serializable
-private data class PlanTravelDto(
+internal data class PlanTravelDto(
     val mode: String,
     val mins: Int,
 )
@@ -100,7 +100,14 @@ private data class PlanInsertDto(
 
 // ── Mappers ──
 
-private fun PlanSlot.toDto() = PlanSlotDto(
+internal fun PlanDay.toDto() = PlanDayDto(
+    label = label,
+    shortName = shortName,
+    slots = slots.map { it.toDto() },
+    travel = travel.map { PlanTravelDto(it.mode, it.mins) },
+)
+
+internal fun PlanSlot.toDto() = PlanSlotDto(
     id = id, time = time, emoji = emoji, name = name, detail = detail, price = price,
     isFree = isFree, eventId = eventId, isCustom = isCustom, isBoWeb = isBoWeb,
     boWebState = boWebState, imageUrl = imageUrl,
@@ -380,27 +387,29 @@ class PlanRepositoryImpl(
 
     override suspend fun updatePlan(plan: Plan) {
         if (plan.id.isBlank()) return
-        try {
-            val dayDtos = plan.days.map { day ->
-                PlanDayDto(
-                    label = day.label,
-                    shortName = day.shortName,
-                    slots = day.slots.map { it.toDto() },
-                    travel = day.travel.map { PlanTravelDto(it.mode, it.mins) },
-                )
-            }
-            supabaseClient.from("plans").update({
-                set("days", json.encodeToJsonElement(
-                    kotlinx.serialization.serializer<List<PlanDayDto>>(), dayDtos
-                ))
-                set("name", plan.title)
-            }) {
-                filter { eq("id", plan.id) }
-            }
-            println("PlanRepository.updatePlan: SUCCESS '${plan.title}'")
-        } catch (e: Throwable) {
-            println("PlanRepository.updatePlan error: ${e::class.simpleName}: ${e.message}")
+        val dayDtos = plan.days.map { day ->
+            PlanDayDto(
+                label = day.label,
+                shortName = day.shortName,
+                slots = day.slots.map { it.toDto() },
+                travel = day.travel.map { PlanTravelDto(it.mode, it.mins) },
+            )
         }
+        // Writes every column the syncer can mutate so a single call covers
+        // any pending op type (slot edits, rename, group-size, attendee-edit
+        // toggle). Throws on failure — callers that need fire-and-forget
+        // semantics should wrap in their own try/catch.
+        supabaseClient.from("plans").update({
+            set("days", json.encodeToJsonElement(
+                kotlinx.serialization.serializer<List<PlanDayDto>>(), dayDtos
+            ))
+            set("name", plan.title)
+            set("group_size", plan.groupSize)
+            set("attendees_can_edit", plan.attendeesCanEdit)
+        }) {
+            filter { eq("id", plan.id) }
+        }
+        println("PlanRepository.updatePlan: SUCCESS '${plan.title}'")
     }
 
     override suspend fun deletePlan(planId: String) {

@@ -285,4 +285,5 @@ private fun actionLabel(action: BoStructuredResponse.Suggestions.Action): String
     BoStructuredResponse.Suggestions.Action.LATE_NIGHT -> "Late night"
     BoStructuredResponse.Suggestions.Action.DIFFERENT_DAY -> "Different day"
     BoStructuredResponse.Suggestions.Action.MORE_RESULTS -> "More results"
+    BoStructuredResponse.Suggestions.Action.BUILD_FROM_WEB -> "Build a plan"
 }

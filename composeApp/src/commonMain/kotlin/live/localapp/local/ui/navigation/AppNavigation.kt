@@ -71,6 +71,9 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
@@ -288,22 +291,32 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         }
     }
 
-    // Listen for Universal Link deep links while app is running (iOS bridge)
+    // Listen for Universal Link deep links while app is running. Callback receives
+    // the full URL path with prefix (/p/{token}, /e/{id}, /v/{id}).
     LaunchedEffect(Unit) {
         setDeepLinkCallback { path ->
             scope.launch {
                 when {
-                    path.length == 12 || !path.contains("-") -> {
-                        // Plan share token (12 chars, no dashes)
-                        val plan = planRepo.getSharedPlan(path)
+                    path.startsWith("/p/") -> {
+                        val token = path.removePrefix("/p/")
+                        val plan = planRepo.getSharedPlan(token)
                         if (plan != null) {
-                            clearClipboardDeepLink()
                             if (userAlreadyHasPlan(plan)) {
                                 selectedPlan = plan
                             } else {
                                 sharedPlan = plan
                             }
                         }
+                    }
+                    path.startsWith("/e/") -> {
+                        val eventId = path.removePrefix("/e/")
+                        val event = eventRepo.getEvent(eventId)
+                        if (event != null) sharedEvent = event
+                    }
+                    path.startsWith("/v/") -> {
+                        val venueId = path.removePrefix("/v/")
+                        val venue = venueRepo.getVenuesByIds(listOf(venueId)).firstOrNull()
+                        if (venue != null) sharedVenue = venue
                     }
                 }
             }
@@ -587,6 +600,8 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             isLoggedIn = isLoggedIn,
                             locationName = homeState.locationName,
                             streakDays = homeState.streakDays,
+                            isUnsupportedState = homeState.isUnsupportedState,
+                            radiusFilter = homeState.radiusFilter,
                         )
                     }
                     Tab.PLANS -> {
@@ -922,6 +937,8 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             isLoggedIn = isLoggedIn,
                             locationName = homeState.locationName,
                             streakDays = homeState.streakDays,
+                            isUnsupportedState = homeState.isUnsupportedState,
+                            radiusFilter = homeState.radiusFilter,
                             onBuildPlanFromEvent = { eventId, eventTitle ->
                                 // Embed the literal event ID so Bo treats this
                                 // as a "use this exact event_id, don't search
@@ -1415,7 +1432,14 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     homeVm.setLocationMode(live.localapp.local.ui.home.LocationMode.MANUAL)
                 },
                 onSelectManualLocation = { lat, lng, name -> homeVm.setManualLocation(lat, lng, name) },
-                onRadiusChanged = { homeVm.setRadiusFilter(it) },
+                onRadiusChanged = {
+                    // Mirror to both VMs — the AppHeader pill on Explore reads
+                    // placesState.radiusFilter, on Home it reads homeState.radiusFilter.
+                    // Without the second call, picking a radius from the sheet would
+                    // update one tab's pill and leave the other showing just the city.
+                    homeVm.setRadiusFilter(it)
+                    placesVm.setRadiusFilter(it)
+                },
                 onDismiss = { showLocationSheet = false },
                 isUnsupportedState = homeState.isUnsupportedState,
             )
@@ -1481,14 +1505,12 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     showChat = false
                 },
                 sheetState = chatSheetState,
-                containerColor = if (showPaywall) Color(0xFF1A1523) else if (showTutorial) AppColors.Snow else AppColors.Snow,
+                containerColor = AppColors.Snow,
                 dragHandle = {
-                    val handleBg = if (showPaywall) Color(0xFF1A1523) else AppColors.Snow
-                    val handleColor = if (showPaywall) Color.White.copy(alpha = 0.2f) else AppColors.Pebble
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(handleBg)
+                            .background(AppColors.Snow)
                             .padding(top = 10.dp, bottom = 4.dp),
                         contentAlignment = Alignment.Center,
                     ) {
@@ -1496,7 +1518,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             modifier = Modifier
                                 .width(36.dp)
                                 .height(4.dp)
-                                .background(handleColor, RoundedCornerShape(2.dp)),
+                                .background(AppColors.Pebble, RoundedCornerShape(2.dp)),
                         )
                     }
                 },
@@ -1524,16 +1546,58 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 showTutorial = false
                             },
                         )
-                    } else if (showPaywall) {
-                        // Fetch dynamic pricing from RevenueCat
-                        var rcMonthly by remember { mutableStateOf<String?>(null) }
-                        var rcAnnual by remember { mutableStateOf<String?>(null) }
-                        var rcIntro by remember { mutableStateOf<String?>(null) }
-                        LaunchedEffect(Unit) {
-                            live.localapp.local.platform.fetchSubscriptionPricing { m, a, i ->
-                                rcMonthly = m; rcAnnual = a; rcIntro = i
-                            }
-                        }
+                    } else {
+                        ChatScreen(
+                            viewModel = chatVm,
+                            onBack = { dismissChat(null) },
+                            onNavigateToPlans = {
+                                dismissChat {
+                                    selectedTab = Tab.PLANS
+                                    // Force refresh even if already on Plans tab
+                                    val plansVm = koin.get<PlansViewModel>()
+                                    plansVm.refresh()
+                                }
+                            },
+                            onNavigateHome = { dismissChat { selectedTab = Tab.HOME } },
+                            onLoginRequired = {
+                                // Close chat and navigate to auth
+                                dismissChat {
+                                    // TODO: show auth sheet or navigate to login
+                                    // For now, show an alert-style message
+                                }
+                            },
+                            showUpgradeBanner = premiumGate.hasDeclinedPaywall,
+                            onUpgrade = { showPaywall = true },
+                        )
+                    }
+                }
+            }
+
+            // Paywall — fullscreen Dialog overlay (iOS parity).
+            // Rendered as a sibling to the chat sheet so it covers the whole screen
+            // instead of being constrained to the 92%-height bottom sheet.
+            if (showPaywall) {
+                // Fetch dynamic pricing from RevenueCat
+                var rcMonthly by remember { mutableStateOf<String?>(null) }
+                var rcAnnual by remember { mutableStateOf<String?>(null) }
+                var rcIntro by remember { mutableStateOf<String?>(null) }
+                LaunchedEffect(Unit) {
+                    live.localapp.local.platform.fetchSubscriptionPricing { m, a, i ->
+                        rcMonthly = m; rcAnnual = a; rcIntro = i
+                    }
+                }
+                Dialog(
+                    onDismissRequest = {
+                        showPaywall = false
+                        pendingPlanSaveAfterPaywall = false
+                    },
+                    properties = DialogProperties(
+                        usePlatformDefaultWidth = false,
+                        dismissOnBackPress = true,
+                        dismissOnClickOutside = false,
+                    ),
+                ) {
+                    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF1A1523))) {
                         live.localapp.local.ui.chat.PremiumPaywall(
                             monthlyPrice = rcMonthly,
                             annualPrice = rcAnnual,
@@ -1593,30 +1657,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 pendingPlanSaveAfterPaywall = false
                             },
                         )
-                    } else {
-                    ChatScreen(
-                        viewModel = chatVm,
-                        onBack = { dismissChat(null) },
-                        onNavigateToPlans = {
-                            dismissChat {
-                                selectedTab = Tab.PLANS
-                                // Force refresh even if already on Plans tab
-                                val plansVm = koin.get<PlansViewModel>()
-                                plansVm.refresh()
-                            }
-                        },
-                        onNavigateHome = { dismissChat { selectedTab = Tab.HOME } },
-                        onLoginRequired = {
-                            // Close chat and navigate to auth
-                            dismissChat {
-                                // TODO: show auth sheet or navigate to login
-                                // For now, show an alert-style message
-                            }
-                        },
-                        showUpgradeBanner = premiumGate.hasDeclinedPaywall,
-                        onUpgrade = { showPaywall = true },
-                    )
-                    } // end else (chat content)
+                    }
                 }
             }
         }
@@ -1707,7 +1748,12 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
 private val NAV_TABS = listOf(Tab.HOME, Tab.PLACES, Tab.PLANS)
 
 @Composable
-private fun BottomTabBar(selectedTab: Tab, onSelect: (Tab) -> Unit, onCreatePlanClick: () -> Unit = {}, userInitial: String = "") {
+private fun BottomTabBar(
+    selectedTab: Tab,
+    onSelect: (Tab) -> Unit,
+    onCreatePlanClick: () -> Unit = {},
+    userInitial: String = "",
+) {
     val haptic = LocalHapticFeedback.current
     val pillShape = RoundedCornerShape(22.dp)
 
@@ -1717,17 +1763,17 @@ private fun BottomTabBar(selectedTab: Tab, onSelect: (Tab) -> Unit, onCreatePlan
             .windowInsetsPadding(WindowInsets.navigationBars)
             .padding(bottom = 4.dp),
     ) {
-        // Floating pill — left side, narrower to make room for wider Create Plan pill
+        // Floating pill — left side, narrower to make room for Create Plan pill
         Row(
             modifier = Modifier
                 .align(Alignment.BottomStart)
                 .padding(start = 16.dp, end = 178.dp) // room for Create Plan button + margin
                 .height(52.dp)
                 .background(
-                    Color(0xFFF0EDF6).copy(alpha = 0.75f),
+                    Color(0xFFF0EDF6).copy(alpha = 0.92f),
                     pillShape,
                 )
-                .border(1.dp, Color(0xFFE0DCE8).copy(alpha = 0.6f), pillShape)
+                .border(0.5.dp, Color(0xFFE0DCE8).copy(alpha = 0.6f), pillShape)
                 .clip(pillShape)
                 .padding(horizontal = 4.dp),
             horizontalArrangement = Arrangement.SpaceEvenly,
@@ -1758,7 +1804,7 @@ private fun BottomTabBar(selectedTab: Tab, onSelect: (Tab) -> Unit, onCreatePlan
                         if (tab == Tab.PROFILE && userInitial.isNotEmpty()) {
                             Box(
                                 modifier = Modifier
-                                    .size(20.dp)
+                                    .size(12.dp)
                                     .background(
                                         if (isSelected) AppColors.Coral else AppColors.Ink3,
                                         CircleShape,
@@ -1770,7 +1816,7 @@ private fun BottomTabBar(selectedTab: Tab, onSelect: (Tab) -> Unit, onCreatePlan
                                     style = TextStyle(
                                         fontFamily = AppFonts.Body,
                                         fontWeight = FontWeight.Black,
-                                        fontSize = 10.sp,
+                                        fontSize = 11.sp,
                                         color = Color.White,
                                     ),
                                 )
@@ -1798,7 +1844,7 @@ private fun BottomTabBar(selectedTab: Tab, onSelect: (Tab) -> Unit, onCreatePlan
             }
         }
 
-        // Create Plan pill — separate, bottom right
+        // Create Plan pill — bottom right.
         live.localapp.local.ui.plans.CreatePlanButton(
             onClick = onCreatePlanClick,
             modifier = Modifier

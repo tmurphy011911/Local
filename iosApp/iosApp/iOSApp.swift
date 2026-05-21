@@ -29,18 +29,9 @@ struct iOSApp: App {
     private func handleDeepLink(_ url: URL) {
         guard url.host() == "localapp.live" || url.host == "localapp.live" else { return }
         let path = url.path
-
-        // Copy URL to clipboard for Compose deep link check on next launch/resume
-        UIPasteboard.general.string = url.absoluteString
-
-        // /p/{token} — shared plan. Uses receiveToken so the token is buffered
-        // if Compose hasn't registered its callback yet (cold-start race).
-        if path.hasPrefix("/p/") {
-            let token = String(path.dropFirst(3))
-            if !token.isEmpty {
-                DeepLinkBridge.shared.receiveToken(token: token)
-            }
+        // Buffer the path if Compose hasn't mounted its callback yet (cold-start race).
+        if path.hasPrefix("/p/") || path.hasPrefix("/e/") || path.hasPrefix("/v/") {
+            DeepLinkBridge.shared.receivePath(path: path)
         }
-        // /e/{id} and /v/{id} are handled via clipboard check in AppNavigation
     }
 }

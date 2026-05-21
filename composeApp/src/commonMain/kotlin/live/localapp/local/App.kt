@@ -63,9 +63,19 @@ fun App() {
         val supabaseClient = remember { KoinPlatform.getKoin().get<SupabaseClient>() }
         val userPrefsRepo = remember { KoinPlatform.getKoin().get<UserPreferencesRepository>() }
 
+        // Resolve the PlanSyncer once at startup so its drain loop is alive
+        // for the full session and any persisted ops from a prior run drain
+        // immediately. Without this, the syncer would only spin up the first
+        // time a ViewModel happens to ask for it.
+        remember { KoinPlatform.getKoin().get<live.localapp.local.data.sync.PlanSyncer>() }
+
         var appState by remember { mutableStateOf(AppState.SPLASH) }
         var userLat by remember { mutableStateOf<Double?>(null) }
         var userLng by remember { mutableStateOf<Double?>(null) }
+        // Set by the splash's session-check LaunchedEffect. The splash always
+        // plays its full animation; on completion we route here (HOME if the
+        // user is already authenticated, otherwise AUTH or DEEP_LINK).
+        var postSplashRoute by remember { mutableStateOf<AppState?>(null) }
 
         // Version check
         var versionResult by remember { mutableStateOf<live.localapp.local.domain.service.VersionCheckResult?>(null) }
@@ -98,19 +108,39 @@ fun App() {
         // callback, which may fire any time after cold-start.
         val appScope = rememberCoroutineScope()
 
-        // Register a pre-auth deep-link callback. iOS onOpenURL often fires AFTER
-        // Compose renders, so this catches Universal Link /p/{token} tokens that
-        // arrive too late for the clipboard check below. DeepLinkBridge on iOS
-        // buffers the token if this callback hasn't been registered yet.
+        // Pre-auth deep-link callback. iOS onOpenURL / Android onNewIntent may fire
+        // AFTER Compose renders, so this catches Universal Links that arrive too
+        // late for the splash clipboard check below. The bridge buffers paths
+        // received before this callback is registered.
         LaunchedEffect(Unit) {
-            setDeepLinkCallback { token ->
+            setDeepLinkCallback { path ->
                 appScope.launch {
                     try {
-                        val plan = KoinPlatform.getKoin().get<PlanRepository>().getSharedPlan(token)
-                        if (plan != null) {
-                            deepLinkContent = DeepLinkContent.SharedPlan(plan)
-                            clearClipboardDeepLink()
-                            println("App: deep link plan via callback '${plan.title}'")
+                        when {
+                            path.startsWith("/p/") -> {
+                                val token = path.removePrefix("/p/")
+                                val plan = KoinPlatform.getKoin().get<PlanRepository>().getSharedPlan(token)
+                                if (plan != null) {
+                                    deepLinkContent = DeepLinkContent.SharedPlan(plan)
+                                    println("App: deep link plan via callback '${plan.title}'")
+                                }
+                            }
+                            path.startsWith("/e/") -> {
+                                val eventId = path.removePrefix("/e/")
+                                val event = KoinPlatform.getKoin().get<EventRepository>().getEvent(eventId)
+                                if (event != null) {
+                                    deepLinkContent = DeepLinkContent.SharedEvent(event)
+                                    println("App: deep link event via callback '${event.title}'")
+                                }
+                            }
+                            path.startsWith("/v/") -> {
+                                val venueId = path.removePrefix("/v/")
+                                val venue = KoinPlatform.getKoin().get<VenueRepository>().getVenuesByIds(listOf(venueId)).firstOrNull()
+                                if (venue != null) {
+                                    deepLinkContent = DeepLinkContent.SharedVenue(venue)
+                                    println("App: deep link venue via callback '${venue.name}'")
+                                }
+                            }
                         }
                     } catch (_: Exception) {}
                 }
@@ -129,7 +159,8 @@ fun App() {
             AppState.SPLASH -> {
                 SplashScreen(onComplete = {
                     if (appState == AppState.SPLASH) {
-                        appState = if (deepLinkContent != null) AppState.DEEP_LINK else AppState.AUTH
+                        appState = postSplashRoute
+                            ?: if (deepLinkContent != null) AppState.DEEP_LINK else AppState.AUTH
                     }
                 })
 
@@ -172,6 +203,11 @@ fun App() {
                         } catch (_: Exception) {}
                     }
 
+                    // Resolve the post-splash destination in parallel with the
+                    // splash animation. We never set appState here — that would
+                    // cut the splash off mid-play. Instead we stash the resolved
+                    // route in postSplashRoute and let SplashScreen.onComplete
+                    // pick it up when the animation finishes naturally.
                     try {
                         val session = supabaseClient.auth.currentSessionOrNull()
                         if (session != null) {
@@ -180,27 +216,26 @@ fun App() {
                                 authUserId = userId
                                 val recovered = userPrefsRepo.recoverProfileByAuthId(userId)
                                 if (recovered != null) {
-                                    appState = AppState.HOME
+                                    postSplashRoute = AppState.HOME
                                     return@LaunchedEffect
                                 }
                             }
                         }
-                        // Also check legacy local cache
                         val alreadyOnboarded = userPrefsRepo.isOnboardingComplete()
                         if (alreadyOnboarded) {
-                            appState = AppState.HOME
+                            postSplashRoute = AppState.HOME
                             return@LaunchedEffect
                         }
                         val recoveredId = userPrefsRepo.recoverProfile()
                         if (recoveredId != null) {
-                            appState = AppState.HOME
+                            postSplashRoute = AppState.HOME
                             return@LaunchedEffect
                         }
-                        // Not authenticated — splash onComplete will set AUTH or SHARED_PLAN
+                        // Not authenticated — splash onComplete will set AUTH or DEEP_LINK
                     } catch (_: Exception) {
                         val alreadyOnboarded = userPrefsRepo.isOnboardingComplete()
                         if (alreadyOnboarded) {
-                            appState = AppState.HOME
+                            postSplashRoute = AppState.HOME
                         }
                     }
                 }

@@ -64,7 +64,7 @@ async function fetchVenues() {
 
 // ── Claude ranking ──
 
-const RANKING_PROMPT = `You are ranking venues for a local event discovery app. For each venue, assign a public_interest_rank from 1 to 100 based on:
+const RANKING_PROMPT = `You are ranking venues for a local event discovery app. For each venue, assign a public_interest_rank from 0 to 100 based on:
 
 - **Popularity** (20%): How well-known is this venue? Major landmarks and famous spots score higher.
 - **Event likelihood** (30%): How likely is this venue to host public events regularly? Concert halls, theaters, and event spaces score high. A random small shop scores low.
@@ -79,10 +79,22 @@ Scoring guide:
 - 10-29: Unlikely to host events, low public interest (e.g., small office park, generic business)
 - 1-9: Not relevant for event discovery at all
 
+HARD ZERO (always rank=0, no exceptions — these venue types are excluded from
+the app entirely. Their events get filtered downstream because rank ≤ 10 is the
+low-rank floor):
+- Strip clubs, gentlemen's clubs, cabarets, adult entertainment, "showgirls"
+- Golf courses, country clubs, golf clubs (public OR private — the product
+  owner's call, golf venues don't fit the app's event-discovery shape)
+
+Look at the venue name AND category. "Brae Burn Country Club", "Stonybrook
+Golf Course", "The Foxy Lady" → 0. "Topgolf" entertainment venues are a gray
+area; treat them as 0 too unless the category is explicitly "entertainment_
+center" or similar without "golf" in the type.
+
 Return ONLY a JSON array of objects with "id" and "rank" fields. No explanation, no markdown fences.
 
 Example response:
-[{"id":"abc-123","rank":85},{"id":"def-456","rank":42}]`;
+[{"id":"abc-123","rank":85},{"id":"def-456","rank":42},{"id":"ghi-789","rank":0}]`;
 
 async function rankBatch(venues) {
   const venueList = venues

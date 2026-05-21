@@ -109,7 +109,11 @@ Deno.serve(async (req) => {
     .lte("venue_lat", lat + latDelta)
     .gte("venue_lng", lng - lngDelta)
     .lte("venue_lng", lng + lngDelta)
-    .neq("subcategory", "no-public-interest")
+    // PostgREST `.neq(col, x)` translates to SQL `col <> x`, which
+    // evaluates NULL for null cells and excludes those rows. Use the
+    // explicit OR-with-IS-NULL idiom so events with null subcategory
+    // (most crawler-sourced events) aren't silently dropped.
+    .or("subcategory.is.null,subcategory.neq.no-public-interest")
     .order("start_at", { ascending: true })
     .limit(80);
 

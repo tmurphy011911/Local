@@ -78,6 +78,9 @@ class PlanChatViewModel(
     private val eventRepo: EventRepository,
     private val venueRepo: VenueRepository,
     private val claudeApi: ClaudeApiService,
+    private val mutationLog: live.localapp.local.data.sync.MutationLog,
+    private val syncer: live.localapp.local.data.sync.PlanSyncer,
+    private val boTools: live.localapp.local.data.bo.BoTools,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(PlanChatUiState(isLoading = true))
@@ -98,7 +101,7 @@ class PlanChatViewModel(
     private val yocalHistory: MutableList<ClaudeMessage> = mutableListOf()
 
     /** Cache of events returned from search_events, keyed by event id. */
-    private val searchResultCache: MutableMap<String, Event> = mutableMapOf()
+    private val searchResultCache: MutableMap<String, Event> get() = boTools.searchResultCache
 
     init {
         loadMessages()
@@ -168,15 +171,16 @@ class PlanChatViewModel(
 
     /** Route to Claude if the current user is allowed to edit, else post a private hint. */
     private suspend fun handleYocalMention(userText: String) {
-        // Refresh the plan from the DB before handing it to Bo. The user
-        // may have deleted or swapped slots from the Plan Detail screen
-        // since this ViewModel was constructed; without a refetch Bo's
-        // CURRENT PLAN context still includes the deleted slot, and any
-        // update_plan tool call rebuilds the day with that slot back in.
+        // Refresh the plan from the server, then replay any unsynced local
+        // mutations on top so Bo sees exactly what the user sees. Without
+        // the replay step Bo would (a) miss recent edits the syncer hasn't
+        // flushed yet and (b) end up with an `update_plan` payload that
+        // re-hydrates slots the user already removed.
         try {
             val fresh = planRepo.getPlan(plan.id)
             if (fresh != null) {
-                plan = fresh
+                val pending = mutationLog.pending.value.filter { it.mutation.planId == plan.id }
+                plan = pending.fold(fresh) { p, record -> record.mutation.applyTo(p) }
             } else {
                 println("PlanChatVM: getPlan(${plan.id}) returned null — falling back to local plan state, may be stale")
             }
@@ -475,6 +479,24 @@ class PlanChatViewModel(
     fun confirmChange() {
         val pending = _uiState.value.pendingConfirmation ?: return
         viewModelScope.launch {
+            // Enqueue a typed ReplaceDay mutation so the syncer is the single
+            // owner of the network write. The reconciler picks the op up
+            // immediately, so the user sees the change before the round-trip
+            // completes — and a failed network call retries instead of being
+            // silently dropped.
+            val opId = "op_chat_" + kotlin.time.Clock.System.now().toEpochMilliseconds().toString(36) +
+                "_" + kotlin.random.Random.nextLong().toString(36)
+            val mutation = live.localapp.local.data.sync.PlanMutation.ReplaceDay(
+                opId = opId,
+                planId = plan.id,
+                createdAt = kotlin.time.Clock.System.now().toEpochMilliseconds(),
+                dayIndex = pending.dayIndex,
+                day = pending.updatedDay,
+            )
+            syncer.enqueue(mutation)
+
+            // Apply locally so this VM's plan reference (which the system
+            // prompt and follow-up turns read from) reflects the change.
             val updatedDays = plan.days.toMutableList()
             if (pending.dayIndex in updatedDays.indices) {
                 updatedDays[pending.dayIndex] = pending.updatedDay
@@ -482,7 +504,6 @@ class PlanChatViewModel(
                 updatedDays.add(pending.updatedDay)
             }
             val updatedPlan = plan.copy(days = updatedDays)
-            planRepo.updatePlan(updatedPlan)
             plan = updatedPlan
             _uiState.update { it.copy(pendingConfirmation = null) }
             postYocalMessage("Done! I've updated the plan.")
@@ -542,32 +563,8 @@ class PlanChatViewModel(
         }
     }
 
-    /** Same shape as ChatViewModel.saveWebFinding — forwards to save-bo-web-finding. */
-    private suspend fun saveWebFinding(input: JsonObject): String {
-        val userId = userPrefsRepo.getLocalUserId() ?: return """{"error": "no_user"}"""
-        val kind = input["kind"]?.jsonPrimitive?.contentOrNull
-            ?: return """{"error": "kind required (event|venue)"}"""
-        val payload = buildJsonObject {
-            put("user_id", JsonPrimitive(userId))
-            put("kind", JsonPrimitive(kind))
-            put("payload", input)
-        }
-        return try {
-            val res = webHttpClient.post("${live.localapp.local.Config.SUPABASE_URL}/functions/v1/save-bo-web-finding") {
-                header("Authorization", "Bearer ${live.localapp.local.Config.SUPABASE_ANON_KEY}")
-                contentType(ContentType.Application.Json)
-                setBody(payload.toString())
-            }
-            val body = res.bodyAsText()
-            if (res.status.value !in 200..299) {
-                println("PlanChatVM save_web_finding error: ${res.status.value} ${body.take(300)}")
-                """{"error": "save failed"}"""
-            } else body
-        } catch (e: Throwable) {
-            println("PlanChatVM save_web_finding exception: ${e.message}")
-            """{"error": "network: ${e.message}"}"""
-        }
-    }
+    private suspend fun saveWebFinding(input: JsonObject): String =
+        boTools.saveWebFinding(input)
 
     private suspend fun searchEvents(input: JsonObject): String {
         val location = input["location"]?.jsonPrimitive?.contentOrNull
@@ -577,8 +574,12 @@ class PlanChatViewModel(
         val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 30
         val startDate = input["start_date"]?.jsonPrimitive?.contentOrNull
         val endDate = input["end_date"]?.jsonPrimitive?.contentOrNull
+        // strict_location defaults to TRUE when a location is set. Bo must
+        // explicitly pass false to widen.
+        val strictLocation = input["strict_location"]?.jsonPrimitive?.booleanOrNull
+            ?: !location.isNullOrBlank()
 
-        val events = eventRepo.searchEvents(
+        val rawEvents = eventRepo.searchEvents(
             location = location ?: plan.city,
             category = category,
             dateRange = dateRange,
@@ -588,6 +589,16 @@ class PlanChatViewModel(
             endDate = endDate,
             radiusMiles = 25.0,
         )
+
+        val events = if (strictLocation && !location.isNullOrBlank()) {
+            val target = location.trim().lowercase()
+            rawEvents.filter { e ->
+                val ec = e.venueCity?.trim()?.lowercase() ?: return@filter false
+                ec == target || ec.contains(target) || target.contains(ec)
+            }.also { kept ->
+                println("PlanChatVM.searchEvents: strict_location=true location='$location' kept ${kept.size}/${rawEvents.size} after city filter")
+            }
+        } else rawEvents
 
         events.forEach { searchResultCache[it.id] = it }
 
@@ -629,22 +640,8 @@ class PlanChatViewModel(
         }
     }
 
-    private suspend fun getEventDetails(input: JsonObject): String {
-        val eventId = input["event_id"]?.jsonPrimitive?.contentOrNull ?: return "missing event_id"
-        val event = searchResultCache[eventId] ?: eventRepo.getEvent(eventId) ?: return "Event not found: $eventId"
-        searchResultCache[eventId] = event
-        return buildString {
-            append("ID: ${event.id}\n")
-            append("Title: ${event.title}\n")
-            append("Venue: ${event.venueName ?: "?"} (${event.venueCity})\n")
-            event.venueAddress?.let { append("Address: $it\n") }
-            event.startAt?.let { append("Date: ${event.dateDisplay}\n") }
-            append("Free: ${event.isFree}\n")
-            if (event.priceDisplay.isNotBlank()) append("Price: ${event.priceDisplay}\n")
-            event.description?.let { append("Description: ${it.take(400)}\n") }
-            event.ticketUrl?.let { append("Tickets: $it\n") }
-        }
-    }
+    private suspend fun getEventDetails(input: JsonObject): String =
+        boTools.getEventDetails(input)
 
     // ── System prompt ──
 
@@ -677,7 +674,6 @@ class PlanChatViewModel(
     private fun buildPlanSystemPrompt(): String {
         val todayLocal = kotlin.time.Clock.System.now()
             .toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault()).date
-        val today = todayLocal.toString()
 
         val planContext = buildString {
             appendLine("CURRENT PLAN (title: \"${plan.title}\") in ${plan.city}:")
@@ -688,7 +684,16 @@ class PlanChatViewModel(
                 // disambiguate ("which Thursday?") even though the plan
                 // is unambiguous from context.
                 val dated = expandLabelWithYearAndIso(day.label, todayLocal)
-                appendLine("Day $i ($dated):")
+                // Inline the exact search_events args needed to add an event
+                // to this day. Bo has been dropping start_date / end_date
+                // when adding to a specific plan day even with the rule in
+                // the prompt — pinning the args literally beside the day
+                // label makes them impossible to miss.
+                val iso = Regex("""\(ISO (\d{4}-\d{2}-\d{2})\)""").find(dated)?.groupValues?.get(1)
+                val pinHint = if (iso != null) {
+                    " — to add or swap events here, call search_events with start_date=\"$iso\" end_date=\"$iso\""
+                } else ""
+                appendLine("Day $i ($dated)$pinHint:")
                 if (day.slots.isEmpty()) appendLine("  (empty)")
                 day.slots.forEach { s ->
                     val tag = when {
@@ -701,69 +706,51 @@ class PlanChatViewModel(
             }
         }
 
-        return """
-You are Bo, an AI assistant helping a group edit an existing plan.
-Today is $today.
-
-$planContext
-
-SCOPE — what you are and aren't (hard rule, single biggest source of bad responses):
-- You help users plan local events, venues, and experiences in their coverage area. That's it.
-- You do NOT answer general-knowledge questions: history, geography, biography, current news, weather (except as it affects an event), sports scores, recipes, homework, advice, biology, etc.
-- When the user mentions a noun (e.g. "Lalibela", "Roxbury", "Symphony"), DO NOT assume it's a topic to research. First treat it as a possible event/venue/neighborhood: run search_events and search_venues with that token. If both return nothing relevant, reply ONE sentence telling the user you didn't find a local match, and offer ONE concrete redirect ("Did you mean a restaurant nearby?" / "Want me to search for events tagged with that?"). Do NOT volunteer history, definitions, or trivia about the noun.
-- web_search is a TOOL FOR FACTS ABOUT EVENTS WE ALREADY HAVE — hours, ticket availability, capacity, weather affecting an outdoor event. It is NOT a general-purpose research engine. If you find yourself wanting to web_search to "explain" or "describe" something, STOP and use the scope-decline path above.
-
-SEARCH DEPTH — keep digging before giving up (hard rule):
-- If search_events returns < 3 results AND the user is browsing or open-ended, you MUST run a second search_events call with broadened terms before responding. Try in order: (1) drop the keyword, (2) drop the category filter, (3) widen the date window, (4) widen the radius.
-- Same applies to search_venues.
-- Never say "I couldn't find anything" after a single search. The user will assume our database is empty.
-- Only after ≥ 2 search attempts may you fall back to web_search (and only for the factual cases above).
-
-EXCLUSIONS — when the user says "not X" (hard rule):
-- Phrases like "not the Red Sox", "something other than X", "no Y", "anything but Z" are EXCLUSIONS. The next response MUST contain ZERO results matching X.
-- Re-run search_events / search_venues with the excluded term explicitly filtered. Do not rely on the previously-cached results — they may include the excluded item.
-- Track exclusions across the conversation. If the user said "not Red Sox" three turns ago, do not surface a Red Sox event on this turn either.
-
-DATE GROUNDING — never derive dates from text (hard rule):
-- When you build or edit a slot in update_plan, the slot's start_at / time / day MUST come from the event row's actual `start_at` field returned by search_events or get_event_details. Never compute a date from words like "tomorrow" or "the show on the 24th" without confirming against the event row.
-- If you can't see the event's start_at, call get_event_details before placing it in a slot.
-- Multi-day plan: each day's events go into THAT day's slots. An event dated 2026-05-24 belongs in the day labeled "Saturday, May 24, 2026", not the next day.
-
-NO PREAMBLE BEFORE SEARCHES (strict):
-- Never say "Let me search…", "Let me check…", "I'll look that up…", or any similar narration before invoking a tool. The UI shows a searching indicator already.
-- Just call the tool. After it finishes, deliver the answer directly. Don't split your response across multiple chat bubbles where one is meta-commentary and the next is the actual content.
-
-DATE OVERLAP INTEGRITY (hard rule):
-- An event whose date is OUTSIDE the user's stated trip/plan window does NOT "overlap" with their dates. Compute it literally: window = [user_start, user_end] inclusive. The event's date(s) must be in that range.
-- Example: User said "June 1-3", you find "Festival, June 11-14". June 11 > June 3 → DOES NOT OVERLAP. Saying so is a hallucination.
-- When an event falls outside the window, drop it silently or flag it honestly: "I also found X on [date], which is outside your June 1-3 window. Want to extend your trip?"
-
-GUIDELINES:
+        return buildString {
+            appendLine("You are Bo, an AI assistant helping a group edit an existing plan.")
+            appendLine()
+            // ABSOLUTE RULES — these come BEFORE any other content so they
+            // can't get lost in a long prompt. Two recurring failures here:
+            // (1) Bo forgets start_date / end_date when adding events to a
+            //     specific day, then narrates the resulting wrong-date
+            //     results to the user.
+            // (2) Bo invents technical errors ("the database is timing
+            //     out") when its own parameters are the cause.
+            // The CURRENT PLAN block below repeats the per-day pin args
+            // inline; the rules below hold Bo to using them.
+            appendLine("ABSOLUTE RULES (highest priority — these override everything else below):")
+            appendLine("1. WHEN ADDING/SWAPPING EVENTS ON A SPECIFIC DAY OF THIS PLAN: your VERY FIRST tool call MUST be search_events with BOTH start_date AND end_date set to that day's ISO date. The CURRENT PLAN block below shows the exact args next to each day label — copy them literally. Never search 'broadly' first, never pass date_range='this_week', never omit either field.")
+            appendLine("2. NEVER FABRICATE ERRORS. Phrases like 'the database is experiencing timeout issues', 'the system is down', 'there's an indexing problem', 'I'm having trouble connecting' are LIES — the system is fine. If a search came back wrong, it's because YOU forgot a parameter (almost always start_date). Fix the parameter and search again silently. NEVER tell the user the system is broken.")
+            appendLine("3. NO PREAMBLE NARRATION. Never type 'I'll search…', 'Let me try a broader search…', 'I notice the results are showing today instead of May 14', or anything else that reports on what tools did or didn't do. The UI shows a searching indicator already — extra text becomes a chat bubble of noise. Just call the tool. When you respond AFTER the final tool, deliver the answer directly.")
+            appendLine()
+            appendLine(planContext)
+            appendLine(live.localapp.local.data.bo.BoPrompt.calendarBlock())
+            appendLine()
+            appendLine(live.localapp.local.data.bo.BoPrompt.sharedRules())
+            appendLine()
+            appendLine("""
+PLAN-EDIT GUIDELINES (specific to this surface):
 - You are responding to a group chat message where someone tagged @Bo (or the legacy @yocal).
-- Your job: suggest a concrete change to the plan.
+- Your job: suggest a concrete change to the plan above.
+- DATE PINNING (HARD RULE — single biggest failure mode here): When the user asks to add or swap an event on a specific day of THIS plan, your VERY FIRST tool call MUST be search_events with BOTH start_date AND end_date set to that day's calendar date in YYYY-MM-DD form. Read the date from the CURRENT PLAN day labels above (every day is shown with its ISO date in parens). Example: user says "add an event to Thursday, May 14, 2026 before dinner" → search_events(start_date="2026-05-14", end_date="2026-05-14", limit=30). DO NOT pass date_range="this_week", DO NOT omit start_date, DO NOT search "broadly" first. The search returns whatever is on May 14; if it's empty, say so honestly in ONE sentence — don't widen the date.
+- LOCATION CONTEXT (HARD RULE): The plan exists in ${plan.city}; that's the default search location. BEFORE searching, look at the OTHER slots on the target day (shown in the CURRENT PLAN block above). If those slots have venue names you recognize as being in a specific neighborhood/town, pass that as `location` to search_events so the new event lands geographically near the rest of the day. Example: target day has "12:30 PM Cafe Escadrille" (Burlington, MA) and "6:30 PM Tempo" (Waltham, MA) — pass location="Waltham" so the new stop is within walking/short-drive distance of the other two. If the target day is empty (no other slots) and the plan's city is broad, default to the plan's city. NEVER suggest a stop that's >30 minutes away from the day's other slots without telling the user honestly: "The closest match I found is in {city} which is ~45 min from your other stops — want me to keep it or look closer?"
+- NO PREAMBLE, NO STATUS NARRATION, NO FABRICATED ERRORS (HARD RULE): Never type "I'll search…", "Let me try a broader search…", "I notice the results are showing today instead of May 14", "The database is experiencing timeout issues", or any sentence that reports on what the tool did or didn't do. The UI shows a searching indicator — anything you write before the next tool call is invisible noise that gets shown as a chat bubble. If a search returns wrong results, FIX YOUR PARAMETERS (probably you forgot start_date) and search again silently — never narrate the retry. NEVER fabricate technical errors ("timeout", "database issues", "system problems"); if the search comes back empty for a reason you can't explain, just say "Nothing's surfacing for May 14 — want me to try a different day?" without referencing the system.
 - Use search_events / search_venues / get_event_details tools to find alternatives.
 - When ready, call `update_plan` with the full updated slot list for the target day.
 - For slots: use event_id when the user wants a real ticketed event, venue_name for restaurants/bars.
 - Do NOT call present_plan — only update_plan is valid in this context (the plan already exists).
 - Keep your text response brief (1-2 sentences). The confirmation UI will handle the details.
 - Do NOT try to delete the plan or change fundamental things (title, dates) — only day slots.
-- If the request is ambiguous, ask a clarifying question.
-""".trimIndent()
+- If the request is genuinely ambiguous (the user didn't name a day or activity), ask ONE clarifying question — but only after you've ruled out searching first.
+""".trimIndent())
+        }
     }
 
     // ── Bo web tools (Phase 1) ────────────────────────────────────────────
 
-    private data class BoWebBudget(
-        val allowWebSearch: Boolean,
-        val allowWebFetch: Boolean,
-        val reason: String,
-        val userState: String?,
-        val liveStatesList: String,
-    )
-
     private val webHttpClient = io.ktor.client.HttpClient()
 
-    private suspend fun fetchBoWebBudget(): BoWebBudget? {
+    private suspend fun fetchBoWebBudget(): live.localapp.local.data.bo.BoWebBudget? {
         val userId = userPrefsRepo.getLocalUserId()
         if (userId == null) {
             println("Bo[web-gate plan]: NULL userId — skipping fetch")
@@ -778,7 +765,7 @@ GUIDELINES:
             println("Bo[web-gate plan]: status=${res.status.value} body=${body.take(300)}")
             if (res.status.value !in 200..299) return null
             val obj = kotlinx.serialization.json.Json.parseToJsonElement(body).jsonObject
-            BoWebBudget(
+            live.localapp.local.data.bo.BoWebBudget(
                 allowWebSearch = obj["allow_web_search"]?.jsonPrimitive?.booleanOrNull == true,
                 allowWebFetch = obj["allow_web_fetch"]?.jsonPrimitive?.booleanOrNull == true,
                 reason = obj["reason"]?.jsonPrimitive?.contentOrNull ?: "unknown",
@@ -791,81 +778,16 @@ GUIDELINES:
         }
     }
 
-    private fun augmentSystemPromptWithBudget(systemPrompt: String, budget: BoWebBudget?): String {
+    private fun augmentSystemPromptWithBudget(
+        systemPrompt: String,
+        budget: live.localapp.local.data.bo.BoWebBudget?,
+    ): String {
         if (budget == null) {
             println("Bo[web-gate plan]: NULL budget — web tools NOT included")
             return systemPrompt
         }
         println("Bo[web-gate plan]: reason=${budget.reason} allowSearch=${budget.allowWebSearch}")
-        val lines = buildString {
-            appendLine()
-            appendLine("============================================")
-            appendLine("WEB SEARCH IS ${if (budget.allowWebSearch) "AVAILABLE" else "DISABLED"}")
-            appendLine("============================================")
-            when (budget.reason) {
-                "ok" -> {
-                    appendLine("You have web_search and web_fetch tools available, but use them SPARINGLY.")
-                    appendLine("They are NOT a general-purpose research engine — they exist to verify facts")
-                    appendLine("ABOUT events and venues we already have in our database.")
-                    appendLine("")
-                    appendLine("USE web_search ONLY when ALL of these are true:")
-                    appendLine("  1. The user is asking about a specific event or venue already in our DB,")
-                    appendLine("     OR an event you've already discussed in this conversation.")
-                    appendLine("  2. You need a factual detail we don't store: open hours, ticket")
-                    appendLine("     availability, price, weather affecting an outdoor event, capacity.")
-                    appendLine("  3. You've already run search_events or search_venues at least twice")
-                    appendLine("     with broadened terms. web_search is the LAST resort, not the first.")
-                    appendLine("")
-                    appendLine("DO NOT use web_search for:")
-                    appendLine("  • Explaining what something is (history, geography, biography, definitions).")
-                    appendLine("    If the user asks 'what is Lalibela', they want a local match — search the")
-                    appendLine("    DB for venue/event tokens, then offer a redirect if no hit.")
-                    appendLine("  • General-knowledge questions or anything outside event discovery.")
-                    appendLine("  • Topics, news, biology, pop culture, advice, etc.")
-                    appendLine("  • A first-pass response when you could have searched our DB first.")
-                    appendLine("")
-                    appendLine("If the user asks something out of scope, decline politely in ONE sentence:")
-                    appendLine("'That's not something I can help with — I'm here to plan local events. Want")
-                    appendLine("me to find <a relevant local thing> instead?' Then stop. Do not free-text")
-                    appendLine("an answer to the off-topic question. Do not web_search to look it up.")
-                    appendLine("")
-                    appendLine("Hard cap: 2 web_search invocations per user turn. web_fetch only when user")
-                    appendLine("pastes a URL or you need to read a specific page already discussed.")
-                    appendLine("")
-                    appendLine("STAGING WEB FINDINGS FOR PLANS:")
-                    appendLine("When you find an event/venue via web_search and want to include it in update_plan,")
-                    appendLine("call save_web_finding FIRST. It returns an id you must put in the slot's event_id,")
-                    appendLine("AND set is_bo_web: true on that slot.")
-                    appendLine("")
-                    appendLine("DATE INTEGRITY: never claim an event 'overlaps' with the plan's dates when it")
-                    appendLine("doesn't. If the plan is for June 1-3 and you find an event on June 11, those don't")
-                    appendLine("overlap — drop the event or offer to shift the plan, never lie.")
-                    appendLine("")
-                    appendLine("FORMATTING — when responding after web_search:")
-                    appendLine("  • Don't lead with 'I'll check…' — just answer directly. The user sees a searching")
-                    appendLine("    indicator already.")
-                    appendLine("  • NEVER put a period or other punctuation on its own line. Sentences end inline.")
-                    appendLine("  • Keep paragraphs whole. No mid-sentence line breaks.")
-                }
-                "not_live_state" -> {
-                    appendLine("Web search is DISABLED — user is in ${budget.userState ?: "a non-live state"}.")
-                    appendLine("If the user asks anything requiring web lookup, respond exactly:")
-                    appendLine("  \"Local is not yet live in your state. It is currently live in ${budget.liveStatesList}.\"")
-                }
-                "user_day_cap", "user_hour_cap" -> {
-                    appendLine("Web search is DISABLED — user hit their quota.")
-                    appendLine("If they ask something requiring it, respond: \"I've hit my lookup limit for now — try again later.\"")
-                }
-                "monthly_cap" -> {
-                    appendLine("Web search is DISABLED — global monthly budget reached.")
-                }
-                else -> {
-                    appendLine("Web search disabled (${budget.reason}).")
-                }
-            }
-            appendLine("============================================")
-        }
-        return systemPrompt + lines
+        return systemPrompt + live.localapp.local.data.bo.BoPrompt.webBudgetBlock(budget)
     }
 
     private fun tallyWebCalls(

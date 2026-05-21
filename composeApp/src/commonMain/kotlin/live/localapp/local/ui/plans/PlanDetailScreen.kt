@@ -3,14 +3,18 @@ package live.localapp.local.ui.plans
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -22,6 +26,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -48,10 +55,12 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
@@ -223,6 +232,18 @@ fun PlanDetailScreen(
                 }
 
                 if (isMultiDay) {
+                    // iOS parity: peek-paging day summary carousel above the
+                    // day strip. Each card is full-screen-width with 28dp
+                    // horizontal content padding so the neighboring days peek
+                    // from the edges. Snap-fling settles to the centered item
+                    // and writes back to `selectedDayIndex` so the day strip
+                    // and slot list follow.
+                    DaySummaryPeekPager(
+                        plan = plan,
+                        selectedDayIndex = selectedDayIndex.coerceAtMost(plan.days.lastIndex),
+                        onDaySelected = { selectedDayIndex = it },
+                    )
+                    Spacer(Modifier.height(4.dp))
                     // Multi-day: day strip with + Add chip.
                     DayTabStrip(
                         days = plan.days,
@@ -287,21 +308,48 @@ fun PlanDetailScreen(
                             )
                         } else {
                             activeDay.slots.forEachIndexed { i, slot ->
-                                V5SlotCard(
-                                    slot = slot,
-                                    readOnly = readOnly || past,
-                                    onRemove = {
-                                        val totalBefore = plan.days.sumOf { d -> d.slots.size }
-                                        onRemoveSlot(effectiveDayIndex, slot.id)
-                                        when {
-                                            totalBefore <= 1 -> confirmDeletePlan = true
-                                            activeDay.slots.size <= 1 -> emptyDayIndexToConfirm = effectiveDayIndex
-                                        }
-                                    },
-                                    onMarkReserved = { onSetSlotReserved(effectiveDayIndex, slot.id, true) },
-                                    onMarkNotReserved = { onSetSlotReserved(effectiveDayIndex, slot.id, false) },
-                                    onReplace = { onReplaceSlot(effectiveDayIndex, slot) },
-                                )
+                                // iOS parity (PlanDetailView.swift:1200-1226): each
+                                // slot row is rendered as a Row composed of a 56dp
+                                // timeline rail on the left + the slot card filling
+                                // the rest of the width. The rail draws TIME + dot
+                                // + vertical connector; the connector continues to
+                                // the next slot, and stops at the dot on the last
+                                // slot of the day.
+                                val isLastSlot = i == activeDay.slots.lastIndex
+                                // Row uses IntrinsicSize.Min so the timeline
+                                // rail can `fillMaxHeight()` and stretch to the
+                                // slot card's natural height — the connector
+                                // line lands flush with the card's bottom edge.
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(androidx.compose.foundation.layout.IntrinsicSize.Min),
+                                ) {
+                                    TimelineRail(
+                                        time = slot.time,
+                                        isLast = isLastSlot,
+                                        modifier = Modifier
+                                            .width(56.dp)
+                                            .fillMaxHeight(),
+                                    )
+                                    Box(modifier = Modifier.weight(1f)) {
+                                        V5SlotCard(
+                                            slot = slot,
+                                            readOnly = readOnly || past,
+                                            onRemove = {
+                                                val totalBefore = plan.days.sumOf { d -> d.slots.size }
+                                                onRemoveSlot(effectiveDayIndex, slot.id)
+                                                when {
+                                                    totalBefore <= 1 -> confirmDeletePlan = true
+                                                    activeDay.slots.size <= 1 -> emptyDayIndexToConfirm = effectiveDayIndex
+                                                }
+                                            },
+                                            onMarkReserved = { onSetSlotReserved(effectiveDayIndex, slot.id, true) },
+                                            onMarkNotReserved = { onSetSlotReserved(effectiveDayIndex, slot.id, false) },
+                                            onReplace = { onReplaceSlot(effectiveDayIndex, slot) },
+                                        )
+                                    }
+                                }
                                 if (i < activeDay.slots.lastIndex) {
                                     activeDay.travel.getOrNull(i)?.let { t ->
                                         TransitRow(mode = t.mode, mins = t.mins)
@@ -1148,6 +1196,146 @@ private fun PastPlanBanner(dateRange: String) {
     }
 }
 
+// ─── Day summary peek-pager ──────────────────────────────────────────
+//
+// iOS parity (PlanDetailView.swift:614-664) — a horizontal pager of
+// day-summary cards. Each card is full-screen-width with 28dp content
+// margins so the previous/next day peek at the edges. Snap-fling settles
+// to the centered card; the centered index is written back to
+// `selectedDayIndex` so the active day stays in sync with the rest of
+// the screen.
+@Composable
+private fun DaySummaryPeekPager(
+    plan: Plan,
+    selectedDayIndex: Int,
+    onDaySelected: (Int) -> Unit,
+) {
+    val days = plan.days
+    if (days.isEmpty()) return
+
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = selectedDayIndex)
+    val flingBehavior = rememberSnapFlingBehavior(lazyListState = listState)
+
+    // When `selectedDayIndex` is changed externally (e.g. from the day
+    // strip below), drive the pager to match.
+    LaunchedEffect(selectedDayIndex) {
+        if (listState.firstVisibleItemIndex != selectedDayIndex) {
+            listState.animateScrollToItem(selectedDayIndex)
+        }
+    }
+
+    // When the user settles the pager onto a new card, publish that as
+    // the selected day. Using `derivedStateOf` keyed on
+    // `firstVisibleItemIndex` together with `isScrollInProgress` only
+    // commits the change once the fling has come to rest.
+    val settledIndex by remember(listState) {
+        derivedStateOf {
+            if (listState.isScrollInProgress) null else listState.firstVisibleItemIndex
+        }
+    }
+    LaunchedEffect(listState) {
+        snapshotFlow { settledIndex }
+            .collect { idx ->
+                if (idx != null && idx != selectedDayIndex && idx in days.indices) {
+                    onDaySelected(idx)
+                }
+            }
+    }
+
+    LazyRow(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp),
+        state = listState,
+        flingBehavior = flingBehavior,
+        // 28dp content padding leaves 28dp of the neighbouring card
+        // visible on each side — the "peek" feel from iOS.
+        contentPadding = PaddingValues(horizontal = 28.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        itemsIndexed(days) { idx, day ->
+            DaySummaryPagerCard(
+                plan = plan,
+                day = day,
+                dayIndex = idx,
+                isActive = idx == selectedDayIndex,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DaySummaryPagerCard(
+    plan: Plan,
+    day: PlanDay,
+    dayIndex: Int,
+    isActive: Boolean,
+) {
+    val titleHeader = headerTitleLabel(plan)
+    val dateLabel = headerDateLabel(plan, day)
+    // Sibling cards don't have access to `routeTotals` (that's the active
+    // day's MapHero output), so they show stops-only metrics. The active
+    // card's full metrics live in the existing FloatingTitleCard above.
+    val metrics = headerMetricsLabel(day.slots.size, totals = null)
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        // 56dp = 28dp peek on each side. Card fills the visible width minus
+        // those gutters so exactly one card centers in the viewport.
+        val cardWidth = maxWidth - 56.dp
+        Column(
+            modifier = Modifier
+                .width(cardWidth)
+                .clip(RoundedCornerShape(14.dp))
+                .background(Color.White)
+                .border(
+                    width = if (isActive) 1.dp else 0.5.dp,
+                    color = if (isActive) V5CoralDk else V5Line,
+                    shape = RoundedCornerShape(14.dp),
+                )
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+        ) {
+            if (titleHeader.isNotBlank()) {
+                Text(
+                    titleHeader.uppercase(),
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 10.sp,
+                        color = V5Coral,
+                        letterSpacing = 0.8.sp,
+                    ),
+                )
+            }
+            if (dateLabel.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    dateLabel,
+                    style = TextStyle(
+                        fontFamily = AppFonts.Heading,
+                        fontWeight = FontWeight.Black,
+                        fontSize = 22.sp,
+                        color = V5Ink,
+                        lineHeight = 26.sp,
+                    ),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (metrics.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    metrics,
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 11.sp,
+                        color = V5Ink3,
+                    ),
+                )
+            }
+        }
+    }
+}
+
 // ─── Day tabs ────────────────────────────────────────────────────────
 
 @Composable
@@ -1395,6 +1583,58 @@ private fun AddEventButton(onClick: () -> Unit) {
     }
 }
 
+// ─── Timeline rail ───────────────────────────────────────────────────
+//
+// iOS PlanDetailView.swift:1200-1226 — a 56pt-wide column to the LEFT of
+// each slot card containing the slot's TIME label, a coral dot, and a
+// thin vertical line that continues down to the next slot. The line stops
+// at the dot on the last slot of a day so the day "ends" visually.
+@Composable
+private fun TimelineRail(
+    time: String,
+    isLast: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Column(
+        modifier = modifier.padding(end = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        // TIME label — top-aligned, matches iOS Body Bold 10pt V5Ink3.
+        if (time.isNotBlank()) {
+            Text(
+                time.uppercase(),
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 10.sp,
+                    color = V5Ink3,
+                    letterSpacing = 0.4.sp,
+                ),
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(4.dp))
+        }
+        // Coral dot.
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .clip(CircleShape)
+                .background(V5Coral),
+        )
+        // Vertical connector — fills the remaining height of the row,
+        // pulling the rail flush with the bottom of the slot card. On the
+        // last slot the line is suppressed so the day terminates at the dot.
+        if (!isLast) {
+            Box(
+                modifier = Modifier
+                    .width(1.dp)
+                    .weight(1f)
+                    .background(V5Line),
+            )
+        }
+    }
+}
+
 // ─── Slot card + transit row ─────────────────────────────────────────
 
 @Composable
@@ -1405,9 +1645,15 @@ private fun V5SlotCard(
     onMarkReserved: () -> Unit = {},
     onMarkNotReserved: () -> Unit = {},
     onReplace: () -> Unit = {},
+    // iOS parity: tapping the slot card body opens reservation/ticket/swap
+    // detail. Android currently has no detail sheet on this path, so the
+    // default opens the existing menu (via the menu-open state below). The
+    // parent caller can supply a non-default to route into a detail screen.
+    onSlotTap: ((String) -> Unit)? = null,
 ) {
     val uriHandler = LocalUriHandler.current
     var showDirectionsSheet by remember { mutableStateOf(false) }
+    var menuOpen by remember { mutableStateOf(false) }
     if (showDirectionsSheet && slot.venueLat != null && slot.venueLng != null) {
         DirectionsSheet(lat = slot.venueLat, lng = slot.venueLng, name = slot.name, onDismiss = { showDirectionsSheet = false })
     }
@@ -1415,7 +1661,19 @@ private fun V5SlotCard(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .localCardSurface(cornerRadius = 16.dp, borderWidth = 1.dp, borderColor = V5Line)
+            // iOS parity: 14pt corner radius + 2pt coralDk overlay stroke.
+            // (Was 16.dp + 1.dp V5Line; pulled in 2026-05-19 to match iOS.)
+            .localCardSurface(cornerRadius = 14.dp, borderWidth = 2.dp, borderColor = V5CoralDk)
+            // Slot body is tappable. Falls back to opening the inline menu so
+            // the card is never a dead tap target on Android.
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = {
+                    val tap = onSlotTap
+                    if (tap != null) tap(slot.id) else menuOpen = true
+                },
+            )
             .padding(12.dp),
     ) {
         // Thumbnail
@@ -1459,7 +1717,6 @@ private fun V5SlotCard(
                 }
                 Spacer(Modifier.weight(1f))
                 if (!readOnly) {
-                    var menuOpen by remember { mutableStateOf(false) }
                     Box {
                         Box(
                             modifier = Modifier

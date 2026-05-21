@@ -63,6 +63,7 @@ private data class EventDto(
     val city: String = "",
     @SerialName("distance_miles") val distanceMiles: Double? = null,
     @SerialName("venue_description") val venueDescription: String? = null,
+    @SerialName("venue_photo_url") val venuePhotoUrl: String? = null,
     @SerialName("time_known") val timeKnown: Boolean = true,
 )
 
@@ -224,8 +225,14 @@ class ServerCarouselRepository : CarouselRepository {
         val body = response.bodyAsText()
         val parsed = json.decodeFromString<CarouselResponse>(body)
 
-        // Cache categories from the response
-        cachedCategories = parsed.categories.map { it.toDomain() }
+        // Cache categories from the response — but don't poison a previously
+        // good list with an empty one. A single bad response (precompute row
+        // briefly empty, server hiccup, etc.) shouldn't blank the tab strip
+        // for the rest of the session.
+        val freshCategories = parsed.categories.map { it.toDomain() }
+        if (freshCategories.isNotEmpty() || cachedCategories.isNullOrEmpty()) {
+            cachedCategories = freshCategories
+        }
 
         val carousels = parsed.carousels.map { it.toDomain() }
         carouselCache[cacheKey] = carousels
@@ -241,8 +248,12 @@ class ServerCarouselRepository : CarouselRepository {
         userLat: Double,
         userLng: Double,
     ): List<CategoryInfo> {
-        // Return cached categories if available
-        cachedCategories?.let { return it }
+        // Return cached categories only if non-empty. An empty list here means
+        // a prior fetch returned no categories (transient server issue, stale
+        // precompute row) — re-fetching is cheap (in-memory cache short-circuits
+        // when carousels are warm) and avoids leaving the tab strip blank for
+        // the whole session.
+        cachedCategories?.takeIf { it.isNotEmpty() }?.let { return it }
 
         // If no cache, fetch carousels which populates categories
         getCarousels(
@@ -300,6 +311,7 @@ class ServerCarouselRepository : CarouselRepository {
         sourceUrl = sourceUrl,
         distanceMiles = distanceMiles,
         venueDescription = venueDescription,
+        venueImageUrl = venuePhotoUrl,
         timeKnown = timeKnown,
     )
 

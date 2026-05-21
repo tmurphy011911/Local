@@ -1,7 +1,10 @@
 package live.localapp.local.ui.detail
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -148,7 +151,40 @@ fun EventDetailScreen(
     val ctaUrl = event.ticketUrl ?: event.sourceUrl
     val hasLocation = event.venueLat != null && event.venueLng != null
 
-    Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
+    // Enter animation — approximates the iOS card-to-fullscreen morph
+    // (EventDetailTransitionController.swift). Scale 0.92 -> 1, alpha 0 -> 1,
+    // corner radius 18 -> 0, all driven by a spring. No exit animation —
+    // dismissal is handled by the parent AnimatedVisibility in AppNavigation.
+    var visible by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { visible = true }
+    val enterScale by animateFloatAsState(
+        targetValue = if (visible) 1f else 0.92f,
+        animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow),
+        label = "enterScale",
+    )
+    val enterAlpha by animateFloatAsState(
+        targetValue = if (visible) 1f else 0f,
+        animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow),
+        label = "enterAlpha",
+    )
+    val enterCorner by animateDpAsState(
+        targetValue = if (visible) 0.dp else 18.dp,
+        animationSpec = spring(dampingRatio = 0.85f, stiffness = Spring.StiffnessMediumLow),
+        label = "enterCorner",
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .graphicsLayer {
+                scaleX = enterScale
+                scaleY = enterScale
+                alpha = enterAlpha
+                clip = true
+                shape = RoundedCornerShape(enterCorner)
+            }
+            .background(AppColors.Snow),
+    ) {
     Column(modifier = Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
@@ -710,9 +746,10 @@ private fun HeroImage(
     Box(
         modifier = Modifier.fillMaxWidth().height(280.dp),
     ) {
-        if (event.imageUrl != null) {
+        val heroUrl = event.imageUrl ?: event.venueImageUrl
+        if (heroUrl != null) {
             AsyncImage(
-                model = event.imageUrl,
+                model = heroUrl,
                 contentDescription = event.title,
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),

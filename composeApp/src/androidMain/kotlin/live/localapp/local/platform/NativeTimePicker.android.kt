@@ -23,6 +23,7 @@ actual fun rememberNativeTimePicker(): NativeTimePickerController {
                     initialMinute,
                     false,
                 )
+                dialog.setTitle("Start Time")
                 dialog.setOnCancelListener { onCancelled() }
                 dialog.show()
             }

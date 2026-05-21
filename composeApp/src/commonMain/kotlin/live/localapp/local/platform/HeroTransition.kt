@@ -150,6 +150,10 @@ expect fun showNativeVenueDetail(
     onDismissed: () -> Unit,
     isFavorited: Boolean = false,
     onFavorited: ((String) -> Unit)? = null,
+    /** When true, suppress the Reserve a Table / Visit Website CTAs on the
+     *  native detail. Used when the detail is opened from a chat plan slot —
+     *  the user is mid-planning, not ready to book/leave the app. */
+    hidesPrimaryCTAs: Boolean = false,
 )
 
 /**

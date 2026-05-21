@@ -1,5 +1,7 @@
 package live.localapp.local.domain.model
 
+import kotlinx.serialization.Serializable
+
 data class Plan(
     val id: String,
     val title: String,
@@ -17,6 +19,7 @@ data class Plan(
     val attendeesCanEdit: Boolean = false,
 )
 
+@Serializable
 data class PlanDay(
     val label: String,       // "Friday, Nov 8"
     val shortName: String,   // "Fri"
@@ -30,11 +33,14 @@ data class PlanDay(
  *  - MADE:        creator has booked and saved party_size + time
  *  - UNAVAILABLE: creator marked the venue as unavailable; swap flow surfaces alternatives
  */
+@Serializable
 enum class ReservationState { NONE, MADE, UNAVAILABLE }
 
 /** Ticket state machine — same shape as ReservationState but for ticketed events. */
+@Serializable
 enum class TicketState { NONE, BOUGHT, UNAVAILABLE }
 
+@Serializable
 data class PlanSlot(
     val id: String,
     val time: String,
@@ -103,6 +109,7 @@ data class PlanSlot(
     val isReserved: Boolean get() = reservationState == ReservationState.MADE
 }
 
+@Serializable
 data class PlanTravel(
     val mode: String,        // "walk" or "drive"
     val mins: Int,

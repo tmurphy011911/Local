@@ -53,30 +53,39 @@ function needsDecoding(s) {
 }
 
 async function fetchAll(serviceKey, table, cols) {
+  // Keyset pagination on id + retry on 5xx. The original offset+limit
+  // approach hit `canceling statement due to statement timeout` on page 2
+  // of events because OFFSET re-scans from row 0 each call AND there's no
+  // supporting index for the entity-marker filter. id-based keyset uses
+  // the primary key index and survives the load.
   const all = [];
-  let offset = 0;
   const page = 1000;
   const selCols = ["id", ...cols].join(",");
-  // PostgREST `or=(..)` — match rows where any of the target columns contain an entity marker
   const filter = cols.map((c) => `${c}.ilike.*%26%23*,${c}.ilike.*%26amp%3B*,${c}.ilike.*%26quot%3B*`).join(",");
+  let cursor = null;
   while (true) {
-    const res = await fetch(
-      `${SUPABASE_URL}/rest/v1/${table}?select=${selCols}&or=(${filter})&offset=${offset}&limit=${page}`,
-      {
-        headers: {
-          apikey: serviceKey,
-          Authorization: `Bearer ${serviceKey}`,
-        },
-      },
-    );
-    if (!res.ok) {
-      console.error(`fetch ${table} failed: ${res.status} ${await res.text()}`);
+    let url = `${SUPABASE_URL}/rest/v1/${table}?select=${selCols}&or=(${filter})&order=id.asc&limit=${page}`;
+    if (cursor) url += `&id=gt.${cursor}`;
+    // Retry on 5xx — the entity-filter scan can race with autovacuum /
+    // other load. Three tries with backoff before giving up on this page.
+    let rows = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const res = await fetch(url, {
+        headers: { apikey: serviceKey, Authorization: `Bearer ${serviceKey}` },
+      });
+      if (res.ok) { rows = await res.json(); break; }
+      const txt = await res.text();
+      console.error(`fetch ${table} attempt ${attempt}/3: ${res.status} ${txt.slice(0, 200)}`);
+      if (res.status < 500 || attempt === 3) { rows = null; break; }
+      await new Promise((r) => setTimeout(r, 1000 * attempt));
+    }
+    if (rows === null) {
+      console.error(`fetch ${table} gave up after 3 attempts — moving on with ${all.length} rows so far`);
       break;
     }
-    const rows = await res.json();
     all.push(...rows);
     if (rows.length < page) break;
-    offset += page;
+    cursor = rows[rows.length - 1].id;
   }
   return all;
 }

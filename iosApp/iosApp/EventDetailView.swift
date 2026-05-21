@@ -10,6 +10,8 @@ struct EventDetailData {
     let description: String?
     let venueDescription: String?
     let imageUrl: String?
+    /// Joined venue's photo. Last-resort hero fallback when [imageUrl] is nil.
+    let venueImageUrl: String?
     let startAt: String?
     let venueName: String?
     let venueAddress: String?
@@ -269,8 +271,9 @@ struct EventDetailView: View {
                 // Background
                 Color.black
 
-                // Image — constrained to geo width so .fill doesn't overflow
-                if let urlStr = event.imageUrl, let url = URL(string: urlStr) {
+                // Image — constrained to geo width so .fill doesn't overflow.
+                // Falls back to venue photo when the event has no image of its own.
+                if let urlStr = event.imageUrl ?? event.venueImageUrl, let url = URL(string: urlStr) {
                     AsyncImage(url: url) { phase in
                         switch phase {
                         case .success(let image):
@@ -448,18 +451,21 @@ struct EventDetailView: View {
             }
 
             // Date — show for all events including recurring (next occurrence).
-            // Date-only events (timeKnown=false) get a "Time TBD" suffix
-            // instead of the misleading "12:00 AM" the formatter would emit.
+            // Date-only events (timeKnown=false) show JUST the date — no
+            // "Time TBD" suffix. Many crawl sources (libraries, museums,
+            // community calendars) are date-only by design; appending TBD
+            // makes the app feel broken when in fact the source just
+            // didn't publish a time.
             if let startAt = event.startAt {
                 let baseText = isRecurring
                     ? "Next: \(formatDate(startAt, timeKnown: event.timeKnown))"
                     : formatDate(startAt, timeKnown: event.timeKnown)
                 let displayText: String = {
                     guard !event.timeKnown else { return baseText }
-                    // Strip any time component the formatter appended (e.g.,
-                    // "May 1, 2026 · 12:00 AM" → "May 1, 2026 · Time TBD").
+                    // Strip any " · 12:00 AM" the formatter might have appended
+                    // for the unknown-time case and surface just the date.
                     let datePart = baseText.split(separator: "\u{00B7}").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? baseText
-                    return "\(datePart) \u{00B7} Time TBD"
+                    return datePart
                 }()
                 infoRow(
                     systemName: "calendar",

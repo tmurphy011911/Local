@@ -546,7 +546,10 @@ private fun HeroCard(
                         }
                     }
                     Text(
-                        "Member since Jan 2025",
+                        // TODO(parity-backlog): plumb a real `createdAt` field through
+                        // ProgressUiState (sourced from `user_profiles.created_at`).
+                        // Until then this falls back to "Member since recently".
+                        formatMemberSince(null),
                         style = TextStyle(
                             fontFamily = AppFonts.Body,
                             fontWeight = FontWeight.SemiBold,
@@ -1134,6 +1137,8 @@ private fun JourneyCard(currentTier: StatusTier, totalPoints: Int) {
 // ══════════════════════════════════════════════
 // ── State Badges Grid (2-column with rings) ──
 // ══════════════════════════════════════════════
+// TODO(parity-backlog): state badges grid is defined but unwired — confirm
+// product intent then either wire under ProgressTrackingCard or delete this block.
 
 @Composable
 private fun StateBadgesGrid(
@@ -2139,7 +2144,7 @@ private fun SupportSection(onRateApp: () -> Unit) {
         Spacer(Modifier.height(10.dp))
 
         Text(
-            "Local v1.0 (Build 3.4)",
+            live.localapp.local.platform.getAppVersion(),
             style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3.copy(alpha = 0.5f)),
             modifier = Modifier.fillMaxWidth(),
             textAlign = androidx.compose.ui.text.style.TextAlign.Center,
@@ -2159,4 +2164,29 @@ private fun SupportRow(title: String, onClick: () -> Unit) {
         Text(title, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Ink), modifier = Modifier.weight(1f))
         Text("\u203A", style = TextStyle(fontSize = 18.sp, color = AppColors.Ink3))
     }
+}
+
+// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+// \u2500\u2500 "Member since" formatter (KMP-friendly, no JDK) \u2500\u2500
+// \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+//
+// Accepts a Postgres-style timestamp ("2026-03-14T15:09:26.123456+00:00"),
+// an ISO-8601 instant, or any string starting with "yyyy-MM" and renders
+// "Member since Mar 2026". Falls back to "Member since recently" when the
+// input is null/blank/unparseable so the UI never shows a hardcoded year.
+private fun formatMemberSince(createdAt: String?): String {
+    if (createdAt.isNullOrBlank()) return "Member since recently"
+    // Cheap parse \u2014 pluck the leading "yyyy-MM" and look up the month name.
+    // Avoids platform-specific java.time / NSDateFormatter divergence.
+    val ym = createdAt.take(7) // "2026-03"
+    val parts = ym.split('-')
+    if (parts.size < 2) return "Member since recently"
+    val year = parts[0].toIntOrNull() ?: return "Member since recently"
+    val month = parts[1].toIntOrNull() ?: return "Member since recently"
+    if (month !in 1..12) return "Member since recently"
+    val monthName = listOf(
+        "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+        "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+    )[month - 1]
+    return "Member since $monthName $year"
 }

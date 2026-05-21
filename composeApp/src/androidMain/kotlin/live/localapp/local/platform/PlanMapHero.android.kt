@@ -27,6 +27,7 @@ import com.google.android.gms.maps.model.BitmapDescriptorFactory
 import com.google.android.gms.maps.model.CameraPosition
 import com.google.android.gms.maps.model.LatLng
 import com.google.android.gms.maps.model.LatLngBounds
+import com.google.android.gms.maps.model.MapStyleOptions
 import com.google.maps.android.compose.CameraPositionState
 import com.google.maps.android.compose.GoogleMap
 import com.google.maps.android.compose.MapProperties
@@ -49,6 +50,7 @@ import kotlinx.serialization.json.Json
 import kotlin.math.cos
 import kotlin.math.sqrt
 import live.localapp.local.BuildConfig
+import live.localapp.local.R
 
 // Switch from walking to driving once the straight-line distance between two
 // stops exceeds this threshold (~1 mile). Mirrors the iOS rule.
@@ -66,7 +68,17 @@ actual fun PlanMapHero(
     if (stops.isEmpty()) return false
 
     val context = LocalContext.current
+    val density = androidx.compose.ui.platform.LocalDensity.current
     val coords = remember(stops) { stops.map { LatLng(it.lat, it.lng) } }
+
+    // POI-suppressing map style (mirrors iOS .standard(pointsOfInterest: .excludingAll)).
+    val mapStyle = remember(context) {
+        try {
+            MapStyleOptions.loadRawResourceStyle(context, R.raw.map_style_no_poi)
+        } catch (_: Throwable) {
+            null
+        }
+    }
 
     // Camera fits the bounding box with bottom bias so pins clear the
     // floating title card overlapping the lower portion of the hero.
@@ -115,7 +127,10 @@ actual fun PlanMapHero(
         GoogleMap(
             modifier = Modifier.fillMaxSize(),
             cameraPositionState = cameraPositionState,
-            properties = MapProperties(mapType = MapType.NORMAL),
+            properties = MapProperties(
+                mapType = MapType.NORMAL,
+                mapStyleOptions = mapStyle,
+            ),
             uiSettings = MapUiSettings(
                 zoomControlsEnabled = false,
                 compassEnabled = false,
@@ -137,19 +152,17 @@ actual fun PlanMapHero(
                     anchor = androidx.compose.ui.geometry.Offset(0.5f, 0.5f),
                 )
             }
-            // Dashed coral route between consecutive stops.
+            // Solid coral route between consecutive stops (mirrors iOS 2pt line).
             if (coords.size >= 2) {
                 Polyline(
                     points = coords,
                     color = coral,
-                    width = 8f,
-                    pattern = listOf(
-                        com.google.android.gms.maps.model.Dash(20f),
-                        com.google.android.gms.maps.model.Gap(12f),
-                    ),
+                    width = 2f * density.density,
                 )
             }
-            // Per-leg walk/drive pill at each midpoint.
+            // Per-leg walk/drive pill at each midpoint. Anchor pushes the
+            // pill visually upward (~16pt equivalent) so it clears the
+            // route line and numbered pins — mirrors iOS -16pt offset.
             legs.forEach { leg ->
                 val labelIcon = remember(leg.midpoint, leg.minutes, leg.mode) {
                     legPillDescriptor(leg.minutes, leg.mode)
@@ -157,6 +170,7 @@ actual fun PlanMapHero(
                 Marker(
                     state = MarkerState(position = leg.midpoint),
                     icon = labelIcon,
+                    anchor = androidx.compose.ui.geometry.Offset(0.5f, 1.2f),
                 )
             }
         }

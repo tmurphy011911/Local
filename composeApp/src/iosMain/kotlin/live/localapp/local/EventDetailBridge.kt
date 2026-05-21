@@ -13,10 +13,14 @@ object EventDetailBridge {
     /**
      * Swift sets this. Compose calls it to present the native detail screen.
      * Parameters: all event fields + card frame (x, y, w, h in points) + card image URL.
+     *
+     * [venueImageUrl] is the joined venue's photo, used by Swift as a last-resort
+     * fallback for the hero when [imageUrl] is null.
      */
     var showEventDetail: ((
         id: String, title: String, description: String?, venueDescription: String?,
-        imageUrl: String?, startAt: String?, venueName: String?, venueAddress: String?,
+        imageUrl: String?, venueImageUrl: String?,
+        startAt: String?, venueName: String?, venueAddress: String?,
         venueCity: String, venueLat: Double, venueLng: Double,
         isFree: Boolean, priceDisplay: String, ticketUrl: String?, sourceUrl: String?,
         category: String, subcategory: String?,

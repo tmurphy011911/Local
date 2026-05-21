@@ -2,19 +2,26 @@ package live.localapp.local.feature.onboarding
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -32,78 +39,136 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import live.localapp.local.platform.isReducedMotionEnabled
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 
-private val WORDS = listOf(
-    "trips" to AppColors.Coral,
-    "dates" to AppColors.Plum,
-    "weekends" to AppColors.Sage,
-    "days" to AppColors.Sky,
-    "everything" to AppColors.Sun,
+private val ALL_WORDS = listOf(
+    "concert", "class", "game", "trivia night", "story time",
+    "open mic", "screening", "festival", "pop-up", "show", "place",
+    "event",
 )
+
+// 12 words landing on "event". Each tick: AnimatedContent transition
+// (CYCLE_TRANSITION_MS or LANDING_TRANSITION_MS) then HOLD_MS stationary
+// before the next swap. Final 3 words (show / place / event) use a slower
+// transition so the punchline lands with weight.
+private const val CYCLE_TRANSITION_MS = 220
+private const val LANDING_TRANSITION_MS = 280
+private const val HOLD_MS = 100L
+private const val TICK_INTERVAL_MS = CYCLE_TRANSITION_MS + HOLD_MS         // 320ms
+private const val SLOW_TICK_INTERVAL_MS = LANDING_TRANSITION_MS + HOLD_MS  // 380ms
+private const val SLOW_TICK_FROM_INDEX = 9  // "show", "place", "event"
+
+// Tagline style. 22sp keeps "Every single trivia night" within screen width
+// even with the row pinned to the "event-centered" position (longer words
+// extend rightward from a fixed anchor instead of recentering the line).
+private val taglineFontSize = 22.sp
 
 @Composable
 fun SplashScreen(onComplete: () -> Unit) {
     var logoVisible by remember { mutableStateOf(false) }
     var taglineVisible by remember { mutableStateOf(false) }
-    var wordIndex by remember { mutableStateOf(0) }
-    var progressTarget by remember { mutableStateOf(0f) }
-    var loadingVisible by remember { mutableStateOf(false) }
-    var readyVisible by remember { mutableStateOf(false) }
+    var kickerVisible by remember { mutableStateOf(false) }
+    var tapHintVisible by remember { mutableStateOf(false) }
     var tapEnabled by remember { mutableStateOf(false) }
-    val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    var tickIndex by remember { mutableStateOf(0) }
+    var logoSettling by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
 
-    // Use FastOutSlowInEasing rather than the default linear tween — a
-    // long linear fill on Compose-iOS can read as stuttery because Skia
-    // delivers frames at uneven intervals; an eased curve hides micro
-    // stalls and reads as a deliberate "winding up" pace.
-    val progress by animateFloatAsState(
-        targetValue = progressTarget,
-        animationSpec = tween(
-            durationMillis = if (progressTarget > 0f) 4200 else 0,
-            easing = androidx.compose.animation.core.FastOutSlowInEasing,
-        ),
+    // Platform reduce-motion. Word cycling is information and still runs in
+    // both states; only decorative beats (logo settle, landing pulse, tap-hint
+    // breathe) are suppressed.
+    val reduceMotion = remember { isReducedMotionEnabled() }
+
+    // Logo settle dip on the first ticker tick.
+    val logoScale by animateFloatAsState(
+        targetValue = if (logoSettling && !reduceMotion) 0.97f else 1.0f,
+        animationSpec = tween(60, easing = FastOutSlowInEasing),
+        finishedListener = { if (logoSettling) logoSettling = false },
+        label = "logoSettle",
     )
 
-    LaunchedEffect(Unit) {
-        delay(350)
-        logoVisible = true
-        delay(600)
-        taglineVisible = true
-        delay(300)
-        loadingVisible = true
-        progressTarget = 1f
+    // Tap-hint alpha breathe. Static 0.70 under reduce-motion.
+    val tapHintBreathe = rememberInfiniteTransition(label = "tapHintBreathe")
+    val tapHintBreathAlpha by tapHintBreathe.animateFloat(
+        initialValue = 0.55f,
+        targetValue = 0.70f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(1200, easing = FastOutSlowInEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "tapHintAlpha",
+    )
+    val tapHintAlpha = if (reduceMotion) 0.70f else tapHintBreathAlpha
 
-        // Word flip with haptic
-        repeat(WORDS.size - 1) {
-            delay(850)
-            wordIndex++
-            haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+    // Landing pulse on "Event". Delayed 300ms after the final tickIndex change
+    // so the AnimatedContent slide-in completes before the scale beat — the
+    // pulse should punctuate a settled word, not fight the entrance.
+    var landingPulseActive by remember { mutableStateOf(false) }
+    LaunchedEffect(tickIndex) {
+        if (tickIndex == ALL_WORDS.lastIndex && !reduceMotion) {
+            delay(300)
+            landingPulseActive = true
+        }
+    }
+    val landingScale by animateFloatAsState(
+        targetValue = if (landingPulseActive) 1.08f else 1.0f,
+        animationSpec = tween(175, easing = FastOutSlowInEasing),
+        finishedListener = { if (landingPulseActive) landingPulseActive = false },
+        label = "landingPulse",
+    )
+
+    val taglineStyle = taglineTextStyle()
+
+    LaunchedEffect(Unit) {
+        delay(200)
+        logoVisible = true
+        delay(300)
+        taglineVisible = true
+        haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+
+        for (i in 1 until ALL_WORDS.size) {
+            if (i == 1) logoSettling = true
+            val interval = if (i >= SLOW_TICK_FROM_INDEX) SLOW_TICK_INTERVAL_MS else TICK_INTERVAL_MS
+            delay(interval)
+            tickIndex = i
+            val type = if (i == ALL_WORDS.lastIndex) {
+                HapticFeedbackType.LongPress
+            } else {
+                HapticFeedbackType.TextHandleMove
+            }
+            haptic.performHapticFeedback(type)
         }
 
-        delay(600)
-        readyVisible = true
+        // After the final tick, hold long enough for the slide-in (280ms) and
+        // the landing pulse (300ms delay + 175ms peak) to play before the
+        // kicker floats up beneath.
+        delay(500)
+        kickerVisible = true
+        delay(350)
+        tapHintVisible = true
+        delay(150)
         tapEnabled = true
     }
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(
-                Brush.radialGradient(
-                    colors = listOf(Color(0xFFFFF8F8), Color(0xFFFAF8FC), Color(0xFFEEF6FF)),
-                    radius = 800f,
-                ),
-            )
+            .background(AppColors.Snow)
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
@@ -115,17 +180,22 @@ fun SplashScreen(onComplete: () -> Unit) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
-            modifier = Modifier.padding(horizontal = 32.dp),
+            modifier = Modifier.padding(horizontal = 16.dp),
         ) {
-            // Logo mark
+            // Brand mark — coral squircle with white serif "L".
             AnimatedVisibility(
                 visible = logoVisible,
                 enter = fadeIn(tween(500)) + slideInVertically(tween(500)) { it / 4 },
             ) {
                 Box(
                     modifier = Modifier
-                        .size(100.dp)
-                        .background(AppColors.Coral, RoundedCornerShape(30.dp)),
+                        .size(120.dp)
+                        .graphicsLayer {
+                            scaleX = logoScale
+                            scaleY = logoScale
+                        }
+                        .clip(RoundedCornerShape(28.dp))
+                        .background(AppColors.Coral),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
@@ -133,147 +203,119 @@ fun SplashScreen(onComplete: () -> Unit) {
                         style = TextStyle(
                             fontFamily = AppFonts.Heading,
                             fontWeight = FontWeight.Black,
-                            fontSize = 56.sp,
+                            fontSize = 72.sp,
                             color = AppColors.White,
                         ),
                     )
                 }
             }
 
-            Spacer(Modifier.height(32.dp))
+            Spacer(Modifier.height(28.dp))
 
-            // Tagline
             AnimatedVisibility(
                 visible = taglineVisible,
                 enter = fadeIn(tween(400)) + slideInVertically(tween(400)) { it / 3 },
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        "plan",
-                        style = TextStyle(
-                            fontFamily = AppFonts.Heading,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 34.sp,
-                            color = AppColors.Ink,
-                        ),
-                    )
+                    // Pin the row's left edge where it would naturally sit
+                    // when the cycling word is "event" — so "Every single"
+                    // stops migrating left/right as word widths change. The
+                    // word slides in from below at a fixed X, extending right
+                    // as needed for longer words.
+                    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                        val available = maxWidth
+                        val measurer = rememberTextMeasurer()
+                        val density = LocalDensity.current
+                        val (everyWidthDp: Dp, eventWidthDp: Dp) = remember(taglineStyle, density) {
+                            val everyPx = measurer.measure("Every single ", taglineStyle).size.width
+                            val eventPx = measurer.measure("event", taglineStyle).size.width
+                            with(density) { everyPx.toDp() to eventPx.toDp() }
+                        }
+                        val anchoredStart = ((available - everyWidthDp - eventWidthDp) / 2)
+                            .coerceAtLeast(0.dp)
 
-                    // Animated word with crossfade only (no slide to avoid layout jank)
-                    Box(
-                        modifier = Modifier.height(48.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        AnimatedContent(
-                            targetState = wordIndex,
-                            transitionSpec = {
-                                fadeIn(tween(500))
-                                    .togetherWith(fadeOut(tween(400)))
-                            },
-                        ) { index ->
-                            val (word, color) = WORDS[index]
+                        Row(
+                            modifier = Modifier.padding(start = anchoredStart),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.Start,
+                        ) {
                             Text(
-                                word,
-                                style = TextStyle(
-                                    fontFamily = AppFonts.Heading,
-                                    fontWeight = FontWeight.Black,
-                                    fontSize = 36.sp,
-                                    fontStyle = FontStyle.Italic,
-                                    color = color,
-                                ),
+                                "Every single ",
+                                style = taglineStyle,
+                                maxLines = 1,
+                                softWrap = false,
                             )
+                            AnimatedContent(
+                                targetState = tickIndex,
+                                transitionSpec = {
+                                    val isLanding = targetState >= SLOW_TICK_FROM_INDEX
+                                    val durMs = if (isLanding) LANDING_TRANSITION_MS else CYCLE_TRANSITION_MS
+                                    val fadeMs = (durMs * 4) / 5
+                                    (slideInVertically(tween(durMs)) { it / 2 } + fadeIn(tween(fadeMs)))
+                                        .togetherWith(
+                                            slideOutVertically(tween(durMs)) { -it / 2 } + fadeOut(tween(fadeMs))
+                                        )
+                                },
+                                label = "wordCycle",
+                            ) { idx ->
+                                val isLanded = idx == ALL_WORDS.lastIndex
+                                val scale = if (isLanded) landingScale else 1.0f
+                                Text(
+                                    ALL_WORDS[idx],
+                                    style = taglineStyle,
+                                    maxLines = 1,
+                                    softWrap = false,
+                                    modifier = Modifier.graphicsLayer {
+                                        scaleX = scale
+                                        scaleY = scale
+                                    },
+                                )
+                            }
                         }
                     }
 
-                    Text(
-                        "like a local",
-                        style = TextStyle(
-                            fontFamily = AppFonts.Heading,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 34.sp,
-                            color = AppColors.Ink,
-                        ),
-                    )
+                    // "One single app." floats up directly beneath the row
+                    // once the word has landed on "Event".
+                    AnimatedVisibility(
+                        visible = kickerVisible,
+                        enter = fadeIn(tween(450)) + slideInVertically(tween(500)) { it / 2 },
+                    ) {
+                        Text(
+                            "One single app.",
+                            style = taglineStyle,
+                            maxLines = 1,
+                            softWrap = false,
+                            textAlign = TextAlign.Center,
+                        )
+                    }
                 }
             }
 
-            Spacer(Modifier.height(52.dp))
+            Spacer(Modifier.height(40.dp))
 
-            // Loading bar
             AnimatedVisibility(
-                visible = loadingVisible,
-                enter = fadeIn(tween(400)),
+                visible = tapHintVisible,
+                enter = fadeIn(tween(400)) + slideInVertically(tween(450)) { it / 2 },
             ) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.fillMaxWidth(0.55f),
-                ) {
-                    // Loading caption swaps from "Finding..." to "Let's
-                    // discover" the moment the progress bar finishes.
-                    // AnimatedContent (vs Crossfade) lets us skip the
-                    // double-overlay frame — the outgoing text fades out
-                    // first, then the incoming text fades in on top of
-                    // a clean canvas, so the eye never sees both at once.
-                    androidx.compose.animation.AnimatedContent(
-                        targetState = readyVisible,
-                        transitionSpec = {
-                            (androidx.compose.animation.fadeIn(tween(280, delayMillis = 120)))
-                                .togetherWith(androidx.compose.animation.fadeOut(tween(140)))
-                                .using(androidx.compose.animation.SizeTransform(clip = false))
-                        },
-                        label = "splashCaption",
-                    ) { ready ->
-                        Text(
-                            if (ready) "Let's discover" else "Finding what's on nearby...",
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 11.sp,
-                                color = AppColors.Ink3,
-                            ),
-                        )
-                    }
-
-                    Spacer(Modifier.height(8.dp))
-
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(10.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(AppColors.Mist),
-                    ) {
-                        Box(
-                            modifier = Modifier
-                                .fillMaxWidth(progress)
-                                .height(10.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(
-                                    Brush.horizontalGradient(
-                                        listOf(AppColors.Coral, AppColors.Sun, AppColors.Sage),
-                                    ),
-                                ),
-                        )
-                    }
-
-                    // The big italic "Let's discover" that used to sit
-                    // beneath the progress bar was redundant with the
-                    // top caption swap above. Removing it lets the
-                    // caption + bar carry the moment cleanly.
-
-                    if (tapEnabled) {
-                        Spacer(Modifier.height(18.dp))
-                        Text(
-                            "Tap anywhere to continue",
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 12.sp,
-                                color = AppColors.Ink3,
-                            ),
-                        )
-                    }
-                }
+                Text(
+                    "Tap anywhere to continue",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 13.sp,
+                        color = AppColors.Ink3.copy(alpha = tapHintAlpha),
+                    ),
+                )
             }
         }
     }
 }
+
+@Composable
+private fun taglineTextStyle(): TextStyle = TextStyle(
+    fontFamily = AppFonts.Heading,
+    fontWeight = FontWeight.Black,
+    fontStyle = FontStyle.Italic,
+    fontSize = taglineFontSize,
+    color = AppColors.Coral,
+)

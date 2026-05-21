@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.core.view.WindowCompat
 import com.revenuecat.purchases.LogLevel
 import com.revenuecat.purchases.Purchases
 import com.revenuecat.purchases.PurchasesConfiguration
@@ -16,6 +17,11 @@ import live.localapp.local.di.initKoin
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
+        WindowCompat.getInsetsController(window, window.decorView)?.apply {
+            isAppearanceLightStatusBars = true   // dark icons on light bg
+            isAppearanceLightNavigationBars = true
+        }
+        window.navigationBarColor = android.graphics.Color.parseColor("#FAF8FC")
         super.onCreate(savedInstanceState)
         initKoin()
         ActivityProvider.activity = this

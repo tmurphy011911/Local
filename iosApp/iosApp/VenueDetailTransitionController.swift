@@ -27,7 +27,8 @@ class VenueDetailTransitionController {
         in window: UIWindow,
         isFavorited: Bool = false,
         onFavorite: ((String) -> Void)? = nil,
-        onDismissed: @escaping () -> Void
+        onDismissed: @escaping () -> Void,
+        hidesPrimaryCTAs: Bool = false
     ) {
         cleanup()
 
@@ -64,7 +65,8 @@ class VenueDetailTransitionController {
             venue: venue,
             onDismiss: { [weak self] in self?.dismiss() },
             isFavorited: isFavorited,
-            onFavorite: onFavorite
+            onFavorite: onFavorite,
+            hidesPrimaryCTAs: hidesPrimaryCTAs
         )
         let hosting = UIHostingController(rootView: detailView)
         hosting.view.backgroundColor = .white

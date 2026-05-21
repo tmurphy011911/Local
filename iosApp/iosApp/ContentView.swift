@@ -109,7 +109,8 @@ struct ComposeView: UIViewControllerRepresentable {
 
         detailBridge.showEventDetail = {
             id, title, description, venueDescription,
-            imageUrl, startAt, venueName, venueAddress,
+            imageUrl, venueImageUrl,
+            startAt, venueName, venueAddress,
             venueCity, venueLat, venueLng,
             isFree, priceDisplay, ticketUrl, sourceUrl,
             category, subcategory, source,
@@ -129,6 +130,7 @@ struct ComposeView: UIViewControllerRepresentable {
                     description: description,
                     venueDescription: venueDescription,
                     imageUrl: imageUrl ?? cardImageUrl,
+                    venueImageUrl: venueImageUrl,
                     startAt: startAt,
                     venueName: venueName,
                     venueAddress: venueAddress,
@@ -208,7 +210,8 @@ struct ComposeView: UIViewControllerRepresentable {
             upcomingEventsJson,
             reservationUrl,
             isFavorited,
-            cardX, cardY, cardW, cardH in
+            cardX, cardY, cardW, cardH,
+            hidesPrimaryCTAs in
 
             DispatchQueue.main.async {
                 guard let window = composeVC.view.window ?? UIApplication.shared.connectedScenes
@@ -284,7 +287,8 @@ struct ComposeView: UIViewControllerRepresentable {
                             }
                         },
                         isFavorited: isFavorited.boolValue,
-                        onFavorite: { vid in venueBridge.onFavorited?(vid) }
+                        onFavorite: { vid in venueBridge.onFavorited?(vid) },
+                        hidesPrimaryCTAs: hidesPrimaryCTAs.boolValue
                     )
                     let hostingVC = UIHostingController(rootView: detailView)
                     weakHostingVC = hostingVC
@@ -302,7 +306,8 @@ struct ComposeView: UIViewControllerRepresentable {
                         in: window,
                         isFavorited: isFavorited.boolValue,
                         onFavorite: { vid in venueBridge.onFavorited?(vid) },
-                        onDismissed: { venueBridge.onDismissed?() }
+                        onDismissed: { venueBridge.onDismissed?() },
+                        hidesPrimaryCTAs: hidesPrimaryCTAs.boolValue
                     )
                 }
             }

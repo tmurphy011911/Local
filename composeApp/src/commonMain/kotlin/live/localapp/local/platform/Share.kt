@@ -11,8 +11,9 @@ expect suspend fun checkClipboardForDeepLink(): String?
 /** Clear any deep link from the clipboard after handling. */
 expect fun clearClipboardDeepLink()
 
-/** Register a callback for when a Universal Link deep link arrives while app is running. */
-expect fun setDeepLinkCallback(onPlanToken: (String) -> Unit)
+/** Register a callback for when a Universal Link arrives. The callback receives the
+ *  full path with prefix (e.g. /p/{token}, /e/{id}, /v/{id}); dispatch on prefix. */
+expect fun setDeepLinkCallback(onDeepLinkPath: (String) -> Unit)
 
 /** Purchase a subscription. isAnnual=true for annual. Callback receives success boolean. */
 expect fun purchaseSubscription(isAnnual: Boolean, onResult: (Boolean) -> Unit)

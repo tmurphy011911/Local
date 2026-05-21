@@ -164,6 +164,10 @@ struct VenueDetailView: View {
     let venue: VenueDetailData
     let onDismiss: () -> Void
     let onFavorite: ((String) -> Void)?
+    /// When true, suppress Reserve a Table / Visit Website CTAs. Set when the
+    /// detail is opened from a chat plan slot — the user is mid-planning, not
+    /// ready to book or leave the app.
+    let hidesPrimaryCTAs: Bool
 
     @State private var mapsExpanded = false
     @State private var selectedDateFilter: DateFilter = .all
@@ -174,10 +178,17 @@ struct VenueDetailView: View {
     @State private var liveEvents: [VenueUpcomingEvent]
     @State private var isLoadingEvents: Bool
 
-    init(venue: VenueDetailData, onDismiss: @escaping () -> Void, isFavorited: Bool = false, onFavorite: ((String) -> Void)? = nil) {
+    init(
+        venue: VenueDetailData,
+        onDismiss: @escaping () -> Void,
+        isFavorited: Bool = false,
+        onFavorite: ((String) -> Void)? = nil,
+        hidesPrimaryCTAs: Bool = false
+    ) {
         self.venue = venue
         self.onDismiss = onDismiss
         self.onFavorite = onFavorite
+        self.hidesPrimaryCTAs = hidesPrimaryCTAs
         self._isFavorited = State(initialValue: isFavorited)
         self._liveEvents = State(initialValue: venue.upcomingEvents)
         self._isLoadingEvents = State(initialValue: venue.upcomingEvents.isEmpty)
@@ -242,12 +253,16 @@ struct VenueDetailView: View {
                     VStack(spacing: 0) {
                         heroImage(width: geo.size.width)
                         contentSection
-                        Spacer().frame(height: 80)
+                        // Reserve room for the floating ctaBar; collapse when
+                        // it's hidden so the page doesn't end with dead space.
+                        Spacer().frame(height: hidesPrimaryCTAs ? 16 : 80)
                     }
                     .frame(width: geo.size.width)
                 }
-                ctaBar
-                    .frame(width: geo.size.width)
+                if !hidesPrimaryCTAs {
+                    ctaBar
+                        .frame(width: geo.size.width)
+                }
             }
         }
         .background(AppColor.snow)
@@ -687,7 +702,8 @@ struct VenueDetailView: View {
         .onTapGesture {
             EventDetailBridge.shared.showEventDetail?(
                 event.id, event.title, event.description, nil,
-                event.imageUrl, event.startAt,
+                event.imageUrl, venue.photoUrl,
+                event.startAt,
                 event.venueName, nil, event.venueCity ?? venue.city, KotlinDouble(value: venue.lat), KotlinDouble(value: venue.lng),
                 KotlinBoolean(value: event.isFree), event.priceDisplay ?? "",
                 event.ticketUrl, event.sourceUrl,
@@ -775,7 +791,8 @@ struct VenueDetailView: View {
             // Open event detail via bridge
             EventDetailBridge.shared.showEventDetail?(
                 event.id, event.title, event.description, nil,
-                event.imageUrl, event.startAt,
+                event.imageUrl, venue.photoUrl,
+                event.startAt,
                 event.venueName, nil, event.venueCity ?? venue.city, KotlinDouble(value: venue.lat), KotlinDouble(value: venue.lng),
                 KotlinBoolean(value: event.isFree), event.priceDisplay ?? "",
                 event.ticketUrl, event.sourceUrl,

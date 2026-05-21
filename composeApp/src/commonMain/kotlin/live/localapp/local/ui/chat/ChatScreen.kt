@@ -54,12 +54,19 @@ import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ChevronLeft
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.IosShare
+import androidx.compose.material.icons.outlined.Place
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -70,6 +77,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -90,7 +98,11 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.layout.ContentScale
 import coil3.compose.AsyncImage
 import live.localapp.local.ui.theme.AppColors
@@ -112,17 +124,89 @@ fun ChatScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val listState = rememberLazyListState()
+    val scrollScope = rememberCoroutineScope()
     var selectedEventId by remember { mutableStateOf<String?>(null) }
     var selectedEvent by remember { mutableStateOf<live.localapp.local.domain.model.Event?>(null) }
     var selectedVenueName by remember { mutableStateOf<String?>(null) }
     var selectedVenue by remember { mutableStateOf<live.localapp.local.domain.model.Venue?>(null) }
 
-    // Auto-scroll to bottom when new messages arrive (no animation to avoid bounce loop)
-    val messageCount = state.messages.size
-    LaunchedEffect(messageCount) {
-        if (messageCount > 0) {
-            listState.scrollToItem(messageCount - 1)
+    // ChatGPT-style scroll anchor: every time the user sends, snap the new
+    // bubble to the top of the viewport so older history scrolls out of view.
+    //
+    // History of attempts before the version below:
+    //   v1 — `animateScrollToItem(idx)` + trailing `Spacer(fillParentMaxHeight)`.
+    //        The spacer was measured lazily and the scroll often ran before
+    //        the LazyColumn had enough scroll range to hoist the new bubble
+    //        to the top. Bubble landed in the middle, history stayed visible.
+    //   v2 — `scrollToItem` + `snapshotFlow { totalItemsCount }`. Compose-iOS
+    //        sometimes silently no-ops `scrollToItem` when the target row's
+    //        layout offset hasn't been measured yet. snapshotFlow caught the
+    //        item-count change but not the layout-info update.
+    //
+    // v3 (this): use raw `scrollBy` driven off the item's measured offset.
+    // We wait until `visibleItemsInfo` actually contains the target row
+    // (i.e. it has been measured and positioned), then dispatch the exact
+    // scroll delta needed to put its top edge at the viewport's top edge.
+    // `scrollBy` is the primitive `scrollToItem` is built on; it can't
+    // silently no-op the way the higher-level call does. The LazyColumn
+    // wrapper below gives a guaranteed `viewport - 60.dp` of bottom
+    // contentPadding so there's always enough scrollable room for the
+    // new bubble to reach the top.
+    //
+    // Re-anchor effect catches the case where Bo's response materializes
+    // below the anchor (typing → streaming → final message → plan card)
+    // and pushes the user bubble down a few px per frame. We skip the
+    // re-anchor if the user is dragging — they may be reading history.
+    // Imperative scroll function — called both reactively (LaunchedEffect on
+    // new message) AND directly from the send action below. Three earlier
+    // versions only used LaunchedEffect and never worked on iOS, so we're
+    // belt-and-suspenders: every scroll API is tried, and the call site is
+    // wired in two places so neither timing path can drop it.
+    suspend fun anchorLatestUserMessage(tag: String) {
+        val msgs = viewModel.uiState.value.messages
+        val targetIdx = msgs.indexOfLast { it.role == MessageRole.USER }
+        println("[ChatScroll/$tag] start targetIdx=$targetIdx msgCount=${msgs.size}")
+        if (targetIdx < 0) return
+        repeat(30) { attempt ->
+            delay(if (attempt == 0) 32 else 50)
+            if (listState.isScrollInProgress) return@repeat
+            val info = listState.layoutInfo
+            val visible = info.visibleItemsInfo.map { it.index }
+            val target = info.visibleItemsInfo.firstOrNull { it.index == targetIdx }
+            println("[ChatScroll/$tag] att=$attempt visible=$visible first=${listState.firstVisibleItemIndex}@${listState.firstVisibleItemScrollOffset} target=${target?.offset}")
+            // Anchored: target row is the first visible AND at offset 0.
+            if (listState.firstVisibleItemIndex == targetIdx && listState.firstVisibleItemScrollOffset == 0) {
+                println("[ChatScroll/$tag] anchored, done")
+                return
+            }
+            // Try every API. Whichever one actually moves the list wins; the
+            // others become no-ops on the next iteration once the goal is met.
+            try {
+                if (target != null) {
+                    val delta = (target.offset - info.viewportStartOffset).toFloat()
+                    if (delta != 0f) {
+                        val consumed = listState.scrollBy(delta)
+                        println("[ChatScroll/$tag] scrollBy($delta) consumed=$consumed")
+                    }
+                }
+            } catch (e: Throwable) { println("[ChatScroll/$tag] scrollBy err: $e") }
+            try {
+                listState.scrollToItem(targetIdx, 0)
+                println("[ChatScroll/$tag] scrollToItem($targetIdx,0) → first=${listState.firstVisibleItemIndex}@${listState.firstVisibleItemScrollOffset}")
+            } catch (e: Throwable) { println("[ChatScroll/$tag] scrollToItem err: $e") }
+            if (attempt == 5 || attempt == 15) {
+                try {
+                    listState.animateScrollToItem(targetIdx, 0)
+                    println("[ChatScroll/$tag] animateScrollToItem fired")
+                } catch (e: Throwable) { println("[ChatScroll/$tag] animate err: $e") }
+            }
         }
+        println("[ChatScroll/$tag] exhausted 30 attempts, first=${listState.firstVisibleItemIndex}@${listState.firstVisibleItemScrollOffset}")
+    }
+
+    val lastUserMessageId = state.messages.lastOrNull { it.role == MessageRole.USER }?.id
+    LaunchedEffect(lastUserMessageId) {
+        if (lastUserMessageId != null) anchorLatestUserMessage("reactive")
     }
 
     // Navigate to Plans when plan is approved
@@ -179,14 +263,59 @@ fun ChatScreen(
         }
     }
 
+    // Airbnb-style scale-in: on iOS the background view scales to 0.92 when
+    // the chat sheet opens. We can't reach the host view from here, so we
+    // approximate the depth cue by scaling the sheet's own content from
+    // 0.92 → 1.0 on first composition (and rounding its corners 0 → 16dp).
+    // This is a simplification — the real effect is on the *background*.
+    var sheetShown by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { sheetShown = true }
+    val sheetScale by animateFloatAsState(
+        targetValue = if (sheetShown) 1f else 0.92f,
+        animationSpec = tween(durationMillis = 320, easing = EaseOutCubic),
+        label = "sheetScale",
+    )
+    val sheetCornerRadius by animateFloatAsState(
+        targetValue = if (sheetShown) 16f else 0f,
+        animationSpec = tween(durationMillis = 320, easing = EaseOutCubic),
+        label = "sheetCorner",
+    )
+
     Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .graphicsLayer {
+                scaleX = sheetScale
+                scaleY = sheetScale
+                clip = true
+                shape = RoundedCornerShape(sheetCornerRadius.dp)
+            }
+            // iOS doesn't auto-shift content when the keyboard appears — without
+            // this the BasicTextField's caret renders at the wrong y-coordinate
+            // during the keyboard slide-in (looks like the cursor "flies up
+            // into the chat area" while Bo is streaming).
+            .imePadding()
             .background(AppColors.Snow),
     ) {
         // ── Header ──
-        ChatHeader(onBack = onBack, onReset = { viewModel.resetChat() })
+        var locationEditorOpen by remember { mutableStateOf(false) }
+        ChatHeader(
+            onBack = onBack,
+            onReset = { viewModel.resetChat() },
+            location = state.currentLocationName,
+            onEditLocation = { locationEditorOpen = true },
+        )
+        if (locationEditorOpen) {
+            LocationEditorSheet(
+                current = state.currentLocationName,
+                onDismiss = { locationEditorOpen = false },
+                onConfirm = { name ->
+                    viewModel.setChatSearchLocationByName(name)
+                    locationEditorOpen = false
+                },
+            )
+        }
 
         // ── Upgrade Banner (for users who declined paywall) ──
         if (showUpgradeBanner) {
@@ -220,26 +349,43 @@ fun ChatScreen(
         }
 
         // ── Messages ──
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.weight(1f).nestedScroll(remember {
-                object : NestedScrollConnection {
-                    override fun onPreScroll(available: androidx.compose.ui.geometry.Offset, source: NestedScrollSource): androidx.compose.ui.geometry.Offset {
-                        // Consume upward scroll when at top to prevent sheet drag
-                        if (available.y > 0 && !listState.canScrollBackward) {
-                            return available
+        // BoxWithConstraints supplies the viewport height as a stable value
+        // we can use for bottom contentPadding. The earlier approach (a
+        // trailing `Spacer(fillParentMaxHeight)` item) failed on iOS because
+        // LazyColumn measures items lazily — when scroll fired right after
+        // a new user message landed, the spacer wasn't measured yet, so
+        // there wasn't enough scroll range for the new bubble to reach the
+        // top of the viewport. Using bottom contentPadding instead is a
+        // constraint applied at LazyColumn construction time, not lazily.
+        BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            val viewportHeight = maxHeight
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize().nestedScroll(remember {
+                    object : NestedScrollConnection {
+                        override fun onPreScroll(available: androidx.compose.ui.geometry.Offset, source: NestedScrollSource): androidx.compose.ui.geometry.Offset {
+                            // Consume upward scroll when at top to prevent sheet drag
+                            if (available.y > 0 && !listState.canScrollBackward) {
+                                return available
+                            }
+                            return androidx.compose.ui.geometry.Offset.Zero
                         }
-                        return androidx.compose.ui.geometry.Offset.Zero
                     }
-                }
-            }),
-            contentPadding = PaddingValues(start = 14.dp, end = 14.dp, top = 4.dp, bottom = 60.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
+                }),
+                contentPadding = PaddingValues(
+                    start = 14.dp, end = 14.dp, top = 4.dp,
+                    // A full viewport of scrollable bottom padding guarantees
+                    // we can always scroll the last user bubble to the top
+                    // (`scrollBy` would otherwise be clamped to whatever
+                    // scroll range happens to exist when it fires).
+                    bottom = viewportHeight,
+                ),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
             items(state.messages, key = { it.id }) { message ->
                 val isSuperseded = viewModel.isPlanSuperseded(message.id)
                 when (message.content) {
-                    is MessageContent.Text -> MessageRow(message.role, (message.content as MessageContent.Text).text)
+                    is MessageContent.Text -> MessageRow(message.role, (message.content as MessageContent.Text).text, messageId = message.id)
                     is MessageContent.DayCardRef -> {
                         val ref = message.content as MessageContent.DayCardRef
                         val dayIdx = ref.dayIndex
@@ -336,6 +482,9 @@ fun ChatScreen(
             } else if (state.isTyping) {
                 item { TypingIndicator() }
             }
+            // The trailing-spacer item that used to live here was replaced
+            // by the BoxWithConstraints bottom contentPadding above.
+            }
         }
 
         // ── Phase 6 Draft Tray ──
@@ -364,7 +513,13 @@ fun ChatScreen(
         ChatInputBar(
             enabled = state.inputEnabled,
             placeholder = state.inputPlaceholder,
-            onSend = { viewModel.sendMessage(it) },
+            onSend = { text ->
+                viewModel.sendMessage(text)
+                // Imperative scroll. The reactive LaunchedEffect above will
+                // also fire on the same state change — whichever lands the
+                // anchor first wins, the other becomes a no-op.
+                scrollScope.launch { anchorLatestUserMessage("imperative") }
+            },
         )
     }
 
@@ -394,58 +549,192 @@ fun ChatScreen(
 // ── Header ──
 
 @Composable
-private fun ChatHeader(onBack: (() -> Unit)? = null, onReset: (() -> Unit)? = null) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(AppColors.Snow)
-            .padding(horizontal = 18.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (onBack != null) {
-            Icon(
-                Icons.Outlined.ChevronLeft, "Back",
-                modifier = Modifier.size(22.dp).clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null, onClick = onBack,
-                ),
-                tint = AppColors.Ink3,
-            )
-            Spacer(Modifier.width(8.dp))
-        }
-
+private fun ChatHeader(
+    onBack: (() -> Unit)? = null,
+    onReset: (() -> Unit)? = null,
+    location: String = "",
+    onEditLocation: (() -> Unit)? = null,
+) {
+    Column(modifier = Modifier.fillMaxWidth().background(AppColors.Snow)) {
         Row(
-            modifier = Modifier.weight(1f),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 18.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Bo character anchors the "Plan with Bo" header — small,
-            // shadow/sparkles off so it sits cleanly inline with text.
-            live.localapp.local.ui.character.Bo(
-                size = 28.dp,
-                showSparkles = false,
-                showShadow = false,
-                modifier = Modifier.size(28.dp),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "Plan with Bo",
-                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = AppColors.Ink),
-            )
+            if (onBack != null) {
+                Icon(
+                    Icons.Outlined.ChevronLeft, "Back",
+                    modifier = Modifier.size(22.dp).clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null, onClick = onBack,
+                    ),
+                    tint = AppColors.Ink3,
+                )
+                Spacer(Modifier.width(8.dp))
+            }
+
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                live.localapp.local.ui.character.Bo(
+                    size = 28.dp,
+                    showSparkles = false,
+                    showShadow = false,
+                    modifier = Modifier.size(28.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "Plan with Bo",
+                    style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = AppColors.Ink),
+                )
+            }
+
+            if (onReset != null) {
+                Text(
+                    "Start over",
+                    modifier = Modifier.clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null, onClick = onReset,
+                    ),
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = AppColors.Ink3),
+                )
+            }
         }
 
-        if (onReset != null) {
-            Text(
-                "Start over",
-                modifier = Modifier.clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null, onClick = onReset,
-                ),
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = AppColors.Ink3),
-            )
+        // Location chip — the canonical "where Bo is searching" value. Tap to
+        // edit. Bo's tool calls default to this whenever it doesn't pass an
+        // explicit location override. Empty state shows a "Set location"
+        // affordance so the chip is always discoverable.
+        if (onEditLocation != null) {
+            Row(
+                modifier = Modifier
+                    .padding(start = 18.dp, end = 18.dp, bottom = 10.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(AppColors.CoralLt)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onEditLocation,
+                    )
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.Outlined.Place, "Location",
+                    tint = AppColors.Coral,
+                    modifier = Modifier.size(14.dp),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    text = if (location.isBlank()) "Set location" else "Searching $location",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 12.sp,
+                        color = AppColors.Coral,
+                    ),
+                )
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "Change",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.SemiBold,
+                        fontSize = 11.sp,
+                        color = AppColors.Coral.copy(alpha = 0.8f),
+                    ),
+                )
+            }
         }
     }
-    // Subtle divider
     Box(Modifier.fillMaxWidth().height(1.dp).background(AppColors.Pebble.copy(alpha = 0.5f)))
+}
+
+/**
+ * Bottom-sheet editor for the chat's search location. Tiny — a single text
+ * field + Set/Cancel. The user types a city or neighborhood; on Set, the
+ * viewmodel geocodes and updates the chip. Bo's next search uses the new
+ * value as the default scope.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun LocationEditorSheet(
+    current: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var text by remember(current) { mutableStateOf(current) }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = AppColors.Snow,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 24.dp)
+                .padding(top = 8.dp, bottom = 32.dp)
+                .imePadding(),
+        ) {
+            Text(
+                "Where should Bo search?",
+                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 20.sp, color = AppColors.Ink),
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "City or neighborhood. Bo will pin all searches to this scope until you change it.",
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Normal, fontSize = 13.sp, color = AppColors.Ink3),
+            )
+            Spacer(Modifier.height(20.dp))
+            TextField(
+                value = text,
+                onValueChange = { text = it },
+                placeholder = { Text("e.g. Brookline, Cambridge, Hyannis") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+                colors = TextFieldDefaults.colors(
+                    focusedContainerColor = AppColors.White,
+                    unfocusedContainerColor = AppColors.White,
+                    focusedIndicatorColor = AppColors.Coral,
+                    unfocusedIndicatorColor = AppColors.Pebble,
+                ),
+                textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = AppColors.Ink),
+            )
+            Spacer(Modifier.height(24.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Box(
+                    modifier = Modifier.weight(1f)
+                        .clip(RoundedCornerShape(50))
+                        .background(AppColors.Pebble.copy(alpha = 0.25f))
+                        .clickable { onDismiss() }
+                        .padding(vertical = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Cancel",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Ink),
+                    )
+                }
+                val canSet = text.trim().isNotBlank()
+                Box(
+                    modifier = Modifier.weight(1f)
+                        .clip(RoundedCornerShape(50))
+                        .background(AppColors.Coral)
+                        .graphicsLayer { alpha = if (canSet) 1f else 0.3f }
+                        .then(if (canSet) Modifier.clickable { onConfirm(text.trim()) } else Modifier)
+                        .padding(vertical = 14.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Set location",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White),
+                    )
+                }
+            }
+        }
+    }
 }
 
 // ── Message Bubbles ──
@@ -476,7 +765,7 @@ private fun SupersededOverlay() {
 }
 
 @Composable
-private fun MessageRow(role: MessageRole, text: String) {
+private fun MessageRow(role: MessageRole, text: String, messageId: String? = null) {
     val isUser = role == MessageRole.USER
 
     Row(
@@ -486,8 +775,8 @@ private fun MessageRow(role: MessageRole, text: String) {
         if (isUser) Spacer(Modifier.width(48.dp))
 
         if (isUser) {
-            // User messages: bubble
-            val bubbleShape = RoundedCornerShape(18.dp, 18.dp, 4.dp, 18.dp)
+            // User messages: bubble. iOS uses uniform 18pt corners.
+            val bubbleShape = RoundedCornerShape(18.dp)
             Box(
                 modifier = Modifier
                     .weight(1f, fill = false)
@@ -497,32 +786,76 @@ private fun MessageRow(role: MessageRole, text: String) {
                 Text(
                     cleanMarkdown(text),
                     style = TextStyle(
-                        fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp,
-                        color = AppColors.Ink, lineHeight = (13 * 1.55).sp,
+                        fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 15.sp,
+                        color = AppColors.Ink, lineHeight = (15 * 1.55).sp,
                     ),
                 )
             }
         } else {
-            // AI messages: small avatar + text, no bubble
-            Icon(
-                Icons.Outlined.AutoAwesome,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp).padding(top = 4.dp),
-                tint = AppColors.Coral,
-            )
+            // AI messages: Bo avatar (placeholder — coral circle + sparkle icon)
+            // + "Bo" label, then text. A real Bo asset will replace the
+            // placeholder later.
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.padding(top = 2.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(16.dp)
+                        .background(AppColors.Coral, CircleShape),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Outlined.AutoAwesome,
+                        contentDescription = null,
+                        modifier = Modifier.size(12.dp),
+                        tint = AppColors.White,
+                    )
+                }
+                Text(
+                    "Bo",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 11.sp,
+                        color = AppColors.Coral,
+                    ),
+                )
+            }
             Spacer(Modifier.width(8.dp))
             Box(
                 modifier = Modifier
                     .weight(1f, fill = false)
                     .padding(vertical = 4.dp),
             ) {
-                RichChatText(text = text, textColor = AppColors.Ink)
+                if (messageId != null && !text.contains("**")) {
+                    // Plain conversational AI reply with a stable id — use
+                    // typewriter reveal (matches iOS ChatView.swift). Skip
+                    // typewriter when the text has markdown bold so the rich
+                    // renderer still handles styling.
+                    TypewritingAiText(
+                        messageId = messageId,
+                        fullText = stripEmojiForTypewriter(text),
+                        color = AppColors.Ink,
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.Medium,
+                            lineHeight = 21.sp,
+                        ),
+                        fontSize = 15.sp,
+                    )
+                } else {
+                    RichChatText(text = text, textColor = AppColors.Ink)
+                }
             }
         }
 
         if (!isUser) Spacer(Modifier.width(48.dp))
     }
 }
+
+/** Helper that exposes the file-private stripEmoji for the typewriter path. */
+private fun stripEmojiForTypewriter(text: String): String = stripEmoji(text)
 
 // ── Typing Indicator ──
 
@@ -1471,13 +1804,21 @@ private fun ActionButton(label: String, isPrimary: Boolean, modifier: Modifier =
 
 @Composable
 private fun QuickReplyBar(replies: List<QuickReply>, onReply: (QuickReply) -> Unit) {
-    LazyRow(
-        contentPadding = PaddingValues(horizontal = 14.dp),
-        horizontalArrangement = Arrangement.spacedBy(7.dp),
-        modifier = Modifier.padding(vertical = 6.dp),
-    ) {
-        items(replies) { reply ->
-            QuickReplyChip(reply = reply, onClick = { onReply(reply) })
+    // Tall plan cards used to butt right up against the chip strip below
+    // them — the eye read it as "chips covering the bottom of the card".
+    // A 1px divider plus the bar's own Snow background gives the strip a
+    // clear top edge that visually separates it from the LazyColumn's
+    // last item, even when that item is being clipped by a tight viewport.
+    Column(modifier = Modifier.fillMaxWidth().background(AppColors.Snow)) {
+        Box(Modifier.fillMaxWidth().height(1.dp).background(AppColors.Pebble.copy(alpha = 0.4f)))
+        LazyRow(
+            contentPadding = PaddingValues(horizontal = 14.dp),
+            horizontalArrangement = Arrangement.spacedBy(7.dp),
+            modifier = Modifier.padding(vertical = 10.dp),
+        ) {
+            items(replies) { reply ->
+                QuickReplyChip(reply = reply, onClick = { onReply(reply) })
+            }
         }
     }
 }
@@ -1512,6 +1853,16 @@ private fun QuickReplyChip(reply: QuickReply, onClick: () -> Unit) {
 @Composable
 private fun ChatInputBar(enabled: Boolean, placeholder: String, onSend: (String) -> Unit) {
     var text by remember { mutableStateOf("") }
+    // Drop focus on send so the keyboard collapses and the user can read Bo's
+    // reply without manually dismissing.
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+
+    fun submit() {
+        if (text.isBlank()) return
+        onSend(text)
+        text = ""
+        focusManager.clearFocus()
+    }
 
     // Top divider
     Box(Modifier.fillMaxWidth().height(1.dp).background(AppColors.Pebble.copy(alpha = 0.4f)))
@@ -1525,19 +1876,25 @@ private fun ChatInputBar(enabled: Boolean, placeholder: String, onSend: (String)
             modifier = Modifier.weight(1f).heightIn(min = 42.dp)
                 .background(AppColors.White, RoundedCornerShape(22.dp))
                 .border(1.dp, AppColors.Pebble.copy(alpha = 0.6f), RoundedCornerShape(22.dp))
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = 12.dp),
             contentAlignment = Alignment.CenterStart,
         ) {
             if (text.isEmpty()) {
-                Text(placeholder, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink3))
+                Text(placeholder, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = AppColors.Ink3))
             }
             if (enabled) {
                 BasicTextField(
                     value = text, onValueChange = { text = it },
                     modifier = Modifier.fillMaxWidth(),
-                    textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink),
+                    textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = AppColors.Ink),
                     keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
-                    keyboardActions = KeyboardActions(onSend = { if (text.isNotBlank()) { onSend(text); text = "" } }),
+                    keyboardActions = KeyboardActions(onSend = { submit() }),
+                    // Hide the caret when the field is empty — on iOS, heavy
+                    // recompositions during Bo's streaming can momentarily
+                    // mis-place the caret (it "jumps" outside the field).
+                    // Showing the caret only once the user has typed avoids
+                    // the visual artifact entirely without breaking input.
+                    cursorBrush = if (text.isEmpty()) SolidColor(Color.Transparent) else SolidColor(AppColors.Coral),
                     singleLine = false, maxLines = 3,
                 )
             }
@@ -1550,7 +1907,7 @@ private fun ChatInputBar(enabled: Boolean, placeholder: String, onSend: (String)
             modifier = Modifier.size(42.dp).graphicsLayer { alpha = if (canSend) 1f else 0.3f }
                 .background(AppColors.Ink, RoundedCornerShape(21.dp))
                 .clip(RoundedCornerShape(21.dp))
-                .then(if (canSend) Modifier.clickable { onSend(text); text = "" } else Modifier),
+                .then(if (canSend) Modifier.clickable { submit() } else Modifier),
             contentAlignment = Alignment.Center,
         ) {
             Icon(Icons.AutoMirrored.Outlined.Send, "Send", Modifier.size(20.dp), tint = AppColors.White)
@@ -1799,37 +2156,54 @@ private fun AuthRequiredOverlay(
     }
 }
 
-/** Renders chat text with bold headers, formatted bullets, and visual hierarchy. */
+/** Renders chat text with bold, formatted bullets, and visual hierarchy.
+ *  Designed to be friendly to STREAMING text: an open `**` with no closing
+ *  delimiter yet renders the rest as bold immediately (so the user sees
+ *  bold formatting live, instead of literal asterisks until Bo finishes).
+ *  When the closing `**` arrives, the regular pairing logic takes over. */
 @Composable
 private fun RichChatText(text: String, textColor: Color) {
-    // Simple: just render **bold** inline, leave everything else as-is
     val annotated = remember(text) {
-        val cleaned = text
-            .replace(Regex("^#+\\s+", RegexOption.MULTILINE), "") // strip markdown headers
+        // Pre-normalize: strip markdown headers and unify bullet prefixes
+        // (`- foo`, `* foo`, `• foo` → `• foo`). The bullet character +
+        // a leading space is preserved as text and rendered inline.
+        // Also strip surrogate-pair emoji that iOS Compose can't render —
+        // Bo is told via prompt not to use them but Claude slips
+        // occasionally, and a broken glyph reads worse than a silent strip.
+        val cleaned = stripEmoji(text)
+            .replace(Regex("^#+\\s+", RegexOption.MULTILINE), "")
+            .replace(Regex("^\\s*[-*•]\\s+", RegexOption.MULTILINE), "• ")
+
         buildAnnotatedString {
             var remaining = cleaned
             while (remaining.isNotEmpty()) {
                 val boldStart = remaining.indexOf("**")
                 if (boldStart < 0) {
-                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = textColor)) {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Medium, fontSize = 15.sp, color = textColor)) {
                         append(remaining)
                     }
                     break
                 }
                 if (boldStart > 0) {
-                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = textColor)) {
+                    withStyle(SpanStyle(fontWeight = FontWeight.Medium, fontSize = 15.sp, color = textColor)) {
                         append(remaining.substring(0, boldStart))
                     }
                 }
                 remaining = remaining.substring(boldStart + 2)
                 val boldEnd = remaining.indexOf("**")
                 if (boldEnd < 0) {
-                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = textColor)) {
-                        append("**$remaining")
+                    // Streaming case: opening `**` with no closing delimiter
+                    // yet. Render the rest as bold so the user sees the
+                    // intended formatting live. When Bo finishes typing
+                    // the closing `**`, the regular pairing branch below
+                    // takes over and the bold scope tightens to the actual
+                    // span.
+                    withStyle(SpanStyle(fontWeight = FontWeight.Black, fontSize = 15.sp, color = textColor)) {
+                        append(remaining)
                     }
                     break
                 }
-                withStyle(SpanStyle(fontWeight = FontWeight.Black, fontSize = 13.sp, color = textColor)) {
+                withStyle(SpanStyle(fontWeight = FontWeight.Black, fontSize = 15.sp, color = textColor)) {
                     append(remaining.substring(0, boldEnd))
                 }
                 remaining = remaining.substring(boldEnd + 2)
@@ -1841,7 +2215,7 @@ private fun RichChatText(text: String, textColor: Color) {
         text = annotated,
         style = TextStyle(
             fontFamily = AppFonts.Body,
-            lineHeight = 19.sp,
+            lineHeight = 21.sp,
         ),
     )
 }
@@ -1858,15 +2232,39 @@ private fun cleanMarkdown(text: String): String {
         .trim()
 }
 
-/** Strip emoji and other non-BMP Unicode characters that render as question marks */
+/**
+ * Strip Unicode characters that iOS Compose can't render — modern emoji
+ * (code points above U+FFFF, encoded as surrogate pairs) fall back to
+ * the system's missing-glyph box. The previous version of this function
+ * filtered by single-Char code point and missed surrogates entirely,
+ * which is why Bo's "Hey! 🙂‍↕️" leaked through. This version walks the
+ * string by Char, drops any high-surrogate + low-surrogate pair, and
+ * also drops the trailing combiners (ZWJ U+200D, variation selectors
+ * U+FE00..FE0F) that decorate a stripped emoji — otherwise they leave
+ * dangling glyph-boxes of their own.
+ */
 private fun stripEmoji(text: String): String {
-    // Kotlin/Native doesn't support \x{} regex syntax, so filter by code point
-    return text.filter { char ->
-        val cp = char.code
-        // Keep ASCII + common Unicode (Latin, Cyrillic, etc.)
-        // Filter out emoji ranges and other non-BMP characters
-        cp < 0x2600 || (cp in 0x2800..0xFDFF) || (cp in 0xFE10..0xFE1F) || (cp in 0xFF00..0xFFEF)
-    }.replace(Regex("\\s{2,}"), " ").trim()
+    val sb = StringBuilder(text.length)
+    var i = 0
+    var skippedRecent = false
+    while (i < text.length) {
+        val ch = text[i]
+        if (ch.isHighSurrogate() && i + 1 < text.length && text[i + 1].isLowSurrogate()) {
+            i += 2
+            skippedRecent = true
+            continue
+        }
+        val cp = ch.code
+        val isCombiner = cp == 0x200D || cp in 0xFE00..0xFE0F
+        if (isCombiner && skippedRecent) {
+            i++
+            continue
+        }
+        sb.append(ch)
+        skippedRecent = false
+        i++
+    }
+    return sb.toString().replace(Regex("\\s{2,}"), " ").trim()
 }
 
 /** Extract a numeric price from strings like "$25", "From $15", "$$" */
@@ -2334,15 +2732,17 @@ private fun StructuredResponseRenderer(
 
 private fun footerActionToIntent(action: live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action): String = when (action) {
     live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action.SEARCH_WIDER ->
-        "Broaden the search — increase the radius and drop any keyword filters, then show me more options"
+        "Cast a wider net, Bo"
     live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action.DIFFERENT_CATEGORY ->
-        "Show me events in a different category"
+        "Try something different"
     live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action.LATE_NIGHT ->
-        "Show me only events starting after 9 PM"
+        "What's open late night?"
     live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action.DIFFERENT_DAY ->
-        "Show me events on a different day"
+        "How about another day?"
     live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action.MORE_RESULTS ->
-        "Show me more results — keep the same filters but go deeper"
+        "Show me more results, Bo!"
+    live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action.BUILD_FROM_WEB ->
+        "Build a plan from the web findings you just surfaced. For each promising event, call save_web_finding(kind='event') to stage it, then call present_plan with the returned bo_web_events ids as the slot event_ids (with is_bo_web: true). Don't ask another question first — just build the plan."
 }
 
 @Composable

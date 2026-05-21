@@ -31,6 +31,8 @@ data class Event(
     val sourceUrl: String? = null,
     val distanceMiles: Double? = null,
     val venueDescription: String? = null,
+    /** Photo URL of the joined venue. Last-resort fallback for cards/hero when [imageUrl] is null. */
+    val venueImageUrl: String? = null,
     /**
      * True when `startAt` is a real source-provided time. False when the
      * crawler had only a date and defaulted to midnight Eastern. UI should
@@ -75,11 +77,15 @@ data class Event(
                     hour > 12 -> hour - 12
                     else -> hour
                 }
-                // Date-only events (timeKnown=false) display "TBD" instead of
-                // the misleading "12am" the formatter would produce. Catches
-                // both new ingestions (flag set) and legacy midnight rows.
+                // Date-only events (timeKnown=false) hide the time entirely
+                // — showing "TBD" reads like the app is broken when in fact
+                // the source just didn't publish a time. Many crawl
+                // sources (libraries, museums, community calendars) are
+                // date-only by design; the day alone is the right surface.
+                // Also catches the midnight-local fallback for legacy rows
+                // that were ingested with a 00:00 sentinel.
                 val time = if (!timeKnown || (hour == 0 && minute == 0)) {
-                    "TBD"
+                    null
                 } else if (minute == 0) {
                     "$displayHour$amPm"
                 } else {
@@ -104,7 +110,7 @@ data class Event(
                     }
                 }
 
-                "$dayLabel, $time"
+                if (time == null) dayLabel else "$dayLabel, $time"
             } catch (_: Exception) {
                 ""
             }

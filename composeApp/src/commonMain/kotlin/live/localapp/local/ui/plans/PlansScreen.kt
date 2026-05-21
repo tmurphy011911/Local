@@ -112,6 +112,8 @@ fun PlansScreen(
     isLoggedIn: Boolean = true,
     locationName: String = "",
     streakDays: Int = 0,
+    isUnsupportedState: Boolean = false,
+    radiusFilter: Double? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
 
@@ -143,14 +145,15 @@ fun PlansScreen(
 
     Column(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
         AppHeader(
-            title = "plans",
+            title = "local",
             locationName = locationName,
-            radiusFilter = null,
+            radiusFilter = radiusFilter,
             streakDays = streakDays,
             userInitial = userInitial,
             onProfileClick = onProfileClick,
             onLocationClick = onLocationClick,
             isLoggedIn = isLoggedIn,
+            isUnsupportedState = isUnsupportedState,
         )
 
         if (!isLoggedIn) {
@@ -432,15 +435,7 @@ private fun SavedEventCard(event: Event, onClick: (androidx.compose.ui.geometry.
                 val (bgStart, bgEnd) = categoryGradient(colorKey)
                 Box(
                     modifier = Modifier.fillMaxSize().background(Brush.linearGradient(listOf(bgStart, bgEnd))),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Outlined.CalendarMonth,
-                        contentDescription = null,
-                        modifier = Modifier.size(28.dp),
-                        tint = AppColors.Ink3.copy(alpha = 0.3f),
-                    )
-                }
+                )
             }
 
             // (Yocal sparkle badge removed — the entire card now opens Bo
@@ -951,15 +946,17 @@ private fun SwipeToRevealDelete(
         }
     }
 
-    // Confirmation shrink-away animation
+    // Confirmation shrink-away animation. We deliberately keep `confirming=true`
+    // after onDelete fires — the ViewModel's state update is async, and resetting
+    // confirming=false makes us re-render content() for ~1 frame while the plan
+    // is still in the parent list, causing the deleted card to flash back in
+    // before LazyColumn drops the item. Leaving confirming=true keeps the
+    // collapsed "Deleted" pill at zero height until disposal.
     val dismissProgress by animateFloatAsState(
         targetValue = if (confirming) 0f else 1f,
         animationSpec = tween(280),
         finishedListener = {
-            if (confirming) {
-                onDelete()
-                confirming = false
-            }
+            if (confirming) onDelete()
         },
     )
 
@@ -985,13 +982,17 @@ private fun SwipeToRevealDelete(
         }
     } else {
         Box(modifier = Modifier.fillMaxWidth().height(IntrinsicSize.Min).clipToBounds()) {
-            // Delete action — rounded pill behind the card
+            // Delete action — rounded pill behind the card. Alpha is tied to
+            // swipe progress so the pill is invisible at rest. Without this,
+            // the press-scale on plan cards (which shrinks them to 0.94)
+            // exposes the pill at the right edge before the user has swiped.
             Row(
                 modifier = Modifier
                     .align(Alignment.CenterEnd)
                     .padding(end = 4.dp)
                     .fillMaxHeight()
                     .width(68.dp)
+                    .graphicsLayer { alpha = ((-offsetX) / 76f).coerceIn(0f, 1f) }
                     .clip(RoundedCornerShape(12.dp))
                     .background(AppColors.Coral)
                     .clickable {
@@ -1083,12 +1084,16 @@ private fun HeroPlanCard(
         modifier = Modifier
             .fillMaxWidth()
             .onGloballyPositioned { cardBounds = it.boundsInRoot() }
+            // pressable must come BEFORE clip/background so its internal
+            // graphicsLayer wraps them — otherwise the background is drawn
+            // outside the scaled layer and the coral gradient leaks around
+            // all four edges of the image during the press shrink.
+            .pressable(onClick = { onClick(cardBounds) })
             .clip(cardShape)
             .background(
                 Brush.linearGradient(listOf(AppColors.Coral, Color(0xFFFF4F4F))),
                 cardShape,
-            )
-            .pressable(onClick = { onClick(cardBounds) }),
+            ),
     ) {
         // Background venue image
         if (firstImageUrl != null) {
@@ -1227,9 +1232,8 @@ private fun CompactPlanRow(
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize(),
                     )
-                } else {
-                    Icon(Icons.Outlined.CalendarMonth, contentDescription = null, modifier = Modifier.size(28.dp), tint = Color.White.copy(alpha = 0.5f))
                 }
+                // No-image plans render the gradient tile only.
             }
 
             // Body
@@ -1319,9 +1323,8 @@ private fun InvitePlanRow(
                         contentScale = ContentScale.Crop,
                         modifier = Modifier.fillMaxSize(),
                     )
-                } else {
-                    Icon(Icons.Outlined.CalendarMonth, contentDescription = null, modifier = Modifier.size(28.dp), tint = Color.White.copy(alpha = 0.5f))
                 }
+                // No-image plans render the gradient tile only.
             }
 
             // Body

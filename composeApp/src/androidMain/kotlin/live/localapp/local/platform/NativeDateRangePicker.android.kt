@@ -1,5 +1,6 @@
 package live.localapp.local.platform
 
+import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.DatePickerDialog
 import androidx.compose.material3.DateRangePicker
@@ -12,6 +13,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -62,7 +65,22 @@ actual fun rememberNativeDateRangePicker(): NativeDateRangePickerController {
                 }) { Text("Cancel") }
             },
         ) {
-            DateRangePicker(state = state, showModeToggle = false, title = null, headline = null)
+            DateRangePicker(
+                state = state,
+                showModeToggle = false,
+                title = {
+                    Text(
+                        text = "When is it?",
+                        modifier = Modifier.padding(start = 24.dp, end = 12.dp, top = 16.dp),
+                    )
+                },
+                headline = {
+                    Text(
+                        text = "Pick a date range",
+                        modifier = Modifier.padding(start = 24.dp, end = 12.dp, bottom = 12.dp),
+                    )
+                },
+            )
         }
     }
 

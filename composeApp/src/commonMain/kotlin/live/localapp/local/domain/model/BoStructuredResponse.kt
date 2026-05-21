@@ -16,6 +16,14 @@ sealed interface BoStructuredResponse {
         val groupBy: GroupBy,
         val groups: List<Group>,
         val footer: Footer? = null,
+        /** Keyword Bo used in the search_events call that produced this
+         *  tray (e.g. "story time", "jazz", "trivia"). Captured so the
+         *  inline "Find more" load-more handler can keep the same filter
+         *  applied — without it, load-more on a day group reverts to
+         *  popular events on that day, dropping the user's original
+         *  intent. Null when the original search had no keyword
+         *  (open-ended browse). Set by ChatViewModel, not by Bo. */
+        val originalKeyword: String? = null,
     ) : BoStructuredResponse {
         enum class GroupBy { DAY, CATEGORY, NONE }
 
@@ -36,7 +44,13 @@ sealed interface BoStructuredResponse {
         )
 
         enum class Action {
-            SEARCH_WIDER, DIFFERENT_CATEGORY, LATE_NIGHT, DIFFERENT_DAY, MORE_RESULTS;
+            SEARCH_WIDER, DIFFERENT_CATEGORY, LATE_NIGHT, DIFFERENT_DAY, MORE_RESULTS,
+            /** Build a plan from the web findings Bo just surfaced in the tray
+             *  headline. Bo's intent on tap: call save_web_finding for each
+             *  promising web event then present_plan. Only included in
+             *  footer.actions when Bo actually has usable web_search results.
+             */
+            BUILD_FROM_WEB;
             companion object {
                 fun fromString(s: String?): Action? = when (s) {
                     "search_wider" -> SEARCH_WIDER
@@ -44,6 +58,7 @@ sealed interface BoStructuredResponse {
                     "late_night" -> LATE_NIGHT
                     "different_day" -> DIFFERENT_DAY
                     "more_results" -> MORE_RESULTS
+                    "build_from_web" -> BUILD_FROM_WEB
                     else -> null
                 }
             }

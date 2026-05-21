@@ -29,6 +29,7 @@ private class AndroidPlacesAutocomplete(private val apiKey: String) : PlacesAuto
     }
 
     override suspend fun query(input: String, lat: Double?, lng: Double?): List<PlaceSuggestion> {
+        if (input.length < 3) return emptyList()
         if (apiKey.isBlank()) return emptyList()
         return try {
             val url = URLBuilder("https://maps.googleapis.com/maps/api/place/autocomplete/json").apply {

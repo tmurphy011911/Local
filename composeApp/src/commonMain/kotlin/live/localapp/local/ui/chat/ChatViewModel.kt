@@ -4,8 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -194,6 +196,10 @@ data class ChatUiState(
     val currentLat: Double? = null,
     val currentLng: Double? = null,
     val currentLocationName: String = "",
+    /** Search radius in miles. Drives the radius slider in the scope editor +
+     *  the bbox query in searchEvents. Defaults to 20mi, the legacy implicit
+     *  value. */
+    val searchRadiusMiles: Double = 20.0,
 )
 
 private var idCounter = 0L
@@ -207,6 +213,8 @@ class ChatViewModel(
     private val planRepo: PlanRepository,
     private val badgeService: BadgeService,
     private val tasteRepo: TasteRepository,
+    private val boTools: live.localapp.local.data.bo.BoTools,
+    private val boChipsRepo: live.localapp.local.domain.repository.BoChipsRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
@@ -224,15 +232,56 @@ class ChatViewModel(
     /** Called after a plan is successfully saved. */
     var onPlanSaved: (() -> Unit)? = null
 
-    /** Cache of all events returned by search_events calls in the current turn. */
+    /** Persistent storage for the search-scope banner. Closing and re-opening
+     *  Bo used to drop the chip back to default; now we save the user's
+     *  chosen location + coords + radius and restore on init. */
+    private val scopeSettings = com.russhwolf.settings.Settings()
+    private companion object {
+        const val PREF_SCOPE_NAME = "bo.scope.name"
+        const val PREF_SCOPE_LAT = "bo.scope.lat"
+        const val PREF_SCOPE_LNG = "bo.scope.lng"
+        const val PREF_SCOPE_RADIUS = "bo.scope.radius_miles"
+    }
+
+    private fun persistScope(name: String, lat: Double?, lng: Double?, radiusMiles: Double) {
+        try {
+            scopeSettings.putString(PREF_SCOPE_NAME, name)
+            if (lat != null && lng != null) {
+                scopeSettings.putDouble(PREF_SCOPE_LAT, lat)
+                scopeSettings.putDouble(PREF_SCOPE_LNG, lng)
+            }
+            scopeSettings.putDouble(PREF_SCOPE_RADIUS, radiusMiles)
+        } catch (_: Throwable) { /* disk write failures are recoverable */ }
+    }
+
+    private fun loadPersistedScope(): Quadruple<String, Double?, Double?, Double>? {
+        return try {
+            val name = scopeSettings.getStringOrNull(PREF_SCOPE_NAME)?.takeIf { it.isNotBlank() }
+                ?: return null
+            val lat = if (scopeSettings.hasKey(PREF_SCOPE_LAT)) scopeSettings.getDouble(PREF_SCOPE_LAT, 0.0) else null
+            val lng = if (scopeSettings.hasKey(PREF_SCOPE_LNG)) scopeSettings.getDouble(PREF_SCOPE_LNG, 0.0) else null
+            val radius = if (scopeSettings.hasKey(PREF_SCOPE_RADIUS)) scopeSettings.getDouble(PREF_SCOPE_RADIUS, 20.0) else 20.0
+            Quadruple(name, lat, lng, radius)
+        } catch (_: Throwable) { null }
+    }
+
+    private data class Quadruple<A, B, C, D>(val a: A, val b: B, val c: C, val d: D)
+
+    /** Events returned by recent search_events calls in this session. Kept
+     *  as a thin local list for plan-build code that iterates by insertion
+     *  order; the canonical map-by-id cache lives in BoTools.searchResultCache
+     *  and both are populated together. We could collapse to just the map
+     *  but several call sites iterate, so the list stays for now. */
     private val searchResultCache = mutableListOf<Event>()
-    /** Cache of search_events queries that returned zero results within the
-     *  current chat session. Bo has a habit of re-querying the same region
-     *  with a slightly different filter ("nantucket outdoors", "nantucket
-     *  music", etc.) when the first query was empty — each re-query costs a
-     *  full SQL round-trip. Hitting this cache short-circuits to "No events
-     *  found" immediately. Cleared on resetChat() like searchResultCache. */
-    private val searchEmptyMisses = mutableSetOf<String>()
+
+    /**
+     * The keyword Bo passed in its most recent `search_events` call. Stamped
+     * onto Suggestions trays so "Find more" on a day group keeps the same
+     * filter applied. Without this, load-more reverts to "popular events on
+     * that day" and the user's original intent ("story times this week",
+     * "jazz tonight") gets lost. Cleared on resetChat.
+     */
+    private var lastSearchKeyword: String? = null
 
     /** Cached taste profile — loaded at init, refreshed after plan approvals. */
     private var tasteProfile: TasteProfile? = null
@@ -244,6 +293,72 @@ class ChatViewModel(
         _uiState.update { it.copy(currentLat = lat, currentLng = lng, currentLocationName = name) }
     }
 
+    /**
+     * Set the chat's search scope — both the named location and the radius
+     * in miles. Driven by the search-scope banner editor in the chat header.
+     * The banner is the canonical "where + how wide Bo is searching" value;
+     * Bo's search tools read both fields. If [name] geocodes we update the
+     * coords too so the search center moves; if it doesn't we still keep
+     * the name so the user sees their intent.
+     */
+    fun setChatSearchScope(name: String, radiusMiles: Double) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+        val coords = geocodeCity(trimmed)
+        val clampedRadius = radiusMiles.coerceIn(2.0, 100.0)
+        val finalLat = coords?.first ?: _uiState.value.currentLat
+        val finalLng = coords?.second ?: _uiState.value.currentLng
+        _uiState.update {
+            it.copy(
+                currentLocationName = trimmed,
+                currentLat = finalLat,
+                currentLng = finalLng,
+                searchRadiusMiles = clampedRadius,
+            )
+        }
+        persistScope(trimmed, finalLat, finalLng, clampedRadius)
+    }
+
+    /**
+     * Same as [setChatSearchScope] but coords come from the caller (iOS uses
+     * Apple's CLGeocoder, which handles arbitrary places — "Concord, MA",
+     * "South End", "94110" — that the in-memory geocodeCity doesn't know).
+     * Falls back to the legacy hardcoded geocoder when the caller couldn't
+     * resolve coords (NaN). Without this, typing any town outside the
+     * hardcoded KNOWN_CITIES list causes every Bo search to come back as
+     * UNRESOLVED_LOCATION.
+     */
+    fun setChatSearchScopeWithCoords(name: String, lat: Double, lng: Double, radiusMiles: Double) {
+        val trimmed = name.trim()
+        if (trimmed.isEmpty()) return
+        val clampedRadius = radiusMiles.coerceIn(2.0, 100.0)
+        val finalLat: Double
+        val finalLng: Double
+        if (lat.isFinite() && lng.isFinite()) {
+            finalLat = lat
+            finalLng = lng
+        } else {
+            val fallback = geocodeCity(trimmed)
+            finalLat = fallback?.first ?: _uiState.value.currentLat ?: 42.3601
+            finalLng = fallback?.second ?: _uiState.value.currentLng ?: -71.0589
+        }
+        _uiState.update {
+            it.copy(
+                currentLocationName = trimmed,
+                currentLat = finalLat,
+                currentLng = finalLng,
+                searchRadiusMiles = clampedRadius,
+            )
+        }
+        persistScope(trimmed, finalLat, finalLng, clampedRadius)
+    }
+
+    /** Legacy single-arg setter — kept so any existing Swift callers still
+     *  compile. Forwards to [setChatSearchScope] with the current radius. */
+    fun setChatSearchLocationByName(name: String) {
+        setChatSearchScope(name, _uiState.value.searchRadiusMiles)
+    }
+
     // One-shot navigation events
     private val _navigateToPlans = Channel<Unit>(Channel.BUFFERED)
     val navigateToPlans = _navigateToPlans.receiveAsFlow()
@@ -251,7 +366,33 @@ class ChatViewModel(
     // Claude conversation history — supports both text and tool_use/tool_result blocks
     private val conversationHistory = mutableListOf<ClaudeMessage>()
 
+    // Tracks the in-flight welcome stream so "Start over" can cancel it before
+    // launching a new one. Without this, two greetings race into streamingText
+    // and the user sees the previous one flicker back during reset.
+    private var welcomeJob: kotlinx.coroutines.Job? = null
+
+    // Must be declared BEFORE init {} — buildSystemPrompt() reads this from the
+    // welcome coroutine, and on Kotlin/Native a field declared after the init
+    // block stays at its null-pointer default until that line of the class
+    // body executes, causing a SIGSEGV inside .lowercase() on launch.
+    /** Stores the last user message for APPROVE detection. */
+    private var lastUserMessage: String = ""
+
     init {
+        // Restore the persisted search-scope banner BEFORE any other init
+        // so the chip is correct on first paint after Bo reopens. Closing +
+        // re-opening Bo used to drop the user's chosen location/radius;
+        // they had to re-edit every session.
+        loadPersistedScope()?.let { saved ->
+            _uiState.update {
+                it.copy(
+                    currentLocationName = saved.a,
+                    currentLat = saved.b ?: it.currentLat,
+                    currentLng = saved.c ?: it.currentLng,
+                    searchRadiusMiles = saved.d,
+                )
+            }
+        }
         loadUserPrefsAndWelcome()
     }
 
@@ -279,50 +420,84 @@ class ChatViewModel(
     // ── Welcome ──
 
     private fun showWelcome() {
-        viewModelScope.launch {
+        // Cancel any in-flight welcome stream — without this, a "Start over" tap
+        // mid-greeting leaves the previous Claude call still emitting TextDeltas
+        // into streamingText *while* the new one starts. The user sees the old
+        // greeting flicker back, get cleared, then the new one type out.
+        welcomeJob?.cancel()
+        welcomeJob = viewModelScope.launch {
             _uiState.update { it.copy(isTyping = true) }
+
+            // Kick off the personalized-chips edge-function call NOW, in
+            // parallel with the greeting. By the time the greeting Claude
+            // call returns ~2–4s later, the chips call (Haiku, cached
+            // server-side) should already be done. We await with a short
+            // join below; if it hasn't finished, we fall through to the
+            // rules-based set so the welcome screen is never chipless.
+            val chipsJob = async { fetchPersonalizedChips() }
 
             try {
                 val systemPrompt = buildSystemPrompt()
                 // Send a welcome prompt to Claude — it will greet the user naturally
-                conversationHistory.add(ClaudeMessage.text("user", "[System: The user just opened the chat. Greet them warmly in 1-2 short sentences. Ask what they'd like to do. Keep it casual and brief. Do NOT use tools. Do NOT use any special formatting.]"))
+                conversationHistory.add(ClaudeMessage.text("user", "[System: The user just opened the chat. Greet them warmly in 1-2 short sentences. Ask what they'd like to do. Keep it casual and brief. Do NOT use tools. Do NOT use any special formatting. NO emoji of any kind — not even one in the greeting. Plain text only.]"))
                 val response = sendStreaming(systemPrompt, null, isToolRound = false, model = live.localapp.local.data.remote.ClaudeApiService.MODEL_CHAT)
                 val text = claudeApi.extractText(response) ?: "Hey! What are you looking to plan?"
                 // Remove the synthetic user message from history — replace with clean start
                 conversationHistory.removeLastOrNull()
 
-                _uiState.update { it.copy(streamingText = "") }
+                // addAiMessage atomically appends the message AND clears
+                // streamingText in a single _uiState.update — clearing it in a
+                // separate update first creates a one-frame gap where the
+                // bubble disappears before reappearing as a finalized message,
+                // which reads as "the typewriter deletes itself and starts over."
                 addAiMessage(text)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                // Reset called mid-stream: drop the partial greeting and let the
+                // new welcome (already launched) own the state.
+                chipsJob.cancel()
+                throw e
             } catch (_: Exception) {
-                _uiState.update { it.copy(streamingText = "") }
                 addAiMessage("Hey! What are you looking to plan?")
             }
 
             val prefs = _uiState.value.userPreferences
-            val defaultChips = mutableListOf(
-                QuickReply("Weekend plans"),
-                QuickReply("Date night ideas"),
-            )
-            prefs?.selectedCategories?.take(2)?.forEach { cat ->
-                defaultChips.add(QuickReply("${categoryDisplayName(cat)} this week"))
-            }
-            prefs?.selectedNeighborhoods?.firstOrNull()?.let { hood ->
-                defaultChips.add(QuickReply("Things to do in $hood"))
-            }
-            if (defaultChips.size <= 2) {
-                defaultChips.add(QuickReply("Free things to do"))
-                defaultChips.add(QuickReply("Live music tonight"))
-            }
-
+            // Personalized chips from edge fn beat rules-based when present.
+            // Cap at 3s past greeting completion so a slow edge function
+            // can't visibly block the welcome state. Empty list (failure,
+            // timeout, or unboarded user) falls through to rules-based.
+            val edgeChips = withTimeoutOrNull(3000) { chipsJob.await() } ?: emptyList()
+            val chips = edgeChips.ifEmpty { buildPersonalizedChips(prefs).map { it.label } }
             _uiState.update {
                 it.copy(
                     isTyping = false,
                     inputEnabled = true,
                     inputPlaceholder = "What are you looking for?",
-                    quickReplies = defaultChips,
+                    quickReplies = chips.map { label -> QuickReply(label) },
                 )
             }
         }
+    }
+
+    /**
+     * Hits the `bo-chips` edge function with the user's id, current local
+     * hour, and day-of-week. The edge function does the personalization
+     * (profile + taste + upcoming plan) and returns 4 chip labels. Returns
+     * empty list on any failure or if the user isn't onboarded yet.
+     */
+    private suspend fun fetchPersonalizedChips(): List<String> {
+        val userId = userPrefsRepo.getLocalUserId() ?: return emptyList()
+        val tz = kotlinx.datetime.TimeZone.currentSystemDefault()
+        val now = kotlin.time.Clock.System.now().toLocalDateTime(tz)
+        // ordinal is 0=Mon..6=Sun; edge function expects 1=Mon..7=Sun (ISO).
+        val dowIso = now.dayOfWeek.ordinal + 1
+        val prefs = _uiState.value.userPreferences
+        return boChipsRepo.getChips(
+            userId = userId,
+            localHour = now.hour,
+            dayOfWeek = dowIso,
+            lat = prefs?.userLat ?: _uiState.value.currentLat,
+            lng = prefs?.userLng ?: _uiState.value.currentLng,
+        )
     }
 
     private fun categoryDisplayName(key: String): String = when (key) {
@@ -338,6 +513,81 @@ class ChatViewModel(
         "libraries" -> "Libraries"
         "for-kids" -> "For Kids"
         else -> key.replaceFirstChar { it.uppercase() }
+    }
+
+    /**
+     * Welcome-screen chip set, prioritized by signal strength: explicit user
+     * favorites (saved venues, neighborhoods, taste-profile top categories)
+     * always beat generic prompts. Always returns exactly 4. Re-ranked by
+     * time-of-day and day-of-week so the same user opening Bo at noon vs.
+     * 9pm Friday sees different starter prompts. Order:
+     *
+     *   1. Time-of-day anchor ("Tonight", "This weekend", etc.) — always first
+     *   2. Favorite venue (if saved during onboarding)
+     *   3. Top taste-profile category, else first onboarding category
+     *   4. Neighborhood, weekend chip, or evergreen fallback
+     */
+    private fun buildPersonalizedChips(prefs: UserPreferences?): List<QuickReply> {
+        val tz = kotlinx.datetime.TimeZone.currentSystemDefault()
+        val now = kotlin.time.Clock.System.now().toLocalDateTime(tz)
+        val hour = now.hour
+        val dow = now.dayOfWeek
+
+        // Time-of-day anchor: morning users plan ahead, evening users want now.
+        val timeChip = when {
+            hour < 11 -> when (dow) {
+                kotlinx.datetime.DayOfWeek.FRIDAY -> "Plans for tonight"
+                kotlinx.datetime.DayOfWeek.SATURDAY, kotlinx.datetime.DayOfWeek.SUNDAY -> "Today's plans"
+                else -> "Things to do this week"
+            }
+            hour < 16 -> when (dow) {
+                kotlinx.datetime.DayOfWeek.FRIDAY, kotlinx.datetime.DayOfWeek.SATURDAY -> "Plans for tonight"
+                kotlinx.datetime.DayOfWeek.SUNDAY -> "Sunday Funday"
+                else -> "Plans for tonight"
+            }
+            hour < 22 -> "Happening right now"
+            else -> "Plans for tomorrow"
+        }
+
+        // Weekend chip swaps phrasing based on where we are in the week.
+        val weekendChip = when (dow) {
+            kotlinx.datetime.DayOfWeek.SATURDAY -> "Sunday Funday"
+            kotlinx.datetime.DayOfWeek.SUNDAY -> "Next weekend"
+            else -> "This weekend"
+        }
+
+        val chips = mutableListOf<QuickReply>()
+        chips.add(QuickReply(timeChip))
+
+        // Favorite venue — strongest personalization signal we have.
+        prefs?.selectedVenues?.firstOrNull()?.takeIf { it.isNotBlank() }?.let { venue ->
+            chips.add(QuickReply("What's on at $venue"))
+        }
+
+        // Taste profile beats onboarding categories because it reflects actual
+        // engagement (tap-throughs, saves) rather than a one-time picker.
+        val topCategory = tasteProfile?.categoryScores
+            ?.entries?.sortedByDescending { it.value }?.firstOrNull()?.key
+            ?: prefs?.selectedCategories?.firstOrNull()
+        if (topCategory != null && chips.size < 4) {
+            chips.add(QuickReply("${categoryDisplayName(topCategory)} this week"))
+        }
+
+        // Neighborhood — only useful if we have one and there's still room.
+        prefs?.selectedNeighborhoods?.firstOrNull()?.takeIf { it.isNotBlank() }?.let { hood ->
+            if (chips.size < 4) chips.add(QuickReply("Things to do in $hood"))
+        }
+
+        // Fill remaining slots with weekend + evergreen fallbacks, in order.
+        val fallbacks = listOf(weekendChip, "Date night ideas", "Free things to do")
+        for (fb in fallbacks) {
+            if (chips.size >= 4) break
+            if (chips.none { it.label.equals(fb, ignoreCase = true) }) {
+                chips.add(QuickReply(fb))
+            }
+        }
+
+        return chips.take(4)
     }
 
     // ── Public actions ──
@@ -359,14 +609,36 @@ class ChatViewModel(
     fun buildPlanFromSelections(eventIds: List<String>) {
         if (eventIds.isEmpty() || _uiState.value.isBusy) return
         val n = eventIds.size
-        val display = "Build me a plan with my $n pick${if (n == 1) "" else "s"}"
-        val technical = "[Build intent from suggestion tray] " +
-            "event_ids: ${eventIds.joinToString(", ")}. " +
-            "Use these EXACT event_ids in present_plan slots — derive each slot's date and time from the event row's start_at, " +
-            "and layer transit + meal stops in any gap > 2 hours. " +
-            "Before calling present_plan, ask the user ONE concise question (1 sentence): " +
-            "whether they want to add anything else, or whether they already have something planned for the day(s) " +
-            "these events fall on. Wait for their response before building."
+        // If Bo has already produced a plan in this chat, the user's intent
+        // on a SECOND batch of selections is to extend that plan rather than
+        // start a new one. iOS's CTA already shows "Add N events to my plan"
+        // in this case — match it here so Bo's tool selection lines up
+        // (update_plan vs present_plan).
+        val addingToExisting = _uiState.value.days.isNotEmpty()
+        val display = if (addingToExisting) {
+            "Add $n event${if (n == 1) "" else "s"} to my plan"
+        } else {
+            "Build me a plan with my $n pick${if (n == 1) "" else "s"}"
+        }
+        val technical = if (addingToExisting) {
+            "[Add-to-existing-plan intent from suggestion tray] " +
+                "event_ids to add: ${eventIds.joinToString(", ")}. " +
+                "Call update_plan (NOT present_plan). Preserve every existing slot " +
+                "in the current plan (their event_ids and venue_names are listed in " +
+                "the CURRENT PLAN context above) and APPEND the new events into the " +
+                "correct day(s) based on each event row's start_at. Use each new " +
+                "event's EXACT event_id verbatim. Layer transit + meal stops in any " +
+                "gap > 2 hours. If a new event falls on a day not already in the plan, " +
+                "add that day. Do NOT ask a clarifying question first — just update."
+        } else {
+            "[Build intent from suggestion tray] " +
+                "event_ids: ${eventIds.joinToString(", ")}. " +
+                "Use these EXACT event_ids in present_plan slots — derive each slot's date and time from the event row's start_at, " +
+                "and layer transit + meal stops in any gap > 2 hours. " +
+                "Before calling present_plan, ask the user ONE concise question (1 sentence): " +
+                "whether they want to add anything else, or whether they already have something planned for the day(s) " +
+                "these events fall on. Wait for their response before building."
+        }
         addUserMessage(display)
         handleMessage(text = display, historyText = technical)
     }
@@ -409,52 +681,107 @@ class ChatViewModel(
                 .flatMap { it.events.map { ref -> ref.eventId } }
                 .toSet()
 
-            // The SQL function's date window is in UTC, but events have local
-            // start_ats. For a user in Eastern (UTC-4), asking for "May 7"
-            // and using start_date=2026-05-07 + end_date=2026-05-07 yields a
-            // UTC window of May 7 00:00 → May 7 23:59 — which in Eastern is
-            // May 6 8 PM through May 7 8 PM. Evening events on May 7 are
-            // missed (their UTC time is May 8) and evening events on May 6
-            // are wrongly included (their UTC time is May 7). Widen the
-            // window by one day on each side, then filter results to those
-            // whose LOCAL day matches the requested dayKey.
             val tz = kotlinx.datetime.TimeZone.currentSystemDefault()
-            val (searchStart, searchEnd) = if (dayKey != null) {
+
+            // Date scoping:
+            //   - dayKey set (groupBy=day): use Bo's day, ±1 day buffer for
+            //     UTC/local boundary slop, then strict-filter to local day.
+            //   - dayKey null but categoryKey set (groupBy=category): infer
+            //     the date range from the EXISTING events in the same
+            //     category group, so Find more on "Music" doesn't leak in
+            //     events from other dates (the bug where load-more on a
+            //     May-15 tray returned May-11 + Red Sox games on other
+            //     dates). Without this we'd be searching the full 90-day
+            //     window with just a keyword.
+            val targetGroup = suggestions.groups.firstOrNull { g ->
+                if (dayKey != null) {
+                    val first = g.events.firstOrNull()?.let { content.hydratedEvents[it.eventId] }
+                    first?.startAt?.let {
+                        try {
+                            kotlinx.datetime.Instant.parse(it).toLocalDateTime(tz).date.toString() == dayKey
+                        } catch (_: Throwable) { false }
+                    } == true
+                } else {
+                    g.label.equals(categoryKey, ignoreCase = true)
+                }
+            }
+            val groupDayLocal: String? = if (dayKey != null) dayKey else {
+                // Pick the day that the events in THIS category group actually
+                // sit on. If they're heterogeneous (multi-day tray), pick the
+                // most common day so Find more keeps the scope tight.
+                targetGroup?.events?.mapNotNull { content.hydratedEvents[it.eventId]?.startAt }
+                    ?.mapNotNull {
+                        try { kotlinx.datetime.Instant.parse(it).toLocalDateTime(tz).date.toString() } catch (_: Throwable) { null }
+                    }
+                    ?.groupingBy { it }?.eachCount()
+                    ?.maxByOrNull { it.value }?.key
+            }
+            val (searchStart, searchEnd) = if (groupDayLocal != null) {
                 try {
-                    val day = kotlinx.datetime.LocalDate.parse(dayKey)
+                    val day = kotlinx.datetime.LocalDate.parse(groupDayLocal)
                     val before = kotlinx.datetime.LocalDate.fromEpochDays(day.toEpochDays() - 1).toString()
                     val after = kotlinx.datetime.LocalDate.fromEpochDays(day.toEpochDays() + 1).toString()
                     before to after
                 } catch (_: Throwable) {
-                    dayKey to dayKey
+                    groupDayLocal to groupDayLocal
                 }
             } else null to null
 
+            // Carry forward the original search's keyword when the tray is
+            // grouped by day (so categoryKey is null). Without this, "Find
+            // more" on a Friday group of "Story Times This Week" would drop
+            // the "story time" filter and return whatever's popular on
+            // Friday — Red Sox games, concerts, anything.
+            val effectiveKeyword = categoryKey ?: suggestions.originalKeyword
             val moreRaw = try {
                 eventRepo.searchEventsBroad(
                     userLat = userLat,
                     userLng = userLng,
-                    radiusMiles = 20.0,
-                    dateRange = if (dayKey != null) "custom" else null,
+                    // Honor the chip's radius slider. Was hardcoded to 20mi
+                    // before, which silently overrode whatever the user had
+                    // set on the banner — "Find more" returned the same 20mi
+                    // pool even with the chip at 50mi.
+                    radiusMiles = state.searchRadiusMiles,
+                    dateRange = if (groupDayLocal != null) "custom" else null,
                     startDate = searchStart,
                     endDate = searchEnd,
-                    keyword = categoryKey,
+                    keyword = effectiveKeyword,
                     limit = 80,
                 )
             } catch (_: Throwable) { emptyList() }
 
             val onTargetDay: (live.localapp.local.domain.model.Event) -> Boolean = filter@{ ev ->
-                if (dayKey == null) return@filter true
+                if (groupDayLocal == null) return@filter true
                 val s = ev.startAt ?: return@filter false
                 try {
-                    kotlinx.datetime.Instant.parse(s).toLocalDateTime(tz).date.toString() == dayKey
+                    kotlinx.datetime.Instant.parse(s).toLocalDateTime(tz).date.toString() == groupDayLocal
                 } catch (_: Throwable) { false }
+            }
+
+            // Strict category filter — when the user clicked Find more on a
+            // specific category group, the keyword search can return events
+            // whose category/subcategory don't actually match (e.g. a Sports
+            // event whose title contains "Music"). Drop those — better to
+            // return fewer results than to invent a new "Sports" group when
+            // the user asked for more Music.
+            val targetCategoryLower = categoryKey?.trim()?.lowercase()
+            val matchesTargetCategory: (live.localapp.local.domain.model.Event) -> Boolean = filter@{ ev ->
+                if (targetCategoryLower.isNullOrBlank()) return@filter true
+                val cat = ev.category?.lowercase()?.trim().orEmpty()
+                val sub = ev.subcategory?.lowercase()?.trim().orEmpty()
+                cat == targetCategoryLower ||
+                    sub == targetCategoryLower ||
+                    cat.contains(targetCategoryLower) ||
+                    sub.contains(targetCategoryLower) ||
+                    targetCategoryLower.contains(cat) ||
+                    (sub.isNotEmpty() && targetCategoryLower.contains(sub))
             }
 
             val newEvents = moreRaw
                 .asSequence()
                 .filter { it.id !in existingIds }
                 .filter(onTargetDay)
+                .filter(matchesTargetCategory)
                 .take(30)
                 .toList()
             if (newEvents.isEmpty()) {
@@ -471,31 +798,21 @@ class ChatViewModel(
                     rationale = null,
                 )
             }
-            val targetGroupLabel = suggestions.groups.firstOrNull { g ->
-                if (dayKey != null) {
-                    // Match by inspecting the first hydrated event's local date
-                    val first = g.events.firstOrNull()?.let { content.hydratedEvents[it.eventId] }
-                    first?.startAt?.let {
-                        try {
-                            val d = kotlinx.datetime.Instant.parse(it)
-                                .toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
-                                .date.toString()
-                            d == dayKey
-                        } catch (_: Throwable) { false }
-                    } == true
-                } else {
-                    g.label.equals(categoryKey, ignoreCase = true)
-                }
-            }?.label
+            val targetGroupLabel = targetGroup?.label
+            // If we couldn't find a matching group to append into, DROP the
+            // results rather than inventing a new group. The user explicitly
+            // asked for "more in this category"; surfacing a fresh group with
+            // unrelated events betrays that intent. (Old behavior: appended
+            // a new group labeled with the categoryKey, which is how Sports
+            // events leaked in under a Music load-more.)
             val updatedGroups = if (targetGroupLabel != null) {
                 suggestions.groups.map { g ->
                     if (g.label == targetGroupLabel) g.copy(events = g.events + newRefs) else g
                 }
             } else {
-                suggestions.groups + live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Group(
-                    label = dayKey ?: categoryKey.orEmpty(),
-                    events = newRefs,
-                )
+                println("loadMoreSuggestionsForGroup: no matching group for dayKey=$dayKey categoryKey=$categoryKey — dropping ${newEvents.size} loaded events")
+                onSuggestionLoadMoreFinished?.invoke(messageId, groupKey, 0)
+                return@launch
             }
             val updatedSuggestions = suggestions.copy(groups = updatedGroups)
             val updatedHydrated = content.hydratedEvents + newEvents.associateBy { it.id }
@@ -538,6 +855,9 @@ class ChatViewModel(
             "save_plan" -> approveCurrentPlan()
             "build_plan_from_narration" -> sendMessage(
                 "Yes — build that as a plan card now using the events you just listed. Call present_plan."
+            )
+            "show_as_tray" -> sendMessage(
+                "Show those options as a tappable list. Call present_suggestions using the events you just searched — group them appropriately (by day if I picked a date range, by category otherwise). Do NOT respond with prose; the tool call IS the response."
             )
             else -> sendMessage(reply.label)
         }
@@ -739,18 +1059,39 @@ class ChatViewModel(
                     // event mismatch.
                     val noteLower = ref.note.lowercase()
                     val eventVenueLower = event.venueName?.lowercase()?.trim().orEmpty()
+                    // Token-based fuzzy match — a venue is "the same" if the
+                    // tokens of the shorter name are all present in the longer
+                    // one, in any order. Catches:
+                    //   "Hatch Shell" vs "Hatch Memorial Shell"
+                    //   "The Sinclair" vs "Sinclair Music Hall"
+                    //   "MIT Museum" vs "MIT Museum at Cambridge"
+                    // Without this, Bo's natural-language shorthand triggers
+                    // the mismatch guard and we drop event_id (losing event
+                    // detail navigation + image) for what is actually a match.
+                    fun tokenize(s: String): Set<String> = s
+                        .lowercase()
+                        .replace(Regex("[^a-z0-9\\s]"), " ")
+                        .split(Regex("\\s+"))
+                        .filter { it.length >= 3 && it !in setOf("the", "and", "for", "boston") }
+                        .toSet()
+                    fun fuzzyVenueMatch(a: String, b: String): Boolean {
+                        if (a.isBlank() || b.isBlank()) return false
+                        if (a.contains(b) || b.contains(a)) return true
+                        val ta = tokenize(a); val tb = tokenize(b)
+                        if (ta.isEmpty() || tb.isEmpty()) return false
+                        val (smaller, larger) = if (ta.size <= tb.size) ta to tb else tb to ta
+                        return smaller.isNotEmpty() && smaller.all { it in larger }
+                    }
                     val noteMentionsDifferentVenue = eventVenueLower.isNotBlank() &&
                         noteLower.isNotBlank() &&
-                        !noteLower.contains(eventVenueLower) &&
+                        !fuzzyVenueMatch(noteLower, eventVenueLower) &&
                         // Look for any "at <Capitalized Venue>" or "at <venue>" pattern
                         // in Bo's note that doesn't match the DB event's venue.
                         Regex("\\bat\\s+([A-Z][\\w'&.\\- ]{2,})", RegexOption.IGNORE_CASE)
                             .findAll(ref.note)
                             .map { it.groupValues[1].trim().lowercase() }
                             .any { mentioned ->
-                                mentioned.isNotBlank() &&
-                                    !mentioned.contains(eventVenueLower) &&
-                                    !eventVenueLower.contains(mentioned)
+                                mentioned.isNotBlank() && !fuzzyVenueMatch(mentioned, eventVenueLower)
                             }
                     if (noteMentionsDifferentVenue) {
                         println("buildPlanFromRefs: event_id mismatch — Bo's note '${ref.note.take(80)}' " +
@@ -890,17 +1231,35 @@ class ChatViewModel(
     }
 
     fun resetChat() {
-        searchEmptyMisses.clear()
-        conversationHistory.clear()
-        searchResultCache.clear()  // wipe cache only on explicit reset
-        _uiState.value = ChatUiState()
-        showWelcome()
+        // Reset must `cancelAndJoin` (not just `cancel`) so the in-flight
+        // welcome stream is FULLY torn down before we clear state and launch
+        // the next one. Without the join, a pending TextDelta callback from
+        // the old stream can land between our `_uiState.value = ChatUiState()`
+        // and the new welcome's first emission — the user sees the partial
+        // greeting (e.g. "Hey there! W") flash, then delete, then the new
+        // greeting type out from scratch.
+        viewModelScope.launch {
+            welcomeJob?.cancelAndJoin()
+            conversationHistory.clear()
+            searchResultCache.clear()
+            lastSearchKeyword = null
+            boTools.resetCache()  // shared BoTools cache — both surfaces clear together
+            // Preserve the user's search-scope chip across "Start over" —
+            // they set Mashpee · 32mi, that's their scope, don't reset it
+            // just because the conversation cleared. Reload persisted values
+            // onto the fresh state.
+            val saved = loadPersistedScope()
+            _uiState.value = ChatUiState(
+                currentLocationName = saved?.a ?: "",
+                currentLat = saved?.b,
+                currentLng = saved?.c,
+                searchRadiusMiles = saved?.d ?: 20.0,
+            )
+            showWelcome()
+        }
     }
 
     // ── Core: Single unified message handler ──
-
-    /** Stores the last user message for APPROVE detection. */
-    private var lastUserMessage: String = ""
 
     private fun handleMessage(text: String, historyText: String = text) {
         _uiState.update { it.copy(quickReplies = emptyList()) }
@@ -983,7 +1342,18 @@ class ChatViewModel(
         tools: JsonArray?,
         isToolRound: Boolean,
         model: String = live.localapp.local.data.remote.ClaudeApiService.MODEL_PLAN,
+        toolChoice: kotlinx.serialization.json.JsonObject? = null,
     ): ClaudeResponse {
+        // Sanitize conversation history before sending — Anthropic returns 400 if
+        // any tool_use block isn't followed in the next message by a matching
+        // tool_result. We've seen this fire on the edit path after a long
+        // chat — a tool execution must've returned without its result being
+        // appended (timeout, race, or upstream cancellation). Walk the history
+        // and synthesize a placeholder tool_result for any dangling tool_use
+        // ids. Safe: a synthetic result tells Bo the tool ran but produced
+        // nothing actionable, never lies about the data.
+        sanitizeToolUsePairing()
+
         var response: ClaudeResponse? = null
         val streamBuffer = StringBuilder()
         var lastEmitTime = 0L
@@ -994,6 +1364,7 @@ class ChatViewModel(
             messages = conversationHistory,
             tools = tools,
             model = model,
+            toolChoice = toolChoice,
         ).collect { event ->
             when (event) {
                 is StreamEvent.TextDelta -> {
@@ -1168,6 +1539,35 @@ class ChatViewModel(
      * lists, longer-form text). False positives are bounded by the
      * single-retry cap upstream.
      */
+    /**
+     * Detects when Bo emitted a prose list of event options after a successful
+     * search — the "Bo skipped present_suggestions and just wrote a paragraph
+     * with **bold names**" failure mode. Distinct from looksLikeNarratedPlan
+     * (which detects day-by-day itinerary commitments). Used to surface a
+     * "Show as tappable list" recovery chip so the user can force Bo back
+     * into a tray on the next turn without re-typing their question.
+     *
+     * Heuristic: at least two bold spans (`**X**`) AND at least two weekday
+     * mentions (Friday/Saturday/etc.) — the canonical "Friday, X; Saturday,
+     * Y" shape. Also matches when the searchResultCache is populated, which
+     * tells us we have real events to convert.
+     */
+    private fun looksLikeNarratedSuggestions(text: String, searchedCount: Int): Boolean {
+        if (text.length < 100) return false
+        if (searchedCount < 2) return false
+        val boldSpans = Regex("""\*\*[^*]{2,80}\*\*""").findAll(text).count()
+        if (boldSpans < 2) return false
+        val lower = text.lowercase()
+        val weekdayMatches = listOf(
+            "monday", "tuesday", "wednesday", "thursday",
+            "friday", "saturday", "sunday",
+        ).count { lower.contains(it) }
+        if (weekdayMatches < 2) return false
+        // Skip if it ALSO looks like a full plan — that has its own chip.
+        if (looksLikeNarratedPlan(text)) return false
+        return true
+    }
+
     private fun looksLikeNarratedPlan(text: String): Boolean {
         if (text.length < 120) return false
         val lower = text.lowercase()
@@ -1202,6 +1602,14 @@ class ChatViewModel(
         // generating" made Bo look broken; instead we retry once with a
         // continuation nudge before showing the user anything.
         var emptyResponseRetried = false
+        // Track whether ANY search_events call this turn returned events. If we
+        // hit the tool-round cap with this still false, every DB search came
+        // back empty (or timed out) — we want the forcing message to push Bo
+        // into the EMPTY DB FALLBACK flow rather than the default "present a
+        // plan" nudge, which previously caused Bo to hallucinate references
+        // to earlier turns' suggestion trays ("Which of these sounds most
+        // appealing..." with nothing to choose from).
+        var turnHadAnyEvents = false
         // Start with Haiku for fast clarifying questions. Switch to Opus when tools are needed.
         var currentModel = live.localapp.local.data.remote.ClaudeApiService.MODEL_CHAT
 
@@ -1232,7 +1640,17 @@ class ChatViewModel(
             // user enough feedback. The maxToolRounds final-completion
             // branch (below) explicitly streams the final response when it's
             // a pure text reply.
-            val response = sendStreaming(augmentedSystemPrompt, toolsForTurn, isToolRound = true, model = currentModel)
+            // tool_choice forcing: on the FIRST round, Bo is free to ask a
+            // clarifying question (no tool call) — that's fine. From round 2
+            // onward, after at least one tool has executed, force any tool
+            // call. This eliminates the "Bo narrates prose with **bold
+            // venue names** instead of calling present_suggestions" failure
+            // mode at the API layer. Bo must either call another data tool
+            // or a terminal tool (present_plan / present_suggestions /
+            // present_event_brief / etc.) — prose is unreachable.
+            val choice: kotlinx.serialization.json.JsonObject? = if (toolRounds == 0) null
+            else kotlinx.serialization.json.buildJsonObject { put("type", JsonPrimitive("any")) }
+            val response = sendStreaming(augmentedSystemPrompt, toolsForTurn, isToolRound = true, model = currentModel, toolChoice = choice)
             tallyWebCalls(response, webCallTally)
 
             val toolCalls = claudeApi.extractToolCalls(response)
@@ -1301,7 +1719,18 @@ class ChatViewModel(
                 val showBuildChip = !isApproval &&
                     looksLikeNarratedPlan(text) &&
                     searchResultCache.isNotEmpty()
-                val chips: List<String> = if (showBuildChip) listOf("Build this as a plan") else emptyList()
+                // Narrated-suggestions miss: Bo wrote a prose list of
+                // options ("**Brighton Music Hall** on Friday…") instead of
+                // calling present_suggestions. Same recovery pattern — chip
+                // forces Bo to re-emit as a tappable tray on the next turn.
+                val showTrayChip = !isApproval && !showBuildChip &&
+                    looksLikeNarratedSuggestions(text, searchResultCache.size) &&
+                    searchResultCache.isNotEmpty()
+                val chips: List<String> = when {
+                    showBuildChip -> listOf("Build this as a plan")
+                    showTrayChip -> listOf("Show as tappable list")
+                    else -> emptyList()
+                }
 
                 // Empty-response retry (bug fix): Bo sometimes returns no text
                 // after a short user message like a number ("4" answering
@@ -1353,6 +1782,14 @@ class ChatViewModel(
                 val finalRoundResults: List<String> = coroutineScope {
                     toolCalls.map { call -> async { executeToolCall(call.name, call.input) } }.awaitAll()
                 }
+                // Also fold the final round's results into the per-turn
+                // events-found tracker — Bo may have finally gotten a hit in
+                // the last allowed round.
+                finalRoundResults.forEachIndexed { i, r ->
+                    if (toolCalls[i].name == "search_events" && r.contains("\"events\":[{")) {
+                        turnHadAnyEvents = true
+                    }
+                }
                 val toolResultBlocks = kotlinx.serialization.json.buildJsonArray {
                     toolCalls.forEachIndexed { i, call ->
                         add(kotlinx.serialization.json.buildJsonObject {
@@ -1363,7 +1800,19 @@ class ChatViewModel(
                     }
                 }
                 conversationHistory.add(ClaudeMessage.blocks("user", toolResultBlocks))
-                conversationHistory.add(ClaudeMessage.text("user", "You have enough information now. Please present a plan using the present_plan tool, or just respond naturally."))
+                // Conditional forcing message. The default "present a plan or
+                // respond naturally" nudge is fine when Bo has events to
+                // present, but when every search_events call this turn
+                // returned 0 (e.g. backfill-induced timeouts, genuinely quiet
+                // calendar), the prior wording let Bo hallucinate references
+                // to earlier turns' trays. Push it into the EMPTY DB
+                // FALLBACK flow instead.
+                val forcingMessage = if (turnHadAnyEvents) {
+                    "You have enough information now. Please present a plan using the present_plan tool, or just respond naturally."
+                } else {
+                    "Every search_events call this turn returned 0 events. Do NOT reference earlier turns' suggestion trays or plans — the user may have changed location, dates, or intent since. Follow the EMPTY DB FALLBACK flow from the system prompt: if web_search is AVAILABLE, run ONE web_search query for the user's location + date + intent, then call present_suggestions with groups=[], a one-line headline acknowledging the empty DB plus a recap of any web findings, and footer.actions = [\"build_from_web\", \"search_wider\", \"different_day\"] when web has usable findings, or [\"search_wider\", \"different_day\"] otherwise. Do NOT respond with plain CHAT prose like \"Want me to try a different date range?\" — chips are tappable, prose forces the user to type."
+                }
+                conversationHistory.add(ClaudeMessage.text("user", forcingMessage))
 
                 // Final response — stream with text visible
                 val finalResponse = sendStreaming(augmentedSystemPrompt, toolsForTurn, isToolRound = false, model = currentModel)
@@ -1413,6 +1862,14 @@ class ChatViewModel(
             }
             results.forEachIndexed { i, r ->
                 println("Tool result (${toolCalls[i].name}): ${r.take(200)}")
+            }
+            // Track non-empty DB hits across the turn. Empty results render
+            // as `{"events":[]...}`; non-empty as `{"events":[{...`. Cheap
+            // string check — avoids re-parsing each tool result.
+            results.forEachIndexed { i, r ->
+                if (toolCalls[i].name == "search_events" && r.contains("\"events\":[{")) {
+                    turnHadAnyEvents = true
+                }
             }
             val toolResultBlocks = kotlinx.serialization.json.buildJsonArray {
                 toolCalls.forEachIndexed { i, call ->
@@ -1483,6 +1940,79 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * Walk conversationHistory and ensure every assistant `tool_use` block has
+     * a corresponding `tool_result` block in the immediately-following user
+     * message. If a tool_use is dangling (no matching id in the next message),
+     * inject a synthetic placeholder tool_result so the Anthropic API doesn't
+     * reject the request with `messages.N: tool_use ids were found without
+     * tool_result blocks immediately after`.
+     *
+     * This is defense-in-depth — the tool loop in [sendWithToolLoop] already
+     * pairs them by construction, but exception paths or future refactors can
+     * leave dangling state. Better to ship a working chat than a 400.
+     */
+    private fun sanitizeToolUsePairing() {
+        var i = 0
+        while (i < conversationHistory.size) {
+            val msg = conversationHistory[i]
+            val content = msg.content
+            if (msg.role != "assistant" || content !is kotlinx.serialization.json.JsonArray) {
+                i++; continue
+            }
+            val toolUseIds = content.mapNotNull { el ->
+                if (el.jsonObject["type"]?.jsonPrimitive?.contentOrNull == "tool_use") {
+                    el.jsonObject["id"]?.jsonPrimitive?.contentOrNull
+                } else null
+            }
+            if (toolUseIds.isEmpty()) { i++; continue }
+
+            // Look at the next message — must be user with matching tool_results.
+            val nextIdx = i + 1
+            val nextMsg = conversationHistory.getOrNull(nextIdx)
+            val nextContent = nextMsg?.content
+            val resultIds: Set<String> = if (
+                nextMsg != null && nextMsg.role == "user" &&
+                nextContent is kotlinx.serialization.json.JsonArray
+            ) {
+                nextContent.mapNotNull { el ->
+                    if (el.jsonObject["type"]?.jsonPrimitive?.contentOrNull == "tool_result") {
+                        el.jsonObject["tool_use_id"]?.jsonPrimitive?.contentOrNull
+                    } else null
+                }.toSet()
+            } else emptySet()
+
+            val missing = toolUseIds.filter { it !in resultIds }
+            if (missing.isEmpty()) { i++; continue }
+
+            println("sanitizeToolUsePairing: synthesizing ${missing.size} placeholder tool_result(s) for dangling tool_use ids: $missing")
+            val syntheticBlocks = kotlinx.serialization.json.buildJsonArray {
+                missing.forEach { id ->
+                    add(kotlinx.serialization.json.buildJsonObject {
+                        put("type", JsonPrimitive("tool_result"))
+                        put("tool_use_id", JsonPrimitive(id))
+                        put("content", JsonPrimitive("(no result — tool execution was interrupted)"))
+                    })
+                }
+            }
+            if (
+                nextMsg != null && nextMsg.role == "user" &&
+                nextContent is kotlinx.serialization.json.JsonArray
+            ) {
+                // Merge synthetic results into the existing user-blocks message.
+                val merged = kotlinx.serialization.json.buildJsonArray {
+                    nextContent.forEach { add(it) }
+                    syntheticBlocks.forEach { add(it) }
+                }
+                conversationHistory[nextIdx] = ClaudeMessage.blocks("user", merged)
+            } else {
+                // Insert a fresh user-blocks message right after the assistant.
+                conversationHistory.add(nextIdx, ClaudeMessage.blocks("user", syntheticBlocks))
+            }
+            i++
+        }
+    }
+
     // ── Tool Execution ──
 
     private suspend fun executeToolCall(name: String, input: JsonObject): String {
@@ -1506,7 +2036,21 @@ class ChatViewModel(
     }
 
     private suspend fun searchEvents(input: JsonObject): String {
-        val location = input["location"]?.jsonPrimitive?.contentOrNull
+        // The chat's location chip (state.currentLocationName + radius miles)
+        // is the canonical search scope — the chip's RADIUS is what defines
+        // the scope, not an additional venue_city filter. When the user sets
+        // "Mashpee · 32mi" they want anywhere within 32mi of Mashpee, NOT
+        // just events whose venue_city is literally "Mashpee" (which would
+        // exclude every event in Hyannis / Falmouth / Provincetown / etc.
+        // even though those are squarely inside the 32mi radius).
+        //
+        // So: location is used as the bbox CENTER; the radius is the scope;
+        // strict_location is OFF by default. Bo can still pass strict=true
+        // when the user explicitly said "only in {place}" / "just {place}".
+        val chipLocation = _uiState.value.currentLocationName.takeIf { it.isNotBlank() }
+        val explicitLocation = input["location"]?.jsonPrimitive?.contentOrNull
+        val location = explicitLocation ?: chipLocation
+        val strictLocation = input["strict_location"]?.jsonPrimitive?.booleanOrNull ?: false
         val category = input["category"]?.jsonPrimitive?.contentOrNull
         var dateRange = input["date_range"]?.jsonPrimitive?.contentOrNull
         val keyword = input["keyword"]?.jsonPrimitive?.contentOrNull
@@ -1514,54 +2058,83 @@ class ChatViewModel(
         val startDate = input["start_date"]?.jsonPrimitive?.contentOrNull
         val endDate = input["end_date"]?.jsonPrimitive?.contentOrNull
 
-        // Empty-result short circuit. If the same region+date narrowly
-        // returned zero this session, Bo will sometimes re-query with a
-        // different category or keyword on the same region — every retry
-        // is another full SQL round-trip. Cache the location+date key
-        // (NOT category/keyword) so any repeat for that region returns
-        // immediately. We DO key by date; widening the date legitimately
-        // changes the result.
-        val emptyKey = buildString {
-            append(location?.lowercase()?.trim().orEmpty()); append("|")
-            append(dateRange.orEmpty()); append("|")
-            append(startDate.orEmpty()); append("|")
-            append(endDate.orEmpty())
-        }
-        if (emptyKey != "|||" && emptyKey in searchEmptyMisses) {
-            println("searchEvents: short-circuit (empty-cache hit for $emptyKey)")
-            return "No events found matching your search."
-        }
+        // Remember the last keyword so the inline "Find more" handler can
+        // re-apply it to load-more searches on day-grouped trays. Don't
+        // overwrite with null — a follow-up search without a keyword (e.g.
+        // Bo broadening) shouldn't erase the original filter.
+        if (!keyword.isNullOrBlank()) lastSearchKeyword = keyword
+
+        // Phase 2: dropped searchEmptyMisses short-circuit. The cache was
+        // keyed by (location, dateRange, startDate, endDate) WITHOUT
+        // strict_location, so a strict-true search that returned zero
+        // poisoned a subsequent strict-false retry for the same window. With
+        // tool_choice: any forcing Bo to call tools, the right answer is to
+        // run the cheap RPC again (sub-second) and let the result speak for
+        // itself, not lie via stale cache.
 
         // If specific dates provided, use custom date range instead of keyword
         if (startDate != null && dateRange == null) {
             dateRange = "custom"
         }
 
-        // If Bo passed a specific location, resolve it. CRITICAL: if Bo
-        // explicitly named a location and we can't resolve it, do NOT fall
-        // back to user coords — that silently runs the search around
-        // somewhere unrelated (e.g. Bo asks for "Dennis" → we use the
-        // user's Boston coords → Bo gets Boston events back and presents
-        // them as Dennis-area, violating the geo-integrity rule). When
-        // unresolved, return a structured signal so Bo can correct course.
+        // Resolve coords for the search center.
+        //
+        // Priority:
+        //  1. If `location` came from the chip (no explicit override from Bo)
+        //     AND state already has valid coords, use those. The chip's
+        //     coords were geocoded by iOS's CLGeocoder when the user set it,
+        //     so they're accurate even for places the in-memory geocodeCity
+        //     doesn't know ("Concord, MA", "South End", arbitrary US towns).
+        //  2. If Bo passed an explicit location, geocode it through the
+        //     in-memory list. If that fails, return UNRESOLVED_LOCATION so
+        //     Bo can correct course — never silently fall back to user
+        //     coords, which would surface results from the wrong region.
+        //  3. If no location at all, use state coords (current location).
         val state = _uiState.value
         val locationRequested = !location.isNullOrBlank()
-        val locationCoords = if (locationRequested) geocodeCity(location!!) else null
-        if (locationRequested && locationCoords == null) {
-            println("searchEvents: location='$location' did not geocode — returning unresolved-location signal to Bo")
-            return "UNRESOLVED_LOCATION: I couldn't geocode '$location' to coordinates, so I did NOT search. " +
-                "Do not fall back to the user's current location — that would surface results from somewhere else " +
-                "and violate the geographic integrity rule. Either: (a) ask the user to clarify the city, " +
-                "(b) try a nearby town you DO know (Hyannis, Cape Cod, Boston, etc.), or " +
-                "(c) explicitly tell the user that '$location' isn't a city we have indexed yet. " +
-                "Do NOT silently search elsewhere."
+        val locationCameFromChip = explicitLocation.isNullOrBlank() && !chipLocation.isNullOrBlank()
+        val locationCoords: Pair<Double, Double>? = when {
+            // Chip path: trust state coords (set by iOS CLGeocoder).
+            locationCameFromChip && state.currentLat != null && state.currentLng != null -> {
+                state.currentLat!! to state.currentLng!!
+            }
+            locationRequested -> geocodeCity(location!!)
+            else -> null
+        }
+        if (locationRequested && !locationCameFromChip && locationCoords == null) {
+            println("searchEvents: Bo-passed location='$location' did not geocode")
+            return kotlinx.serialization.json.buildJsonObject {
+                put("error", JsonPrimitive("unresolved_location"))
+                put("location", JsonPrimitive(location ?: ""))
+                put("guidance", JsonPrimitive(
+                    "I couldn't geocode '$location'. Ask the user to clarify the city, or try a nearby town. Do NOT silently search elsewhere — that would surface results from the wrong region."
+                ))
+                put("events", kotlinx.serialization.json.buildJsonArray { })
+            }.toString()
         }
         val prefs = state.userPreferences
         val prefsEffectiveLat = prefs?.let { if (it.locationMode == "manual") it.manualLat ?: it.userLat else it.userLat }
         val prefsEffectiveLng = prefs?.let { if (it.locationMode == "manual") it.manualLng ?: it.userLng else it.userLng }
         val userLat = locationCoords?.first ?: state.currentLat ?: prefsEffectiveLat
         val userLng = locationCoords?.second ?: state.currentLng ?: prefsEffectiveLng
-        println("searchEvents: lat=$userLat lng=$userLng location=$location currentLocationName=${state.currentLocationName} geocoded=${locationCoords != null}")
+        println("searchEvents: lat=$userLat lng=$userLng location=$location chip=${state.currentLocationName} fromChip=$locationCameFromChip")
+
+        // If Bo explicitly passed a location that differs from the chip AND
+        // we geocoded it successfully, update the chip to reflect the new
+        // search scope. The chip is meant to always show "where we're
+        // searching now" — staying out of sync confuses the user.
+        if (!explicitLocation.isNullOrBlank() && locationCoords != null) {
+            val explicitTrim = explicitLocation.trim()
+            if (explicitTrim.isNotBlank() && !explicitTrim.equals(state.currentLocationName.trim(), ignoreCase = true)) {
+                _uiState.update {
+                    it.copy(
+                        currentLocationName = explicitTrim,
+                        currentLat = locationCoords.first,
+                        currentLng = locationCoords.second,
+                    )
+                }
+            }
+        }
 
         // Bo gets the three-lane stratified pool (breadth + niche + keyword).
         // Bo's `category` and `keyword` collapse into a single keyword hint —
@@ -1569,16 +2142,25 @@ class ChatViewModel(
         // either one is matched the same way. Prefer keyword when both are
         // set (more specific signal).
         val effectiveKeyword = listOf(keyword, category).firstOrNull { !it.isNullOrBlank() }
+        // Radius comes from the search-scope banner (state.searchRadiusMiles).
+        // When the user widens the slider, every subsequent search expands.
+        // When strict_location is also on, the city filter is applied AFTER
+        // the bbox query — so widening the radius doesn't bypass strict.
+        val effectiveRadius = _uiState.value.searchRadiusMiles
         val rawEvents = if (userLat != null && userLng != null) {
             eventRepo.searchEventsBroad(
                 userLat = userLat,
                 userLng = userLng,
-                radiusMiles = 20.0,
+                radiusMiles = effectiveRadius,
                 dateRange = dateRange,
                 startDate = startDate,
                 endDate = endDate,
                 keyword = effectiveKeyword,
-                limit = limit.coerceAtMost(150), // halved from 300 — bigger context wasn't worth the latency
+                // Cap raised to match the RPC ceiling — `search_events_stratified`
+                // hard-caps `p_max_results` at 500, so any higher value just
+                // silently truncates. We ask for the full 500 every time and
+                // let Bo (and the display cap below) decide how much to use.
+                limit = limit.coerceAtMost(500),
             )
         } else {
             // Rare fallback when we have no coords (geocoding failed and the
@@ -1594,7 +2176,7 @@ class ChatViewModel(
                 endDate = endDate,
                 userLat = userLat,
                 userLng = userLng,
-                radiusMiles = 20.0,
+                radiusMiles = effectiveRadius,
             )
         }
 
@@ -1603,90 +2185,145 @@ class ChatViewModel(
         // carousels surfaces enforce — Yocal should never recommend venues
         // the user can't actually discover elsewhere in the app.
         val lowRankNames = venueRepo.getLowRankVenueNames()
-        val events = if (lowRankNames.isEmpty()) rawEvents else rawEvents.filter { e ->
+        val cleaned = if (lowRankNames.isEmpty()) rawEvents else rawEvents.filter { e ->
             val vn = e.venueName?.trim()?.lowercase() ?: return@filter true
             val normalized = vn.removePrefix("the ").replace(Regex("[^a-z0-9\\s]"), "").trim()
             vn !in lowRankNames && normalized !in lowRankNames
         }
+        // Strict-location filter: when the user said "in {city}" / named a
+        // place with no modifier (or the chip is set to a city), drop every
+        // result whose venue_city doesn't match. We keep both counts (cleaned
+        // = full 20mi pool, events = in-scope) so the response can surface a
+        // coverage breadcrumb to Bo, who can offer the user the choice to
+        // widen rather than silently expanding.
+        val events = if (strictLocation && !location.isNullOrBlank()) {
+            val target = location.trim().lowercase()
+            cleaned.filter { e ->
+                val ec = e.venueCity?.trim()?.lowercase() ?: return@filter false
+                ec == target || ec.contains(target) || target.contains(ec)
+            }.also { kept ->
+                println("searchEvents: strict_location=true location='$location' kept ${kept.size}/${cleaned.size} after city filter")
+            }
+        } else cleaned
+        val coverageInScope = events.size
+        val coverageWithin20mi = cleaned.size
 
-        // Cache full event objects
+        // Cache full event objects — local list-keyed cache for the
+        // plan-building paths AND the shared BoTools map-keyed cache so
+        // get_event_details (delegated to BoTools) can answer without a
+        // second round-trip.
         searchResultCache.addAll(events)
+        events.forEach { boTools.searchResultCache[it.id] = it }
 
-        // Cap what Claude sees to keep token usage manageable. Lower cap (60)
-        // is more aggressive — Bo can re-search with different params if it
-        // needs more, but most planning queries use the top results.
+        // Cap what Claude sees in the tool result. 300 is the right balance
+        // between "Bo sees the whole pool" and "we don't blow the context
+        // window every turn". Each compact row is ~50 tokens, so 300 events
+        // ≈ 15k tokens per tool result — affordable on Sonnet, fine on Opus.
+        // Replayed across ~3 tool rounds per turn this comes in well under
+        // the model context. If we ever want to expose the full 500 the RPC
+        // returned, cursor pagination is the right path (next session).
         val totalFound = events.size
-        val displayEvents = events.take(60)
+        val displayEvents = events.take(300)
 
+        // ── JSON tool result (Phase 1 refactor) ────────────────────────
+        // Bo reads JSON natively — no parsing of "=== Saturday ===" headers
+        // or "[evt:xxx]" markers. Event IDs are first-class fields so Bo
+        // can't lose them, mis-extract them, or invent them.
+        val radiusInt = effectiveRadius.toInt()
         if (displayEvents.isEmpty()) {
-            if (emptyKey != "|||") searchEmptyMisses += emptyKey
-            return "No events found matching your search."
+            return kotlinx.serialization.json.buildJsonObject {
+                put("events", kotlinx.serialization.json.buildJsonArray { })
+                put("coverage", kotlinx.serialization.json.buildJsonObject {
+                    put("returned", JsonPrimitive(0))
+                    put("total_in_scope", JsonPrimitive(0))
+                    if (strictLocation && !location.isNullOrBlank()) {
+                        put("location", JsonPrimitive(location))
+                        put("strict", JsonPrimitive(true))
+                        put("total_in_radius", JsonPrimitive(coverageWithin20mi))
+                        put("radius_miles", JsonPrimitive(radiusInt))
+                    }
+                })
+                if (strictLocation && !location.isNullOrBlank() && coverageWithin20mi > 0) {
+                    put("guidance", JsonPrimitive(
+                        "0 in $location, $coverageWithin20mi within ${radiusInt}mi. Ask the user: \"I don't see anything in $location — want me to widen to nearby towns?\" Wait for confirmation before re-searching with strict_location=false."
+                    ))
+                }
+            }.toString()
         }
 
-        // Group events by date, then by category for compact display
-        data class EventEntry(
-            val id: String, val title: String, val venue: String, val venueCity: String,
-            val dateKey: String, val dateLabel: String, val time: String,
-            val category: String, val price: String,
-        )
-
-        val entries = displayEvents.map { e ->
-            val venue = e.venueName ?: "TBD"
-            val isFlexible = e.category == "always_on" || e.startAt == null
-            val (dateKey, dateLabel, time) = if (isFlexible) {
-                Triple("Flexible", "Flexible", "anytime")
-            } else {
-                try {
-                    val instant = kotlinx.datetime.Instant.parse(e.startAt!!)
-                    val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
-                    val dowFull = local.dayOfWeek.name.lowercase().replaceFirstChar { it.uppercase() }
-                    val monthNames = arrayOf("January","February","March","April","May","June","July","August","September","October","November","December")
-                    val monthName = monthNames[local.monthNumber - 1]
-                    val label = "$dowFull, $monthName ${local.dayOfMonth}"
-                    val key = "${local.date}"
-                    val h = local.hour
-                    val m = local.minute
-                    // Date-only events (timeKnown=false) show "TBD" so Bo doesn't
-                    // mistake the midnight default for a real start time. Bo can
-                    // still slot them by passing its own ref.time in present_plan.
-                    val timeStr = if (!e.timeKnown) {
-                        "TBD"
-                    } else {
-                        val ampm = if (h < 12) "am" else "pm"
-                        val dh = if (h == 0) 12 else if (h > 12) h - 12 else h
-                        if (m == 0) "${dh}${ampm}" else "${dh}:${m.toString().padStart(2, '0')}${ampm}"
-                    }
-                    Triple(key, label, timeStr)
-                } catch (_: Exception) {
-                    Triple(e.startAt?.take(10) ?: "?", e.startAt?.take(10) ?: "?", "?")
+        return kotlinx.serialization.json.buildJsonObject {
+            put("events", kotlinx.serialization.json.buildJsonArray {
+                displayEvents.forEach { e ->
+                    add(kotlinx.serialization.json.buildJsonObject {
+                        put("id", JsonPrimitive(e.id))
+                        put("title", JsonPrimitive(e.title))
+                        put("venue_name", JsonPrimitive(e.venueName ?: ""))
+                        put("venue_city", JsonPrimitive(e.venueCity))
+                        val isFlexible = e.category == "always_on" || e.startAt == null
+                        if (isFlexible) {
+                            put("date", JsonPrimitive("Flexible"))
+                            put("time", JsonPrimitive("anytime"))
+                            put("iso_date", kotlinx.serialization.json.JsonNull)
+                        } else {
+                            try {
+                                val instant = kotlinx.datetime.Instant.parse(e.startAt!!)
+                                val local = instant.toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+                                val dowFull = local.dayOfWeek.name.lowercase().replaceFirstChar { it.uppercase() }
+                                val monthNames = arrayOf("January","February","March","April","May","June","July","August","September","October","November","December")
+                                val monthName = monthNames[local.monthNumber - 1]
+                                put("date", JsonPrimitive("$dowFull, $monthName ${local.dayOfMonth}"))
+                                put("iso_date", JsonPrimitive(local.date.toString()))
+                                val h = local.hour
+                                val m = local.minute
+                                val timeStr = if (!e.timeKnown) "TBD"
+                                else {
+                                    val ampm = if (h < 12) "am" else "pm"
+                                    val dh = if (h == 0) 12 else if (h > 12) h - 12 else h
+                                    if (m == 0) "${dh}${ampm}" else "${dh}:${m.toString().padStart(2, '0')}${ampm}"
+                                }
+                                put("time", JsonPrimitive(timeStr))
+                            } catch (_: Exception) {
+                                put("date", JsonPrimitive(e.startAt?.take(10) ?: "?"))
+                                put("iso_date", JsonPrimitive(e.startAt?.take(10) ?: ""))
+                                put("time", JsonPrimitive("?"))
+                            }
+                        }
+                        put("category", JsonPrimitive(e.category ?: "other"))
+                        put("subcategory", JsonPrimitive(e.subcategory ?: ""))
+                        put("is_free", JsonPrimitive(e.isFree))
+                        put("price", JsonPrimitive(if (e.isFree) "FREE" else e.priceDisplay))
+                    })
                 }
-            }
-            val price = if (e.isFree) "FREE" else e.priceDisplay.ifBlank { "" }
-            val cat = (e.subcategory ?: e.category ?: "other").uppercase()
-            EventEntry(e.id, e.title, venue, e.venueCity, dateKey, dateLabel, time, cat, price)
-        }
-
-        // Build compact grouped output
-        val grouped = entries.groupBy { it.dateKey }
-        return buildString {
-            for ((_, dateEntries) in grouped) {
-                val dateLabel = dateEntries.first().dateLabel
-                val count = dateEntries.size
-                appendLine("=== $dateLabel ($count events) ===")
-                val byCategory = dateEntries.groupBy { it.category }
-                for ((cat, catEntries) in byCategory) {
-                    val items = catEntries.joinToString(", ") { e ->
-                        val priceTag = if (e.price.isNotBlank()) " ${e.price}" else ""
-                        "${e.title} at ${e.venue} (${e.venueCity}) ${e.time}$priceTag [evt:${e.id}]"
-                    }
-                    appendLine("$cat: $items")
+            })
+            put("coverage", kotlinx.serialization.json.buildJsonObject {
+                put("returned", JsonPrimitive(displayEvents.size))
+                put("total_in_scope", JsonPrimitive(totalFound))
+                put("radius_miles", JsonPrimitive(radiusInt))
+                if (strictLocation && !location.isNullOrBlank()) {
+                    put("location", JsonPrimitive(location))
+                    put("strict", JsonPrimitive(true))
+                    put("total_in_radius", JsonPrimitive(coverageWithin20mi))
                 }
-                appendLine()
+            })
+            // Honest "there's more" hint so Bo can offer to dig deeper
+            // instead of claiming the well is dry. Only present when the
+            // result was capped.
+            if (totalFound > displayEvents.size) {
+                put("has_more", JsonPrimitive(true))
+                put("guidance", JsonPrimitive(
+                    "Result capped: showed $totalFound but returned ${displayEvents.size}. To see more, call search_events again with a narrower keyword, category, or date filter."
+                ))
             }
-            if (totalFound > 100) {
-                appendLine("($totalFound total events, showing top 100)")
+            // Coverage guidance for strict-mode + nearby results — Bo MUST
+            // ask before widening per the COVERAGE-DRIVEN CONFIRMATION rule.
+            if (strictLocation && !location.isNullOrBlank() && coverageWithin20mi > coverageInScope) {
+                val extra = coverageWithin20mi - coverageInScope
+                put("widen_available", JsonPrimitive(true))
+                put("widen_guidance", JsonPrimitive(
+                    "$coverageInScope in $location; $extra more within ${radiusInt}mi. Ask the user before re-searching with strict_location=false."
+                ))
             }
-        }.trim()
+        }.toString()
     }
 
     private suspend fun searchVenues(input: JsonObject): String {
@@ -1704,27 +2341,8 @@ class ChatViewModel(
         }.ifEmpty { "No venues found matching your search." }
     }
 
-    private suspend fun getEventDetails(input: JsonObject): String {
-        val eventId = input["event_id"]?.jsonPrimitive?.contentOrNull
-            ?: return """{"error": "event_id is required"}"""
-
-        val event = eventRepo.getEvent(eventId)
-            ?: return """{"error": "Event not found with id: $eventId"}"""
-
-        return buildString {
-            appendLine("ID: ${event.id}")
-            appendLine("Title: ${event.title}")
-            appendLine("Venue: ${event.venueName ?: "TBD"} (${event.venueCity})")
-            if (event.venueAddress != null) appendLine("Address: ${event.venueAddress}")
-            appendLine("Date: ${event.dateDisplay}")
-            appendLine("Price: ${event.priceDisplay.ifBlank { "TBD" }}")
-            if (event.description != null) appendLine("Description: ${event.description}")
-            if (event.ticketUrl != null) appendLine("Tickets: ${event.ticketUrl}")
-            if (event.imageUrl != null) appendLine("Image: ${event.imageUrl}")
-            appendLine("Category: ${event.category}${if (event.subcategory != null) " / ${event.subcategory}" else ""}")
-            appendLine("Free: ${event.isFree}")
-        }
-    }
+    private suspend fun getEventDetails(input: JsonObject): String =
+        boTools.getEventDetails(input)
 
     private val httpClient = HttpClient()
 
@@ -1793,6 +2411,12 @@ class ChatViewModel(
                     appendLine("  3. You've already run search_events or search_venues at least twice with")
                     appendLine("     broadened terms. web_search is the LAST resort, never the first response.")
                     appendLine("")
+                    appendLine("OR — EMPTY-DB EXCEPTION — rules 1-3 above DO NOT apply when search_events has")
+                    appendLine("returned 0 results across at least one broadening attempt AND the user is")
+                    appendLine("browsing for events (not asking a factual question). In that case web_search")
+                    appendLine("is REQUIRED (not last resort) — see the EMPTY DB FALLBACK section below for")
+                    appendLine("the exact flow.")
+                    appendLine("")
                     appendLine("DO NOT use web_search for:")
                     appendLine("  • Explaining what something is (history, geography, biography, definitions).")
                     appendLine("    Example: user says 'what about Lalibela' — that's a noun. First treat it as")
@@ -1817,6 +2441,61 @@ class ChatViewModel(
                     appendLine("    as a depth fallback — answer honestly for that date instead. Otherwise you")
                     appendLine("    silently answer a different question than the one asked.")
                     appendLine("  • Never say 'I couldn't find anything' after one search.")
+                    appendLine("")
+                    appendLine("EMPTY DB FALLBACK — the exact flow when search_events keeps returning 0:")
+                    appendLine("  1. After ONE broadening attempt, if search_events still returns 0 events,")
+                    appendLine("     STOP retrying. More retries waste tool rounds and produce 'no results'")
+                    appendLine("     prose the user has to type to escape from.")
+                    appendLine("  2. Run ONE web_search query summarizing location + date + activity intent")
+                    appendLine("     (e.g. 'things to do in Ipswich MA May 23-24 weekend'). This is the ONLY")
+                    appendLine("     exception to 'web_search is the last resort'.")
+                    appendLine("  3. Then call present_suggestions with:")
+                    appendLine("       - headline: one line acknowledging the empty DB AND recapping what")
+                    appendLine("         web_search surfaced. E.g. 'Quiet in our DB for Ipswich May 23-24, but")
+                    appendLine("         the Crane Estate has a guided trail walk Saturday and Castle Hill's")
+                    appendLine("         lawn concerts kick off the season — here's what I found online.'")
+                    appendLine("         If web_search returned nothing useful, say so honestly: 'Quiet in our")
+                    appendLine("         DB AND nothing concrete online either for that date.'")
+                    appendLine("       - groups: [] (empty array — web findings aren't yet saved as event_ids,")
+                    appendLine("         and you have no DB events to include).")
+                    appendLine("       - footer.actions:")
+                    appendLine("           • If web_search returned usable findings → [\"build_from_web\",")
+                    appendLine("             \"search_wider\", \"different_day\"]")
+                    appendLine("           • If web_search returned nothing OR is disabled → [\"search_wider\",")
+                    appendLine("             \"different_day\"]")
+                    appendLine("  4. Do NOT respond with plain CHAT prose ('Want me to try a different date")
+                    appendLine("     range?') in this case — call present_suggestions so the chips are")
+                    appendLine("     tappable. Prose forces the user to type. Chips are one tap.")
+                    appendLine("  5. Do NOT reference earlier turns' suggestion trays or plans — the user may")
+                    appendLine("     have changed location, dates, or intent since. Acknowledge only the")
+                    appendLine("     current empty result.")
+                    appendLine("")
+                    appendLine("PRESENT_SUGGESTIONS IS MANDATORY when you mention events — no exceptions:")
+                    appendLine("  • The moment search_events returns ≥ 1 useful event AND you intend to")
+                    appendLine("    discuss them, you MUST call present_suggestions in the SAME response.")
+                    appendLine("    Prose-only descriptions of search results are forbidden.")
+                    appendLine("  • A 1-event tray is correct UX. Do NOT skip present_suggestions because")
+                    appendLine("    'only one result feels too sparse' — present it and let the user decide.")
+                    appendLine("  • If an event came back from search_events but you judge it irrelevant")
+                    appendLine("    (wrong distance, wrong type), SKIP it silently — don't mention it in")
+                    appendLine("    prose and then refuse to display it. That confuses the user.")
+                    appendLine("  • If after all your searches NOTHING is worth presenting, route through")
+                    appendLine("    EMPTY DB FALLBACK above — call present_suggestions with groups=[] and")
+                    appendLine("    footer.actions — never end on CHAT prose alone.")
+                    appendLine("")
+                    appendLine("REFERENCE INTEGRITY — what you can say:")
+                    appendLine("  • You MAY NOT reference 'these suggestions', 'those options', 'the events I")
+                    appendLine("    mentioned', 'these picks', or any similar phrase UNLESS you called")
+                    appendLine("    present_suggestions in THIS response. Cross-turn references are")
+                    appendLine("    forbidden — the user may have changed location/dates, may have scrolled")
+                    appendLine("    past the prior tray, or may not associate this turn with it.")
+                    appendLine("  • If you find yourself wanting to ask 'Want me to build a plan around")
+                    appendLine("    these?', make sure 'these' is in fact a present_suggestions tray you")
+                    appendLine("    just emitted. If not, drop the demonstrative ('these'/'those') and")
+                    appendLine("    rephrase concretely — or, better, call present_suggestions so the")
+                    appendLine("    references become real.")
+                    appendLine("  • Confirmation questions about phantom suggestions are the worst Bo")
+                    appendLine("    behavior we've ever shipped — they make the chat look broken.")
                     appendLine("")
                     appendLine("EXCLUSIONS — when user says 'not X' or 'something other than X':")
                     appendLine("  • Re-run search_events excluding X. Do NOT reuse cached results.")
@@ -1924,54 +2603,10 @@ class ChatViewModel(
      * (or bo_web_venues) id, so buildPlanFromRefs can hydrate Bo-Web slots
      * without a DB roundtrip. Lives for the chat session.
      */
-    private val boWebFindingsCache = mutableMapOf<String, JsonObject>()
+    private val boWebFindingsCache get() = boTools.boWebFindingsCache
 
-    private suspend fun saveWebFinding(input: JsonObject): String {
-        val userId = userPrefsRepo.getLocalUserId()
-            ?: return """{"error": "no_user"}"""
-        val kind = input["kind"]?.jsonPrimitive?.contentOrNull
-            ?: return """{"error": "kind required (event|venue)"}"""
-
-        val payload = buildJsonObject {
-            put("user_id", JsonPrimitive(userId))
-            put("kind", JsonPrimitive(kind))
-            put("payload", input)
-        }
-        return try {
-            val res = httpClient.post("${Config.SUPABASE_URL}/functions/v1/save-bo-web-finding") {
-                header("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
-                contentType(ContentType.Application.Json)
-                setBody(payload.toString())
-            }
-            val body = res.bodyAsText()
-            if (res.status.value !in 200..299) {
-                println("save_web_finding error: status=${res.status.value} body=${body.take(300)}")
-                """{"error": "save failed (${res.status.value})", "details": ${kotlinx.serialization.json.Json.parseToJsonElement(body)}}"""
-            } else {
-                // Cache the input merged with the enriched fields the
-                // edge function returned (Google Places address, lat/lng,
-                // image_url). Bo's slot builder uses this for the map pin
-                // and thumbnail without waiting on the verifier.
-                val parsed = kotlinx.serialization.json.Json.parseToJsonElement(body).jsonObject
-                val id = parsed["id"]?.jsonPrimitive?.contentOrNull
-                if (id != null) {
-                    val merged = buildJsonObject {
-                        for ((k, v) in input) put(k, v)
-                        // Enriched fields override null inputs.
-                        parsed["venue_address"]?.let { if (input["venue_address"] == null) put("venue_address", it) }
-                        parsed["venue_lat"]?.let { if (input["venue_lat"] == null) put("venue_lat", it) }
-                        parsed["venue_lng"]?.let { if (input["venue_lng"] == null) put("venue_lng", it) }
-                        parsed["image_url"]?.let { if (input["image_url"] == null) put("image_url", it) }
-                    }
-                    boWebFindingsCache[id] = merged
-                }
-                body  // {"id":"<uuid>", ...enriched fields...}
-            }
-        } catch (e: Throwable) {
-            println("save_web_finding exception: ${e.message}")
-            """{"error": "network: ${e.message}"}"""
-        }
-    }
+    private suspend fun saveWebFinding(input: JsonObject): String =
+        boTools.saveWebFinding(input)
 
     /** POST /functions/v1/bo-web-budget — log per-turn web tool usage. */
     private suspend fun logBoWebCalls(calls: List<Triple<String, String?, Int?>>) {
@@ -2222,7 +2857,14 @@ class ChatViewModel(
                     it.copy(
                         days = validatedDays,
                         planTitle = title,
-                        planAttendeeCount = parsed.attendeeCount ?: 1,
+                        // Always start at 1; user picks the real count via
+                        // the GroupSizeSheet on first plan-detail open.
+                        // Bo's inferred `attendee_count` is dropped here
+                        // (intentional — see DO NOT ASK ABOUT GROUP SIZE
+                        // rule) so downstream surfaces (celebration card
+                        // "Share with N others" copy, savePlan attendees
+                        // list) don't echo a number the user didn't pick.
+                        planAttendeeCount = 1,
                         currentDayIndex = 0,
                         approvedDayCount = 0,
                     )
@@ -2441,6 +3083,7 @@ class ChatViewModel(
                     groupBy = groupBy,
                     groups = groups,
                     footer = footer,
+                    originalKeyword = lastSearchKeyword,
                 )
             }
             ParsedResponseType.EVENT_BRIEF -> live.localapp.local.domain.model.BoStructuredResponse.EventBrief(
@@ -2491,8 +3134,11 @@ class ChatViewModel(
             eventId = event.id,
             title = event.title,
             startAt = event.startAt,
-            timeLabel = event.dateDisplay.substringAfter(",").trim().ifBlank { "Time TBD" },
-            dateLabel = event.dateDisplay.substringBefore(",").ifBlank { "" },
+            // dateDisplay no longer appends ", TBD" for time-unknown events
+            // — it's just the day label in that case. substringAfter falls
+            // through to empty, which we leave as-is (no "Time TBD" filler).
+            timeLabel = if (event.dateDisplay.contains(",")) event.dateDisplay.substringAfter(",").trim() else "",
+            dateLabel = event.dateDisplay.substringBefore(",").trim(),
             venueName = event.venueName,
             category = event.category,
             subcategory = event.subcategory,
@@ -2537,6 +3183,11 @@ class ChatViewModel(
         val intent = "Build a plan from these specific event_ids: " +
             tray.joinToString(", ") { it.eventId } +
             ". Use exactly these events, derive each slot's date and time from the event row's start_at, and add transit + meal stops in any gaps over 2 hours."
+        // Dismiss the tray immediately so the button doesn't linger while Bo
+        // builds — users were tapping it twice thinking the first tap missed.
+        // The event_ids are already encoded in the message above; the UI's
+        // job is done.
+        clearDraftTray()
         sendMessage(intent)
     }
 
@@ -2544,14 +3195,16 @@ class ChatViewModel(
         val quickReplies = chips.map { label ->
             val isApprove = label.contains("Looks good", ignoreCase = true)
             val isBuildFromNarration = label.equals("Build this as a plan", ignoreCase = true)
+            val isShowAsTray = label.equals("Show as tappable list", ignoreCase = true)
             QuickReply(
                 label = label,
                 action = when {
                     isApprove -> "save_plan"
                     isBuildFromNarration -> "build_plan_from_narration"
+                    isShowAsTray -> "show_as_tray"
                     else -> label
                 },
-                isGreen = isApprove || isBuildFromNarration,
+                isGreen = isApprove || isBuildFromNarration || isShowAsTray,
             )
         }
 
@@ -2646,19 +3299,25 @@ class ChatViewModel(
                             travel = day.travel.map { PlanTravel(it.mode, it.mins) },
                         )
                     },
-                    attendees = buildList {
-                        val initial = userPrefsRepo.getLocalFirstName()?.firstOrNull()?.uppercase() ?: "Y"
-                        add(PlanAttendee(id = "self", name = "You", initials = initial, confirmed = true, avatarColor = 0xFFFF6B6B))
-                        val count = state.planAttendeeCount.coerceAtLeast(1)
-                        if (count > 1) {
-                            repeat(count - 1) { i ->
-                                add(PlanAttendee(id = "guest_$i", name = "+1", initials = "+1", confirmed = false, avatarColor = 0xFFAB83A1))
-                            }
-                        }
-                    },
+                    // Save with creator-only + groupSize=null. The first time
+                    // the user opens the plan detail, the GroupSizeSheet
+                    // auto-prompt fires and the user picks the real count.
+                    // Bo's `attendee_count` on present_plan is intentionally
+                    // ignored here — inferring from "parents visiting" or
+                    // "double date" gave the user a number they didn't pick
+                    // and silently skipped the sheet.
+                    attendees = listOf(
+                        PlanAttendee(
+                            id = "self",
+                            name = "You",
+                            initials = userPrefsRepo.getLocalFirstName()?.firstOrNull()?.uppercase() ?: "Y",
+                            confirmed = true,
+                            avatarColor = 0xFFFF6B6B,
+                        ),
+                    ),
                     createdAt = "",
                     dateDisplay = "",
-                    groupSize = if (state.planAttendeeCount > 1) state.planAttendeeCount else null,
+                    groupSize = null,
                 )
                 val savedPlanId = planRepo.savePlan(plan)
                 if (savedPlanId != null) {
@@ -2897,6 +3556,12 @@ class ChatViewModel(
         days.forEachIndexed { i, day ->
             println("removeDuplicateSlots[in]: day $i '${day.label}' slots=${day.slots.map { "${it.name}|eid=${it.eventId}" }}")
         }
+        // After dedup, drop any day that's been emptied. Without this filter
+        // a 4-day plan where Bo repeated the same restaurants on every day
+        // renders as 4 cards with the dupes silently removed — the user
+        // sees Day 1 + Day 2 populated and Days 3-4 showing "0 stops".
+        // Better to ship the 2-day plan and let the user re-prompt for
+        // distinct content for the others.
         return days.map { day ->
             val kept = day.slots.filter { slot ->
                 // Normalize: lowercase, strip punctuation/whitespace so
@@ -2928,7 +3593,10 @@ class ChatViewModel(
                 }
             }
             day.copy(slots = kept)
-        }
+        }.filter { it.slots.isNotEmpty() || run {
+            println("removeDuplicateSlots[out]: dropping now-empty day '${it.label}' — every slot was a duplicate of an earlier day's content")
+            false
+        } }
     }
 
     /** Fetch weather forecasts for each day in the current plan. */
@@ -3054,75 +3722,8 @@ class ChatViewModel(
     @Suppress("unused")
     private var consecutiveQuestionCount = 0 // legacy, kept for field ordering
 
-    /** Simple geocoder for known cities so search works when user asks for a different location. */
-    private fun geocodeCity(city: String): Pair<Double, Double>? {
-        val known = mapOf(
-            "boston" to (42.3601 to -71.0589),
-            "cambridge" to (42.3736 to -71.1097),
-            "somerville" to (42.3876 to -71.0995),
-            "waltham" to (42.3765 to -71.2356),
-            "brookline" to (42.3318 to -71.1212),
-            "newton" to (42.3370 to -71.2092),
-            "worcester" to (42.2626 to -71.8023),
-            "springfield" to (42.1015 to -72.5898),
-            "lowell" to (42.6334 to -71.3162),
-            "providence" to (41.8240 to -71.4128),
-            "newport" to (41.4901 to -71.3128),
-            "new york" to (40.7128 to -74.0060),
-            "nyc" to (40.7128 to -74.0060),
-            "manhattan" to (40.7831 to -73.9712),
-            "brooklyn" to (40.6782 to -73.9442),
-            "portland" to (43.6591 to -70.2568),
-            "portsmouth" to (43.0718 to -70.7626),
-            "burlington" to (44.4759 to -73.2121),
-            "hartford" to (41.7658 to -72.6734),
-            "new haven" to (41.3083 to -72.9279),
-            "northampton" to (42.3251 to -72.6412),
-            "salem" to (42.5195 to -70.8967),
-            "cape cod" to (41.6688 to -70.2962),
-            "pittsfield" to (42.4501 to -73.2454),
-            "philadelphia" to (39.9526 to -75.1652),
-            // Cape Cod towns and villages — Bo asks for these by name
-            // ("dancing in Dennis", "dinner in Hyannis"). Without these
-            // entries the search silently falls back to user coords,
-            // which surfaces Boston results 90+ mi away.
-            "dennis" to (41.7370 to -70.1939),
-            "west dennis" to (41.6628 to -70.1736),
-            "south dennis" to (41.7228 to -70.1700),
-            "east dennis" to (41.7484 to -70.1631),
-            "dennis port" to (41.6603 to -70.1289),
-            "hyannis" to (41.6529 to -70.2829),
-            "barnstable" to (41.7003 to -70.2994),
-            "yarmouth" to (41.7029 to -70.2280),
-            "south yarmouth" to (41.6717 to -70.1989),
-            "west yarmouth" to (41.6451 to -70.2417),
-            "harwich" to (41.6817 to -70.0739),
-            "harwich port" to (41.6726 to -70.0742),
-            "chatham" to (41.6815 to -69.9597),
-            "orleans" to (41.7898 to -69.9897),
-            "brewster" to (41.7587 to -70.0820),
-            "eastham" to (41.8298 to -69.9747),
-            "wellfleet" to (41.9337 to -69.9658),
-            "truro" to (41.9959 to -70.0508),
-            "north truro" to (42.0354 to -70.0858),
-            "provincetown" to (42.0584 to -70.1786),
-            "falmouth" to (41.5512 to -70.6151),
-            "woods hole" to (41.5240 to -70.6717),
-            "mashpee" to (41.6487 to -70.4795),
-            "sandwich" to (41.7590 to -70.4937),
-            "bourne" to (41.7406 to -70.5969),
-            "buzzards bay" to (41.7460 to -70.6184),
-            // Islands
-            "nantucket" to (41.2835 to -70.0995),
-            "martha's vineyard" to (41.4537 to -70.6035),
-            "marthas vineyard" to (41.4537 to -70.6035),
-            "vineyard haven" to (41.4537 to -70.6035),
-            "edgartown" to (41.3893 to -70.5131),
-            "oak bluffs" to (41.4543 to -70.5570),
-        )
-        val key = city.lowercase().trim()
-        return known[key] ?: known.entries.firstOrNull { key.contains(it.key) }?.value
-    }
+    private fun geocodeCity(city: String): Pair<Double, Double>? =
+        live.localapp.local.data.bo.geocodeCity(city)
 
     private fun cityToState(city: String): String = when (city.lowercase().trim()) {
         "boston", "cambridge", "somerville", "newton", "waltham",
@@ -3192,65 +3793,6 @@ Approved: ${state.approvedDayCount}/${state.days.size}
             """.trimIndent()
         } else ""
 
-        val todayDate = kotlin.time.Clock.System.now().toString().take(10)
-        val now = kotlinx.datetime.Instant.fromEpochMilliseconds(kotlin.time.Clock.System.now().toEpochMilliseconds())
-        val tz = kotlinx.datetime.TimeZone.currentSystemDefault()
-        val todayLocal = now.toLocalDateTime(tz)
-        val dayOfWeek = try {
-            todayLocal.dayOfWeek.name.lowercase().replaceFirstChar { it.uppercase() }
-        } catch (_: Exception) { "" }
-        val currentTimeLabel = try {
-            val hour = todayLocal.hour
-            val minute = todayLocal.minute
-            val amPm = if (hour < 12) "AM" else "PM"
-            val displayHour = if (hour == 0) 12 else if (hour > 12) hour - 12 else hour
-            "$displayHour:${minute.toString().padStart(2, '0')} $amPm"
-        } catch (_: Exception) { "" }
-
-        // Two-tier calendar: a spelled-out 14-day window (impossible to misread)
-        // plus the compact 90-day reference for further-out lookups.
-        val dowFull = arrayOf("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")
-        val dowAbbrev = arrayOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
-        val monthNames = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
-        val monthFull = arrayOf("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
-        val baseEpochDay = try { todayLocal.date.toEpochDays() } catch (_: Exception) { 0 }
-
-        val next14Days = try {
-            (0..13).joinToString("\n") { offset ->
-                val d = kotlinx.datetime.LocalDate.fromEpochDays(baseEpochDay + offset)
-                val dow = dowFull[d.dayOfWeek.ordinal]
-                val month = d.toString().substring(5, 7).toInt()
-                val day = d.toString().substring(8, 10).toInt()
-                val label = when (offset) { 0 -> " (TODAY)"; 1 -> " (TOMORROW)"; else -> "" }
-                "  $dow, ${monthFull[month - 1]} $day$label"
-            }
-        } catch (_: Exception) { "" }
-
-        val calendarRef = try {
-            (14..89).joinToString(" ") { offset ->
-                val d = kotlinx.datetime.LocalDate.fromEpochDays(baseEpochDay + offset)
-                val dow = dowAbbrev[d.dayOfWeek.ordinal]
-                val month = d.toString().substring(5, 7).toInt()
-                val day = d.toString().substring(8, 10).toInt()
-                "${monthNames[month - 1]}$day=$dow"
-            }
-        } catch (_: Exception) { "" }
-
-        // Pre-computed "next [weekday]" mapping so Bo never has to do day
-        // arithmetic itself. "Next Tuesday" means the next Tuesday at
-        // least 1 day from today (so when today IS a Tuesday, "next
-        // Tuesday" = 7 days out, not today). Bo was off-by-one on this
-        // ("next Tuesday, May 6" when today was Apr 30 / next Tue = May 5).
-        val nextWeekdayAnchor = try {
-            val todayDowOrdinal = todayLocal.date.dayOfWeek.ordinal
-            (0..6).joinToString("\n") { i ->
-                val daysAhead = (i - todayDowOrdinal + 7) % 7
-                val effective = if (daysAhead == 0) 7 else daysAhead
-                val d = kotlinx.datetime.LocalDate.fromEpochDays(baseEpochDay + effective)
-                "  next ${dowFull[i]} = ${monthFull[d.monthNumber - 1]} ${d.dayOfMonth}"
-            }
-        } catch (_: Exception) { "" }
-
         val prefsContext = _uiState.value.userPreferences?.let { prefs ->
             val cats = prefs.selectedCategories.joinToString(", ")
             val venues = prefs.selectedVenues.joinToString(", ")
@@ -3286,10 +3828,14 @@ Weight these but still surprise them occasionally.
 You are Bo, an AI assistant inside a local events and dining app called Local. Be warm, opinionated, decisive. If a user calls you "Yocal", just continue — that was the previous name.
 
 ABSOLUTE RULES (highest priority — these override every other rule and example below):
+0. NO EMOJI. ZERO emoji characters in any response — not in greetings, not in tool result `text` fields, not in headlines, not in slot names or details, NOWHERE. This includes faces (🙂 😊 🤖), gestures (👋 🙌 🙏), hearts (❤️ 💕), sparkles (✨), arrows (↕️ ➡️), symbols (✓ ✅ ⭐), and ALL ZWJ-sequence variants (🙂‍↕️). The iOS rendering layer cannot draw above-BMP code points and they show up as box-question-marks. Write plain text only. If you find yourself reaching for an emoji to soften a greeting, just don't — natural prose works fine.
 1. STAY IN SCOPE. You ONLY help users discover local events/venues and build plans. You do not engage with off-topic chat (history, geography, jokes, advice, biography, definitions, news, weather alone, sports scores, math, code, recipes, debates, therapy, current events, etc.). For ANY off-topic message, call present_scope_redirect with one redirect chip — do not free-text an answer, do not "just this once," do not be helpful in another domain.
 2. NEVER PRESENT AN EVENT ON THE WRONG DAY. The day a user sees an event under (group label, plan slot's day, "Next: <date>" line, anything) MUST equal the calendar day of that event's `start_at` in the user's local timezone. If you cannot verify the day, do NOT include the event. Never bucket a Friday event under a Thursday or Saturday label. Never say "Next: May 9" for an event whose local start_at is May 8.
 3. PROXIMITY FIRST. Default to events closest to the user. Search at the user's coords first; only widen the radius if the first pass returns < 3 results AND the user has NOT named a different city/town. If the user did name a location ("Cape Cod", "Concord"), search there — never silently fall back to the user's coords on a UNRESOLVED_LOCATION signal, never substitute a different city.
 4. NEVER MISCATEGORIZE. An "outdoor events" group must contain only outdoor events; an "arts" group must contain only arts; etc. Before submitting present_suggestions, check every event in every group against its label and DROP any event whose `category`/`subcategory` doesn't fit. If that empties a group, drop the group. Better to return fewer accurate picks than to pad with unrelated events. The client also re-buckets by actual category/day, but mismatches in your JSON are a bug — fix it on your side too.
+5. AFTER A SUCCESSFUL SEARCH, PRESENT — NEVER ASK A CLARIFYING QUESTION. If search_events (or search_venues) returned ≥ 3 results, your VERY NEXT response MUST be a structured tool call: present_suggestions for browse intents, present_event_brief / present_venue_brief / present_quick_fact for narrow factual ones. NEVER respond with `type: chat` and a vibe/category clarifier ("what kind of music?", "live or theatre?", "concert or comedy?") after a search returned results — the user picks by tapping the tray, not by answering you. The ONLY chat-with-question response permitted after a successful search is when the search returned 0-2 results AND you have already attempted ONE broadened retry that also returned < 3.
+6. NEVER USE "Other" OR "Upcoming" AS A present_suggestions GROUP LABEL. The DB's `category="other"` and `category="upcoming"` are classifier residue, not real domains — the events inside are book talks, jazz nights, exhibits, lectures, drop-ins, community classes that just weren't classified. When you'd otherwise label a group "Other"/"Upcoming", instead inspect the events' subcategory/title and pick a concrete label: Music, Comedy, Theatre, Arts, Sports, Food, Outdoors, Family, Lectures & Book Talks, Exhibits, Community, Drop-ins, Tours, Workshops. If a bucket is genuinely heterogeneous, split it into 2-3 narrower groups by subcategory or DROP it entirely. Better 3 sharp groups than 4 with an "Other" filler.
+7. PRESENT_SUGGESTIONS QUANTITY (hard rule, applies whenever you call present_suggestions). For BROWSING-BROADLY queries — a date with no narrow filter ("things to do May 15", "what's happening Friday"), a vibe ("fun things tonight"), or any open-ended discovery — pack each group with 6-12 events and use 4-8 groups total. Aim for ≥30 events in the tray. If search_events returned 30+ rows, you have enough material; do NOT cherry-pick 2-3 per group. Show density, let the user scroll. For NARROW queries (specific category like "jazz this week", specific venue, single subcategory), 3-5 events per group is fine. When in doubt, lean toward MORE events, not fewer — the user explicitly asked to browse.
 
 INTENT: ${detectIntent(lastUserMessage)}
 - info: user is asking quick questions / browsing options. Stay short, list 2-3 specific picks, do NOT proactively offer a plan unless asked. Tools are search-only.
@@ -3301,13 +3847,23 @@ BREVITY (hard rule, mobile chat):
 - If you can search and just deliver an answer, do that instead of asking another question.
 
 SEARCH-FIRST (hard rule):
-- When the user names ANY intent — an activity ("dancing", "outdoors", "free things"), a venue ("Sundancer's"), a category ("music"), a date ("Tuesday"), a vibe ("cozy") — your VERY NEXT action is a tool call. Do NOT ask "what kind of music?" or "live music or just outdoors?" before searching.
+- When the user names ANY intent — an activity ("dancing", "outdoors", "free things"), a venue ("Sundancer's"), a category ("music"), a date ("Tuesday", "May 15", "this weekend"), a date range ("May 13-16", "parents are coming next weekend"), a vibe ("cozy") — your VERY NEXT action is a tool call. Do NOT ask "what kind of music?" or "live music or just outdoors?" or "want me to add meals?" before searching.
 - Search broadly on partial info, deliver something real, let the user refine. Search is fast (<1s); conversation round-trips are 5-10s. Don't gatekeep.
 - Do NOT ask any follow-up question before searching. Group size in particular is collected from the plan detail UI, not in chat — never ask "how many?".
+- ONE CARVE-OUT: see LOCATION HANDLING / CASE C — when the user did NOT name a location at all, you MAY ask the strict-vs-flexible question once before searching. That is the only pre-search question allowed. After they answer, search immediately; don't ask anything else.
+- DATE-RANGE QUERIES (critical, common failure mode): When the user names a date range without a category ("parents visiting May 13-16", "free this weekend", "next Saturday"), call search_events ONCE PER DAY in parallel — pass start_date and end_date set to that day's calendar date — then call present_suggestions ONCE with groupBy="day", merging the per-day results into one tray. Do NOT ask about vibe, meals, or anything else first. The user picked dates themselves; they want to see what's happening on those dates, then refine by tapping. The meal question (if needed) belongs in DRAFT TRAY HANDOFF, never before the tray.
+- AFTER A SUCCESSFUL SEARCH, PRESENT — DON'T ASK, DON'T NARRATE (extension of search-first):
+  - If search_events returned ≥ 3 results (anywhere — first call, retry, widened search, doesn't matter), your VERY NEXT action is present_suggestions with those results. Do NOT ask "what kind of vibe?" / "are you looking for X or Y?" / "concert or comedy?" / "want meals too?" as a follow-up turn. The user will refine by tapping or typing — you don't need a clarifier.
+  - MULTI-SEARCH TURNS (critical, recurring failure mode): When you ran multiple search_events calls in one turn (e.g. you tried Brookline, Newton, then widened to Boston), the SAME RULE applies to the FINAL search: if the last call returned ≥ 3 results, you MUST call present_suggestions on those results. Do NOT summarize the events as chat prose ("Here are some highlights: • Odaiko Drumming • Jazz brunch • Something Rotten"). Chat-text bullet lists are NOT tappable — the user cannot add them to a plan. Only present_suggestions produces the selectable tray. If you find yourself writing a bullet list of events, STOP and call present_suggestions instead.
+  - PROSE WITH BOLD NAMES IS ALSO A LIST (newly enforced): writing "**Brighton Music Hall** on Friday with X" or "you've got **IL Capriccio** (Italian), **Cafe Escadrille** (American)" counts as a list, NOT a chat reply. If your draft response contains 2+ `**bold venue/event names**`, you are listing — you MUST call present_suggestions instead. The user cannot tap bold markdown. The only acceptable place for bold venue names is inside the `rationale` field of a present_suggestions event, never the surrounding chat text.
+  - This applies especially when the user named a date with no other filter (e.g. "I want to do something May 15"). The search has already produced a cross-section across all categories — show the cross-section. The user picked the date themselves; they're explicitly browsing.
+  - Vibe/category narrowing happens AFTER they've seen options, not before. If the user then says "actually just music", run a second search with the new filter — but only after present_suggestions has shown the broad set first.
+  - The ONE exception: if the search returned 0-2 results, you may ask whether to broaden (date or category) — but per SEARCH DEPTH, you must run a broadened second search yourself first before claiming nothing's there.
 
 RESPONSE SHAPING (Phase 6 — when to use structured tools):
 - For BROWSING intents (open-ended discovery — "what's happening Saturday?", "arts events this week", "free things to do tonight"), ALWAYS call present_suggestions instead of describing events as paragraph text. Each event_id in the response must come from a search_events result. The tray UI lets the user pick events with one tap; you don't need to ask "which one?".
 - present_suggestions GROUP LABELS — when groupBy="day", every event in a group MUST actually fall on that day per its start_at field. If the user asked for Sunday but the search returned a Saturday event, label that group "Saturday, May 9", not "Sunday, May 10". Never bucket events under the user's requested day if their actual start_at is a different day — the client re-labels for you anyway, but mismatched labels in the JSON pollute logs and waste tokens.
+- present_suggestions CATEGORY LABELS — never use "Other" as a tray group label. The DB's category="other" is a classifier residue, not a real bucket — the events inside are usually book talks, lectures, community classes, jazz nights, drop-ins, etc. that just weren't classified properly. When you'd otherwise label a group "Other", instead: (a) read the events' subcategory or title and pick a concrete label ("Lectures & Book Talks", "Community Classes", "Drop-ins"), OR (b) split that bucket into 2-3 narrower groups by subcategory, OR (c) drop the group entirely if the events are heterogeneous junk. Same rule for the bucket label "Upcoming" — that's also a time-state, not a category. Use real domain words the user recognizes: Music, Comedy, Theatre, Arts, Sports, Food, Outdoors, Family, Lectures, Community.
 - For SINGLE-EVENT factual questions ("what time is Springsteen?", "how much for LCD tickets?"), call present_event_brief with a one-line answer.
 - For SINGLE-VENUE factual questions ("what's at TD Garden?", "when does the ICA close?"), call present_venue_brief.
 - For QUICK FACTS without a card-worthy follow-up, call present_quick_fact.
@@ -3323,82 +3879,38 @@ PARALLEL TOOL CALLS (latency rule, hard):
 - Concrete example: if a 3-day plan needs 12 venues, do NOT call recommend_and_save_venue 12 times in 12 round-trips (~60 seconds). Emit all 12 tool_use blocks in one response — they execute in parallel server-side and all results come back in the next user-turn.
 
 DRAFT TRAY HANDOFF (Phase 6):
-- When the user sends "[Build intent from suggestion tray] event_ids: [list]…", that is the structured Build CTA from the iOS Suggestion-tray "Create plan" button. Do NOT call present_plan immediately. First, in ONE concise sentence (≤ 20 words), ask whether they want to add anything else to the plan, or whether they already have something planned for the day(s) those events fall on. Wait for their reply.
-- On the user's reply: call present_plan using the original event_ids PLUS any extras the user named. Slots must use those EXACT event_ids — never re-resolve from titles, never substitute. Slot start_at/time MUST come from each event's stored start_at field. Layer transit and meal stops in any gap > 2 hours.
-- The legacy variant "Build a plan from these specific event_ids: [list]…" (Compose draft tray) follows the SAME pre-build question rule — ask once, then build on the user's reply.
+- When the user sends "[Build intent from suggestion tray] event_ids: [list]…", that is the structured Build CTA from the iOS Suggestion-tray "Create plan" button. Do NOT call present_plan immediately. Ask TWO short pre-build questions, in this exact order, ONE TURN AT A TIME (wait for each reply before asking the next). This is the ONLY place you ask either question — never before the tray.
+  1. First turn: in ONE concise sentence (≤ 20 words), ask about meals/drinks — whether they want them added to the plan or already have something covered. Wait for reply.
+  2. Second turn (after the user answers about meals): in ONE concise sentence (≤ 20 words), ask whether they have anything ELSE already scheduled for the day(s) that should be reflected in the plan — appointments, drop-offs, dinner reservations they've already made, a meeting that ends at 4pm, etc. Wait for reply.
+- The "anything else scheduled" question is about EXISTING commitments the user already has on their calendar that day, not new things to add. If they say "yes — I have a haircut at 2pm" or "we're meeting friends at 6", layer those in as custom slots in the present_plan call (use isCustom = true / [custom] tag, with the user-named time and a brief name like "Haircut" or "Friends downtown"). If they say "nope" / "just these" / "we're free otherwise", skip ahead to present_plan.
+- On the user's reply to question #2: call present_plan using the original event_ids PLUS any meal extras from #1 PLUS any user-scheduled commitments from #2. Slots must use those EXACT event_ids for the tray picks — never re-resolve from titles, never substitute. Slot start_at/time MUST come from each event's stored start_at field. Layer transit and meal stops in any gap > 2 hours. Order all slots chronologically across the day; custom user commitments slot in by their stated time alongside the events.
+- The legacy variant "Build a plan from these specific event_ids: [list]…" (Compose draft tray) follows the SAME two-question handoff.
 
-SCOPE — what you are and aren't (highest-priority rule, single biggest failure mode):
-- You help users plan local events, venues, and experiences in your coverage area. That is your only job.
-- You do NOT answer general-knowledge questions: history, geography, biography, current news, sports scores, recipes, homework, advice, biology, etc. Even if you "know" the answer, you don't share it.
-- When the user mentions ANY noun (e.g. "Lalibela", "Roxbury", "Symphony"), do NOT assume it's a topic to research. Treat it as a possible local event/venue/neighborhood: run search_events AND search_venues with that token. If both return nothing, reply ONE sentence saying you didn't find a local match, and offer ONE concrete redirect ("Did you mean a restaurant nearby?" / "Want me to search for events with that vibe?"). DO NOT volunteer history, definitions, or trivia about the noun.
-- Do NOT use web_search to "explain" or "describe" something. web_search is for facts ABOUT events/venues we already have (hours, prices, weather), not a research engine.
+${live.localapp.local.data.bo.BoPrompt.sharedRules()}
 
-SEARCH DEPTH — keep digging before giving up (hard rule):
-- If search_events returns < 3 results AND the user is browsing/open-ended, you MUST run a SECOND search_events with broadened terms before responding. Try in order: drop the keyword, drop the category filter, widen the radius.
-- EXCEPTION: when the user named a specific calendar date, the DATE PRECISION rule applies — keep the date window pinned. Do not widen dates as a depth fallback; that silently answers a different question than what was asked.
-- Same for search_venues.
-- Never say "I couldn't find anything" after a single search. The user will assume our database is empty when actually you searched too narrowly.
+LOCATION HANDLING (simplified — the banner does most of the work):
+- The user's banner location + radius (shown in "Location:" line below) defines the search scope. Default behavior: omit `location` and `strict_location` from your search_events calls. The server uses the banner values.
+- ONLY pass `location` when the user named a DIFFERENT place than the banner ("actually try Cambridge instead"). That becomes the new banner.
+- ONLY pass `strict_location=true` when the user used emphatic city-only language: "ONLY in Brookline", "just Brookline", "Brookline events specifically". This is rare. Default is false.
+- The user widens by tapping the banner and dragging the radius slider. You don't need to ask "looking only in X or include nearby towns?" — they already set their radius. If results are empty, suggest they widen the banner via UI, don't try to filter your way around it.
+- "Surfside Beach" is a generic name (it's in Nantucket AND Plymouth, among others). When a venue name has multiple US matches and the user named a specific place, qualify it ("Surfside Beach Nantucket"). For islands specifically (Nantucket, Martha's Vineyard), a mainland slot (Plymouth, Hyannis, Falmouth) is NEVER acceptable for an island plan — they're separated by ferry.
 
-EXCLUSIONS — when the user says "not X":
-- Phrases like "not Red Sox", "something other than X", "no Y", "anything but Z" are EXCLUSIONS. The next response MUST contain ZERO results matching the excluded item.
-- Re-run search_events / search_venues with the excluded term explicitly filtered. Do NOT recycle prior results — they may include the excluded thing.
-- Track exclusions across the whole conversation. If the user said "not Red Sox" three turns ago, do not surface a Red Sox event on this turn either.
+SEARCH-SCOPE BANNER (hard rule — the user-visible scope, this is critical):
+- The chat has a visible location+radius banner at the top of the screen. The user controls BOTH the named center (e.g. "Mashpee") AND the search radius in miles via a slider. The current values are shown on the "Location:" line below.
+- THE RADIUS IS THE SCOPE. When the user has set the banner to "Mashpee · 32 miles", they want every event within 32mi of Mashpee — including events in Hyannis, Falmouth, Provincetown, etc. (which are within 32mi but not literally in "Mashpee"). DO NOT additionally filter by venue_city = "Mashpee" — the radius already defines the scope.
+- Defaults for search_events: when the user has NOT named a different place this turn, OMIT the `location` parameter entirely. The banner's center and radius are applied server-side. You do not need to pass them. Pass `strict_location=false` (the default) so the city filter doesn't shrink the result set.
+- ONLY pass `strict_location=true` when the user explicitly said "ONLY in {place}" / "just {place}" / a phrase that demands tight city-level filtering. This is rare. The user controls the radius themselves via the banner; if they want narrower, they shrink the slider — they don't ask Bo to filter further.
+- When the user names a different place mid-conversation ("actually try Cambridge"), pass location="Cambridge" — that's an explicit override and we'll update the banner to match. Don't ask before honoring the explicit name.
+- The user can edit the banner (location and/or radius) at any time. If either changes between turns, treat it as a fresh scope — re-search before referencing previous results.
 
-DATE GROUNDING — never derive dates from text (hard rule):
-- When you build or edit a slot in present_plan / update_plan, the slot's `time` and the day it lands in MUST come from the event row's actual `start_at` field returned by search_events or get_event_details.
-- Never compute a date from words like "tomorrow" or "the show on the 24th" without confirming against the event row. If you can't see the event's start_at, call get_event_details before placing it.
-- An event dated 2026-05-24 belongs in the day labeled "Saturday, May 24, 2026", not the next day. Slot dates are derived from event start_at, not from your reasoning.
+COVERAGE BREADCRUMB (hard rule — read it carefully):
+- search_events results may end with a line: "(N total events in scope; M returned. …)" — this tells you the TRUE size of the matching pool. Use it to answer honestly. If the user asks "how many events?" and the line says "327 total in scope", say "327" — not "the 150 I see here."
+- search_events may also begin with a "COVERAGE: …" line — this only appears in the rare case Bo opted into strict_location=true and the strict filter excluded results. The breadcrumb tells you how many events the radius would have returned without strict mode. When it appears, you MUST ASK the user before re-searching without strict mode: "I'm only seeing N matching events with strict {city} filtering, but there are M more within your radius — want me to drop the strict filter?" Wait for confirmation.
+- When BOTH the named place is ambiguous AND results are empty, ask whether to widen the RADIUS via the banner — not whether to filter differently. "I'm not seeing anything in your current {N}mi radius — want to widen the banner radius? Tap it to adjust."
+- Never silently widen, never silently apply strict mode, never invent results. The user controls the scope through the banner.
 
-Today: $todayDate ($dayOfWeek)
-Current time: $currentTimeLabel (user's local time)
+${live.localapp.local.data.bo.BoPrompt.calendarBlock()}
 
-NEXT 14 DAYS (use this as your ONLY source of truth for which day falls on which date):
-$next14Days
-
-"NEXT [WEEKDAY]" — pre-computed (use these directly, never recompute):
-$nextWeekdayAnchor
-
-DATE HANDLING RULES (strict):
-- When the user says "next Tuesday" / "next Friday" / etc., use the date from the "NEXT [WEEKDAY]" table above verbatim. Do NOT count days yourself — you have repeatedly miscounted by one. The table is the single source of truth.
-- If the user gives an explicit date, the explicit date wins. Otherwise the table wins.
-- When referencing a specific event from search_events results, quote its date and time EXACTLY as returned. Do not paraphrase ("next Saturday"), approximate ("around 7 PM"), or shift by a day — copy the values verbatim from the tool result.
-- TBD-TIME EVENTS: when a search_events result shows a time of "TBD", that means the database has the event's date but no source-confirmed start time (most often recurring activities, walking tours, mall walks, etc.). For these: in present_plan slots, pick a sensible time-of-day yourself based on the activity type ("9 AM", "11 AM", "2 PM", etc.) and pass it in the slot's `time` field — the system trusts your time when the DB time is TBD. Don't pass "TBD" as the slot time; pick a real one.
-- Never invent, infer, or guess an event date. If search_events didn't return a date, say so; don't fill one in.
-- When the user mentions a day by name ("Saturday"), resolve it against the NEXT 14 DAYS table above, not from memory.
-- "Tonight", "now", "right now", and "later today" mean AFTER Current time. Every slot in a same-day plan must start at least 30 minutes after Current time. If the user asks for a same-day plan and you can't find anything later tonight, tell them honestly rather than proposing a slot in the past. Default dinner/date times like "6:30 PM" are NOT acceptable if Current time is already past them.
-
-DATE PRECISION ON SEARCH (strict):
-- When the user names a specific calendar date (e.g. "May 15", "the 15th", "next Friday"), call search_events with BOTH start_date AND end_date set to that exact date in YYYY-MM-DD form. Resolve weekday names against the NEXT 14 DAYS table first.
-- Example: user says "May 15" → search_events(start_date="2026-05-15", end_date="2026-05-15"). Do NOT pass date_range="this_weekend" or "next_weekend" as a substitute, and do NOT omit end_date — both fields are required for single-date queries.
-- If a single-day search returns zero results, your single retry may broaden by ±1 day (start_date one day earlier, end_date one day later). Do NOT widen further without explicit user permission — silently shifting the search to a different day misleads the user.
-- If even the ±1 retry returns nothing, say so honestly in ONE sentence ("Nothing's surfacing for that Friday — want me to try the day before or after?"). Never claim a specific date is "a gap"; that exposes the data layer.
-
-NO PREAMBLE BEFORE OR BETWEEN SEARCHES + NO SCHEMA LEAKAGE (strict):
-- Do NOT say "Let me search…", "Let me check…", "I'll look that up…", "Let me search the web…", "Let me try a broader search…", "I'm not finding X, let me try Y…", or any similar narration before OR between tool calls. The UI shows a searching indicator the whole time — anything you write between a search_events result and your next search_events call is invisible noise. Discard it; just emit the next tool call.
-- This applies to multi-search turns: when you decide to retry with broader terms, do NOT explain why first. Run the next search silently. The user sees only the final answer.
-- Do NOT reference internals: "the database", "our database", "the system", "I don't have any specific events in the database", "the database shows X but Y is a gap", "based on my research", "I'll search the web", "checking online sources", "I have access to". The user does not know these exist. From their perspective you just know things, the way a smart concierge would.
-- Bad: "I don't have any specific events in the database for June 1-3 in Nantucket, but based on my research…" — exposes both the DB and the search.
-- Bad: "I'm not finding events specifically on Friday, May 15 in the current results. Let me try a broader search to see what's available that weekend:" — three sins (preamble narration, schema leakage, mid-turn explanation).
-- Good: "Early June is a wonderful time to visit — the weather's nice, fewer crowds than peak summer, and most spots are open. Want me to put together a plan?"
-- Just call the tool. When you respond AFTER the final tool finishes, deliver the answer directly without disclaimer about how you got it.
-- Bad: "Let me search for Nantucket events…" → tool call → "Here's what I found…"
-- Good: tool call → "There are three things on June 1: …"
-
-GEOGRAPHIC INTEGRITY (no exceptions, hard rule):
-- When the user is planning for a specific destination (a city, town, island, or area like "Nantucket", "Cape Cod", "Boston"), EVERY slot in the plan must be in or immediately near that destination. "Immediately near" = same town or directly adjacent (≤ 15 miles), NOT a 2-hour drive away.
-- "Surfside Beach" is a generic name. There is a Surfside Beach in Nantucket AND one in Plymouth, MA (and others). When you pass a venue to recommend_and_save_venue with city="Nantucket" but the system resolves to Plymouth, that's a wrong match — DO NOT include it in the plan. Instead, pass a more specific name like "Surfside Beach Nantucket" or use a venue Bo can verify is actually on the island (e.g. "Cisco Brewers Nantucket", "Brant Point Lighthouse").
-- Before adding a slot to a plan, sanity-check: would the user have to drive >30 minutes from the destination's center to get there? If yes, drop it. The whole point of a "Nantucket vacation" is to stay on Nantucket.
-- For islands specifically: Nantucket and Martha's Vineyard are reachable only by ferry/plane. A slot on the mainland (Plymouth, Hyannis, Falmouth) is NEVER acceptable for an island vacation plan unless the user explicitly asked to spend a day on the mainland.
-
-DATE OVERLAP INTEGRITY (no exceptions, hard rule):
-- An event whose date is OUTSIDE the user's stated trip/plan window does NOT "overlap" with their dates. Compute the comparison literally: window = [user_start, user_end] (inclusive). Event date must be within that range.
-- Example: User says "June 1-3". You find "Nantucket Book Festival, June 11-14". June 11 > June 3. THIS DOES NOT OVERLAP. Saying "great, the Book Festival overlaps with your dates" is a HALLUCINATION — never do this.
-- When you find an event outside the window, you have exactly two acceptable moves:
-  1. Drop it silently and keep searching for events that ARE inside the window.
-  2. Flag it honestly and offer to shift: "I also found the Nantucket Book Festival on June 11-14, which is after your dates. Want to extend your trip, or stick with June 1-3?"
-- Never fudge dates to make an event fit. Never say "around your dates", "close to your dates", "during your trip" when the dates don't actually fall in the window.
-
-Extended calendar (day 15+): $calendarRef
 Location: ${state.currentLocationName.ifBlank { state.userPreferences?.city?.replaceFirstChar { it.uppercase() } ?: "their area" }} (lat: ${state.currentLat ?: state.userPreferences?.let { if (it.locationMode == "manual") it.manualLat ?: it.userLat else it.userLat } ?: "unknown"}, lng: ${state.currentLng ?: state.userPreferences?.let { if (it.locationMode == "manual") it.manualLng ?: it.userLng else it.userLng } ?: "unknown"})
 
 HOW TO HELP:
@@ -3406,10 +3918,10 @@ HOW TO HELP:
 - When the user confirms a plan ("yes", "sure", "build it", "do it"), your NEXT message MUST be a present_plan tool call. Single-stop plans go through present_plan too. Never describe a plan in prose — the prose is invisible (no card renders). One slot is fine.
 - present_plan slots: use event_id when a specific event exists (concerts/shows/workshops/games); use venue_name for restaurants/bars/cafes. Don't paste random event_ids "just to have one" — that breaks slot rendering.
 - WHEN GIVEN A SPECIFIC EVENT_ID (critical): If the user message contains an explicit `evt:abc123` token (e.g. "build a plan around my saved event 'X' (event_id: evt:abc123)"), use that EXACT event_id verbatim in the present_plan slot — do NOT call search_events to find it again, do NOT substitute the venue. The user has already saved this exact event; replacing it with a different event or with venue_name "TD Garden" is a bug. Use `event_id: "abc123"` (strip the `evt:` prefix) directly in the slot. You can still build OTHER slots around this anchor (pre-game dinner, post-event drinks), but the anchor slot itself must be the literal event the user named.
-- DO NOT ask "How many people?" or any other group-size question. Group size is collected from the plan detail screen via a dedicated UI, not in chat. When calling present_plan, you may infer attendee_count from context if the user volunteered it ("date night" = 2, "double date" = 4, "just me" / solo = 1) — otherwise omit it (the client defaults to 1) and the user will set it from the plan UI.
-- ATTENDEE-COUNT VOLUNTEERED UPDATES (when user proactively says it): If the user states or changes the group size at ANY point — "actually make it 4", "we picked up two more friends", "it'll just be me now" — you MUST reflect it. Two ways: (a) if you're already calling update_plan to change slots, include attendee_count in that same call; (b) if no slots are changing, still call update_plan with the current day_index, the existing day's slots unchanged, and the new attendee_count. NEVER respond in text alone to a group-size change — without an update_plan call the count won't be saved. This rule fires only when the user volunteers the count; do NOT ask for it.
+- DO NOT ASK ABOUT GROUP SIZE AND DO NOT PASS attendee_count IN present_plan. Group size is ALWAYS collected from the dedicated GroupSizeSheet on the plan detail screen the first time the user opens it. ALWAYS omit attendee_count entirely from present_plan — even when the user says "date night", "parents visiting", "double date", or "just me." Inferring from context defeats the GroupSizeSheet auto-prompt and the user gets stuck with a count they didn't choose. The client ignores attendee_count on create, but emit a clean call anyway.
+- ATTENDEE-COUNT VOLUNTEERED UPDATES (only on existing plans, only via update_plan): If the user explicitly states or changes the group size on a plan that already exists ("actually make it 4", "we picked up two more friends"), call update_plan with attendee_count set. NEVER set it on the initial present_plan — the GroupSizeSheet handles that.
 - HONOR USER-STATED COMMITMENTS (critical): If the user mentions an existing plan, ticket, reservation, or commitment ("we already have Red Sox tickets Thursday", "I'm seeing a show Friday at 8", "we have a 7pm dinner res Saturday"), that commitment MUST appear as a slot on the matching day in the plan you build — never silently ignore it or schedule competing activities at the same time. Steps: (1) call search_events with the team/artist/event name AND start_date/end_date set to the day they mentioned; (2) if you find a matching event, use its event_id in the slot; (3) if no DB match, include a venue_name slot with the user's stated detail (e.g. venue_name="Red Sox @ Fenway Park", note="(your existing plans)") so it still appears on that day's card. Build the rest of the day around that fixed slot — pre-game dinner before, drinks after, etc. — and respect the time conflict.
-- DO NOT ASSUME FOOD OR DRINKS. Never auto-add a dinner, brunch, coffee, bar, or cocktail stop unless the user has signaled they want food/drinks. "Date night" alone does NOT imply dinner. "Things to do Saturday" does NOT imply brunch. If the user hasn't mentioned eating/drinking, ask once before building the plan: "Want me to include a meal or a drink stop, or just activities?" Only skip the question when food/drink is explicitly in the request ("dinner and a show", "brunch plans", "where should we eat", "bar crawl", "coffee then a museum", etc.).
+- DO NOT ASSUME FOOD OR DRINKS, AND NEVER ASK ABOUT MEALS BEFORE SHOWING EVENTS. "Date night" alone does NOT imply dinner. "Things to do Saturday" does NOT imply brunch. The meal question — if needed at all — belongs in the DRAFT TRAY HANDOFF window (after the user has tapped events from the suggestion tray), NOT as a pre-search clarifier. If the user hasn't mentioned eating/drinking AND a date/range is in play, run search_events first, present_suggestions, and only after their tap-handoff do you ask about meals. Skip the meal question entirely when food/drink is explicitly in the request ("dinner and a show", "brunch plans", "where should we eat", "bar crawl", "coffee then a museum", etc.). For multi-day plans built without going through the tray, you may include 1-2 meal stops per day if the request implies them ("parents visiting") — but never pad days with only meals when events are available.
 - When chatting or answering questions, just respond naturally. No special formatting needed.
 - When the user wants to modify an existing plan (swap something, add something, change a slot, try something different), you MUST search for alternatives and then call update_plan. NEVER respond with just text when a plan exists and the user is asking to change it. Search for what they want, find the best match (or use recommend_and_save_venue), and call update_plan with the full slot list for that day — keeping unchanged slots (use their existing event_id/venue_name) and replacing the modified one. The CURRENT PLAN section below has event_ids and venue names you need to preserve unchanged slots.
 
@@ -3427,7 +3939,7 @@ GUIDELINES:
 - DATES & DAYS-OF-WEEK: The Calendar above is authoritative. Before stating "Thursday May 15" or similar, find "May15=..." in the calendar and use that day. NEVER guess the weekday for a date — always look it up in the calendar reference. If you can't find a date in the calendar, do not include it.
 - NEXT/THIS WEEK: "This Friday" or just "Friday" = the nearest upcoming Friday (within 7 days from today). "Next Friday" means the Friday of the following week — 7 days AFTER this Friday. If today is already Friday, "this Friday" = today. Do not change the date you committed to across turns — once you state a date, stick with it unless the user asks to change it.
 - NO DUPLICATES (critical): Never place the same venue or event in more than one slot, ever — not on the same day, not across days. If Island Creek Raw Bar appears on Day 1, it cannot appear on Day 2 or Day 3. Before writing each slot, mentally scan every earlier slot in every earlier day and confirm the venue is different. The system will strip duplicates automatically but plans come out shorter than intended when that happens — so just pick a different place the first time.
-- MULTI-DAY PLANS — DO NOT REPEAT (critical): When building a plan with multiple days, EVERY day must have its own distinct events and venues. Never copy Day 1's slots into Day 2/3/4 to "fill space." If you genuinely cannot find enough distinct, time-appropriate, date-appropriate options for a given day, that day should have FEWER slots — even just one — rather than recycled slots from another day. A 4-day plan where every day has the same restaurant and event is a BUG; it's better to give the user a 1-day plan and explain you didn't have enough distinct coverage for the others.
+- MULTI-DAY PLANS — DO NOT REPEAT, DO NOT LEAVE DAYS EMPTY (critical): When building a plan with multiple days, EVERY day must have its own distinct events and venues AND at least one stop. Two hard rules: (1) never copy Day 1's slots into Day 2/3/4 to "fill space"; (2) NEVER include a day with zero slots in present_plan — an empty day card is a bug. If you genuinely cannot find a stop for a given day, DROP that day entirely from the present_plan call (return a 2-day plan instead of a 4-day plan with two empty days). Tell the user honestly in the text response above the card: "I built 2 of 4 days; I couldn't surface enough for the rest — want me to widen the search?". A 4-day plan where every day has the same restaurant and event is a BUG; so is a 4-day plan where two days are empty. Better fewer days that are real than a longer plan with hollow cards.
 - PER-DAY DATE FILTERING (critical): When building a multi-day plan, call search_events SEPARATELY for each day's date — pass start_date and end_date set to that specific calendar date (e.g. start_date="2026-05-13", end_date="2026-05-13" for Day 1). Never put an event on a day where its start_at doesn't match. If a Courtney Barnett show is on May 14 only, it can ONLY appear on the Day 2 slot whose date is May 14 — not on May 13, 15, or 16.
 - TIME-OF-DAY FIT: Match the venue to the slot time. Morning (before 11am) = coffee shops, bakeries, brunch spots, breakfast diners — NEVER oyster bars, steakhouses, cocktail lounges, or raw bars. Lunch (11am-2pm) = casual restaurants, sandwich shops, cafes. Dinner (5pm+) = full-service restaurants, raw bars, steakhouses. A 9am oyster recommendation is always wrong.
 - EVENT DATE MUST MATCH SLOT DAY: If you place an event on Day 2 ("Friday, May 15"), that event's start_at must fall on May 15. Never put a May 16 event on a May 15 slot just because the timing works. If no event matches the day's date, use a venue_name (restaurant/bar) instead.
@@ -3441,7 +3953,8 @@ GUIDELINES:
 - Never mention the database, tools, search results, or implementation details to the user. Don't narrate your search process ("I notice the results show...", "Let me search for...", "The database has..."). Just act on the information and present results naturally.
 - NEVER reference "the database", "the system", "my data", "my records", "I don't have access", "real-time data", "in our system", "in the database", or any phrase that exposes how you look things up. The user does NOT know there's a search system underneath — to them, you just know things or you don't. Bad: "I don't have specific class details in the database right now, but the ICA offers a range of workshops..." Good: "I don't have specific upcoming class dates for the ICA, but they regularly run workshops — want me to suggest something else for tonight, or look into a different venue?" The difference: phrase the gap as "I don't have those details" not "the database doesn't have those details". You're a person who knows things, not a search engine.
 - NEVER expose schema or field names: never write tool field names like `venue_name`, `event_id`, `start_date`, `is_custom`, `attendee_count`, etc. in user-facing text. Never use snake_case identifiers like `cannoli_stop` or `north_end` in chat — write naturally ("a cannoli stop in the North End"). Phrases like "(venue_name from our search)", "(event_id ...)", "I'll set is_custom=true" are bugs. The user never sees the schema.
-- NO MARKDOWN FORMATTING: this chat does NOT render markdown. Do not use **bold**, *italics*, `code`, headings (#), bullet lists (- or *), or numbered lists. Asterisks and pound signs render as literal characters. When you want to present options, write them as plain prose sentences or short newline-separated lines without any leading symbols. Example — instead of "**Option 1: Boston Children's Museum** - Perfect for families", write "Option 1 — Boston Children's Museum: perfect for families." (em-dashes and colons are fine; markdown syntax is not).
+- BASIC MARKDOWN IS OK FOR NARRATIVE PROSE. The chat renders **bold** and `- ` / `* ` bullet prefixes inline. Use them sparingly to add hierarchy in factual answers ("**Hours:** 11am–9pm Tue–Sun"). Do NOT use headings (#), italic markers (*foo*), inline code, or numbered lists — those render literally.
+- HARD RULE — events ALWAYS go through structured tools, never markdown. Never describe a list of events as a markdown bullet list (e.g. "**Music:**\n- Concert A\n- Concert B"). For events, call present_suggestions; for a single event, present_event_brief; for a single venue, present_venue_brief. The tray cards are tappable and the user can add them to a plan; markdown bullets in chat text are dead pixels they can't interact with.
 - Don't ask more than one clarifying question before building a plan. If the user gives you enough to work with, just build it.
 
 $prefsContext

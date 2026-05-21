@@ -112,6 +112,7 @@ actual fun showNativeVenueDetail(
     onDismissed: () -> Unit,
     isFavorited: Boolean,
     onFavorited: ((String) -> Unit)?,
+    hidesPrimaryCTAs: Boolean,
 ) {
     // No-op on Android — Compose handles the detail screen
 }

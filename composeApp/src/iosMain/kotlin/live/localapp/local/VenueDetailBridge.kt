@@ -25,7 +25,8 @@ object VenueDetailBridge {
         upcomingEventsJson: String,
         reservationUrl: String?,
         isFavorited: Boolean,
-        cardX: Float, cardY: Float, cardW: Float, cardH: Float
+        cardX: Float, cardY: Float, cardW: Float, cardH: Float,
+        hidesPrimaryCTAs: Boolean,
     ) -> Unit)? = null
 
     /**

@@ -202,13 +202,17 @@ data class ToolCall(
 val claudeTools: JsonArray = buildJsonArray {
     addJsonObject {
         put("name", "search_events")
-        put("description", "Search for upcoming events and activities. Use this when the user asks about things to do, events, activities, concerts, shows, etc.")
+        put("description", "Search for upcoming events and activities. Use this when the user asks about things to do, events, activities, concerts, shows, etc. Returns JSON: { events: [{id, title, venue_name, venue_city, date, iso_date, time, category, subcategory, is_free, price}], coverage: {returned, total_in_scope, radius_miles, location?, strict?, total_in_radius?}, has_more?, widen_available?, guidance? }. Read events[*].id directly — never invent IDs.")
         putJsonObject("input_schema") {
             put("type", "object")
             putJsonObject("properties") {
                 putJsonObject("location") {
                     put("type", "string")
                     put("description", "City or neighborhood name (e.g. 'Concord', 'Boston', 'Cambridge')")
+                }
+                putJsonObject("strict_location") {
+                    put("type", "boolean")
+                    put("description", "DEFAULTS TO TRUE when `location` is set. Strict mode means only events whose venue_city matches `location` are returned. Pass FALSE explicitly when the user said 'near {place}' / 'around {place}' / 'close to {place}' to widen to a 20-mile radius around the location. For 'in {place}' / bare placename / no modifier, leave it at the default (true) or pass true.")
                 }
                 putJsonObject("category") {
                     put("type", "string")
@@ -232,7 +236,7 @@ val claudeTools: JsonArray = buildJsonArray {
                 }
                 putJsonObject("limit") {
                     put("type", "integer")
-                    put("description", "Max results to return (default 20)")
+                    put("description", "Max results to return. OMIT this field for browse/discovery queries — the server returns a stratified cross-section (~60-150 events) that the response shaping then groups by date and category. Only pass an explicit limit when you genuinely want a small slice (e.g. limit=5 for a single-category 'best 5 jazz shows' followup). Default behavior (no limit) returns the full pool.")
                 }
             }
         }
@@ -453,7 +457,7 @@ val claudeTools: JsonArray = buildJsonArray {
 
     addJsonObject {
         put("name", "present_suggestions")
-        put("description", "Display a structured tray of event candidates for the user to browse and add to a draft plan. Use this WHENEVER the user is browsing events or considering options — never describe events as paragraph text or numbered lists. The tray is the only way the user can pick events explicitly. Each event must come from search_events results — never invent event_ids. If search_events returns nothing relevant, you may still call this with an empty groups array and footer.actions to let the user broaden the search with one tap.")
+        put("description", "Display a structured tray of event candidates for the user to browse and add to a draft plan. Use this WHENEVER the user is browsing events or considering options — never describe events as paragraph text or numbered lists. The tray is the only way the user can pick events explicitly. Each event must come from search_events results — never invent event_ids. If search_events returns nothing relevant, you may still call this with an empty groups array and footer.actions to let the user broaden the search with one tap. QUANTITY: when the user is BROWSING BROADLY (a date + no narrow filter, 'what's happening tonight', 'things to do May 15'), include 6-12 events per group across 4-8 groups — the user explicitly asked for a wide cross-section, give it to them. When the user named a NARROW filter ('jazz this week', 'free outdoor events'), 3-5 per group is right. Default to MORE rather than fewer when search_events returned 30+ rows.")
         putJsonObject("input_schema") {
             put("type", "object")
             putJsonObject("properties") {
@@ -859,6 +863,7 @@ class ClaudeApiService {
         messages: List<ClaudeMessage>,
         tools: JsonArray? = null,
         model: String = MODEL_PLAN,
+        toolChoice: JsonObject? = null,
     ): ClaudeResponse {
         val body = buildJsonObject {
             put("model", model)
@@ -870,6 +875,7 @@ class ClaudeApiService {
             ))
             if (tools != null && tools.isNotEmpty()) {
                 put("tools", cacheableTools(tools))
+                if (toolChoice != null) put("tool_choice", toolChoice)
             }
         }
 
@@ -902,6 +908,7 @@ class ClaudeApiService {
         messages: List<ClaudeMessage>,
         tools: JsonArray? = null,
         model: String = MODEL_PLAN,
+        toolChoice: JsonObject? = null,
     ): Flow<StreamEvent> = callbackFlow {
         val body = buildJsonObject {
             put("model", model)
@@ -914,6 +921,7 @@ class ClaudeApiService {
             ))
             if (tools != null && tools.isNotEmpty()) {
                 put("tools", cacheableTools(tools))
+                if (toolChoice != null) put("tool_choice", toolChoice)
             }
         }
 

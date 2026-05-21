@@ -36,7 +36,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -252,7 +255,7 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
 
                 // "Your Events This Week" album carousel
                 if (state.savedThisWeek.isNotEmpty()) {
-                    item {
+                    item(key = "saved_events_album") {
                         SavedEventsAlbumCarousel(
                             events = state.savedThisWeek,
                             onEventClick = { event, transitionInfo -> onEventClick(event, transitionInfo) },
@@ -406,7 +409,7 @@ private fun CarouselSectionView(section: CarouselSection, onEventClick: (Event, 
         title = section.title,
         onSeeAll = if (section.events.size >= 4) {{ onSeeAll?.invoke(section) }} else null,
     )
-    EventCardRow(section.events, onEventClick, showTags = showTags, showSaves = section.showSaves, onFavorite = onFavorite, favoriteIds = favoriteIds)
+    EventCardRow(section.slug, section.events, onEventClick, showTags = showTags, showSaves = section.showSaves, onFavorite = onFavorite, favoriteIds = favoriteIds)
 }
 
 // ── Category Row ──
@@ -484,12 +487,14 @@ private fun CategoryRow(state: HomeUiState, viewModel: HomeViewModel) {
             horizontalArrangement = Arrangement.spacedBy(2.dp),
         ) {
             categories.forEach { cat ->
-                val isActive = cat.id == state.selectedCategory
-                CategoryTileItem(
-                    tile = cat,
-                    isActive = isActive,
-                    onClick = { viewModel.selectCategory(cat.id) },
-                )
+                key(cat.id) {
+                    val isActive = cat.id == state.selectedCategory
+                    CategoryTileItem(
+                        tile = cat,
+                        isActive = isActive,
+                        onClick = { viewModel.selectCategory(cat.id) },
+                    )
+                }
             }
         }
 
@@ -1108,14 +1113,31 @@ fun EventCard(data: EventCardData, modifier: Modifier = Modifier.width(156.dp), 
 }
 
 @Composable
-private fun EventCardRow(events: List<Event>, onEventClick: (Event, CardTransitionInfo?) -> Unit, showTags: Boolean = true, showSaves: Boolean = false, onFavorite: ((Event) -> Unit)? = null, favoriteIds: Set<String> = emptySet()) {
+private fun EventCardRow(slug: String, events: List<Event>, onEventClick: (Event, CardTransitionInfo?) -> Unit, showTags: Boolean = true, showSaves: Boolean = false, onFavorite: ((Event) -> Unit)? = null, favoriteIds: Set<String> = emptySet()) {
     val communityRepo = if (showSaves) {
         remember { KoinPlatform.getKoin().get<live.localapp.local.domain.repository.CommunityInterestRepository>() }
     } else null
 
+    // Preserve horizontal scroll per (category, carousel). The parent LazyColumn
+    // keys its section item by `section.slug`, so the SaveableStateHolder retains
+    // this ScrollState across the carousel leaving composition when the user
+    // taps to another category and returns. Passing `slug` as an input keeps
+    // the saver bucket explicit and stable.
+    val scrollState = rememberSaveable(slug, saver = ScrollState.Saver) { ScrollState(0) }
+
+    // After a pull-to-refresh swaps in fewer events, the saved offset may exceed
+    // the new content width. Wait one frame for layout, then clamp so the
+    // carousel doesn't render pinned past its content end.
+    LaunchedEffect(slug, events.size) {
+        withFrameNanos { }
+        if (scrollState.value > scrollState.maxValue) {
+            scrollState.scrollTo(scrollState.maxValue)
+        }
+    }
+
     Row(
         modifier = Modifier
-            .horizontalScroll(rememberScrollState())
+            .horizontalScroll(scrollState)
             .padding(horizontal = 20.dp),
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
@@ -1225,7 +1247,7 @@ fun Event.toCardData(showTag: Boolean = true, tagOverride: String? = null, fallb
         showTag = showTag,
         isFree = isFree,
         price = priceDisplay,
-        imageUrl = imageUrl ?: fallbackImageUrl,
+        imageUrl = imageUrl ?: venueImageUrl ?: fallbackImageUrl,
         bgStart = bgS,
         bgEnd = bgE,
         icon = categoryIcon(colorKey),
@@ -1550,6 +1572,17 @@ private fun SavedEventsAlbumCarousel(
 ) {
     var expanded by remember { mutableStateOf(false) }
 
+    // Preserve horizontal scroll across category switches. Item key on the
+    // LazyColumn parent ("saved_events_album") plus the rememberSaveable bucket
+    // here means the offset survives when the user navigates away and back.
+    val scrollState = rememberSaveable("saved_events_album_scroll", saver = ScrollState.Saver) { ScrollState(0) }
+    LaunchedEffect(events.size) {
+        withFrameNanos { }
+        if (scrollState.value > scrollState.maxValue) {
+            scrollState.scrollTo(scrollState.maxValue)
+        }
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1589,7 +1622,7 @@ private fun SavedEventsAlbumCarousel(
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
+                        .horizontalScroll(scrollState)
                         .padding(horizontal = 20.dp),
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
                 ) {

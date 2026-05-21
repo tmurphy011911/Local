@@ -20,10 +20,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Restaurant
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.People
 import androidx.compose.material.icons.outlined.Star
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -56,8 +58,10 @@ fun PremiumPaywall(
     monthlyPrice: String? = null,
     annualPrice: String? = null,
     introPrice: String? = null,
+    isPurchasing: Boolean = false,
+    monthlyIntroEligible: Boolean = false,
 ) {
-    val hasIntro = introPrice != null
+    val hasIntro = introPrice != null && monthlyIntroEligible
     val displayMonthly = if (hasIntro) introPrice!! else (monthlyPrice ?: "$6.99")
     val displayMonthlySubtext = if (hasIntro) "then ${monthlyPrice ?: "$6.99"}/mo" else "/month"
     val displayMonthlyBadge = if (hasIntro) "First month" else null
@@ -148,7 +152,7 @@ fun PremiumPaywall(
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 BenefitRow(Icons.Outlined.CalendarMonth, "Unlimited Plans", "Build as many shareable plans as you want")
                 BenefitRow(Icons.Outlined.Share, "Easily Share", "One tap to send your plan to friends and family")
-                BenefitRow(Icons.Outlined.Star, "Weekly Snapshot", "Personalized event picks delivered to you each week")
+                BenefitRow(Icons.Outlined.Notifications, "Weekly Snapshot", "Personalized event picks delivered to you each week")
                 BenefitRow(Icons.Outlined.People, "Group Coordination", "Share, vote, and confirm plans with your crew")
             }
 
@@ -159,16 +163,6 @@ fun PremiumPaywall(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                // Annual option
-                PricingCard(
-                    modifier = Modifier.weight(1f),
-                    isSelected = isAnnual,
-                    label = "Annual",
-                    price = displayAnnual,
-                    subtext = annualPerMonth,
-                    badge = "Best value",
-                    onClick = { isAnnual = true },
-                )
                 // Monthly option
                 PricingCard(
                     modifier = Modifier.weight(1f),
@@ -178,6 +172,16 @@ fun PremiumPaywall(
                     subtext = displayMonthlySubtext,
                     badge = displayMonthlyBadge,
                     onClick = { isAnnual = false },
+                )
+                // Annual option
+                PricingCard(
+                    modifier = Modifier.weight(1f),
+                    isSelected = isAnnual,
+                    label = "Annual",
+                    price = displayAnnual,
+                    subtext = annualPerMonth,
+                    badge = "Best value",
+                    onClick = { isAnnual = true },
                 )
             }
 
@@ -191,19 +195,30 @@ fun PremiumPaywall(
                     .background(
                         Brush.linearGradient(listOf(AppColors.Coral, Color(0xFFE85D5D))),
                     )
-                    .pressable(onClick = { onSubscribe(isAnnual) })
+                    .then(
+                        if (isPurchasing) Modifier
+                        else Modifier.pressable(onClick = { onSubscribe(isAnnual) })
+                    )
                     .padding(vertical = 16.dp),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    if (isAnnual) "Start Local Pro" else if (hasIntro) "Try for $displayMonthly" else "Start Local Pro",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 16.sp,
+                if (isPurchasing) {
+                    CircularProgressIndicator(
                         color = Color.White,
-                    ),
-                )
+                        strokeWidth = 2.5.dp,
+                        modifier = Modifier.size(22.dp),
+                    )
+                } else {
+                    Text(
+                        if (isAnnual) "Start Local Pro" else if (hasIntro) "Try for $displayMonthly" else "Start Local Pro",
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.Black,
+                            fontSize = 16.sp,
+                            color = Color.White,
+                        ),
+                    )
+                }
             }
 
             Spacer(Modifier.height(10.dp))
