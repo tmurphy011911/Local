@@ -594,8 +594,15 @@ class ChatViewModel(
 
     fun sendMessage(text: String) {
         if (text.isBlank() || _uiState.value.isBusy) return
-        addUserMessage(text.trim())
-        handleMessage(text.trim())
+        val trimmed = text.trim()
+        live.localapp.local.observability.Analytics.track(
+            live.localapp.local.observability.AnalyticsEvent.boMessageSent(
+                messageLength = trimmed.length,
+                hasAttachedEvent = false,
+            )
+        )
+        addUserMessage(trimmed)
+        handleMessage(trimmed)
     }
 
     /**
@@ -1231,6 +1238,9 @@ class ChatViewModel(
     }
 
     fun resetChat() {
+        live.localapp.local.observability.Analytics.track(
+            live.localapp.local.observability.AnalyticsEvent.boThreadCleared()
+        )
         // Reset must `cancelAndJoin` (not just `cancel`) so the in-flight
         // welcome stream is FULLY torn down before we clear state and launch
         // the next one. Without the join, a pending TextDelta callback from
@@ -1305,12 +1315,32 @@ class ChatViewModel(
                         else -> "days=${parsed.days.size} chips=${parsed.chips.size}"
                     }
                     println("Claude response: type=${parsed.type} text=${parsed.text.take(100)} $shape")
+                    run {
+                        val eventCount = (parsed.structuredJson?.jsonObject?.get("groups") as? kotlinx.serialization.json.JsonArray)?.sumOf { g ->
+                            (g.jsonObject["events"] as? kotlinx.serialization.json.JsonArray)?.size ?: 0
+                        } ?: 0
+                        live.localapp.local.observability.Analytics.track(
+                            live.localapp.local.observability.AnalyticsEvent.boResponseReceived(
+                                responseMs = 0L,
+                                hadWebSearch = parsed.text.contains("web", ignoreCase = true),
+                                hadChips = parsed.chips.isNotEmpty(),
+                                resultEventCount = eventCount,
+                            )
+                        )
+                    }
                     handleClaudeResponse(parsed)
                     break
                 } catch (e: Throwable) {
                     attempts++
                     println("Claude error (attempt $attempts/$maxAttempts): ${e::class.simpleName}: ${e.message}")
                     e.printStackTrace()
+                    live.localapp.local.observability.Analytics.track(
+                        live.localapp.local.observability.AnalyticsEvent.boResponseFailed(
+                            errorCode = e::class.simpleName ?: "Unknown",
+                            phase = "llm",
+                        )
+                    )
+                    live.localapp.local.observability.Analytics.recordError(e, "bo_response_failed")
                     if (attempts < maxAttempts) {
                         println("ChatVM: retrying in 2s...")
                         _uiState.update { it.copy(streamingText = "") }

@@ -176,8 +176,14 @@ fun ManualPlanSheet(
                         .clip(CircleShape)
                         .background(AppColors.Ink.copy(alpha = 0.05f))
                         .clickable {
-                            if (step == 0) onDismiss()
-                            else step -= 1
+                            if (step == 0) {
+                                live.localapp.local.observability.Analytics.track(
+                                    live.localapp.local.observability.AnalyticsEvent.planCreateAbandoned(
+                                        lastStep = "step_$step"
+                                    )
+                                )
+                                onDismiss()
+                            } else step -= 1
                         },
                     contentAlignment = Alignment.Center,
                 ) {

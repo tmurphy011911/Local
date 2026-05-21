@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import live.localapp.local.domain.repository.UserPreferencesRepository
+import live.localapp.local.observability.Analytics
+import live.localapp.local.observability.AnalyticsEvent
 
 enum class AuthStep { PHONE, OTP, NAME }
 
@@ -135,9 +137,11 @@ class PhoneAuthViewModel(
                 // Check if user has an existing profile with completed onboarding
                 val hasProfile = userPreferencesRepository.profileExistsForAuthId(userId)
 
+                Analytics.identify(userId = userId)
                 if (hasProfile) {
                     // Existing user: recover profile and go straight to home
                     userPreferencesRepository.recoverProfileByAuthId(userId)
+                    Analytics.track(AnalyticsEvent.signedIn(method = "phone_otp"))
                     _state.update {
                         it.copy(
                             isLoading = false,
@@ -148,6 +152,7 @@ class PhoneAuthViewModel(
                     }
                 } else {
                     // New user: skip name collection, go straight to onboarding
+                    Analytics.track(AnalyticsEvent.signedUp(method = "phone_otp", entryPoint = "organic"))
                     _state.update {
                         it.copy(
                             isLoading = false,
@@ -160,6 +165,7 @@ class PhoneAuthViewModel(
                 e.printStackTrace()
                 val fullError = "${e::class.simpleName}: ${e.message}"
                 println("DEBUG: OTP verification error: $fullError")
+                Analytics.recordError(e, message = "otp_verify_failed")
                 val message = when {
                     e.message?.contains("expired", ignoreCase = true) == true ->
                         "Code expired. Please request a new one."

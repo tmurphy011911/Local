@@ -116,6 +116,12 @@ fun App() {
             setDeepLinkCallback { path ->
                 appScope.launch {
                     try {
+                        val linkType = when {
+                            path.startsWith("/p/") -> "plan"
+                            path.startsWith("/e/") -> "event"
+                            path.startsWith("/v/") -> "venue"
+                            else -> "other"
+                        }
                         when {
                             path.startsWith("/p/") -> {
                                 val token = path.removePrefix("/p/")
@@ -123,6 +129,15 @@ fun App() {
                                 if (plan != null) {
                                     deepLinkContent = DeepLinkContent.SharedPlan(plan)
                                     println("App: deep link plan via callback '${plan.title}'")
+                                    live.localapp.local.observability.Analytics.track(
+                                        live.localapp.local.observability.AnalyticsEvent.shareLinkOpened(linkType = "plan", planId = plan.id)
+                                    )
+                                    live.localapp.local.observability.Analytics.track(
+                                        live.localapp.local.observability.AnalyticsEvent.planInviteAccepted(
+                                            planId = plan.id,
+                                            wasSignedIn = appState != live.localapp.local.AppState.AUTH,
+                                        )
+                                    )
                                 }
                             }
                             path.startsWith("/e/") -> {
@@ -131,6 +146,9 @@ fun App() {
                                 if (event != null) {
                                     deepLinkContent = DeepLinkContent.SharedEvent(event)
                                     println("App: deep link event via callback '${event.title}'")
+                                    live.localapp.local.observability.Analytics.track(
+                                        live.localapp.local.observability.AnalyticsEvent.shareLinkOpened(linkType = "event", eventId = event.id)
+                                    )
                                 }
                             }
                             path.startsWith("/v/") -> {
@@ -139,9 +157,14 @@ fun App() {
                                 if (venue != null) {
                                     deepLinkContent = DeepLinkContent.SharedVenue(venue)
                                     println("App: deep link venue via callback '${venue.name}'")
+                                    live.localapp.local.observability.Analytics.track(
+                                        live.localapp.local.observability.AnalyticsEvent.shareLinkOpened(linkType = "venue")
+                                    )
                                 }
                             }
                         }
+                        // Fire-and-forget no-op reference so unused-var linters stay quiet.
+                        if (linkType.isEmpty()) {}
                     } catch (_: Exception) {}
                 }
             }
@@ -352,6 +375,10 @@ fun App() {
                             try {
                                 supabaseClient.auth.clearSession()
                             } catch (_: Exception) {}
+                            live.localapp.local.observability.Analytics.track(
+                                live.localapp.local.observability.AnalyticsEvent.signedOut()
+                            )
+                            live.localapp.local.observability.Analytics.reset()
                             userPrefsRepo.clearLocal()
                             // Clear premium gate so new user starts fresh
                             try { live.localapp.local.ui.chat.PremiumGate().clear() } catch (_: Exception) {}

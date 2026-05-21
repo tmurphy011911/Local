@@ -126,6 +126,16 @@ fun EventDetailScreen(
     val uriHandler = LocalUriHandler.current
     val clipboardManager = LocalClipboardManager.current
 
+    LaunchedEffect(event.id) {
+        live.localapp.local.observability.Analytics.track(
+            live.localapp.local.observability.AnalyticsEvent.eventViewed(
+                eventId = event.id,
+                source = if (sharedMode) "share_link" else "feed",
+                eventMetro = event.venueCity,
+            )
+        )
+    }
+
     var isFavorited by remember { mutableStateOf(initialFavorited) }
     var countdown by remember { mutableStateOf(computeCountdown(event.startAt)) }
     var mapsExpanded by remember { mutableStateOf(false) }
@@ -200,6 +210,16 @@ fun EventDetailScreen(
                     isFavorited = !isFavorited
                     if (!wasFavorited) {
                         onFavoriteTracked?.invoke(event.id)
+                        live.localapp.local.observability.Analytics.track(
+                            live.localapp.local.observability.AnalyticsEvent.eventSaved(
+                                eventId = event.id,
+                                source = "event_detail",
+                            )
+                        )
+                    } else {
+                        live.localapp.local.observability.Analytics.track(
+                            live.localapp.local.observability.AnalyticsEvent.eventUnsaved(eventId = event.id)
+                        )
                     }
                 },
             )
@@ -384,6 +404,12 @@ fun EventDetailScreen(
                     "https://localapp.live/e/${event.id}",
                 )
                 onShareTracked?.invoke(event.id)
+                live.localapp.local.observability.Analytics.track(
+                    live.localapp.local.observability.AnalyticsEvent.eventShareTapped(
+                        eventId = event.id,
+                        shareChannel = "system_sheet",
+                    )
+                )
             },
         )
 

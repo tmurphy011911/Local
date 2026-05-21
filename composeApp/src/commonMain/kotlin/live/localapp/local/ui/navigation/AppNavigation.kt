@@ -428,6 +428,35 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         )
     }
 
+    // Observability: fire once at every tab change / Bo open / manual-plan open.
+    // Cleaner than instrumenting every assignment site (there are 20+).
+    var lastTab by remember { mutableStateOf(selectedTab) }
+    LaunchedEffect(selectedTab) {
+        if (selectedTab != lastTab) {
+            live.localapp.local.observability.Analytics.track(
+                live.localapp.local.observability.AnalyticsEvent.tabSwitched(
+                    fromTab = lastTab.name.lowercase(),
+                    toTab = selectedTab.name.lowercase(),
+                )
+            )
+            lastTab = selectedTab
+        }
+    }
+    LaunchedEffect(showChat) {
+        if (showChat) {
+            live.localapp.local.observability.Analytics.track(
+                live.localapp.local.observability.AnalyticsEvent.boOpened(entryPoint = "fab")
+            )
+        }
+    }
+    LaunchedEffect(showManualPlanSheet) {
+        if (showManualPlanSheet) {
+            live.localapp.local.observability.Analytics.track(
+                live.localapp.local.observability.AnalyticsEvent.planCreateStarted(entryPoint = "create_menu")
+            )
+        }
+    }
+
     Box(
         modifier = Modifier
             .fillMaxSize()

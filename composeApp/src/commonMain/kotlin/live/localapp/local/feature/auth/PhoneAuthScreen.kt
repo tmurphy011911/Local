@@ -117,6 +117,12 @@ fun PhoneAuthScreen(
 ) {
     val state by viewModel.state.collectAsState()
 
+    LaunchedEffect(Unit) {
+        live.localapp.local.observability.Analytics.track(
+            live.localapp.local.observability.AnalyticsEvent.signupStarted(entryPoint = "organic")
+        )
+    }
+
     // Handle auth completion
     if (state.authComplete) {
         val userId = state.authUserId ?: ""

@@ -1,6 +1,7 @@
 import "@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { jsonCompressed, corsPreflight } from "../_shared/compress.ts";
+import { withObservability } from "../_shared/observability.ts";
 
 // ════════════════════════════════════════════════════════════════
 // Types
@@ -2076,6 +2077,9 @@ Deno.serve(async (req) => {
     return jsonCompressed(req, { error: "Method not allowed" }, { status: 405 });
   }
 
+  return await withObservability(
+    { functionName: "carousels", request: req },
+    async () => {
   try {
     const url = new URL(req.url);
     const lat = parseFloat(url.searchParams.get("lat") ?? "42.3601");
@@ -2290,4 +2294,6 @@ Deno.serve(async (req) => {
       { status: 500 },
     );
   }
+    },
+  );
 });

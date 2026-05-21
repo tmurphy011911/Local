@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		5E1C2C142F88028A0057E9F9 /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = 5E1C2C132F88028A0057E9F9 /* RevenueCat */; };
 		5E1C2C182F9187330057E9F9 /* Products.storekit in Resources */ = {isa = PBXBuildFile; fileRef = 5E1C2C172F9187330057E9F9 /* Products.storekit */; };
+		5E84B18C2FBEAA0F00B1A75B /* PostHog in Frameworks */ = {isa = PBXBuildFile; productRef = 5E84B18B2FBEAA0F00B1A75B /* PostHog */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -48,6 +49,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				5E1C2C142F88028A0057E9F9 /* RevenueCat in Frameworks */,
+				5E84B18C2FBEAA0F00B1A75B /* PostHog in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -102,6 +104,7 @@
 			name = iosApp;
 			packageProductDependencies = (
 				5E1C2C132F88028A0057E9F9 /* RevenueCat */,
+				5E84B18B2FBEAA0F00B1A75B /* PostHog */,
 			);
 			productName = iosApp;
 			productReference = EEB79C38E91BB2244F08BFBD /* Local.app */;
@@ -133,6 +136,8 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				5E1C2C112F87F5A20057E9F9 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */,
+				5E84B1892FBEA9F200B1A75B /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
+				5E84B18A2FBEAA0F00B1A75B /* XCRemoteSwiftPackageReference "posthog-ios" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 46A8AB7EB05E776F34C7FBE8 /* Products */;
@@ -403,6 +408,22 @@
 				minimumVersion = 5.67.2;
 			};
 		};
+		5E84B1892FBEA9F200B1A75B /* XCRemoteSwiftPackageReference "sentry-cocoa" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/getsentry/sentry-cocoa";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 9.13.0;
+			};
+		};
+		5E84B18A2FBEAA0F00B1A75B /* XCRemoteSwiftPackageReference "posthog-ios" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/PostHog/posthog-ios";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 3.58.3;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -410,6 +431,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 5E1C2C112F87F5A20057E9F9 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;
 			productName = RevenueCat;
+		};
+		5E84B18B2FBEAA0F00B1A75B /* PostHog */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5E84B18A2FBEAA0F00B1A75B /* XCRemoteSwiftPackageReference "posthog-ios" */;
+			productName = PostHog;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

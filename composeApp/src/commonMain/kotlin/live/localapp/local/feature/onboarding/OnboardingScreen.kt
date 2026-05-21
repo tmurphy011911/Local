@@ -54,6 +54,15 @@ fun OnboardingScreen(
     val isGoingBack = currentIndex < previousStepIndex
     previousStepIndex = currentIndex
 
+    LaunchedEffect(state.currentStep) {
+        live.localapp.local.observability.Analytics.track(
+            live.localapp.local.observability.AnalyticsEvent.onboardingStepViewed(
+                stepName = state.currentStep.name.lowercase(),
+                stepIndex = currentIndex,
+            )
+        )
+    }
+
     // Platform location permission + GPS
     RequestLocationEffect(
         active = requestingLocation,
@@ -155,7 +164,14 @@ fun OnboardingScreen(
                         onToggleNearby = viewModel::toggleNotifNearby,
                         onToggleVenues = viewModel::toggleNotifVenues,
                         onNext = {
-                            if (state.notifTickets || state.notifNearby || state.notifVenues) {
+                            val notifGranted = state.notifTickets || state.notifNearby || state.notifVenues
+                            live.localapp.local.observability.Analytics.track(
+                                live.localapp.local.observability.AnalyticsEvent.onboardingCompleted(
+                                    totalSeconds = 0L,
+                                    notificationsGranted = notifGranted,
+                                )
+                            )
+                            if (notifGranted) {
                                 live.localapp.local.platform.requestNotificationPermission { _ ->
                                     onComplete(state.userLat, state.userLng)
                                 }
@@ -163,7 +179,15 @@ fun OnboardingScreen(
                                 onComplete(state.userLat, state.userLng)
                             }
                         },
-                        onSkip = { onComplete(state.userLat, state.userLng) },
+                        onSkip = {
+                            live.localapp.local.observability.Analytics.track(
+                                live.localapp.local.observability.AnalyticsEvent.onboardingCompleted(
+                                    totalSeconds = 0L,
+                                    notificationsGranted = false,
+                                )
+                            )
+                            onComplete(state.userLat, state.userLng)
+                        },
                         onBack = { viewModel.onBackFromNotifications() },
                     )
                     OnboardingStep.PHONE -> {

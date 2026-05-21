@@ -9,16 +9,16 @@ plugins {
     alias(libs.plugins.kotlinSerialization)
 }
 
-// Read MAPS_API_KEY from local.properties so the key never gets committed.
-// Add a line like `MAPS_API_KEY=AIza...` to local.properties (gitignored).
-// Used as a manifest placeholder for the Maps SDK and a BuildConfig field
-// for the Directions API client.
-val mapsApiKey: String = run {
-    val props = Properties()
+// Read keys from local.properties so they never get committed.
+val localProps: Properties = Properties().also { props ->
     val f = rootProject.file("local.properties")
     if (f.exists()) f.inputStream().use { props.load(it) }
-    props.getProperty("MAPS_API_KEY", "")
 }
+val mapsApiKey: String = localProps.getProperty("MAPS_API_KEY", "")
+val sentryDsnAndroid: String = localProps.getProperty("SENTRY_DSN_ANDROID", "")
+val sentryDsnIos: String = localProps.getProperty("SENTRY_DSN_IOS", "")
+val postHogKey: String = localProps.getProperty("POSTHOG_KEY", "")
+val postHogHost: String = localProps.getProperty("POSTHOG_HOST", "https://us.i.posthog.com")
 
 kotlin {
     androidTarget {
@@ -50,6 +50,9 @@ kotlin {
             // iOS uses MapKit via PlanDetailView.swift).
             implementation("com.google.android.gms:play-services-maps:19.0.0")
             implementation("com.google.maps.android:maps-compose:6.1.2")
+            // Observability
+            implementation(libs.sentry.android)
+            implementation(libs.posthog.android)
         }
 
         commonMain.dependencies {
@@ -139,4 +142,41 @@ android {
 
 dependencies {
     debugImplementation(libs.compose.uiTooling)
+}
+
+// Generate a commonMain Kotlin object holding observability keys read from
+// local.properties. Lets shared code reference Sentry/PostHog credentials
+// without committing them and without a separate Android-only BuildConfig.
+val generateBuildKeys = tasks.register("generateBuildKeys") {
+    val outDir = layout.buildDirectory.dir("generated/source/buildKeys")
+    outputs.dir(outDir)
+    val dsnAndroid = sentryDsnAndroid
+    val dsnIos = sentryDsnIos
+    val phKey = postHogKey
+    val phHost = postHogHost
+    doLast {
+        val pkgDir = outDir.get().asFile.resolve("live/localapp/local/observability")
+        pkgDir.mkdirs()
+        pkgDir.resolve("BuildKeys.kt").writeText(
+            """
+            package live.localapp.local.observability
+
+            internal object BuildKeys {
+                const val SENTRY_DSN_ANDROID: String = "$dsnAndroid"
+                const val SENTRY_DSN_IOS: String = "$dsnIos"
+                const val POSTHOG_KEY: String = "$phKey"
+                const val POSTHOG_HOST: String = "$phHost"
+            }
+            """.trimIndent() + "\n"
+        )
+    }
+}
+
+kotlin.sourceSets.named("commonMain") {
+    kotlin.srcDir(generateBuildKeys)
+}
+
+// Make sure the generator runs before any Kotlin compile.
+tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompilationTask<*>>().configureEach {
+    dependsOn(generateBuildKeys)
 }

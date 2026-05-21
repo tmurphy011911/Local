@@ -19,6 +19,8 @@ import live.localapp.local.domain.model.ReservationState
 import live.localapp.local.domain.model.TicketState
 import live.localapp.local.domain.repository.PlanRepository
 import live.localapp.local.domain.repository.UserPreferencesRepository
+import live.localapp.local.observability.Analytics
+import live.localapp.local.observability.AnalyticsEvent
 
 // ── Supabase DTOs ──
 
@@ -376,11 +378,18 @@ class PlanRepositoryImpl(
             // Insert creator as confirmed attendee
             if (result?.id != null) {
                 try { insertCreatorAttendee(result.id) } catch (_: Throwable) {}
+                Analytics.track(AnalyticsEvent.planCreated(
+                    planId = result.id,
+                    slotCount = dayDtos.sumOf { it.slots.size },
+                    hasTitle = !plan.title.isNullOrBlank(),
+                    creationMethod = "manual",
+                ))
             }
             return result?.id
         } catch (e: Throwable) {
             println("PlanRepository.savePlan error: ${e::class.simpleName}: ${e.message}")
             e.printStackTrace()
+            Analytics.recordError(e, "plan_save_failed")
             return null
         }
     }
@@ -410,6 +419,7 @@ class PlanRepositoryImpl(
             filter { eq("id", plan.id) }
         }
         println("PlanRepository.updatePlan: SUCCESS '${plan.title}'")
+        Analytics.track(AnalyticsEvent.planEdited(planId = plan.id, field = "bulk"))
     }
 
     override suspend fun deletePlan(planId: String) {
@@ -417,8 +427,10 @@ class PlanRepositoryImpl(
             supabaseClient.from("plans").delete {
                 filter { eq("id", planId) }
             }
+            Analytics.track(AnalyticsEvent.planDeleted(planId = planId, hadAttendees = false))
         } catch (e: Throwable) {
             println("PlanRepository.deletePlan error: ${e.message}")
+            Analytics.recordError(e, "plan_delete_failed")
         }
     }
 

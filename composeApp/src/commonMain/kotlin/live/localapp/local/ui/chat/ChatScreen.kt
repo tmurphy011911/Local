@@ -1956,8 +1956,16 @@ private fun AlsoHappeningRow(
             contentPadding = PaddingValues(horizontal = 14.dp),
             horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            items(events, key = { it.id }) { event ->
-                AlsoHappeningCard(event = event, onClick = { onEventTap(event) })
+            itemsIndexed(events, key = { _, e -> e.id }) { index, event ->
+                AlsoHappeningCard(event = event, onClick = {
+                    live.localapp.local.observability.Analytics.track(
+                        live.localapp.local.observability.AnalyticsEvent.boResultEventTapped(
+                            eventId = event.id,
+                            positionInResponse = index,
+                        )
+                    )
+                    onEventTap(event)
+                })
             }
         }
     }
@@ -2965,7 +2973,14 @@ private fun ScopeRedirectCard(
                         .clickable(
                             interactionSource = remember { MutableInteractionSource() },
                             indication = null,
-                            onClick = { onChipTap(chip.intent) },
+                            onClick = {
+                                live.localapp.local.observability.Analytics.track(
+                                    live.localapp.local.observability.AnalyticsEvent.boChipTapped(
+                                        chipLabelHash = chip.label.hashCode().toString()
+                                    )
+                                )
+                                onChipTap(chip.intent)
+                            },
                         )
                         .padding(horizontal = 12.dp, vertical = 6.dp),
                 ) {

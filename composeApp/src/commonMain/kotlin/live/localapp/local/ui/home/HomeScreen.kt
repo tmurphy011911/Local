@@ -170,6 +170,12 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
     LaunchedEffect(state.isLoading, state.carousels) {
         if (previouslyLoading && !state.isLoading && state.carousels.isNotEmpty()) {
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            live.localapp.local.observability.Analytics.track(
+                live.localapp.local.observability.AnalyticsEvent.feedViewed(
+                    feed = "for_you",
+                    resultCount = state.carousels.size,
+                )
+            )
         }
         previouslyLoading = state.isLoading
     }

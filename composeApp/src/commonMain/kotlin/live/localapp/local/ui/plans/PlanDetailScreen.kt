@@ -170,6 +170,17 @@ fun PlanDetailScreen(
         }
     }
 
+    LaunchedEffect(plan.id) {
+        live.localapp.local.observability.Analytics.track(
+            live.localapp.local.observability.AnalyticsEvent.planViewed(
+                planId = plan.id,
+                isCreator = isCreator,
+                attendeeCount = plan.confirmedCount,
+                source = "plan_detail",
+            )
+        )
+    }
+
     Box(modifier = Modifier.fillMaxSize().background(V5Paper)) {
         Column(modifier = Modifier.fillMaxSize()) {
             // Hero — 250dp map (or gradient fallback) with floating title card
@@ -180,7 +191,15 @@ fun PlanDetailScreen(
                 selectedDayIndex = selectedDayIndex,
                 onSelectDay = { selectedDayIndex = it },
                 onBack = onBack,
-                onShare = onShare,
+                onShare = {
+                    live.localapp.local.observability.Analytics.track(
+                        live.localapp.local.observability.AnalyticsEvent.planShared(
+                            planId = plan.id,
+                            shareChannel = "system_sheet",
+                        )
+                    )
+                    onShare()
+                },
                 onEditName = { showEditNameDialog = true },
                 onEditPlan = onEditPlan,
                 onDeletePlan = { confirmDeletePlan = true },
@@ -1023,7 +1042,7 @@ private fun AttendeeCard(
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(22.dp))
                 .background(V5Coral)
-                .clickable(onClick = onShare)
+                .clickable(onClick = { onShare() })
                 .padding(vertical = 12.dp),
             contentAlignment = Alignment.Center,
         ) {

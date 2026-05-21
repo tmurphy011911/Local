@@ -13,6 +13,8 @@ import com.revenuecat.purchases.LogLevel
 import com.revenuecat.purchases.Purchases
 import com.revenuecat.purchases.PurchasesConfiguration
 import live.localapp.local.di.initKoin
+import live.localapp.local.observability.Analytics
+import live.localapp.local.observability.AnalyticsEvent
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -23,6 +25,18 @@ class MainActivity : ComponentActivity() {
         }
         window.navigationBarColor = android.graphics.Color.parseColor("#FAF8FC")
         super.onCreate(savedInstanceState)
+
+        // Init observability before Koin so any startup error gets captured.
+        Analytics.bind(this)
+        val info = packageManager.getPackageInfo(packageName, 0)
+        Analytics.initialize(
+            environment = if (BuildConfig.DEBUG) "dev" else "prod",
+            appVersion = info.versionName ?: "unknown",
+            buildNumber = info.longVersionCode.toString(),
+            platform = "android",
+        )
+        Analytics.track(AnalyticsEvent.appOpened(coldStart = savedInstanceState == null))
+
         initKoin()
         ActivityProvider.activity = this
         handleDeepLink(intent)

@@ -5,7 +5,27 @@ import RevenueCat
 @main
 struct iOSApp: App {
     init() {
+        // Sentry/PostHog first so anything thrown by later lines is captured.
+        AnalyticsBridge.installAndStart()
+
         InitKoinKt.doInitKoin()
+
+        // Push super-properties + first lifecycle event through the bridge.
+        let bundle = Bundle.main
+        let appVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let buildNumber = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown"
+        #if DEBUG
+        let environment = "dev"
+        #else
+        let environment = "prod"
+        #endif
+        Analytics.shared.initialize(
+            environment: environment,
+            appVersion: appVersion,
+            buildNumber: buildNumber,
+            platform: "ios"
+        )
+        Analytics.shared.track(event: AnalyticsEvent.Events.shared.appOpened(coldStart: true, secondsBackgrounded: nil))
 
         // Oversize URLCache so venue hero images viewed once (as thumbnails or in detail)
         // are still warm when re-opening the detail page — removes the blank-frame jank on
