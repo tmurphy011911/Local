@@ -28,6 +28,10 @@ interface EventRow {
   venue_state: string | null;
   venue_lat: number | null;
   venue_lng: number | null;
+  event_city: string | null;
+  event_state: string | null;
+  event_lat: number | null;
+  event_lng: number | null;
   source: string;
   source_url: string | null;
   city: string;
@@ -653,6 +657,15 @@ function deduplicateCrossSource(events: ProcessedEvent[]): ProcessedEvent[] {
 // ════════════════════════════════════════════════════════════════
 
 function withDistance(event: ProcessedEvent, userLat: number, userLng: number): ProcessedEvent {
+  // Prefer event_lat (real event location) over venue_lat (host org HQ).
+  // Mirrors the priority in mv_events_for_geo so card distance is consistent
+  // across the fast (MV) path and the always_on slow path.
+  if (event.event_lat != null && event.event_lng != null) {
+    return {
+      ...event,
+      distance_miles: distanceMiles(userLat, userLng, event.event_lat, event.event_lng),
+    };
+  }
   if (event.venue_lat == null || event.venue_lng == null) return event;
   return {
     ...event,
@@ -805,6 +818,50 @@ function isSimilarEvent(a: ProcessedEvent, b: ProcessedEvent): boolean {
   return overlap >= 2;
 }
 
+// Diversify a single-category event list (e.g. all "for-kids") by
+// sub_subcategory + venue, with a relaxed backfill pass so we never
+// return fewer events than the pool allows. Used by rankForColdStart's
+// single-category fast path.
+function diversifyWithinCategory(
+  events: ProcessedEvent[],
+  maxResults: number,
+): ProcessedEvent[] {
+  const result: ProcessedEvent[] = [];
+  const subSubCounts = new Map<string, number>();
+  const venueCounts = new Map<string, number>();
+  const deferred: ProcessedEvent[] = [];
+  const SUBSUB_CAP = 3;
+  const VENUE_CAP = 3;
+
+  for (const e of events) {
+    if (result.length >= maxResults) break;
+    const subSub = (e.sub_subcategory ?? "").toLowerCase() || "_none";
+    const venue = (e.venue_name ?? "").toLowerCase() || "_none";
+    const subSubCount = subSubCounts.get(subSub) ?? 0;
+    const venueCount = venueCounts.get(venue) ?? 0;
+    if (subSubCount >= SUBSUB_CAP) { deferred.push(e); continue; }
+    if (venueCount >= VENUE_CAP) { deferred.push(e); continue; }
+    if (result.length > 0 && isSimilarEvent(e, result[result.length - 1])) {
+      deferred.push(e);
+      continue;
+    }
+    result.push(e);
+    subSubCounts.set(subSub, subSubCount + 1);
+    venueCounts.set(venue, venueCount + 1);
+  }
+
+  // Backfill: drop the dimension caps but keep the adjacent-similarity
+  // guard. Better to ship 12 cards with one near-duplicate pair than 4
+  // cards with strict caps.
+  for (const e of deferred) {
+    if (result.length >= maxResults) break;
+    if (result.length > 0 && isSimilarEvent(e, result[result.length - 1])) continue;
+    result.push(e);
+  }
+
+  return result;
+}
+
 function rankForColdStart(
   events: ProcessedEvent[],
   prefs: UserPreferences | null,
@@ -815,6 +872,21 @@ function rankForColdStart(
     event: e,
     score: coldStartScore(e, prefs, affinityMap),
   })).sort((a, b) => b.score - a.score);
+
+  // ── Single-category fast path ─────────────────────────────────────
+  // On subcategory tabs ("For Kids", "Music", etc.) every event in the
+  // pool shares the same top-level category. The cross-category rules
+  // below (first-3-distinct + 25% top-level cap) collapse the output
+  // to a single event in that case: slot 0 gets placed, every later
+  // event gets deferred on first-3-distinct, and the deferred-insert
+  // loop's earliestAllowed=3 with result.length=1 means the for-loop
+  // body never runs. Detect that case and diversify on sub_subcategory
+  // + venue_name instead, which are the meaningful axes inside a
+  // single subcategory.
+  const distinctCategories = new Set(scored.map(p => p.event.category ?? "other"));
+  if (distinctCategories.size <= 1 && scored.length > 0) {
+    return diversifyWithinCategory(scored.map(p => p.event), maxResults);
+  }
 
   const result: ProcessedEvent[] = [];
   const deferred: typeof scored = [];
@@ -914,6 +986,20 @@ function isMonthlyEvent(event: ProcessedEvent): boolean {
 
 function isDailyEvent(event: ProcessedEvent): boolean {
   return event.category === "always_on" && !isWeeklyEvent(event) && !isMonthlyEvent(event);
+}
+
+// Events that belong in the general-purpose feed — i.e. NOT curated
+// experiences and NOT recurring. Curated rows belong only in
+// "Things to Do Anytime" / Experiences tab; recurring rows belong only
+// in Happens Every Day / Weekly / Monthly. Venue- and neighborhood-
+// scoped rails are intentionally exempt from this rule (a user who
+// favorited the MFA wants its exhibits to show up under "Coming Up at
+// MFA").
+function isGeneralFeedEvent(event: ProcessedEvent): boolean {
+  return event.source !== "curated"
+    && event.category !== "always_on"
+    && !isWeeklyEvent(event)
+    && !isMonthlyEvent(event);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1018,24 +1104,31 @@ function resolveFilter(category: string | null): EventFilterType {
 
 function applyFilter(events: ProcessedEvent[], filter: EventFilterType): ProcessedEvent[] {
   switch (filter.type) {
-    case "none": return events;
+    case "none": return events.filter(isGeneralFeedEvent);
     case "empty": return [];
     case "category": {
       const filterValue = filter.value;
       // If filtering by a parent category, include events whose subcategory maps to it
       if (parentCategories.has(filterValue)) {
         return events.filter(e => {
+          if (!isGeneralFeedEvent(e)) return false;
           const subcat = (e.subcategory ?? "").toLowerCase();
           if (subcat === filterValue) return true;
           return (subcategoryToParent[subcat] ?? "") === filterValue;
         });
       }
-      return events.filter(e => (e.subcategory ?? "").toLowerCase() === filterValue);
+      return events.filter(e =>
+        isGeneralFeedEvent(e) && (e.subcategory ?? "").toLowerCase() === filterValue
+      );
     }
     case "source":
+      // Experiences tab — must NOT apply isGeneralFeedEvent (it would
+      // strip the very rows the tab exists to show).
       return events.filter(e => e.source === filter.value);
     case "exclude_known":
-      return events.filter(e => !knownSubcategories.includes((e.subcategory ?? "other").toLowerCase()));
+      return events.filter(e =>
+        isGeneralFeedEvent(e) && !knownSubcategories.includes((e.subcategory ?? "other").toLowerCase())
+      );
   }
 }
 
@@ -1126,10 +1219,16 @@ function buildDynamicSubcarousels(
     if (arr) arr.push(e);
     else byVenue.set(key, [e]);
   }
+  // Venue must have at least 4 events to render (matches addCarousel's
+  // minimum). Filtering at >= 4 here (not >= 2) avoids burning a top-N
+  // slot on a venue that's going to silently fail to render anyway.
+  // Show up to 12 venues so dense subcategories (For Kids in metro Boston
+  // has 20+ venues meeting the bar) surface a representative spread
+  // instead of clipping to a top 6.
   const sortedVenues = [...byVenue.entries()]
-    .filter(([, v]) => v.length >= 2)
+    .filter(([, v]) => v.length >= 4)
     .sort((a, b) => b[1].length - a[1].length)
-    .slice(0, 6);
+    .slice(0, 12);
   for (const [, venueEvents] of sortedVenues) {
     const venueName = venueEvents[0].venue_name!;
     addCarousel(
@@ -1359,9 +1458,19 @@ function resolveCarouselFromPool(
     case "tag":
       return carousel.filter_value === "free" ? pool.filter(e => e.is_free) : pool;
     case "top_weekly": {
-      const cutoff = daysFromNowIso(7);
-      const weekPool = pool.filter(e => (e.start_at ?? "") <= cutoff);
-      return rankForColdStart(weekPool, prefs, CAROUSEL_DISPLAY_LIMIT, affinityMap);
+      // Adaptive window: try 7 days; if the pool is thin, widen to 14, then 30.
+      // Title is "Top Events Happening Soon" regardless of which window wins,
+      // so users never see a sparse rail on slow weekdays / sparse subcategories.
+      const windows = [7, 14, 30];
+      const minPoolSizes = [12, 8, 0];
+      let chosen: ProcessedEvent[] = [];
+      for (let i = 0; i < windows.length; i++) {
+        const cutoff = daysFromNowIso(windows[i]);
+        const windowPool = pool.filter(e => (e.start_at ?? "") <= cutoff);
+        chosen = windowPool;
+        if (windowPool.length >= minPoolSizes[i]) break;
+      }
+      return rankForColdStart(chosen, prefs, CAROUSEL_DISPLAY_LIMIT, affinityMap);
     }
     case "trending":
       return pool;
@@ -1414,7 +1523,13 @@ function buildCarousels(
     // default. Diversity caps inside rankForColdStart scale with maxResults,
     // so a 40-slot pool naturally surfaces 5+ distinct categories.
     const weekCutoff = daysFromNowIso(7);
-    const weekPool = filtered.filter(e => (e.start_at ?? "") <= weekCutoff);
+    // Belt-and-suspenders: require a real start_at. (e.start_at ?? "")
+    // is "" for null, which sorts < any ISO string, so without this any
+    // re-classification slip-up upstream would put curated/always_on
+    // rows straight back into the hero. applyFilter already excludes
+    // them on the For You feed, but the hero pool is high-value enough
+    // to double-gate.
+    const weekPool = filtered.filter(e => e.start_at != null && e.start_at <= weekCutoff);
     const ranked = rankForColdStart(weekPool, prefs, HERO_CAROUSEL_DISPLAY_LIMIT, affinityMap);
     const personalizedEvents = backfillToMinimum(ranked, seenEventIds, filtered, HERO_CAROUSEL_DISPLAY_LIMIT);
 
@@ -1433,6 +1548,7 @@ function buildCarousels(
       let favCatIdx = 0;
       for (const cat of prefs.selected_categories) {
         const catEvents = allEvents
+          .filter(isGeneralFeedEvent)
           .filter(e => (e.subcategory ?? "").toLowerCase() === cat.toLowerCase())
           .filter(e => !e.start_at || e.start_at <= monthCutoff)
           .map(e => withDistance(e, userLat, userLng))
@@ -1506,6 +1622,7 @@ function buildCarousels(
       if (skipCategories.has(cat.toLowerCase())) continue;
       if (favCatSlugs.has(`fav-cat-${cat.toLowerCase()}`)) continue;
       const affinityEvents = allEvents
+        .filter(isGeneralFeedEvent)
         .filter(e => (e.subcategory ?? e.category).toLowerCase() === cat.toLowerCase())
         .map(e => withDistance(e, userLat, userLng))
         .sort(sortFn)
@@ -1676,9 +1793,9 @@ function buildCarousels(
     if (filter.type === "category") {
       const catName = categoryDisplayName(filter.value);
       // The category is implied by the page the user is on, so titles on
-      // category tabs render bare ("Top Events This Week", not "Kids: Top
-      // Events This Week"). Kept "This Weekend" / "Trending Now" qualified
-      // because they originally were — flag if those should also strip.
+      // category tabs render bare ("Top Events Happening Soon", not "Kids:
+      // Top Events Happening Soon"). Kept "This Weekend" / "Trending Now"
+      // qualified because they originally were — flag if those should strip.
       title = title
         .replace("This Weekend", `${catName} This Weekend`)
         .replace("Trending Now", `Trending ${catName}`);
@@ -1694,11 +1811,47 @@ function buildCarousels(
   }
   result.push(...standardCarousels);
 
-  // Dynamic sub-carousels for subcategory tab
+  // Dynamic sub-carousels for subcategory tab.
+  //
+  // PRODUCT RULE EXCEPTION: `filtered` strips recurring events via
+  // isGeneralFeedEvent (the right call for Top Events / This Month / For You).
+  // But the themed sub_subcategory rails — "Story Time", "Open Mic Nights",
+  // "Minecraft Club" — are specifically scoped to one subcategory AND one
+  // sub_subcategory. That's exactly where recurring events belong, because
+  // the rail title IS the recurrence pattern. Routing them only into the
+  // generic "Weekly Happenings" rail loses the specificity that made these
+  // rails useful (regression introduced 2026-05-27).
+  //
+  // So: build a parallel pool for buildDynamicSubcarousels that matches the
+  // subcategory + geo filter but keeps recurring events. Curated events
+  // (`source === "curated"`) stay excluded — those belong on Experiences.
   if (filter.type === "category" && filter.value !== "sports") {
-    result.push(...buildDynamicSubcarousels(
-      filtered, filter.value, categoryDisplayName(filter.value),
-    ));
+    const filterValue = filter.value;
+    const dynamicSubPool = allEvents
+      .filter(e => e.source !== "curated")
+      .filter(e => {
+        if (parentCategories.has(filterValue)) {
+          const subcat = (e.subcategory ?? "").toLowerCase();
+          if (subcat === filterValue) return true;
+          return (subcategoryToParent[subcat] ?? "") === filterValue;
+        }
+        return (e.subcategory ?? "").toLowerCase() === filterValue;
+      })
+      .map(e => withDistance(e, userLat, userLng))
+      .filter(e => maxRadius === Infinity || (e.distance_miles ?? 999) <= maxRadius)
+      .sort(sortFn);
+
+    const dynamicSections = buildDynamicSubcarousels(
+      dynamicSubPool, filter.value, categoryDisplayName(filter.value),
+    );
+    // Mark events surfaced by themed sub-rails as seen so the downstream
+    // Daily / Weekly / Monthly rails don't show the same event twice. The
+    // themed rail wins because it's more specific ("Story Time" beats
+    // "Weekly Happenings" for the same row).
+    for (const section of dynamicSections) {
+      for (const e of section.events) seenEventIds.add(e.id);
+    }
+    result.push(...dynamicSections);
   }
 
   // Experiences tab dynamic sub-carousels
@@ -1835,6 +1988,7 @@ async function fetchAllEvents(
   lat: number,
   lng: number,
   radiusMiles: number,
+  subcategoryFocus: string | null = null,
 ): Promise<ProcessedEvent[]> {
   // Latency sprint cutover: upcoming events come from mv_carousel_payload
   // via mv_events_for_geo() — single RPC call replaces the 7×1000 paginated
@@ -1868,16 +2022,41 @@ async function fetchAllEvents(
     return data ?? [];
   }
 
-  const [mvResp, ...alwaysOnPages] = await Promise.all([
+  // When the request is for a subcategory tab, fire a venue-diverse fetch
+  // in parallel. mv_events_for_geo's rank-stratified output starves the
+  // venue diversity that the "At <venue>" rails need (BPL's high venue
+  // rank crowds out Brighton Branch, Hummingbird Books, etc., for the
+  // for-kids subcategory). This parallel call returns top 12 venues × top
+  // 6 events for the focused subcategory only — bounded payload, zero
+  // added latency because it runs in the same Promise.all.
+  const venueDiverseRpc = subcategoryFocus
+    ? supabase.rpc("mv_events_for_subcategory_venues", {
+        p_lat: lat,
+        p_lng: lng,
+        p_radius_miles: radiusMiles,
+        p_subcategory: subcategoryFocus,
+        p_top_venues: 12,
+        p_events_per_venue: 6,
+      })
+    : Promise.resolve({ data: [], error: null });
+
+  const [mvResp, venueDiverseResp, ...alwaysOnPages] = await Promise.all([
     supabase.rpc("mv_events_for_geo", {
       p_lat: lat,
       p_lng: lng,
       p_radius_miles: radiusMiles,
       p_max_results: 7000,
     }),
+    venueDiverseRpc,
     ...Array.from({ length: 3 }, (_, i) => fetchAlwaysOnPage(i)),
   ]);
   if (mvResp.error) throw mvResp.error;
+  // Tolerate venue-diverse RPC errors silently — venue rails are
+  // additive; degraded mode is "main RPC's venue diversity only", not
+  // a broken page.
+  if (venueDiverseResp.error) {
+    console.error("[carousels] mv_events_for_subcategory_venues failed:", venueDiverseResp.error);
+  }
 
   const mvRows = (mvResp.data ?? []) as Array<EventRow & {
     rank_score: number | null;
@@ -1894,19 +2073,41 @@ async function fetchAllEvents(
     }))
     .filter(e => e.distance_miles == null || e.distance_miles <= radiusMiles);
 
+  // Union venue-diverse events on top of the main MV result. Dedup by id
+  // so events that appeared in both queries don't double-count when
+  // buildDynamicSubcarousels groups by venue.
+  const venueDiverseRows = (venueDiverseResp.data ?? []) as Array<EventRow & {
+    rank_score: number | null;
+    distance_miles: number | null;
+    venue_description: string | null;
+    venue_photo_url: string | null;
+  }>;
+  const seenIds = new Set(mvProcessed.map(e => e.id));
+  const venueDiverseProcessed: ProcessedEvent[] = venueDiverseRows
+    .filter(row => !seenIds.has(row.id))
+    .map(row => ({
+      ...row,
+      distance_miles: row.distance_miles,
+      venue_description: row.venue_description ?? null,
+      venue_photo_url: row.venue_photo_url ?? null,
+    }))
+    .filter(e => e.distance_miles == null || e.distance_miles <= radiusMiles);
+
   const alwaysOnRows = alwaysOnPages.flat();
   const alwaysOnProcessed: ProcessedEvent[] = alwaysOnRows
     .map(row => ({
       ...row,
-      distance_miles: (row.venue_lat != null && row.venue_lng != null)
-        ? distanceMiles(lat, lng, row.venue_lat, row.venue_lng)
-        : null,
+      distance_miles: (row.event_lat != null && row.event_lng != null)
+        ? distanceMiles(lat, lng, row.event_lat, row.event_lng)
+        : (row.venue_lat != null && row.venue_lng != null)
+          ? distanceMiles(lat, lng, row.venue_lat, row.venue_lng)
+          : null,
       venue_description: null,
       venue_photo_url: null,
     }))
     .filter(e => e.distance_miles == null || e.distance_miles <= radiusMiles);
 
-  return [...mvProcessed, ...alwaysOnProcessed];
+  return [...mvProcessed, ...venueDiverseProcessed, ...alwaysOnProcessed];
 }
 
 // fetchRawSportsEvents removed — rawSportsEvents is now derived inline
@@ -2184,8 +2385,18 @@ Deno.serve(async (req) => {
       //    9 sequential paginated calls — the previous long pole)
       // 3. rawSports → JS filter over fetchAllEvents result (was a
       //    second 7×1000 scan; same source data, just a different filter)
+      // Compute the subcategoryFocus to drive the parallel venue-diverse
+      // fetch inside fetchAllEvents. We pass the raw filter.value when
+      // it's a category-typed filter and not sports (sports has its own
+      // dedicated rail logic). For-You / Experiences / Locations tabs
+      // pass null and skip the extra call.
+      const _filterForFetch = resolveFilter(category);
+      const subcategoryFocus =
+        _filterForFetch.type === "category" && _filterForFetch.value !== "sports"
+          ? _filterForFetch.value
+          : null;
       const [rawEvents, venues, config] = await Promise.all([
-        fetchAllEvents(supabase, lat, lng, radiusMiles),
+        fetchAllEvents(supabase, lat, lng, radiusMiles, subcategoryFocus),
         fetchVenueCacheLite(supabase),
         fetchCarouselsConfig(supabase, lat, lng),
       ]);
@@ -2252,6 +2463,10 @@ Deno.serve(async (req) => {
         venue_lat: e.venue_lat,
         venue_lng: e.venue_lng,
         venue_address: e.venue_address,
+        event_city: e.event_city,
+        event_state: e.event_state,
+        event_lat: e.event_lat,
+        event_lng: e.event_lng,
         city: e.city,
         source: e.source,
         source_url: e.source_url,
