@@ -26,6 +26,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -339,7 +340,7 @@ val claudeTools: JsonArray = buildJsonArray {
                                         }
                                         putJsonObject("venue_name") {
                                             put("type", "string")
-                                            put("description", "Venue name from recommend_and_save_venue. ONLY use this for restaurants, bars, and cafes where there is no specific event — just a dining/drinks recommendation. Never use this for music venues, theaters, or any place where a specific event is happening.")
+                                            put("description", "Two usages: (1) PUBLIC VENUE — venue name returned by recommend_and_save_venue (restaurants/bars/cafes, no specific event). Never use for music venues, theaters, or places hosting a specific event. (2) PERSONAL-LOCATION SLOT — when the user names a personal/non-public place (\"my house\", \"Jane's apartment\", \"the office\"), set venue_name to the ACTIVITY in title case (\"Dinner\", \"Brunch\", \"Drinks\", \"Game night\") and put the location in `note` as \"at {location verbatim}\". This renders activity on top, location below. NEVER call recommend_and_save_venue / search_venues / search_events for a personal location — use this encoding directly.")
                                         }
                                         putJsonObject("time") {
                                             put("type", "string")
@@ -347,7 +348,7 @@ val claudeTools: JsonArray = buildJsonArray {
                                         }
                                         putJsonObject("note") {
                                             put("type", "string")
-                                            put("description", "Brief reason for picking this (1 sentence)")
+                                            put("description", "Brief reason for picking this (1 sentence). For PERSONAL-LOCATION SLOTS (see venue_name docs), this MUST be \"at {location verbatim from user}\" — e.g. \"at Your House\", \"at Jane's apartment\", \"at the office\".")
                                         }
                                         putJsonObject("is_bo_web") {
                                             put("type", "boolean")
@@ -408,7 +409,7 @@ val claudeTools: JsonArray = buildJsonArray {
                             }
                             putJsonObject("venue_name") {
                                 put("type", "string")
-                                put("description", "Venue name from recommend_and_save_venue")
+                                put("description", "Two usages: (1) PUBLIC VENUE — venue name from recommend_and_save_venue. (2) PERSONAL-LOCATION SLOT — when the user named a personal/non-public place (\"my house\", \"Jane's apartment\"), set venue_name to the ACTIVITY in title case (\"Dinner\", \"Brunch\") and put the location in `note` as \"at {location}\". NEVER call recommend_and_save_venue / search_venues for a personal location, and when CORRECTING a prior slot that wrongly substituted a real venue, re-emit with venue_name=activity, note=\"at {location}\" — do NOT preserve the wrong venue_name.")
                             }
                             putJsonObject("time") {
                                 put("type", "string")
@@ -416,7 +417,7 @@ val claudeTools: JsonArray = buildJsonArray {
                             }
                             putJsonObject("note") {
                                 put("type", "string")
-                                put("description", "Brief reason for picking this")
+                                put("description", "Brief reason for picking this. For PERSONAL-LOCATION SLOTS (see venue_name docs), this MUST be \"at {location verbatim from user}\".")
                             }
                             putJsonObject("is_bo_web") {
                                 put("type", "boolean")
@@ -814,9 +815,19 @@ class ClaudeApiService {
             json(json)
         }
         install(HttpTimeout) {
-            requestTimeoutMillis = 180_000
-            connectTimeoutMillis = 15_000
-            socketTimeoutMillis = 180_000
+            // Streaming calls. socketTimeoutMillis is the real stall detector:
+            // the max gap between bytes. Haiku streams chunks every few hundred
+            // ms, so a 30s silence means the connection is dead (flaky wifi /
+            // dropped keep-alive). The OLD 180s values meant a stalled
+            // connection hung the whole chat for THREE MINUTES before failing
+            // and letting the caller's retry (attempt 1/2, 2s backoff) recover.
+            // Now a dead stream fails in ~30s and the retry — which warms the
+            // prompt cache — usually succeeds fast. requestTimeoutMillis is a
+            // hard ceiling on one round-trip (one Claude call); 75s is generous
+            // for even a 30-event present_suggestions while still far below 180s.
+            requestTimeoutMillis = 75_000
+            connectTimeoutMillis = 10_000
+            socketTimeoutMillis = 30_000
         }
     }
 

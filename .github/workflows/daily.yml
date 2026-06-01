@@ -1,4 +1,4 @@
-name: Daily — Event Sync & Deactivate Past Events
+name: Daily — Event Sync & Cross-source Dedupe
 
 on:
   schedule:
@@ -37,16 +37,26 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node eventbrite_sync.js
 
-  deactivate-past-events:
+  # Deactivation now runs hourly in its own workflow (hourly.yml) so a
+  # just-ended event doesn't linger in feeds until the next daily run.
+  #
+  # Dedupe used to run only weekly (weekly.yml, after the crawl). The daily
+  # Ticketmaster + Eventbrite syncs insert the same shows that crawlers also
+  # find, so a dup inserted Monday stayed visible until Sunday. Running the
+  # cross-source pass daily — right after the two syncs — collapses those
+  # within a day. dedupe_pass.js is idempotent and bounded to future, active
+  # rows, so the extra runs are cheap and safe.
+  dedupe-pass:
     runs-on: ubuntu-latest
     needs: [ticketmaster-sync, eventbrite-sync]
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - name: Deactivate Past Events
+      - name: Cross-source dedupe (events + venues)
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-        run: node deactivate_past_events.js
+        run: node dedupe_pass.js

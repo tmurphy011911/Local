@@ -10,6 +10,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.*
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.unit.Dp
@@ -48,21 +49,33 @@ enum class BoExpression {
     Surprised,  // wide eyes, "o" mouth — for moments of delight
 }
 
-private val BounceEasing = CubicBezierEasing(0.34f, 1.56f, 0.64f, 1f)
+private val BounceEasing = DefaultBounceEasing
 
 @Composable
 fun Bo(
     size: Dp = 80.dp,
     expression: BoExpression = BoExpression.Default,
     trigger: Int = 0,
+    motion: BoMotion? = null,
     showSparkles: Boolean = true,
     showShadow: Boolean = true,
     modifier: Modifier = Modifier,
 ) {
-    // Tap animation — squishy bounce with vertical squash/stretch
+    // Motion animation — full library (Spin, Shake, PopIn, …).
+    // When [motion] is null we fall back to the legacy tap-squish bounce.
+    val motionProgress = remember { Animatable(0f) }
+    LaunchedEffect(trigger, motion) {
+        if (trigger > 0 && motion != null) {
+            motionProgress.snapTo(0f)
+            motionProgress.animateTo(
+                targetValue = 1f,
+                animationSpec = tween(durationMillis = motion.durationMs(), easing = motion.easing()),
+            )
+        }
+    }
     val bounce = remember { Animatable(0f) }
-    LaunchedEffect(trigger) {
-        if (trigger > 0) {
+    LaunchedEffect(trigger, motion) {
+        if (trigger > 0 && motion == null) {
             bounce.snapTo(0f)
             bounce.animateTo(1f, tween(durationMillis = 800, easing = BounceEasing))
         }
@@ -108,14 +121,18 @@ fun Bo(
                 drawSparkles(sparkleProgress)
             }
 
-            // Body group (subject to bounce transform)
-            val (sx, sy, dy) = bounceTransform(bounce.value)
-            translate(left = 0f, top = dy) {
-                scale(sx, sy, pivot = Offset(50f, 80f)) {
-                    drawBody()
-                    drawCheeks()
-                    drawEyes(expression, blinkProgress)
-                    drawMouth(expression)
+            // Body group — motion transform (full library) takes precedence
+            // when [motion] is set, otherwise the legacy bounce squish.
+            val tx = if (motion != null) motionTransform(motion, motionProgress.value)
+                     else bounceTransform(bounce.value)
+            translate(left = tx.dx, top = tx.dy) {
+                rotate(degrees = tx.rotationDeg, pivot = Offset(50f, 50f)) {
+                    scale(tx.scaleX, tx.scaleY, pivot = Offset(50f, 80f)) {
+                        drawBody()
+                        drawCheeks()
+                        drawEyes(expression, blinkProgress)
+                        drawMouth(expression)
+                    }
                 }
             }
         }
@@ -346,26 +363,6 @@ private fun sparklePulse(t: Float): Float = when {
 }
 
 // ─── Bounce transform ───────────────────────────────────────────────────────
-private data class BounceTransform(val sx: Float, val sy: Float, val dy: Float)
-private operator fun BounceTransform.component1() = sx
-private operator fun BounceTransform.component2() = sy
-private operator fun BounceTransform.component3() = dy
-
-/** Squash & stretch on tap. 0..1 progress. */
-private fun bounceTransform(t: Float): BounceTransform {
-    return when {
-        t == 0f -> BounceTransform(1f, 1f, 0f)
-        t < 0.3f -> {
-            val k = t / 0.3f
-            BounceTransform(sx = 1f, sy = 1f + 0.04f * k, dy = -6f * k)
-        }
-        t < 0.6f -> {
-            val k = (t - 0.3f) / 0.3f
-            BounceTransform(sx = 1f, sy = 1.04f - 0.08f * k, dy = -6f + 8f * k)
-        }
-        else -> {
-            val k = (t - 0.6f) / 0.4f
-            BounceTransform(sx = 1f, sy = 0.96f + 0.04f * k, dy = 2f - 2f * k)
-        }
-    }
-}
+// Legacy bounce shape lives in BoMotions.kt as `bounceTransform(t)` returning a
+// MotionTransform. Keeping it there lets the motion library and the tap squish
+// share the same transform pipeline.

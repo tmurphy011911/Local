@@ -80,13 +80,16 @@ function pickWinner(a, b) {
   const ra = SOURCE_RANK[a.source] ?? 0;
   const rb = SOURCE_RANK[b.source] ?? 0;
   if (ra !== rb) return ra > rb ? a : b;
-  // Same source rank → prefer the one with more populated fields
+  // Same source rank → prefer the one with more populated fields.
+  // time_known weight is intentionally large: a row with a known real time
+  // must beat a date-only sibling, otherwise the UI silently swaps a 7 PM
+  // show for "12 AM" (the Boch/Shubert Zakir Khan symptom). 2026-05-21.
   const score = (e) =>
     (e.image_url ? 2 : 0) +
     (e.description ? 2 : 0) +
     (e.ticket_url ? 1 : 0) +
     (e.price_min != null ? 1 : 0) +
-    (e.time_known ? 1 : 0) +
+    (e.time_known ? 3 : 0) +
     (e.confidence_score ?? 0.5);
   return score(a) >= score(b) ? a : b;
 }
@@ -205,7 +208,7 @@ async function fetchAllUpcoming() {
   while (true) {
     let url =
       `${SUPABASE_URL}/rest/v1/events` +
-      `?select=id,title,category,start_at,time_known,venue_name,venue_state,source,image_url,description,ticket_url,price_min,confidence_score,is_active` +
+      `?select=id,title,category,start_at,time_known,venue_name,venue_state,source,source_url,image_url,description,ticket_url,price_min,confidence_score,is_active` +
       `&is_active=eq.true` +
       `&start_at=gte.${today}` +
       `&order=id.asc` +
@@ -231,22 +234,73 @@ async function main() {
   const events = await fetchAllUpcoming();
   console.log(`Loaded ${events.length} active upcoming events`);
 
-  // Group by (normalized venue, local ET date)
+  const pairs = []; // { winner, loser, confidence, reasons }
+  const claimedLosers = new Set(); // ids already marked as losers across passes
+
+  // PASS 1: same source_url + same ET calendar date + title similarity.
+  // Two rows with the same canonical source URL on the same date are the same
+  // event ONLY when titles also match — the Boch/Shubert case has identical
+  // "Zakir Khan" title across venue-name variants. The source_url alone is
+  // unreliable because many venues attach the same "events landing page" URL
+  // to every event extracted from that page (Stone Zoo's animal chats, Tree
+  // House Brewing's calendar), so multiple genuinely-different events share
+  // a URL on the same day. Reuse dupConfidence to require title similarity.
+  const urlGroups = new Map();
+  for (const e of events) {
+    if (!e.source_url || !e.start_at) continue;
+    const key = `${e.source_url}::${localDateET(e.start_at)}`;
+    if (!urlGroups.has(key)) urlGroups.set(key, []);
+    urlGroups.get(key).push(e);
+  }
+  let urlGroupsWithDups = 0;
+  let pass1Pairs = 0;
+  for (const [, list] of urlGroups) {
+    if (list.length < 2) continue;
+    const claimed = new Set();
+    let groupHadDup = false;
+    for (let i = 0; i < list.length; i++) {
+      if (claimed.has(list[i].id)) continue;
+      for (let j = i + 1; j < list.length; j++) {
+        if (claimed.has(list[j].id)) continue;
+        const { confidence, reasons } = dupConfidence(list[i], list[j]);
+        if (confidence < 0.75) continue;
+        const winner = pickWinner(list[i], list[j]);
+        const loser = winner === list[i] ? list[j] : list[i];
+        // Boost confidence and tag the reason — same source_url is strong
+        // evidence on top of title similarity.
+        const boosted = Math.min(0.99, confidence + 0.05);
+        pairs.push({
+          winner,
+          loser,
+          confidence: boosted,
+          reasons: ["same source_url + dateET", ...reasons],
+        });
+        claimed.add(loser.id);
+        claimedLosers.add(loser.id);
+        groupHadDup = true;
+        pass1Pairs++;
+      }
+    }
+    if (groupHadDup) urlGroupsWithDups++;
+  }
+  console.log(`Pass 1 (source_url + title): ${urlGroupsWithDups} groups, ${pass1Pairs} pairs`);
+
+  // PASS 2: normalized venue + ET calendar date + fuzzy title.
+  // Catches cross-source dupes where source_url differs (Ticketmaster vs
+  // venue crawl), or rows missing source_url entirely.
   const groups = new Map();
   for (const e of events) {
     if (!e.venue_name || !e.start_at) continue;
+    if (claimedLosers.has(e.id)) continue; // already handled in pass 1
     const key = `${normalizeVenue(e.venue_name)}::${localDateET(e.start_at)}`;
     if (!groups.has(key)) groups.set(key, []);
     groups.get(key).push(e);
   }
-
-  // Find candidate dup pairs in each group
-  const pairs = []; // { winner, loser, confidence, reasons }
+  let pass2Pairs = 0;
   let groupsWithDups = 0;
   for (const [, list] of groups) {
     if (list.length < 2) continue;
-    // Compare all pairs
-    const claimed = new Set(); // ids already chosen as a loser
+    const claimed = new Set();
     let groupHadDup = false;
     for (let i = 0; i < list.length; i++) {
       if (claimed.has(list[i].id)) continue;
@@ -258,14 +312,15 @@ async function main() {
         const loser = winner === list[i] ? list[j] : list[i];
         pairs.push({ winner, loser, confidence, reasons });
         claimed.add(loser.id);
+        claimedLosers.add(loser.id);
         groupHadDup = true;
+        pass2Pairs++;
       }
     }
     if (groupHadDup) groupsWithDups++;
   }
-
-  console.log(`Groups with duplicates: ${groupsWithDups}`);
-  console.log(`Duplicate pairs found: ${pairs.length}`);
+  console.log(`Pass 2 (venue+date+title): ${groupsWithDups} groups, ${pass2Pairs} pairs`);
+  console.log(`Total duplicate pairs found: ${pairs.length}`);
   console.log("");
 
   // Sort by confidence desc for the dry-run preview
@@ -282,6 +337,21 @@ async function main() {
     console.log("");
   }
   if (pairs.length > sample.length) console.log(`  ... and ${pairs.length - sample.length} more`);
+
+  // Row-count safety gate per Data Ops registry rule:
+  // bulk UPDATEs need an assertion. If we're about to mark more than 5% of
+  // active upcoming events is_active=false, something is wrong (over-merging,
+  // a bad source_url collision, etc.). Refuse to write without FORCE=1.
+  const lossRatio = pairs.length / Math.max(events.length, 1);
+  const THRESHOLD = 0.05;
+  if (lossRatio > THRESHOLD) {
+    console.error(`\n  ABORT: would mark ${pairs.length} rows is_active=false ` +
+      `(${(lossRatio * 100).toFixed(2)}% of ${events.length} active rows).`);
+    console.error(`  Threshold: ${(THRESHOLD * 100).toFixed(0)}%. Inspect the merge groups above.`);
+    console.error(`  If the merge is intended, re-run with FORCE=1.`);
+    if (process.env.FORCE !== "1") process.exit(2);
+    console.error(`  FORCE=1 set — proceeding past threshold.`);
+  }
 
   if (!WRITE) {
     console.log("\nDRY RUN — pass WRITE=1 to apply (sets is_active=false + duplicate_of on losers).");

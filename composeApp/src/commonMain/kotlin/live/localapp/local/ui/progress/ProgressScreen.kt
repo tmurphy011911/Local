@@ -261,62 +261,14 @@ fun ProgressScreen(
             )
 
             if (!isLoggedIn) {
-                // ── Logged-out state ──
-                Column(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .padding(horizontal = 20.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.Center,
-                ) {
-                    Icon(
-                        Icons.Outlined.Edit,
-                        contentDescription = null,
-                        modifier = Modifier.size(48.dp),
-                        tint = AppColors.Ink3,
-                    )
-                    Spacer(Modifier.height(16.dp))
-                    Text(
-                        "Track your progress",
-                        style = TextStyle(
-                            fontFamily = AppFonts.Heading,
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 22.sp,
-                            color = AppColors.Ink,
-                        ),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "Sign in to earn badges, track your streak, and unlock rewards as you explore.",
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.Medium,
-                            fontSize = 15.sp,
-                            color = AppColors.Ink3,
-                            textAlign = TextAlign.Center,
-                        ),
-                    )
-                    Spacer(Modifier.height(24.dp))
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(AppColors.Coral)
-                            .clickable(onClick = onSignIn)
-                            .padding(vertical = 14.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            "Sign In",
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 16.sp,
-                                color = Color.White,
-                            ),
-                        )
-                    }
-                }
+                // ── Logged-out state (Bank 4) ──
+                // Big Bo Pop-In, Excited expression, Sign in CTA, fresh copy
+                // line per visit. Replaces the old static Edit-icon layout.
+                live.localapp.local.ui.emptystate.BoEmptyState(
+                    bank = live.localapp.local.ui.emptystate.EmptyStateCopy.ACCOUNT_SIGNED_OUT,
+                    ctaLabel = "Sign in",
+                    onCta = onSignIn,
+                )
             } else {
 
             if (!state.isLoaded) {

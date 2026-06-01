@@ -132,6 +132,44 @@ Platform-specific crawlers auto-detect and use structured APIs before falling ba
 
 ## TODO
 
+- [ ] **Sports classifier: team_name + subcategory gap fix.** Discovered 2026-05-27 while WooSox + Patriots showed only 1-2 games each on Sports tab despite full seasons in the events table. `buildSportsCarousels` in `supabase/functions/carousels/index.ts` groups by `team_name`, so any sports event with `team_name IS NULL` is invisible to the tab regardless of how many games exist.
+
+  **Two root failure modes, both in `scripts/classify_events.js`:**
+
+  1. **Miscategorized subcategory blocks the backfill.** The `TEAM_NAME_BACKFILL=1` mode at `classify_events.js:956-960` filters to `subcategory IN ('sports','hockey','baseball','basketball','football','soccer','rugby','lacrosse','college-sports','minor-league')`. But 40 Worcester Red Sox games landed with `subcategory='miscellaneous'` on first classify, so the backfill never picks them up. Same likely for Reading Fightin Phils (44), Jersey Shore BlueClaws (41), Frederick Keys (41), Aberdeen Ironbirds (40), Wilmington Blue Rocks (39), Harrisburg Senators (39), Lehigh Valley Iron Pigs (34), Sussex County Miners (36), Staten Island FerryHawks (36), Washington Wild Things (34) — all MILB/independent teams that hit `miscellaneous` on first pass.
+     - **Fix**: widen the backfill's subcategory filter to include `'miscellaneous'` AND `'other'`. Risk: more LLM token spend on non-sports rows; mitigate by adding a venue-rank or title-pattern pre-filter so we only spend tokens on "looks like a sports event" rows.
+
+  2. **Title pattern `" v "` (single letter) isn't recognized as a vs-game.** 6 New England Patriots games at Gillette Stadium use Ticketmaster's `New England Patriots v Buffalo Bills` format. Same for Gillette World Cup games (`2026 World Cup: Haiti v Scotland`). The classifier's LLM prompt should already handle this (LLMs read "v" as "versus"), but in practice the team_name comes back null on these rows, suggesting the prompt or the post-processing rejects them.
+     - **Fix**: audit the LLM prompt at `classify_events.js:425` to confirm it handles `" v "` and `:` prefixes ("Preseason Game 1: New England Patriots v X"). If the prompt is fine, the post-processing trim is the issue.
+
+  **Plus a separate-but-related bug:**
+
+  3. **Stale rebranded team names.** 3 Boston Legacy FC games are tagged `team_name='Boston Breakers'` — the old team name (rebranded ~2024). Carousels group by team_name so these show under a non-existent team. Curated team-name dictionary in the classifier prompt is stale.
+     - **Fix**: maintain a rename map (`'Boston Breakers' → 'Boston Legacy FC'`, etc.) and apply post-classification. Or run a one-time UPDATE.
+
+  **Audit query for the broader gap** (run when starting):
+  ```sql
+  SELECT
+    regexp_replace(title, '\s*(vs\.?|VS\.?|v\.?|@)\s.*$', '', 'i') AS inferred_team,
+    count(*) AS n
+  FROM events
+  WHERE is_active = true
+    AND team_name IS NULL
+    AND (title ILIKE '% vs %' OR title ILIKE '% vs. %' OR title ILIKE '% v %')
+    AND start_at >= now() AND start_at < now() + interval '120 days'
+  GROUP BY 1
+  ORDER BY n DESC
+  LIMIT 50;
+  ```
+  Expected output: confirms ~700+ events with null team_name, grouped by detected leading team string. Filter for in-radius (PA/NJ/MD/CT) teams = real backlog. World Cup watch parties, recreational hockey leagues ("Sweaty Bettys vs Bulldogs"), high-school games = noise to skip.
+
+  **Immediate-pain backfill quick wins** (until classifier is fixed — do as `/db-op`):
+  - New England Patriots (6 games) — `team_name IS NULL AND venue_name='Gillette Stadium' AND title ILIKE 'New England Patriots v %'`
+  - Boston Legacy FC rename (3 games) — `team_name='Boston Breakers' AND title ILIKE 'Boston Legacy FC%'`
+  - Worcester Red Sox — DONE 2026-05-27 (logged in backfills.md)
+
+  **Success criteria**: Sports tab in Boston metro shows packed rails for Red Sox / Bruins (when in season) / Celtics (when in season) / Patriots / Revolution / Banshees / Worcester Red Sox / Brockton Rox / Boston Legacy FC. No "team rail with 1 game" anomalies for pro/MILB teams in radius.
+
 - [ ] Deploy `carousels` edge function to pick up city/state filtering added in commit `1230676` on `claude/mobile-editing-support-BDTIO` (stops MA-only carousels from leaking to out-of-market users):
   ```bash
   npx supabase functions deploy carousels --project-ref blifubxslaucshmlphdc

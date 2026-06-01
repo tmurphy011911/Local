@@ -34,7 +34,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.AccessTime
+import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
+import androidx.compose.material.icons.outlined.AttachMoney
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.DirectionsCar
@@ -73,8 +74,11 @@ import kotlinx.coroutines.delay
 import kotlinx.datetime.Instant
 import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.domain.model.Event
+import live.localapp.local.domain.repository.VenueRepository
+import live.localapp.local.domain.repository.formatVenueEventCount
 import live.localapp.local.snakeToTitleCase
 import live.localapp.local.ui.theme.AppColors
+import org.koin.mp.KoinPlatform
 import live.localapp.local.ui.theme.AppFonts
 import live.localapp.local.ui.theme.AppShapes
 import live.localapp.local.ui.theme.AppType
@@ -122,9 +126,26 @@ fun EventDetailScreen(
     initialFavorited: Boolean = false,
     sharedMode: Boolean = false,
     onSaveEvent: (() -> Unit)? = null,
+    /** Tapped the venue card → open that venue's detail page. Null = non-tappable. */
+    onVenueClick: (() -> Unit)? = null,
 ) {
     val uriHandler = LocalUriHandler.current
     val clipboardManager = LocalClipboardManager.current
+
+    // Upcoming-event count for the host venue, shown on the venue card. Events
+    // carry no venue FK in the read path (see EventDto), so we resolve by the
+    // same name+city pair used elsewhere. Loads async; null until ready.
+    var venueEventCount by remember(event.id) { mutableStateOf<Int?>(null) }
+    LaunchedEffect(event.id, event.venueName) {
+        val name = event.venueName
+        if (name.isNullOrBlank()) return@LaunchedEffect
+        venueEventCount = try {
+            val repo = KoinPlatform.getKoin().get<VenueRepository>()
+            repo.getUpcomingEventsForVenue(name, event.venueCity).size
+        } catch (_: Exception) {
+            null
+        }
+    }
 
     LaunchedEffect(event.id) {
         live.localapp.local.observability.Analytics.track(
@@ -209,17 +230,9 @@ fun EventDetailScreen(
                     val wasFavorited = isFavorited
                     isFavorited = !isFavorited
                     if (!wasFavorited) {
+                        // Persistence + analytics both happen in the VM's
+                        // toggleEventFavorite (wired via onFavoriteTracked).
                         onFavoriteTracked?.invoke(event.id)
-                        live.localapp.local.observability.Analytics.track(
-                            live.localapp.local.observability.AnalyticsEvent.eventSaved(
-                                eventId = event.id,
-                                source = "event_detail",
-                            )
-                        )
-                    } else {
-                        live.localapp.local.observability.Analytics.track(
-                            live.localapp.local.observability.AnalyticsEvent.eventUnsaved(eventId = event.id)
-                        )
                     }
                 },
             )
@@ -283,16 +296,15 @@ fun EventDetailScreen(
                     Spacer(Modifier.height(10.dp))
                 }
 
-                // Venue
+                // Venue \u2014 tappable card that routes to the venue's detail page.
+                // Secondary line surfaces city \u00B7 distance \u00B7 # events at the venue.
                 if (event.venueName != null) {
-                    val venueText = buildString {
-                        append(event.venueName)
-                        if (event.venueAddress != null) append(" \u00B7 ${event.venueAddress}")
-                    }
-                    InfoRow(
-                        icon = Icons.Outlined.Place,
-                        iconTint = AppColors.Sky,
-                        text = venueText,
+                    VenueCard(
+                        venueName = event.venueName,
+                        city = event.displayCity,
+                        distanceDisplay = event.distanceDisplay,
+                        eventCount = venueEventCount,
+                        onClick = onVenueClick,
                     )
                     Spacer(Modifier.height(10.dp))
                 }
@@ -300,7 +312,7 @@ fun EventDetailScreen(
                 // Price
                 if (event.priceDisplay.isNotEmpty()) {
                     InfoRow(
-                        icon = Icons.Outlined.AccessTime,
+                        icon = Icons.Outlined.AttachMoney,
                         iconTint = if (event.isFree) AppColors.Sage else AppColors.Ink2,
                         text = event.priceDisplay,
                         textColor = if (event.isFree) AppColors.Sage else AppColors.Ink,
@@ -878,6 +890,68 @@ private fun InfoRow(
             modifier = Modifier.padding(top = 6.dp),
             style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = textColor, lineHeight = 18.sp),
         )
+    }
+}
+
+// ── Venue card ───────────────────────────────────────────────────────────────
+
+/**
+ * Venue row in the icon-chip language. Tappable when [onClick] is non-null
+ * (shows a chevron) — routes to the venue's own detail page. Secondary line
+ * surfaces city · distance · # of upcoming events at the venue.
+ */
+@Composable
+private fun VenueCard(
+    venueName: String,
+    city: String,
+    distanceDisplay: String,
+    eventCount: Int?,
+    onClick: (() -> Unit)?,
+) {
+    val secondary = buildList {
+        if (city.isNotBlank()) add(city)
+        if (distanceDisplay.isNotBlank()) add(distanceDisplay)
+        eventCount?.let { formatVenueEventCount(it) }?.let { add(it) }
+    }.joinToString(" · ")
+
+    val rowModifier = if (onClick != null) {
+        Modifier.clickable(onClick = onClick)
+    } else {
+        Modifier
+    }
+
+    Row(
+        modifier = rowModifier,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier.size(32.dp).background(AppColors.Mist, AppShapes.IconBox).border(1.5.dp, AppColors.Pebble, AppShapes.IconBox),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.Outlined.Place, null, Modifier.size(16.dp), tint = AppColors.Sky)
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                venueName,
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = AppColors.Ink, lineHeight = 18.sp),
+            )
+            if (secondary.isNotEmpty()) {
+                Text(
+                    secondary,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3, lineHeight = 16.sp),
+                )
+            }
+        }
+        if (onClick != null) {
+            Spacer(Modifier.width(8.dp))
+            Icon(
+                Icons.AutoMirrored.Outlined.KeyboardArrowRight,
+                contentDescription = "View venue",
+                modifier = Modifier.size(20.dp),
+                tint = AppColors.Ink3,
+            )
+        }
     }
 }
 

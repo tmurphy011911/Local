@@ -31,9 +31,32 @@ struct EventDetailData {
     /// crawler had only a date and defaulted to midnight Eastern. UI shows
     /// "Time TBD" instead of "12:00 AM" for false rows.
     var timeKnown: Bool = true
+    /// Distance to the venue in miles; negative when unknown. Drives the
+    /// venue card's secondary line.
+    var venueDistanceMiles: Double = -1
+    /// Upcoming-event count at this venue. Resolved async (events carry no
+    /// venue FK) and pushed via the bridge after present; 0 until known.
+    var venueUpcomingEventCount: Int = 0
 
     var ctaUrl: String? { ticketUrl ?? sourceUrl }
     var hasLocation: Bool { venueLat != 0 && venueLng != 0 }
+
+    /// Trimmed city for the venue card; nil when blank. Strips a trailing
+    /// source qualifier the crawler leaks into venue_city, e.g.
+    /// "Philadelphia, PA (CVB)" → "Philadelphia, PA".
+    var displayCity: String? {
+        var c = venueCity.trimmingCharacters(in: .whitespaces)
+        if let open = c.lastIndex(of: "("), c.hasSuffix(")") {
+            c = String(c[..<open]).trimmingCharacters(in: .whitespaces)
+        }
+        return c.isEmpty ? nil : c
+    }
+
+    /// "X.X mi" when distance is known (>= 0), else nil.
+    var distanceDisplay: String? {
+        guard venueDistanceMiles >= 0 else { return nil }
+        return String(format: "%.1f mi", venueDistanceMiles)
+    }
 
     var categoryDisplay: String {
         let raw = subcategory ?? category
@@ -226,6 +249,13 @@ struct EventDetailView: View {
     @State private var mapsExpanded = false
     @State private var rideExpanded = false
     @State private var shareCopied = false
+    /// Fire event_viewed exactly once per presentation. Mirrors the Compose
+    /// EventDetailScreen's LaunchedEffect(event.id); without this the native
+    /// (feed-opened) detail path is invisible to product analytics on iOS.
+    @State private var didTrackView = false
+    /// Venue's upcoming-event count. Seeded from the event payload (usually 0
+    /// at present time) and updated async via the bridge notification.
+    @State private var venueEventCount: Int
 
     init(event: EventDetailData, onDismiss: @escaping () -> Void, onFavorite: ((String) -> Void)? = nil) {
         self.event = event
@@ -233,6 +263,7 @@ struct EventDetailView: View {
         self.onDismiss = onDismiss
         self._countdown = State(initialValue: computeCountdown(startAt: event.startAt))
         self._isFavorited = State(initialValue: event.isFavorited)
+        self._venueEventCount = State(initialValue: Int(event.venueUpcomingEventCount))
     }
 
     var body: some View {
@@ -251,8 +282,24 @@ struct EventDetailView: View {
             }
         }
         .background(AppColor.snow)
+        .onAppear {
+            guard !didTrackView else { return }
+            didTrackView = true
+            Analytics.shared.track(event: AnalyticsEvent.Events.shared.eventViewed(
+                eventId: event.id,
+                source: "feed",
+                positionInFeed: nil,
+                eventMetro: event.venueCity
+            ))
+        }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
             countdown = computeCountdown(startAt: event.startAt)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .eventVenueCountDidUpdate)) { note in
+            guard let info = note.userInfo,
+                  (info["eventId"] as? String) == event.id,
+                  let count = info["count"] as? Int else { return }
+            venueEventCount = count
         }
         .onChange(of: shareCopied) { copied in
             if copied {
@@ -324,6 +371,10 @@ struct EventDetailView: View {
                     HStack(spacing: 8) {
                         Spacer()
                         heroIconButton(systemName: "square.and.arrow.up") {
+                            Analytics.shared.track(event: AnalyticsEvent.Events.shared.eventShareTapped(
+                                eventId: event.id,
+                                shareChannel: "system_sheet"
+                            ))
                             let shareUrl = "https://localapp.live/e/\(event.id)"
                             let shareText = event.title
                             ShareBridge.shared.presentShareSheet?(shareText, shareUrl)
@@ -475,23 +526,17 @@ struct EventDetailView: View {
                 Spacer().frame(height: 10)
             }
 
-            // Venue
+            // Venue — tappable card that opens the venue's detail screen and
+            // surfaces city · distance · upcoming-event count on a secondary line.
             if let venueName = event.venueName {
-                let venueText = event.venueAddress != nil
-                    ? "\(venueName) \u{00B7} \(event.venueAddress!)"
-                    : venueName
-                infoRow(
-                    systemName: "mappin.and.ellipse",
-                    iconColor: AppColor.sky,
-                    text: venueText
-                )
+                venueCard(venueName: venueName)
                 Spacer().frame(height: 10)
             }
 
             // Price
             if !event.priceDisplay.isEmpty {
                 infoRow(
-                    systemName: "clock",
+                    systemName: "dollarsign",
                     iconColor: event.isFree ? AppColor.sage : AppColor.ink2,
                     text: event.priceDisplay,
                     textColor: event.isFree ? AppColor.sage : AppColor.ink
@@ -641,6 +686,58 @@ struct EventDetailView: View {
                 .lineSpacing(5)
                 .padding(.top, 6)
         }
+    }
+
+    // MARK: - Venue Card
+
+    /// Builds the "City · X.X mi · N events" secondary line, dropping any parts
+    /// that aren't known yet.
+    private var venueSecondaryLine: String? {
+        var parts: [String] = []
+        if let city = event.displayCity { parts.append(city) }
+        if let dist = event.distanceDisplay { parts.append(dist) }
+        if let countText = formatVenueEventCount(venueEventCount) { parts.append(countText) }
+        return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
+    }
+
+    private func venueCard(venueName: String) -> some View {
+        Button {
+            EventDetailBridge.shared.onVenueTap?(venueName, event.venueCity)
+        } label: {
+            HStack(alignment: .center, spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(AppColor.mist)
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(AppColor.pebble, lineWidth: 1.5)
+                    Image(systemName: "mappin.and.ellipse")
+                        .font(AppFont.body(13, weight: .medium))
+                        .foregroundColor(AppColor.sky)
+                }
+                .frame(width: 32, height: 32)
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(venueName)
+                        .font(AppFont.body(13, weight: .bold))
+                        .foregroundColor(AppColor.ink)
+                        .lineLimit(1)
+                    if let secondary = venueSecondaryLine {
+                        Text(secondary)
+                            .font(AppFont.body(12, weight: .semibold))
+                            .foregroundColor(AppColor.ink3)
+                            .lineLimit(1)
+                    }
+                }
+
+                Spacer(minLength: 0)
+
+                Image(systemName: "chevron.right")
+                    .font(AppFont.body(12, weight: .bold))
+                    .foregroundColor(AppColor.ink3)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
     }
 
     // MARK: - CTA Bar

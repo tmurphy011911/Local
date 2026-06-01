@@ -504,14 +504,16 @@ const SYSTEM_PROMPT = `You are an event data extraction assistant. You receive r
 
 Rules:
 - Extract ALL events — do not skip any
-- Dates in ISO 8601 (YYYY-MM-DD or YYYY-MM-DDTHH:MM:SS)
+- Dates in ISO 8601. Prefer the full \`YYYY-MM-DDTHH:MM:SS\` form. Use date-only \`YYYY-MM-DD\` ONLY when the page truly has no time of day for that event.
+- TIME OF DAY IS REQUIRED WHEN VISIBLE. If the page shows any time indicator next to the event — "7 PM", "19:00", "Doors 6:30", "7:00pm", "Show starts at 8", a clock icon followed by digits, or an embedded ISO datetime in JSON-LD / meta tags — \`start_date\` MUST include that time. Returning date-only when a time is present on the page is a defect, not a fallback.
+- If multiple times are shown for the same event (e.g., doors + show), use the SHOW time. If only "doors" is shown, use that.
 - If year is missing, assume ${YEAR} (or ${YEAR + 1} if month already passed)
 - Today is ${TODAY} — use this as the starting point for all date calculations
 - For exhibitions/runs, set both start_date and end_date
-- Set confidence 0.0-1.0 based on clarity of extracted data
+- Set confidence 0.0-1.0 based on clarity of extracted data. If you used date-only because the page genuinely had no time, set confidence ≤ 0.6 so downstream can flag it.
 - RECURRING EVENTS: When you detect a recurring event (e.g. "Every Sunday", "Weekly", "First Friday of every month", "Daily", "Every Monday and Wednesday"), you MUST expand it into separate individual event entries for EACH occurrence over the next 6 weeks starting from ${TODAY}. Do NOT create a single entry for a recurring event.
-  - Each expanded entry must have its own specific start_date with the correct calendar date
-  - Append the specific date to the title so each entry is distinguishable (e.g. "SOWA Sunday - March 22", "SOWA Sunday - March 29", "Trivia Night - March 24", "Trivia Night - March 31")
+  - Each expanded entry must have its own specific start_date with the correct calendar date — that date is what distinguishes the occurrences, so it lives in start_date, NOT the title.
+  - Do NOT append the date (or any "- March 22" style suffix) to the title. Each occurrence keeps the clean base title (e.g. "SOWA Sunday", "Trivia Night"); the date is stored separately in start_date and rendered from there.
   - Mention the recurrence pattern in the description (e.g. "Recurring weekly every Sunday")
   - Use a confidence of 0.7 for expanded recurring entries since the specific dates are inferred
 - Return ONLY valid JSON, no other text`;
@@ -660,7 +662,7 @@ function normalizeEvent(event, venue) {
     // venue's photo. The migration backfill query handles existing rows.
     image_url: event.image_url || venue.photo_url || null,
     status: "active",
-    venue_name: venue.name,
+    venue_name: decodeXmlEntities(venue.name),
     venue_address: null,
     venue_city: venue.city,
     venue_state: venue.state || null,
@@ -668,7 +670,12 @@ function normalizeEvent(event, venue) {
     venue_lng: venue.lng ? parseFloat(venue.lng) : null,
     source: "crawl",
     source_id: sourceId,
-    source_url: event.source_url || venue.events_url || null,
+    // For aggregator venues (Harvard Square, Creative Legion, etc.) padding
+    // source_url with the parent listing page sabotages split_aggregator_events.js
+    // — its JSON-LD path returns whichever Event happens to be first on the
+    // listing, not this row's actual venue. Leave null when the adapter didn't
+    // extract a per-event link so the splitter falls through to title hints.
+    source_url: event.source_url || (venue.is_aggregator ? null : venue.events_url) || null,
     confidence_score: event.confidence ?? 0.5,
     needs_review: (event.confidence ?? 0.5) < 0.7,
     dedupe_hash: `crawl:${sourceId}`,
@@ -702,6 +709,72 @@ async function updateVenueCrawlStatus(venueId, success, currentRate) {
 
 // ── Upsert events to Supabase ──
 
+// Shadow guard: a date-only crawler pass (time_known=false) must not insert
+// a new row when an existing time_known=true row already represents the same
+// event. Without this, a single LLM jitter run can resurrect a midnight-EDT
+// duplicate alongside the correct row — exactly the Boch/Shubert symptom that
+// produced 4 rows for one show. One round-trip per batch.
+function shadowKey(title, startAt, venueName) {
+  const titleKey = (title || "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 30);
+  if (!startAt || !venueName || !titleKey) return null;
+  const d = new Date(startAt);
+  if (isNaN(d.getTime())) return null;
+  const month = d.getUTCMonth();
+  const offsetHours = (month >= 2 && month <= 10) ? 4 : 5;
+  const dateET = new Date(d.getTime() - offsetHours * 3600 * 1000).toISOString().slice(0, 10);
+  return `${venueName}::${dateET}::${titleKey}`;
+}
+
+async function filterDateOnlyShadows(batch) {
+  const dateOnly = batch.filter((r) => r.time_known === false && r.start_at && r.venue_name);
+  if (dateOnly.length === 0) return batch;
+
+  const venues = [...new Set(dateOnly.map((r) => r.venue_name))];
+  const dates = dateOnly.map((r) => r.start_at.slice(0, 10)).sort();
+  const minDate = dates[0];
+  // Add one day to the max so the half-open range covers the last day's events
+  const maxDateMs = Date.parse(dates[dates.length - 1] + "T00:00:00Z") + 86_400_000;
+  const maxDate = new Date(maxDateMs).toISOString().slice(0, 10);
+
+  const venueIn = venues.map((v) => `"${v.replace(/"/g, '\\"')}"`).join(",");
+  const url = `${SUPABASE_URL}/rest/v1/events?` +
+    `select=title,start_at,venue_name` +
+    `&venue_name=in.(${encodeURIComponent(venueIn)})` +
+    `&start_at=gte.${minDate}` +
+    `&start_at=lt.${maxDate}` +
+    `&time_known=eq.true` +
+    `&is_active=eq.true`;
+  let existing = [];
+  try {
+    const res = await fetch(url, {
+      headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` },
+    });
+    if (res.ok) existing = await res.json();
+  } catch { /* fail open — never block a crawl on this guard */ }
+
+  if (existing.length === 0) return batch;
+
+  const shadowed = new Set();
+  for (const e of existing) {
+    const k = shadowKey(e.title, e.start_at, e.venue_name);
+    if (k) shadowed.add(k);
+  }
+
+  const kept = [];
+  let dropped = 0;
+  for (const r of batch) {
+    if (r.time_known === false) {
+      const k = shadowKey(r.title, r.start_at, r.venue_name);
+      if (k && shadowed.has(k)) { dropped++; continue; }
+    }
+    kept.push(r);
+  }
+  if (dropped > 0) {
+    console.log(`  Shadow guard: dropped ${dropped} date-only rows shadowed by existing time_known=true rows`);
+  }
+  return kept;
+}
+
 async function upsertEvents(rows) {
   const url = `${SUPABASE_URL}/rest/v1/events?on_conflict=dedupe_hash`;
   const batchSize = 50;
@@ -715,7 +788,9 @@ async function upsertEvents(rows) {
   }
 
   for (let i = 0; i < deduped.length; i += batchSize) {
-    const batch = deduped.slice(i, i + batchSize);
+    const rawBatch = deduped.slice(i, i + batchSize);
+    const batch = await filterDateOnlyShadows(rawBatch);
+    if (batch.length === 0) continue;
     const res = await fetch(url, {
       method: "POST",
       headers: {
@@ -786,7 +861,7 @@ async function crawlBiblioCommons(venue, libraryCode) {
           start_date: startIso,
           end_date: def.end ? def.end + ":00Z" : null,
           description: descClean || null,
-          source_url: `https://${libraryCode}.bibliocommons.com/v2/events/${id}`,
+          source_url: `https://${libraryCode}.bibliocommons.com/events/${id}`,
           venue_override: branchName,
         });
       }

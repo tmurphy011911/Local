@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
@@ -37,6 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
@@ -131,6 +133,19 @@ fun PlanDetailScreen(
     onDeletePlan: () -> Unit = {},
     onSetSlotReserved: (dayIndex: Int, slotId: String, reserved: Boolean) -> Unit = { _, _, _ -> },
     onReplaceSlot: (dayIndex: Int, slot: PlanSlot) -> Unit = { _, _ -> },
+    // Slot card tap → parent opens the matching native/Compose event or venue
+    // detail screen. iOS parity for "tap a stop to see more." When omitted,
+    // the card falls back to opening its inline overflow menu.
+    onSlotTap: (slot: PlanSlot) -> Unit = { _ -> },
+    // Slot state-machine handlers (iOS parity). Detail capture (party size /
+    // ticket count) defaults to going-count in this Phase 1; richer pickers
+    // can land in a follow-up.
+    onSaveReservationDetails: (dayIndex: Int, slotId: String, partySize: Int, time: String) -> Unit = { _, _, _, _ -> },
+    onReservationUnavailable: (dayIndex: Int, slotId: String) -> Unit = { _, _ -> },
+    onClearReservation: (dayIndex: Int, slotId: String) -> Unit = { _, _ -> },
+    onSaveTicketDetails: (dayIndex: Int, slotId: String, ticketCount: Int) -> Unit = { _, _, _ -> },
+    onTicketsUnavailable: (dayIndex: Int, slotId: String) -> Unit = { _, _ -> },
+    onClearTickets: (dayIndex: Int, slotId: String) -> Unit = { _, _ -> },
     userLat: Double? = null,
     userLng: Double? = null,
 ) {
@@ -148,6 +163,9 @@ fun PlanDetailScreen(
     var confirmDeletePlan by remember { mutableStateOf(false) }
     var addEventDayIndex by remember { mutableStateOf<Int?>(null) }
     var selectedDayIndex by remember { mutableStateOf(0) }
+    // Active stop-action sheet (Reservation / Tickets / Unavailable chooser).
+    // Drives all chip-tap flows; null = no sheet visible.
+    var activeStopSheet by remember(plan.id) { mutableStateOf<StopSheetTarget?>(null) }
 
     // Creator-side badge claim. INVITE_ACCEPTED / GROUP_5_CONFIRMED /
     // GROUP_10_CONFIRMED milestones belong to the plan creator, awarded the
@@ -366,6 +384,24 @@ fun PlanDetailScreen(
                                             onMarkReserved = { onSetSlotReserved(effectiveDayIndex, slot.id, true) },
                                             onMarkNotReserved = { onSetSlotReserved(effectiveDayIndex, slot.id, false) },
                                             onReplace = { onReplaceSlot(effectiveDayIndex, slot) },
+                                            onSlotTap = { onSlotTap(slot) },
+                                            onOpenReservation = {
+                                                // Confirmed reservation → jump straight to the
+                                                // details sheet in edit mode (Clear button visible).
+                                                // Otherwise show the parent Reservation chooser.
+                                                activeStopSheet = if (slot.reservationState == live.localapp.local.domain.model.ReservationState.MADE) {
+                                                    StopSheetTarget.ReservationDetails(slot, effectiveDayIndex, isEditing = true)
+                                                } else {
+                                                    StopSheetTarget.Reservation(slot, effectiveDayIndex)
+                                                }
+                                            },
+                                            onOpenTickets = {
+                                                activeStopSheet = if (slot.ticketState == live.localapp.local.domain.model.TicketState.BOUGHT) {
+                                                    StopSheetTarget.TicketDetails(slot, effectiveDayIndex, isEditing = true)
+                                                } else {
+                                                    StopSheetTarget.Tickets(slot, effectiveDayIndex)
+                                                }
+                                            },
                                         )
                                     }
                                 }
@@ -550,6 +586,91 @@ fun PlanDetailScreen(
                     showGroupSizeSheet = false
                 },
             )
+        }
+
+        // Stop-action sheets (chip-driven). Phase 2: "I have a reservation"
+        // and "Tickets already bought" route into dedicated detail sheets
+        // (party-size + time stepper, ticket-count stepper) instead of
+        // saving with attendee-count defaults — iOS parity.
+        val goingCount = plan.attendees.count { it.confirmed }.coerceAtLeast(1)
+        when (val sheet = activeStopSheet) {
+            is StopSheetTarget.Reservation -> ReservationSheet(
+                slot = sheet.slot,
+                onMakeReservation = { activeStopSheet = null },
+                onMarkUnavailable = {
+                    activeStopSheet = StopSheetTarget.UnavailableReservation(sheet.slot, sheet.dayIdx)
+                },
+                onAlreadyBooked = {
+                    activeStopSheet = StopSheetTarget.ReservationDetails(sheet.slot, sheet.dayIdx, isEditing = false)
+                },
+                onDismiss = { activeStopSheet = null },
+            )
+            is StopSheetTarget.ReservationDetails -> ReservationDetailsSheet(
+                slot = sheet.slot,
+                goingCount = goingCount,
+                isEditing = sheet.isEditing,
+                onSave = { partySize, time ->
+                    onSaveReservationDetails(sheet.dayIdx, sheet.slot.id, partySize, time)
+                    activeStopSheet = null
+                },
+                onClear = {
+                    onClearReservation(sheet.dayIdx, sheet.slot.id)
+                    activeStopSheet = null
+                },
+                onDismiss = { activeStopSheet = null },
+            )
+            is StopSheetTarget.Tickets -> TicketsSheet(
+                slot = sheet.slot,
+                onGetTickets = { activeStopSheet = null },
+                onMarkUnavailable = {
+                    activeStopSheet = StopSheetTarget.UnavailableTicket(sheet.slot, sheet.dayIdx)
+                },
+                onAlreadyBought = {
+                    activeStopSheet = StopSheetTarget.TicketDetails(sheet.slot, sheet.dayIdx, isEditing = false)
+                },
+                onDismiss = { activeStopSheet = null },
+            )
+            is StopSheetTarget.TicketDetails -> TicketDetailsSheet(
+                slot = sheet.slot,
+                goingCount = goingCount,
+                isEditing = sheet.isEditing,
+                onSave = { count ->
+                    onSaveTicketDetails(sheet.dayIdx, sheet.slot.id, count)
+                    activeStopSheet = null
+                },
+                onClear = {
+                    onClearTickets(sheet.dayIdx, sheet.slot.id)
+                    activeStopSheet = null
+                },
+                onDismiss = { activeStopSheet = null },
+            )
+            is StopSheetTarget.UnavailableReservation -> UnavailableActionSheet(
+                title = "No reservations for ${sheet.slot.name}",
+                subtitle = "Swap it for something else or take it off the plan.",
+                onReplace = {
+                    onReplaceSlot(sheet.dayIdx, sheet.slot)
+                    activeStopSheet = null
+                },
+                onRemove = {
+                    onRemoveSlot(sheet.dayIdx, sheet.slot.id)
+                    activeStopSheet = null
+                },
+                onDismiss = { activeStopSheet = null },
+            )
+            is StopSheetTarget.UnavailableTicket -> UnavailableActionSheet(
+                title = "No tickets for ${sheet.slot.name}",
+                subtitle = "Swap it for something else or take it off the plan.",
+                onReplace = {
+                    onReplaceSlot(sheet.dayIdx, sheet.slot)
+                    activeStopSheet = null
+                },
+                onRemove = {
+                    onRemoveSlot(sheet.dayIdx, sheet.slot.id)
+                    activeStopSheet = null
+                },
+                onDismiss = { activeStopSheet = null },
+            )
+            null -> Unit
         }
 
         emptyDayIndexToConfirm?.let { idx ->
@@ -1664,11 +1785,14 @@ private fun V5SlotCard(
     onMarkReserved: () -> Unit = {},
     onMarkNotReserved: () -> Unit = {},
     onReplace: () -> Unit = {},
-    // iOS parity: tapping the slot card body opens reservation/ticket/swap
-    // detail. Android currently has no detail sheet on this path, so the
-    // default opens the existing menu (via the menu-open state below). The
-    // parent caller can supply a non-default to route into a detail screen.
-    onSlotTap: ((String) -> Unit)? = null,
+    // iOS parity: tapping the slot card body opens the venue/event detail
+    // screen. Parent provides the action; when null, falls back to opening
+    // the inline overflow menu so the card is never a dead tap target.
+    onSlotTap: (() -> Unit)? = null,
+    // Chip-driven state-machine entry points (iOS parity). Parent renders the
+    // matching ReservationSheet / TicketsSheet when invoked.
+    onOpenReservation: () -> Unit = {},
+    onOpenTickets: () -> Unit = {},
 ) {
     val uriHandler = LocalUriHandler.current
     var showDirectionsSheet by remember { mutableStateOf(false) }
@@ -1683,14 +1807,15 @@ private fun V5SlotCard(
             // iOS parity: 14pt corner radius + 2pt coralDk overlay stroke.
             // (Was 16.dp + 1.dp V5Line; pulled in 2026-05-19 to match iOS.)
             .localCardSurface(cornerRadius = 14.dp, borderWidth = 2.dp, borderColor = V5CoralDk)
-            // Slot body is tappable. Falls back to opening the inline menu so
-            // the card is never a dead tap target on Android.
+            // Slot body is tappable. Use clickable (not pointerInput) — the
+            // lambda is invoked fresh each tap so there's no stale-capture
+            // risk like the For-Kids→Sports misroute (2026-05-20).
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = {
                     val tap = onSlotTap
-                    if (tap != null) tap(slot.id) else menuOpen = true
+                    if (tap != null) tap() else menuOpen = true
                 },
             )
             .padding(12.dp),
@@ -1839,7 +1964,13 @@ private fun V5SlotCard(
                 }
             }
             Spacer(Modifier.height(6.dp))
-            SlotCtas(slot, readOnly = readOnly, onDirections = { showDirectionsSheet = true })
+            SlotCtas(
+                slot = slot,
+                readOnly = readOnly,
+                onDirections = { showDirectionsSheet = true },
+                onOpenReservation = onOpenReservation,
+                onOpenTickets = onOpenTickets,
+            )
         }
     }
 }
@@ -2148,51 +2279,74 @@ private fun EditPlanNameSheet(currentName: String, onDismiss: () -> Unit, onSave
 //   - Anything with coords: "Directions" → DirectionsSheet.
 
 @Composable
-private fun SlotCtas(slot: PlanSlot, readOnly: Boolean, onDirections: () -> Unit) {
-    val uriHandler = LocalUriHandler.current
+private fun SlotCtas(
+    slot: PlanSlot,
+    readOnly: Boolean,
+    onDirections: () -> Unit,
+    onOpenReservation: () -> Unit,
+    onOpenTickets: () -> Unit,
+) {
     val hasLocation = slot.venueLat != null && slot.venueLng != null
     val isRestaurant = isRestaurantSlot(slot)
+    val isTicketed = slot.eventId != null && !slot.ticketUrl.isNullOrBlank()
 
-    val openTableUrl: String = run {
-        // V1: no affiliate ID, just deep-link to OpenTable's search for the venue.
-        // If the slot already has a reservation URL on it, prefer that.
-        slot.reservationUrl?.takeIf { it.isNotBlank() }
-            ?: "https://www.opentable.com/s?term=${slot.name.replace(" ", "+")}+${slot.venueAddress?.substringAfter(",")?.trim()?.substringBefore(",")?.replace(" ", "+") ?: ""}"
-    }
-
+    // iOS parity: primary state-aware chip + Directions chip on the same row.
+    // - Restaurant: "Reservation" / "Booked · N" / "No reservations" (or "View
+    //   booking" on read-only when confirmed).
+    // - Ticketed: "Tickets" / "N tickets" with green check / "No tickets".
+    // - Free RSVP / venue stops: no primary chip, Directions only.
+    // Tapping primary chip opens the corresponding sheet; Directions opens
+    // the existing DirectionsSheet.
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         when {
-            // View booking remains available on past/read-only plans for confirmed reservations.
-            isRestaurant && slot.isReserved -> {
-                ActionChip(
-                    label = "View booking",
-                    icon = Icons.Outlined.Check,
-                    onClick = { uriHandler.openUri(openTableUrl) },
-                )
+            isRestaurant && slot.reservationState == live.localapp.local.domain.model.ReservationState.MADE -> {
+                val label = slot.reservationPartySize?.let { "Booked · $it" } ?: "Booked"
+                StateChip(label = label, icon = Icons.Outlined.Check, accent = V5Green, onClick = { if (!readOnly) onOpenReservation() })
             }
-            // Per spec §9: past plans show no "Make reservation" chip.
+            isRestaurant && slot.reservationState == live.localapp.local.domain.model.ReservationState.UNAVAILABLE -> {
+                StateChip(label = "No reservations", icon = Icons.Outlined.Close, accent = V5Coral, onClick = { if (!readOnly) onOpenReservation() })
+            }
             isRestaurant && !readOnly -> {
-                ActionChip(
-                    label = "Make reservation",
-                    icon = Icons.Outlined.Place,
-                    onClick = { uriHandler.openUri(openTableUrl) },
-                )
+                ActionChip(label = "Reservation", icon = Icons.Outlined.Place, onClick = onOpenReservation)
             }
-            slot.ticketUrl != null -> {
-                ActionChip(
-                    label = "Tickets",
-                    icon = Icons.Outlined.AutoAwesome,
-                    onClick = { uriHandler.openUri(slot.ticketUrl!!) },
-                )
+            isTicketed && slot.ticketState == live.localapp.local.domain.model.TicketState.BOUGHT -> {
+                val count = slot.ticketCount ?: 1
+                val label = "$count ${if (count == 1) "ticket" else "tickets"}"
+                StateChip(label = label, icon = Icons.Outlined.Check, accent = V5Green, onClick = { if (!readOnly) onOpenTickets() })
             }
-            hasLocation -> {
-                ActionChip(
-                    label = "Directions",
-                    icon = Icons.Outlined.Place,
-                    onClick = onDirections,
-                )
+            isTicketed && slot.ticketState == live.localapp.local.domain.model.TicketState.UNAVAILABLE -> {
+                StateChip(label = "No tickets", icon = Icons.Outlined.Close, accent = V5Coral, onClick = { if (!readOnly) onOpenTickets() })
+            }
+            isTicketed && !readOnly -> {
+                ActionChip(label = "Tickets", icon = Icons.Outlined.AutoAwesome, onClick = onOpenTickets)
             }
         }
+        if (hasLocation) {
+            ActionChip(label = "Directions", icon = Icons.Outlined.Place, onClick = onDirections)
+        }
+    }
+}
+
+@Composable
+private fun StateChip(label: String, icon: ImageVector, accent: Color, onClick: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(20.dp))
+            .background(accent.copy(alpha = 0.12f))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = accent, modifier = Modifier.size(13.dp))
+        Spacer(Modifier.width(5.dp))
+        Text(
+            label,
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = accent),
+        )
     }
 }
 
@@ -2277,5 +2431,452 @@ private fun inferMealType(time: String): String {
         hour in 17..20 -> "Dinner"
         hour >= 21 -> "Drinks"
         else -> ""
+    }
+}
+
+// ─── Stop-action sheets (iOS parity for chip-driven Reservation/Tickets) ────
+//
+// Mirrors the iOS PlanDetailView StopSheet flow. The slot's primary-action
+// chip opens ReservationSheet or TicketsSheet; the unavailable CTA in each
+// bounces through UnavailableActionSheet (Replace event / Remove event)
+// instead of jumping straight to Bo. Detail capture (party-size + time for
+// reservations, ticket count for tickets) is currently bound to sensible
+// defaults — full pickers can come in a Phase 2.
+
+internal sealed interface StopSheetTarget {
+    val slot: PlanSlot
+    val dayIdx: Int
+
+    data class Reservation(override val slot: PlanSlot, override val dayIdx: Int) : StopSheetTarget
+    data class ReservationDetails(override val slot: PlanSlot, override val dayIdx: Int, val isEditing: Boolean) : StopSheetTarget
+    data class Tickets(override val slot: PlanSlot, override val dayIdx: Int) : StopSheetTarget
+    data class TicketDetails(override val slot: PlanSlot, override val dayIdx: Int, val isEditing: Boolean) : StopSheetTarget
+    data class UnavailableReservation(override val slot: PlanSlot, override val dayIdx: Int) : StopSheetTarget
+    data class UnavailableTicket(override val slot: PlanSlot, override val dayIdx: Int) : StopSheetTarget
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ReservationSheet(
+    slot: PlanSlot,
+    onMakeReservation: () -> Unit,
+    onMarkUnavailable: () -> Unit,
+    onAlreadyBooked: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val uriHandler = LocalUriHandler.current
+    val reservationUrl = slot.reservationUrl?.takeIf { it.isNotBlank() }
+        ?: "https://www.opentable.com/s?term=${slot.name.replace(" ", "+")}"
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = Color.White,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        dragHandle = {
+            Box(Modifier.padding(top = 12.dp, bottom = 8.dp).size(width = 44.dp, height = 5.dp).background(V5Line, RoundedCornerShape(3.dp)))
+        },
+    ) {
+        StopActionSheetBody(
+            title = "Reservation at ${slot.name}",
+            subtitle = "Make it official, mark it unavailable, or save what you've already booked.",
+            primary = StopAction("Make reservation", Icons.Outlined.Place) {
+                uriHandler.openUri(reservationUrl)
+                onDismiss()
+            },
+            secondaries = listOf(
+                StopAction("No reservations available", Icons.Outlined.Close, onMarkUnavailable),
+                StopAction("I have a reservation", Icons.Outlined.Check, onAlreadyBooked),
+            ),
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TicketsSheet(
+    slot: PlanSlot,
+    onGetTickets: () -> Unit,
+    onMarkUnavailable: () -> Unit,
+    onAlreadyBought: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val uriHandler = LocalUriHandler.current
+    val ticketUrl = slot.ticketUrl?.takeIf { it.isNotBlank() }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = Color.White,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        dragHandle = {
+            Box(Modifier.padding(top = 12.dp, bottom = 8.dp).size(width = 44.dp, height = 5.dp).background(V5Line, RoundedCornerShape(3.dp)))
+        },
+    ) {
+        StopActionSheetBody(
+            title = "Tickets for ${slot.name}",
+            subtitle = "Get them now, mark sold out, or save the ones you've already bought.",
+            primary = StopAction("Get tickets", Icons.Outlined.AutoAwesome) {
+                if (ticketUrl != null) uriHandler.openUri(ticketUrl)
+                onDismiss()
+            },
+            secondaries = listOf(
+                StopAction("No tickets available", Icons.Outlined.Close, onMarkUnavailable),
+                StopAction("Tickets already bought", Icons.Outlined.Check, onAlreadyBought),
+            ),
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun UnavailableActionSheet(
+    title: String,
+    subtitle: String,
+    onReplace: () -> Unit,
+    onRemove: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = Color.White,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        dragHandle = {
+            Box(Modifier.padding(top = 12.dp, bottom = 8.dp).size(width = 44.dp, height = 5.dp).background(V5Line, RoundedCornerShape(3.dp)))
+        },
+    ) {
+        StopActionSheetBody(
+            title = title,
+            subtitle = subtitle,
+            primary = StopAction("Replace event", Icons.Outlined.AutoAwesome, onReplace),
+            secondaries = listOf(
+                StopAction("Remove event", Icons.Outlined.Delete, onRemove),
+            ),
+        )
+    }
+}
+
+private data class StopAction(val label: String, val icon: ImageVector, val onClick: () -> Unit)
+
+// ─── Detail-capture sheets (party size + time; ticket count) ─────────
+//
+// Phase 2 of the chip-system parity. Opened from the "I have a
+// reservation" / "Tickets already bought" CTAs on the parent sheets,
+// or directly from a confirmed state chip in edit mode (shows Clear).
+// Mirrors iOS ReservationDetailsSheet / TicketDetailsSheet (stepper
+// UX kept simple — wheel-style time picker on iOS is a single 30-min
+// stepper here, good enough for V1).
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ReservationDetailsSheet(
+    slot: PlanSlot,
+    goingCount: Int,
+    isEditing: Boolean,
+    onSave: (partySize: Int, time: String) -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var partySize by remember(slot.id) {
+        mutableStateOf((slot.reservationPartySize ?: goingCount).coerceIn(1, 20))
+    }
+    var minutes by remember(slot.id) {
+        mutableStateOf(parseTimeToMinutesOfDay(slot.reservationTime?.ifBlank { null } ?: slot.time) ?: (18 * 60))
+    }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = Color.White,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        dragHandle = {
+            Box(Modifier.padding(top = 12.dp, bottom = 8.dp).size(width = 44.dp, height = 5.dp).background(V5Line, RoundedCornerShape(3.dp)))
+        },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+        ) {
+            Text(
+                "Reservation details",
+                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = V5Ink),
+            )
+            Spacer(Modifier.height(16.dp))
+            StepperRow(
+                label = "Number of people",
+                value = partySize,
+                onMinus = { if (partySize > 1) partySize -= 1 },
+                onPlus = { if (partySize < 20) partySize += 1 },
+                minusEnabled = partySize > 1,
+                plusEnabled = partySize < 20,
+            )
+            Spacer(Modifier.height(16.dp))
+            StepperRow(
+                label = "Reservation time",
+                value = formatMinutesOfDay(minutes),
+                onMinus = { minutes = ((minutes - 30) + 24 * 60) % (24 * 60) },
+                onPlus = { minutes = (minutes + 30) % (24 * 60) },
+                minusEnabled = true,
+                plusEnabled = true,
+                wide = true,
+            )
+            Spacer(Modifier.height(20.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(V5Coral)
+                    .clickable { onSave(partySize, formatMinutesOfDay(minutes)) }
+                    .padding(vertical = 14.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "Save",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.White),
+                )
+            }
+            if (isEditing) {
+                Spacer(Modifier.height(6.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onClear() }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.Delete, contentDescription = null, tint = V5Coral, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "Clear reservation",
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = V5Coral),
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun TicketDetailsSheet(
+    slot: PlanSlot,
+    goingCount: Int,
+    isEditing: Boolean,
+    onSave: (count: Int) -> Unit,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var count by remember(slot.id) {
+        mutableStateOf((slot.ticketCount ?: goingCount).coerceIn(1, 20))
+    }
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = Color.White,
+        shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp),
+        dragHandle = {
+            Box(Modifier.padding(top = 12.dp, bottom = 8.dp).size(width = 44.dp, height = 5.dp).background(V5Line, RoundedCornerShape(3.dp)))
+        },
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+        ) {
+            Text(
+                "Ticket details",
+                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = V5Ink),
+            )
+            Spacer(Modifier.height(16.dp))
+            StepperRow(
+                label = "Number of tickets",
+                value = count,
+                onMinus = { if (count > 1) count -= 1 },
+                onPlus = { if (count < 20) count += 1 },
+                minusEnabled = count > 1,
+                plusEnabled = count < 20,
+            )
+            Spacer(Modifier.height(20.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(V5Coral)
+                    .clickable { onSave(count) }
+                    .padding(vertical = 14.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "Save",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = Color.White),
+                )
+            }
+            if (isEditing) {
+                Spacer(Modifier.height(6.dp))
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onClear() }
+                        .padding(vertical = 10.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.Delete, contentDescription = null, tint = V5Coral, modifier = Modifier.size(14.dp))
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "Clear tickets",
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = V5Coral),
+                        )
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun StepperRow(
+    label: String,
+    value: Any,
+    onMinus: () -> Unit,
+    onPlus: () -> Unit,
+    minusEnabled: Boolean,
+    plusEnabled: Boolean,
+    wide: Boolean = false,
+) {
+    Column {
+        Text(
+            label,
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = V5Ink2),
+        )
+        Spacer(Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            StepperCircle(icon = Icons.Outlined.Close, enabled = minusEnabled, onClick = onMinus)
+            Text(
+                value.toString(),
+                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = V5Ink),
+                modifier = Modifier.widthIn(min = if (wide) 110.dp else 44.dp),
+                textAlign = TextAlign.Center,
+            )
+            StepperCircle(icon = Icons.Outlined.Add, enabled = plusEnabled, onClick = onPlus)
+        }
+    }
+}
+
+@Composable
+private fun StepperCircle(icon: ImageVector, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(44.dp)
+            .clip(CircleShape)
+            .background(V5Shade)
+            .clickable(enabled = enabled) { onClick() },
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = if (enabled) V5Ink else V5Ink4, modifier = Modifier.size(18.dp))
+    }
+}
+
+/** Parse "5:30 PM" / "17:30" / "5:30pm" → minutes since midnight, or null. */
+private fun parseTimeToMinutesOfDay(raw: String): Int? {
+    val s = raw.trim().uppercase()
+    if (s.isEmpty()) return null
+    val isPm = s.endsWith("PM")
+    val isAm = s.endsWith("AM")
+    val core = if (isPm || isAm) s.dropLast(2).trim() else s
+    val parts = core.split(":")
+    if (parts.isEmpty()) return null
+    val h = parts[0].toIntOrNull() ?: return null
+    val m = parts.getOrNull(1)?.toIntOrNull() ?: 0
+    val hour24 = when {
+        isPm && h < 12 -> h + 12
+        isAm && h == 12 -> 0
+        else -> h
+    }
+    if (hour24 !in 0..23 || m !in 0..59) return null
+    return hour24 * 60 + m
+}
+
+private fun formatMinutesOfDay(min: Int): String {
+    val hour24 = (min / 60).coerceIn(0, 23)
+    val mm = (min % 60).coerceIn(0, 59)
+    val amPm = if (hour24 < 12) "AM" else "PM"
+    val h12 = when {
+        hour24 == 0 -> 12
+        hour24 > 12 -> hour24 - 12
+        else -> hour24
+    }
+    val mmStr = mm.toString().padStart(2, '0')
+    return "$h12:$mmStr $amPm"
+}
+
+@Composable
+private fun StopActionSheetBody(
+    title: String,
+    subtitle: String,
+    primary: StopAction,
+    secondaries: List<StopAction>,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(horizontal = 20.dp, vertical = 8.dp),
+    ) {
+        Text(
+            title,
+            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = V5Ink),
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            subtitle,
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Normal, fontSize = 13.sp, color = V5Ink3),
+        )
+        Spacer(Modifier.height(16.dp))
+        // Primary CTA
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(14.dp))
+                .background(V5Coral)
+                .clickable { primary.onClick() }
+                .padding(vertical = 14.dp),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(primary.icon, contentDescription = null, tint = Color.White, modifier = Modifier.size(16.dp))
+            Spacer(Modifier.width(8.dp))
+            Text(
+                primary.label,
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color.White),
+            )
+        }
+        secondaries.forEach { action ->
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(V5Shade)
+                    .clickable { action.onClick() }
+                    .padding(horizontal = 14.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(action.icon, contentDescription = null, tint = V5Ink2, modifier = Modifier.size(14.dp))
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    action.label,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = V5Ink),
+                )
+                Spacer(Modifier.weight(1f))
+                Icon(Icons.Outlined.ChevronRight, contentDescription = null, tint = V5Ink4, modifier = Modifier.size(14.dp))
+            }
+        }
+        Spacer(Modifier.height(12.dp))
     }
 }

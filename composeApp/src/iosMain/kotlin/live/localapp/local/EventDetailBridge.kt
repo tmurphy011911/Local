@@ -28,10 +28,22 @@ object EventDetailBridge {
         cardX: Float, cardY: Float, cardW: Float, cardH: Float, cardImageUrl: String?,
         isFavorited: Boolean,
         timeKnown: Boolean,
+        /** Distance to the venue in miles; negative when unknown. Drives the venue card's secondary line. */
+        venueDistanceMiles: Double,
     ) -> Unit)? = null
 
     /** Swift sets this. Compose calls it to dismiss the native detail screen. */
     var dismissEventDetail: (() -> Unit)? = null
+
+    /**
+     * Swift sets this. Compose calls it AFTER the detail is presented with the
+     * venue's upcoming-event count (resolved async by name+city, since events
+     * carry no venue FK). Used to fill the "N events" part of the venue card.
+     */
+    var updateVenueEventCount: ((eventId: String, count: Int) -> Unit)? = null
+
+    /** Compose sets this. Swift calls it when the user taps the venue card to open the venue page. */
+    var onVenueTap: ((venueName: String, city: String) -> Unit)? = null
 
     /** Compose sets this. Swift calls it when the detail screen has been dismissed. */
     var onDismissed: (() -> Unit)? = null

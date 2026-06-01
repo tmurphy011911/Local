@@ -10,6 +10,7 @@ import live.localapp.local.domain.model.Event
 import live.localapp.local.snakeToTitleCase
 import live.localapp.local.domain.model.Venue
 import live.localapp.local.domain.model.distanceMiles
+import live.localapp.local.domain.repository.VENUE_UPCOMING_EVENTS_CAP
 import live.localapp.local.domain.repository.VenueRepository
 import live.localapp.local.domain.repository.VenueWithMeta
 
@@ -121,7 +122,7 @@ class VenueRepositoryImpl(
                 .decodeList<EventDto>()
                 .map { it.toDomain() }
                 .filter { it.subcategory != "no-public-interest" }
-                .take(50)
+                .take(VENUE_UPCOMING_EVENTS_CAP)
         } catch (_: Exception) {
             emptyList()
         }

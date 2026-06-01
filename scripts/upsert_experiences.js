@@ -81,7 +81,7 @@ function findVenueMatch(venueName, existingVenues) {
 async function createVenue(exp) {
   const venue = {
     name: exp.venue_name,
-    city: exp.venue_city || "Boston",
+    city: exp.venue_city || null,
     state: exp.venue_state || "MA",
     lat: exp.venue_lat || null,
     lng: exp.venue_lng || null,
@@ -192,6 +192,13 @@ async function main() {
       venue_state: exp.venue_state || null,
       venue_lat: exp.venue_lat || null,
       venue_lng: exp.venue_lng || null,
+      // Event-level location overrides venue_* when the host org's HQ is
+      // not where the event happens (e.g. Mass Audubon event in Lenox).
+      // Optional — leave null if the venue *is* the event site.
+      event_city: exp.event_city || null,
+      event_state: exp.event_state || null,
+      event_lat: exp.event_lat || null,
+      event_lng: exp.event_lng || null,
       source: "curated",
       source_id: exp.source_id,
       city: exp.city || "boston",

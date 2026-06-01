@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -201,6 +202,9 @@ fun CreatePlanMenuItems(
         Column(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
+                // Size to the widest chip so a shorter label (e.g. "Ask Bo")
+                // keeps the same width as "Build a Plan Manually".
+                .width(androidx.compose.foundation.layout.IntrinsicSize.Max)
                 // 52dp button + 4dp bottom pad + system insets ~= 100dp on most
                 // phones. 112dp leaves a little breathing room above the button.
                 .padding(end = 16.dp, bottom = 112.dp),
@@ -222,7 +226,7 @@ fun CreatePlanMenuItems(
             BounceInMenuItem(
                 visible = visible,
                 delayMs = 0,
-                label = "Create a Plan with Bo",
+                label = "Ask Bo",
                 icon = Icons.Outlined.AutoAwesome,
                 outlined = true,
                 useBoCharacter = true,
@@ -242,6 +246,7 @@ private fun BounceInMenuItem(
     label: String,
     icon: ImageVector,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
     outlined: Boolean = false,
     useBoCharacter: Boolean = false,
 ) {
@@ -275,7 +280,8 @@ private fun BounceInMenuItem(
     }
 
     Row(
-        modifier = Modifier
+        modifier = modifier
+            .fillMaxWidth()
             .graphicsLayer {
                 this.scaleX = scale.value
                 this.scaleY = scale.value

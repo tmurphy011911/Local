@@ -20,6 +20,37 @@ import live.localapp.local.data.remote.dto.toDomain
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.repository.EventRepository
 
+/**
+ * Signals that an event search failed because of a NETWORK/infrastructure
+ * timeout (Supabase unreachable, socket/connect/request timeout) — as opposed
+ * to a query that genuinely returned zero rows. Bo's tool loop catches this to
+ * distinguish "the network is down" from "this calendar is quiet" so it can
+ * bail fast instead of grinding through every tool round on dead infra.
+ */
+class SearchInfraTimeoutException(message: String, cause: Throwable? = null) : Exception(message, cause)
+
+/**
+ * Heuristic timeout detector. We avoid importing platform-specific Ktor socket
+ * exception types (they don't all resolve cleanly in commonMain across the
+ * supabase-kt stack), and instead sniff the exception chain's class names and
+ * messages for the tell-tale "timeout" / connection-refused markers.
+ */
+internal fun isInfraTimeout(e: Throwable): Boolean {
+    var cur: Throwable? = e
+    var depth = 0
+    while (cur != null && depth < 6) {
+        val cls = cur::class.simpleName?.lowercase().orEmpty()
+        val msg = cur.message?.lowercase().orEmpty()
+        if (cls.contains("timeout") || msg.contains("timeout") || msg.contains("timed out") ||
+            msg.contains("connection refused") || msg.contains("connect timeout") ||
+            msg.contains("failed to connect") || msg.contains("network is unreachable")
+        ) return true
+        cur = cur.cause
+        depth++
+    }
+    return false
+}
+
 class EventRepositoryImpl(
     private val supabaseClient: SupabaseClient,
 ) : EventRepository {
@@ -278,6 +309,13 @@ class EventRepositoryImpl(
                 result.data,
             ).map { it.toDomain() }
         } catch (e: Throwable) {
+            if (isInfraTimeout(e)) {
+                // Network is down — surface it as a distinct signal so the
+                // caller's circuit breaker can bail instead of treating an
+                // unreachable backend as "no events found".
+                println("searchEventsBroad RPC TIMEOUT (${e.message}) — signaling infra timeout")
+                throw SearchInfraTimeoutException(e.message ?: "search timeout", e)
+            }
             println("searchEventsBroad RPC failed (${e.message}) — returning empty")
             return emptyList()
         }

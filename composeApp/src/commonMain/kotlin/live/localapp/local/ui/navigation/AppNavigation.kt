@@ -93,6 +93,7 @@ import live.localapp.local.domain.model.Event
 import live.localapp.local.ui.common.pressable
 import live.localapp.local.ui.chat.ChatScreen
 import live.localapp.local.ui.chat.ChatViewModel
+import live.localapp.local.ui.chat.MessageRole
 import live.localapp.local.ui.detail.EventDetailScreen
 import live.localapp.local.ui.home.CardTransitionInfo
 import live.localapp.local.ui.home.HomeScreen
@@ -151,7 +152,7 @@ enum class Tab(val label: String, val icon: ImageVector) {
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: () -> Unit = {}, showUpdateBanner: Boolean = false, onDismissUpdateBanner: () -> Unit = {}) {
+fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: () -> Unit = {}, showUpdateBanner: Boolean = false, onDismissUpdateBanner: () -> Unit = {}, showTutorial: Boolean = false) {
     val koin = KoinPlatform.getKoin()
     val scope = rememberCoroutineScope()
     val eventRepo: EventRepository = remember { koin.get() }
@@ -162,7 +163,6 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     var detailEvent by remember { mutableStateOf<Event?>(null) }
     var detailFromPlans by remember { mutableStateOf(false) }
     var showChat by remember { mutableStateOf(false) }
-    var showLoginPrompt by remember { mutableStateOf(false) }
     var pendingChatMessage by remember { mutableStateOf<String?>(null) }
     var chatOpenCount by remember { mutableStateOf(0) }
     var showTasteProfile by remember { mutableStateOf(false) }
@@ -177,11 +177,9 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     var showCreatePlanMenu by remember { mutableStateOf(false) }
     var showManualPlanSheet by remember { mutableStateOf(false) }
 
-    // Home lobby tutorial — shown once on very first app open
-    val homeTutorialSettings = remember { com.russhwolf.settings.Settings() }
-    var showHomeTutorial by remember {
-        mutableStateOf(!homeTutorialSettings.getBoolean("home_tutorial_seen", false))
-    }
+    // Home lobby tutorial — only fires for users who *just* completed onboarding
+    // this session. Returning users (session-restore, re-login) never see it.
+    var showHomeTutorial by remember { mutableStateOf(showTutorial) }
 
     // Gate chat behind auth + sync location (defined as a lambda referencing hoisted VMs below)
 
@@ -386,7 +384,17 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     val openChatOrLogin: () -> Unit = {
         val userId = userPrefsRepo.getLocalUserId()
         if (userId != null) {
-            chatVm.setCurrentLocation(homeState.userLat ?: 42.3601, homeState.userLng ?: -71.0589, homeState.locationName)
+            // Bo's scope is conversation-scoped. Only sync home → Bo when
+            // there's no ongoing chat (no user-authored messages yet).
+            // Once the user has sent a message, leave the chat's location
+            // alone — whether they set it via the scope editor or it
+            // carried over from a previous open within the same session.
+            val hasOngoingChat = chatState.messages.any { it.role == MessageRole.USER }
+            val hLat = homeState.userLat
+            val hLng = homeState.userLng
+            if (!hasOngoingChat && hLat != null && hLng != null) {
+                chatVm.setCurrentLocation(hLat, hLng, homeState.locationName)
+            }
             if (hasNativeTabBar) {
                 // iOS path: snapshot the pending message before opening the sheet,
                 // then fire it once the SwiftUI ChatView is ready. Without this
@@ -409,7 +417,27 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 chatOpenCount++
             }
         } else {
-            showLoginPrompt = true
+            onLogout()
+        }
+    }
+
+    // Catches the in-chat "Start over" path: resetChat clears Bo's location
+    // but the home-sync above only fires when the user taps the Bo button.
+    // Without this, the scope chip and the scope-editor sheet open with an
+    // empty name immediately after reset.
+    LaunchedEffect(
+        chatState.messages.any { it.role == MessageRole.USER },
+        chatState.currentLocationName,
+        homeState.userLat,
+        homeState.userLng,
+        homeState.locationName,
+    ) {
+        val hasOngoingChat = chatState.messages.any { it.role == MessageRole.USER }
+        val locationMissing = chatState.currentLocationName.isBlank()
+        val hLat = homeState.userLat
+        val hLng = homeState.userLng
+        if (!hasOngoingChat && locationMissing && hLat != null && hLng != null && homeState.locationName.isNotBlank()) {
+            chatVm.setCurrentLocation(hLat, hLng, homeState.locationName)
         }
     }
 
@@ -468,7 +496,6 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             live.localapp.local.ui.home.HomeTutorial(
                 cityName = homeState.locationName,
                 onComplete = {
-                    homeTutorialSettings.putBoolean("home_tutorial_seen", true)
                     showHomeTutorial = false
                 },
             )
@@ -500,7 +527,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                         cardImageUrl = transitionInfo?.imageUrl,
                                         onDismissed = { /* state cleanup if needed */ },
                                         onFavorited = { eventId ->
-                                            homeVm.toggleEventFavorite(eventId, event.subcategory ?: event.category)
+                                            homeVm.toggleEventFavorite(eventId, event.subcategory ?: event.category, source = "event_detail")
                                         },
                                         showDirections = false,
                                         isFavorited = event.id in homeState.favoriteEventIds,
@@ -592,7 +619,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                         cardImageUrl = event.imageUrl,
                                         onDismissed = {},
                                         onFavorited = { eventId ->
-                                            placesVm.toggleEventFavorite(eventId, event.subcategory ?: event.category)
+                                            placesVm.toggleEventFavorite(eventId, event.subcategory ?: event.category, source = "event_detail")
                                         },
                                         showDirections = false,
                                         isFavorited = isFav,
@@ -610,7 +637,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             progressVm,
                             onLogout = onLogout,
                             onTasteProfile = { showTasteProfile = true },
-                            onSignIn = { showLoginPrompt = true },
+                            onSignIn = { onLogout() },
                             onNameChanged = { name -> homeVm.setUserName(name) },
                             onLocationClick = { showLocationSheet = true },
                             onUpgrade = {
@@ -913,14 +940,26 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                                 onDismiss = {},
                                             )
                                         },
-                                        onSlotTap = { _, _, eventId, venueName ->
+                                        onSlotTap = { dayIdx, slotId, eventId, venueName ->
                                             // Slot card tap → open the same native event/venue
                                             // detail screens used elsewhere in the app. Events
                                             // win when an event_id is present (concert / show /
                                             // workshop), venues otherwise (restaurants / bars).
+                                            //
+                                            // Speed-first: DB lookup is capped at 300ms via
+                                            // withTimeoutOrNull. Past that we fall back to a
+                                            // minimal Event/Venue built from the slot's own
+                                            // fields so the user never waits — a 2-second hang
+                                            // on a slow Supabase read was making the tap feel
+                                            // broken. Under 300ms the user perceives the lookup
+                                            // as instant and gets the richer DB row.
+                                            val slot = plan.days.getOrNull(dayIdx)
+                                                ?.slots?.firstOrNull { it.id == slotId }
                                             scope.launch {
                                                 if (!eventId.isNullOrBlank()) {
-                                                    val ev = try { eventRepo.getEvent(eventId) } catch (_: Throwable) { null }
+                                                    val ev = kotlinx.coroutines.withTimeoutOrNull(300) {
+                                                        try { eventRepo.getEvent(eventId) } catch (_: Throwable) { null }
+                                                    } ?: slot?.toFallbackEvent()
                                                     if (ev != null) {
                                                         live.localapp.local.platform.showNativeEventDetail(
                                                             event = ev,
@@ -933,7 +972,9 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                                         )
                                                     }
                                                 } else if (!venueName.isNullOrBlank()) {
-                                                    val v = try { venueRepo.searchByName(venueName) } catch (_: Throwable) { null }
+                                                    val v = kotlinx.coroutines.withTimeoutOrNull(300) {
+                                                        try { venueRepo.searchByName(venueName) } catch (_: Throwable) { null }
+                                                    } ?: slot?.toFallbackVenue()
                                                     if (v != null) {
                                                         live.localapp.local.platform.showNativeVenueDetail(
                                                             venueWithMeta = live.localapp.local.domain.repository.VenueWithMeta(venue = v),
@@ -962,7 +1003,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             userInitial = homeState.userName.firstOrNull()?.uppercase() ?: "",
                             onProfileClick = { selectedTab = Tab.PROFILE },
                             onLocationClick = { showLocationSheet = true },
-                            onSignIn = { showLoginPrompt = true },
+                            onSignIn = { onLogout() },
                             isLoggedIn = isLoggedIn,
                             locationName = homeState.locationName,
                             streakDays = homeState.streakDays,
@@ -999,7 +1040,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                             cardH = bounds.height / density,
                                             cardImageUrl = event.imageUrl,
                                             onDismissed = {},
-                                            onFavorited = { id -> homeVm.toggleEventFavorite(id, event.subcategory ?: event.category) },
+                                            onFavorited = { id -> homeVm.toggleEventFavorite(id, event.subcategory ?: event.category, source = "event_detail") },
                                             showDirections = true,
                                             isFavorited = event.id in homeState.favoriteEventIds,
                                         )
@@ -1058,7 +1099,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     if (userPrefsRepo.getLocalUserId() != null) {
                         showManualPlanSheet = true
                     } else {
-                        showLoginPrompt = true
+                        onLogout()
                     }
                 },
             )
@@ -1226,6 +1267,111 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             pendingChatMessage = "Please replace ${slot.name} in my plan: ${plan.title}"
                             openChatOrLogin()
                         },
+                        onSaveReservationDetails = { dayIdx, slotId, partySize, time ->
+                            plansVm.setReservationDetails(plan.id, dayIdx, slotId, partySize, time)
+                            val updatedDays = plan.days.mapIndexed { i, d ->
+                                if (i != dayIdx) d
+                                else d.copy(slots = d.slots.map { s ->
+                                    if (s.id == slotId) s.copy(
+                                        reservationState = live.localapp.local.domain.model.ReservationState.MADE,
+                                        reservationPartySize = partySize,
+                                        reservationTime = time,
+                                    ) else s
+                                })
+                            }
+                            selectedPlan = plan.copy(days = updatedDays)
+                        },
+                        onReservationUnavailable = { dayIdx, slotId ->
+                            plansVm.setReservationUnavailable(plan.id, dayIdx, slotId)
+                            val updatedDays = plan.days.mapIndexed { i, d ->
+                                if (i != dayIdx) d
+                                else d.copy(slots = d.slots.map { s ->
+                                    if (s.id == slotId) s.copy(
+                                        reservationState = live.localapp.local.domain.model.ReservationState.UNAVAILABLE,
+                                    ) else s
+                                })
+                            }
+                            selectedPlan = plan.copy(days = updatedDays)
+                        },
+                        onClearReservation = { dayIdx, slotId ->
+                            plansVm.clearReservation(plan.id, dayIdx, slotId)
+                            val updatedDays = plan.days.mapIndexed { i, d ->
+                                if (i != dayIdx) d
+                                else d.copy(slots = d.slots.map { s ->
+                                    if (s.id == slotId) s.copy(
+                                        reservationState = live.localapp.local.domain.model.ReservationState.NONE,
+                                        reservationPartySize = null,
+                                        reservationTime = null,
+                                    ) else s
+                                })
+                            }
+                            selectedPlan = plan.copy(days = updatedDays)
+                        },
+                        onSaveTicketDetails = { dayIdx, slotId, ticketCount ->
+                            plansVm.setTicketDetails(plan.id, dayIdx, slotId, ticketCount)
+                            val updatedDays = plan.days.mapIndexed { i, d ->
+                                if (i != dayIdx) d
+                                else d.copy(slots = d.slots.map { s ->
+                                    if (s.id == slotId) s.copy(
+                                        ticketState = live.localapp.local.domain.model.TicketState.BOUGHT,
+                                        ticketCount = ticketCount,
+                                    ) else s
+                                })
+                            }
+                            selectedPlan = plan.copy(days = updatedDays)
+                        },
+                        onTicketsUnavailable = { dayIdx, slotId ->
+                            plansVm.setTicketsUnavailable(plan.id, dayIdx, slotId)
+                            val updatedDays = plan.days.mapIndexed { i, d ->
+                                if (i != dayIdx) d
+                                else d.copy(slots = d.slots.map { s ->
+                                    if (s.id == slotId) s.copy(
+                                        ticketState = live.localapp.local.domain.model.TicketState.UNAVAILABLE,
+                                    ) else s
+                                })
+                            }
+                            selectedPlan = plan.copy(days = updatedDays)
+                        },
+                        onClearTickets = { dayIdx, slotId ->
+                            plansVm.clearTickets(plan.id, dayIdx, slotId)
+                            val updatedDays = plan.days.mapIndexed { i, d ->
+                                if (i != dayIdx) d
+                                else d.copy(slots = d.slots.map { s ->
+                                    if (s.id == slotId) s.copy(
+                                        ticketState = live.localapp.local.domain.model.TicketState.NONE,
+                                        ticketCount = null,
+                                    ) else s
+                                })
+                            }
+                            selectedPlan = plan.copy(days = updatedDays)
+                        },
+                        onSlotTap = { slot ->
+                            // Android tap-to-detail: events route to the existing
+                            // Compose EventDetailScreen overlay (via detailEvent
+                            // state), venues route through PlacesViewModel.selectVenue.
+                            // DB lookup is best-effort; on miss we fall back to slot
+                            // data so the tap always lands somewhere.
+                            scope.launch {
+                                val eventId = slot.eventId
+                                if (!eventId.isNullOrBlank()) {
+                                    val ev = kotlinx.coroutines.withTimeoutOrNull(300) {
+                                        try { eventRepo.getEvent(eventId) } catch (_: Throwable) { null }
+                                    } ?: slot.toFallbackEvent()
+                                    detailFromPlans = false
+                                    detailEvent = ev
+                                } else {
+                                    val name = slot.venueName ?: slot.name
+                                    if (name.isNotBlank()) {
+                                        val v = kotlinx.coroutines.withTimeoutOrNull(300) {
+                                            try { venueRepo.searchByName(name) } catch (_: Throwable) { null }
+                                        } ?: slot.toFallbackVenue()
+                                        placesVm.selectVenue(
+                                            live.localapp.local.domain.repository.VenueWithMeta(venue = v)
+                                        )
+                                    }
+                                }
+                            }
+                        },
                         userLat = homeState.userLat,
                         userLng = homeState.userLng,
                     )
@@ -1309,7 +1455,32 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 // Save plan to accept after auth, then trigger login
                                 plansVm.setPendingAcceptAfterAuth(plan)
                                 sharedPlan = null
-                                showLoginPrompt = true
+                                onLogout()
+                            }
+                        },
+                        onSlotTap = { slot ->
+                            // Same tap-to-detail behavior as the main path so
+                            // someone previewing a shared plan can inspect a
+                            // stop before deciding to accept.
+                            scope.launch {
+                                val eventId = slot.eventId
+                                if (!eventId.isNullOrBlank()) {
+                                    val ev = kotlinx.coroutines.withTimeoutOrNull(300) {
+                                        try { eventRepo.getEvent(eventId) } catch (_: Throwable) { null }
+                                    } ?: slot.toFallbackEvent()
+                                    detailFromPlans = false
+                                    detailEvent = ev
+                                } else {
+                                    val name = slot.venueName ?: slot.name
+                                    if (name.isNotBlank()) {
+                                        val v = kotlinx.coroutines.withTimeoutOrNull(300) {
+                                            try { venueRepo.searchByName(name) } catch (_: Throwable) { null }
+                                        } ?: slot.toFallbackVenue()
+                                        placesVm.selectVenue(
+                                            live.localapp.local.domain.repository.VenueWithMeta(venue = v)
+                                        )
+                                    }
+                                }
                             }
                         },
                     )
@@ -1341,7 +1512,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 val settings = com.russhwolf.settings.Settings()
                                 settings.putString("pending_favorite_event", event.id)
                                 sharedEvent = null
-                                showLoginPrompt = true
+                                onLogout()
                             }
                         },
                     )
@@ -1383,7 +1554,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 settings.putString("pending_favorite_venue", venue.id)
                                 settings.putString("pending_favorite_venue_category", venue.category ?: "")
                                 sharedVenue = null
-                                showLoginPrompt = true
+                                onLogout()
                             }
                         },
                     )
@@ -1412,7 +1583,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
                         cardImageUrl = event.imageUrl,
                         onDismissed = { },
-                        onFavorited = { id -> homeVm.toggleEventFavorite(id, event.subcategory ?: event.category) },
+                        onFavorited = { id -> homeVm.toggleEventFavorite(id, event.subcategory ?: event.category, source = "event_detail") },
                         showDirections = detailFromPlans,
                         isFavorited = event.id in homeState.favoriteEventIds,
                     )
@@ -1432,9 +1603,17 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     },
                     onFavoriteTracked = { eventId ->
                         val cat = detailEvent?.let { it.subcategory ?: it.category }
-                        homeVm.toggleEventFavorite(eventId, cat)
+                        homeVm.toggleEventFavorite(eventId, cat, source = "event_detail")
                     },
                     initialFavorited = detailEvent?.id in homeState.favoriteEventIds,
+                    onVenueClick = detailEvent?.venueName?.let { vName ->
+                        {
+                            val ev = detailEvent
+                            if (ev != null) {
+                                placesVm.openVenueByNameAndCity(vName, ev.venueCity, ev.distanceMiles)
+                            }
+                        }
+                    },
                 )
             }
             }
@@ -1691,63 +1870,8 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             }
         }
 
-        // ── Login Required Overlay ──
-        if (showLoginPrompt) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(Color.Black.copy(alpha = 0.5f))
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = { showLoginPrompt = false },
-                    ),
-                contentAlignment = Alignment.Center,
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 32.dp)
-                        .clip(RoundedCornerShape(24.dp))
-                        .background(AppColors.White)
-                        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {})
-                        .padding(28.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                ) {
-                    Text(
-                        "Sign in to continue",
-                        style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = AppColors.Ink),
-                    )
-                    Spacer(Modifier.height(8.dp))
-                    Text(
-                        "Create an account to build plans, save events, and get personalized recommendations.",
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink3, lineHeight = 20.sp),
-                        textAlign = TextAlign.Center,
-                    )
-                    Spacer(Modifier.height(24.dp))
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(48.dp)
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(AppColors.Coral)
-                            .clickable {
-                                showLoginPrompt = false
-                                onLogout() // triggers re-auth flow
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text("Sign in", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, color = AppColors.White))
-                    }
-                    Spacer(Modifier.height(12.dp))
-                    Text(
-                        "Maybe later",
-                        modifier = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = { showLoginPrompt = false }),
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = AppColors.Ink3),
-                    )
-                }
-            }
-        }
+        // Login-required overlay removed — every "Sign in" trigger now routes
+        // directly to phone-number entry via onLogout().
 
         // ── Global Badge Celebration Overlays ──
         // Defer celebrations while plan success overlay is showing
@@ -2005,6 +2129,60 @@ private fun BootstrapSplash() {
         }
     }
 }
+
+// Build a minimal Event from a plan slot's own data. Used as a fallback when
+// the slot's eventId doesn't resolve in the events table — Bo-web finds (point
+// at bo_web_events, not events), deactivated past-event rows, and id-prefix
+// mismatches all leave the DB lookup empty. Without this fallback the tap was
+// a silent no-op; with it the user always lands on a detail screen.
+private fun live.localapp.local.domain.model.PlanSlot.toFallbackEvent(): live.localapp.local.domain.model.Event =
+    live.localapp.local.domain.model.Event(
+        id = eventId ?: id,
+        title = name,
+        description = detail.takeIf { it.isNotBlank() },
+        category = venueCategory ?: "Event",
+        subcategory = null,
+        imageUrl = imageUrl,
+        startAt = null,
+        endAt = null,
+        isFree = isFree,
+        priceMin = priceMin,
+        priceMax = priceMax,
+        ticketUrl = ticketUrl,
+        venueName = venueName ?: name,
+        venueAddress = venueAddress,
+        venueCity = venueCity ?: "",
+        venueLat = venueLat,
+        venueLng = venueLng,
+        city = venueCity ?: "",
+        source = "plan_slot",
+        sourceUrl = sourceUrl,
+        venueDescription = null,
+        venueImageUrl = imageUrl,
+        timeKnown = false,
+    )
+
+// Build a minimal Venue from a plan slot's own data. Mirrors toFallbackEvent
+// for restaurant / venue stops where searchByName misses (Bo-recommended
+// venues that aren't in the DB).
+private fun live.localapp.local.domain.model.PlanSlot.toFallbackVenue(): live.localapp.local.domain.model.Venue =
+    live.localapp.local.domain.model.Venue(
+        id = venueName ?: id,
+        name = venueName ?: name,
+        address = venueAddress,
+        city = venueCity ?: "",
+        state = null,
+        country = null,
+        latitude = venueLat,
+        longitude = venueLng,
+        imageUrl = imageUrl,
+        photoUrl = imageUrl,
+        description = null,
+        category = venueCategory,
+        googleRating = venueRating,
+        website = venueWebsite,
+        reservationUrl = reservationUrl,
+    )
 
 // ═══════════════════════════════════════
 // ── Global Celebration Overlays ──

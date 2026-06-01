@@ -207,8 +207,7 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
         }
         if (state.selectedCategory.equals("experiences", ignoreCase = true)) {
             radiusFiltered.filterNot { section ->
-                val t = section.title.trim()
-                t.startsWith("Top ", ignoreCase = true) && t.endsWith("This Week", ignoreCase = true)
+                section.filterType.equals("top_weekly", ignoreCase = true)
             }
         } else {
             radiusFiltered
@@ -277,19 +276,18 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
 
                 if (state.isLoading && !state.isRefreshing) {
                     item { SkeletonCarousels() }
-                } else if (state.carousels.isEmpty() && state.error != null) {
-                    item {
-                        EmptyState(
-                            title = "Something went wrong",
-                            subtitle = "Tap to retry",
-                            onClick = { viewModel.refresh() },
-                        )
-                    }
                 } else if (state.carousels.isEmpty() && !state.isLoading) {
+                    // Bank 1 — Bo empty state. Covers both the error path
+                    // and the genuine zero-carousels case for For You + every
+                    // subcategory page. Same Refresh CTA either way; the bank
+                    // copy never references the gesture (the button carries it).
                     item {
-                        EmptyState(
-                            title = "No events found",
-                            subtitle = "Try a different category or check back later",
+                        live.localapp.local.ui.emptystate.BoEmptyState(
+                            bank = live.localapp.local.ui.emptystate.EmptyStateCopy.NO_EVENTS,
+                            ctaLabel = "Refresh",
+                            onCta = { viewModel.refresh() },
+                            rotationKey = state.selectedCategory,
+                            modifier = Modifier.fillMaxWidth().height(440.dp),
                         )
                     }
                 } else {
@@ -1242,8 +1240,10 @@ fun Event.toCardData(showTag: Boolean = true, tagOverride: String? = null, fallb
         venueName = venueName ?: "",
         date = dateDisplay,
         city = buildString {
-            append(venueCity.replaceFirstChar { it.uppercase() })
-            val state = venueState?.uppercase()
+            // Prefer the physical event location over the host-venue HQ.
+            // displayCity returns eventCity when set, otherwise venueCity.
+            append(displayCity.replaceFirstChar { it.uppercase() })
+            val state = (eventState ?: venueState)?.uppercase()
             if (state != null && state != "MA") {
                 append(", $state")
             }
@@ -1461,8 +1461,8 @@ private fun AiConciergeCard(
                 .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 14.dp),
         ) {
             Column {
-                // Title — tap focuses the input. Bo character on the left so
-                // the entry point reads as Bo's surface, not a generic prompt.
+                // Title — tap focuses the input. Bo character sits after the
+                // "Ask Bo" text to match the chat header's placement.
                 Row(
                     modifier = Modifier.clickable(
                         interactionSource = remember { MutableInteractionSource() },
@@ -1471,17 +1471,17 @@ private fun AiConciergeCard(
                     ),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    Text("Ask ", style = AppType.AiTitle)
+                    Text(
+                        "Bo",
+                        style = AppType.AiTitle.copy(fontStyle = FontStyle.Italic),
+                    )
+                    Spacer(Modifier.width(8.dp))
                     live.localapp.local.ui.character.Bo(
                         size = 32.dp,
                         showSparkles = false,
                         showShadow = false,
                         modifier = Modifier.size(32.dp),
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text("Ask ", style = AppType.AiTitle)
-                    Text(
-                        "Bo",
-                        style = AppType.AiTitle.copy(fontStyle = FontStyle.Italic),
                     )
                 }
 

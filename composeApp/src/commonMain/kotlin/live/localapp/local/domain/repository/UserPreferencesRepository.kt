@@ -23,6 +23,31 @@ data class UserPreferences(
     val manualLng: Double? = null,
 )
 
+data class CachedManualLocation(
+    val locationMode: String? = null,
+    val manualLocationName: String? = null,
+    val manualLat: Double? = null,
+    val manualLng: Double? = null,
+)
+
+/**
+ * Tri-state result of inspecting `user_profiles` for a given auth id.
+ *
+ * Distinguishing these three states is what the cold-start router uses to
+ * decide between HOME, ONBOARDING(resume), and ONBOARDING(fresh). The legacy
+ * `recoverProfileByAuthId` collapsed Missing and Incomplete into a single
+ * `null`, which forced the router to guess — see the auth-routing refactor
+ * notes for context.
+ */
+enum class ProfileStatus {
+    /** No row exists in `user_profiles` for this auth id. */
+    Missing,
+    /** Row exists but `onboarding_complete = false`. */
+    Incomplete,
+    /** Row exists and `onboarding_complete = true`. */
+    Complete,
+}
+
 interface UserPreferencesRepository {
     /** Load cached user ID + onboarding flag from local storage. Null if never onboarded. */
     fun getLocalUserId(): String?
@@ -43,6 +68,14 @@ interface UserPreferencesRepository {
     /** Check if a user_profiles row exists for the given Supabase auth user ID. */
     suspend fun profileExistsForAuthId(authUserId: String): Boolean
 
+    /**
+     * Pure query: inspect `user_profiles` for the given auth id and report
+     * whether the row is Missing, Incomplete, or Complete. Used by the
+     * cold-start router to pick HOME vs ONBOARDING(resume) vs ONBOARDING(fresh).
+     * No side effects (no cache writes).
+     */
+    suspend fun getProfileStatus(authUserId: String): ProfileStatus
+
     /** Load preferences from Supabase by auth user ID and cache locally. Returns user ID if found. */
     suspend fun recoverProfileByAuthId(authUserId: String): String?
 
@@ -51,4 +84,35 @@ interface UserPreferencesRepository {
 
     /** Clear local cache (logout). */
     fun clearLocal()
+
+    /** Synchronously cache the manual-location selection so it survives an
+     *  immediate app kill that races the Supabase upsert. Pair with
+     *  [getCachedManualLocation] on cold start. */
+    fun cacheManualLocationLocally(
+        locationMode: String,
+        manualLocationName: String?,
+        manualLat: Double?,
+        manualLng: Double?,
+    )
+
+    /** Read the locally-cached manual-location snapshot. Use to backfill
+     *  manual-location fields the remote row is missing (e.g. user killed the
+     *  app before the network save landed). */
+    fun getCachedManualLocation(): CachedManualLocation
+
+    /** Synchronously cache the last reverse-geocoded GPS city name (e.g.
+     *  "Waltham, MA"). Used so the location chip renders something on cold
+     *  start instead of staying blank until the geocode round-trip returns. */
+    fun cacheGpsLocationNameLocally(name: String)
+
+    /** Read the last reverse-geocoded GPS city name, or null if never set. */
+    fun getCachedGpsLocationName(): String?
+
+    /** Cache the user's onboarding city ("boston", "philadelphia", etc.) so
+     *  it can be used as the chip's final fallback when there is no manual
+     *  selection and no cached GPS city yet. */
+    fun cacheUserCityLocally(city: String)
+
+    /** Read the locally-cached onboarding city, or null if never set. */
+    fun getCachedUserCity(): String?
 }

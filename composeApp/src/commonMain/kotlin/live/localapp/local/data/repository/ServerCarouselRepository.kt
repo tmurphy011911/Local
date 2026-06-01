@@ -1,5 +1,7 @@
 package live.localapp.local.data.repository
 
+import io.github.jan.supabase.SupabaseClient
+import io.github.jan.supabase.auth.auth
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.compression.ContentEncoding
@@ -58,6 +60,10 @@ private data class EventDto(
     @SerialName("venue_state") val venueState: String? = null,
     @SerialName("venue_lat") val venueLat: Double? = null,
     @SerialName("venue_lng") val venueLng: Double? = null,
+    @SerialName("event_city") val eventCity: String? = null,
+    @SerialName("event_state") val eventState: String? = null,
+    @SerialName("event_lat") val eventLat: Double? = null,
+    @SerialName("event_lng") val eventLng: Double? = null,
     val source: String? = null,
     @SerialName("source_url") val sourceUrl: String? = null,
     val city: String = "",
@@ -75,7 +81,9 @@ private data class CategoryInfoDto(
     @SerialName("event_count") val eventCount: Int,
 )
 
-class ServerCarouselRepository : CarouselRepository {
+class ServerCarouselRepository(
+    private val supabaseClient: SupabaseClient,
+) : CarouselRepository {
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -206,14 +214,25 @@ class ServerCarouselRepository : CarouselRepository {
         // their personalized carousels (favCat / favVenue / neighborhood)
         // until pull-to-refresh, because the unpersonalized response
         // cached at cold start kept hitting on every tab open.
+        //
+        // Also include radius — the edge function returns a different
+        // event pool for different radii, so toggling 25 mi → 100 mi
+        // → 25 mi needs to refetch on the way back to 25 (not serve
+        // the 100 mi cached response).
         val tab = category ?: "foryou"
         val uid = userPreferences?.id?.takeIf { it.isNotBlank() } ?: "anon"
-        val cacheKey = "$tab:$uid"
+        val cacheKey = "$tab:$uid:r$radiusMiles"
 
         carouselCache[cacheKey]?.let { return it }
 
+        // Authorization stays the anon key so the edge-function gateway is
+        // always satisfied. The user's identity travels in X-User-Token, which
+        // the server verifies and trusts over the (spoofable) user_id param.
+        // Phase 1 of the carousels IDOR fix.
+        val userToken = supabaseClient.auth.currentSessionOrNull()?.accessToken
         val response = httpClient.get(edgeFunctionUrl) {
             header("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
+            userToken?.let { header("X-User-Token", it) }
             parameter("lat", userLat)
             parameter("lng", userLng)
             parameter("category", tab)
@@ -306,6 +325,10 @@ class ServerCarouselRepository : CarouselRepository {
         venueState = venueState,
         venueLat = venueLat,
         venueLng = venueLng,
+        eventCity = eventCity,
+        eventState = eventState,
+        eventLat = eventLat,
+        eventLng = eventLng,
         city = city,
         source = source,
         sourceUrl = sourceUrl,

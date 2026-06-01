@@ -11,5 +11,10 @@
 		<string>nunito_variable.ttf</string>
 		<string>fraunces_variable.ttf</string>
 	</array>
+	<key>UILaunchScreen</key>
+	<dict>
+		<key>UIColorName</key>
+		<string>SplashCream</string>
+	</dict>
 </dict>
 </plist>

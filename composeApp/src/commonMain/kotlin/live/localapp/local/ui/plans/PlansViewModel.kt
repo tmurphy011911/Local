@@ -154,9 +154,14 @@ class PlansViewModel(
         }
     }
 
-    /** Set the pending-open plan id. Consumed by PlansScreen on observation. */
+    /** Set the pending-open plan id. Consumed by PlansScreen on observation.
+     *  Also kicks loadPlans() because the requested plan is typically one
+     *  the user just saved in chat — and the cached upcomingPlans list won't
+     *  contain it yet, so PlansScreen's LaunchedEffect would silently fail
+     *  to find a match and never open the detail sheet. */
     fun requestOpenPlan(planId: String?) {
         _uiState.update { it.copy(pendingOpenPlanId = planId) }
+        if (planId != null) loadPlans()
     }
 
     /** Clear the pending-open signal once PlansScreen has acted on it. */

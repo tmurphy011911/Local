@@ -1,0 +1,34 @@
+name: Hourly — Deactivate Past Events
+
+# Runs every hour so an event that just ended drops out of the feeds within
+# ~1h instead of lingering until the old daily 3am sweep. Feeds filter on
+# is_active (carousel MV + search_events_stratified both require
+# is_active = true AND start_at >= now()), so the deactivation cadence is
+# what bounds how long a finished event stays visible. The job is cheap:
+# deactivate_past_events.js pages an indexed start_at scan and PATCHes with
+# return=minimal, and is idempotent (a no-op once everything past is flipped).
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # top of every hour
+  workflow_dispatch: {}
+
+# Forward-compat: opt into Node 24 for JS-based actions before the
+# June 2 2026 forced-cutoff. Removes deprecation warnings on every job.
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  deactivate-past-events:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Deactivate Past Events
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node deactivate_past_events.js

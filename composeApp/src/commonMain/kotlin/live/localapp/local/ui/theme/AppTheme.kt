@@ -46,6 +46,13 @@ object AppColors {
     val Orange = Color(0xFFFF9B4E)
     val OrangeDk = Color(0xFFE07030)
 
+    // Reel-safe variants used by SplashScreen at 44sp italic on Cream.
+    // The brand Sun (#FFB830) and Orange (#FF9B4E) fail WCAG AA large-text
+    // (3:1) on Cream — these darker versions clear it while staying in the
+    // same hue family. Identity surfaces keep the brand tokens above.
+    val SplashSunReel = Color(0xFFB86E00)
+    val SplashOrangeReel = Color(0xFFB85000)
+
     // ── Plan Detail V5 palette — warm, scoped to the Plan Detail screen only.
     //    Kept separate from the app-wide tokens above so we don't shift other
     //    screens' coral/bg during the V5 rollout.
@@ -299,12 +306,14 @@ private val LocalColorScheme = lightColorScheme(
 @Composable
 fun LocalAppTheme(content: @Composable () -> Unit) {
     val headingFamily = FontFamily(
+        Font(Res.font.fraunces_variable, FontWeight.Normal),
+        Font(Res.font.fraunces_variable, FontWeight.Medium),
         Font(Res.font.fraunces_variable, FontWeight.Bold),
         Font(Res.font.fraunces_variable, FontWeight.Black),
-        Font(Res.font.fraunces_variable, FontWeight.Normal),
+        Font(Res.font.fraunces_italic_variable, FontWeight.Normal, FontStyle.Italic),
+        Font(Res.font.fraunces_italic_variable, FontWeight.Medium, FontStyle.Italic),
         Font(Res.font.fraunces_italic_variable, FontWeight.Bold, FontStyle.Italic),
         Font(Res.font.fraunces_italic_variable, FontWeight.Black, FontStyle.Italic),
-        Font(Res.font.fraunces_italic_variable, FontWeight.Normal, FontStyle.Italic),
     )
     val bodyFamily = FontFamily(
         Font(Res.font.nunito_variable, FontWeight.Normal),

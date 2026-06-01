@@ -35,6 +35,10 @@ interface EventRow {
   venue_city: string;
   venue_lat: number | null;
   venue_lng: number | null;
+  event_city: string | null;
+  event_state: string | null;
+  event_lat: number | null;
+  event_lng: number | null;
   source_url: string | null;
   city: string;
 }
@@ -212,6 +216,17 @@ function resolveDateWindow(
         endIso: new Date(mon).toISOString(),
       };
     }
+    case "next_weekend": {
+      // The Fri→Mon AFTER this weekend: take this weekend's Friday and add 7d.
+      let daysUntilFri = (5 - localDow + 7) % 7;
+      if (localDow === 5 || localDow === 6 || localDow === 0) daysUntilFri = 0;
+      const fri = startOfTodayUtcMs + (daysUntilFri + 7) * DAY;
+      const mon = fri + 3 * DAY;
+      return {
+        startIso: new Date(fri).toISOString(),
+        endIso: new Date(mon).toISOString(),
+      };
+    }
     case "next_30_days": {
       const end = startOfTodayUtcMs + 30 * DAY;
       return {
@@ -262,7 +277,7 @@ async function fetchEvents(
   let q = supabase
     .from("events")
     .select(
-      "id,title,description,category,subcategory,start_at,end_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,venue_lat,venue_lng,source_url,city",
+      "id,title,description,category,subcategory,start_at,end_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,venue_lat,venue_lng,event_city,event_state,event_lat,event_lng,source_url,city",
     )
     .eq("is_active", true)
     .gte("start_at", nowIso)
@@ -383,8 +398,10 @@ function scoreEvent(
   _maxCommunityScore: number,
   nowMs: number,
 ): number {
-  const eLat = e.venue_lat;
-  const eLng = e.venue_lng;
+  // Prefer the physical event location (event_lat) over the host-venue HQ
+  // (venue_lat) — matches the home carousel's distance basis.
+  const eLat = e.event_lat ?? e.venue_lat;
+  const eLng = e.event_lng ?? e.venue_lng;
   const distance = eLat != null && eLng != null ? distanceMiles(userLat, userLng, eLat, eLng) : 30;
   const proxScore = 1 / (1 + distance / 4);
 
@@ -531,8 +548,12 @@ Deno.serve(async (req) => {
           const meta = venueKey ? venueMeta[venueKey] : undefined;
           const resolvedImage = e.image_url || meta?.photoUrl || null;
           const venueRank = meta?.rank ?? null;
-          const dist = e.venue_lat != null && e.venue_lng != null
-            ? distanceMiles(lat, lng, e.venue_lat, e.venue_lng)
+          // Prefer event_lat/lng (real location) over venue HQ — same basis
+          // as the home carousel so a given event's distance matches on both.
+          const dLat = e.event_lat ?? e.venue_lat;
+          const dLng = e.event_lng ?? e.venue_lng;
+          const dist = dLat != null && dLng != null
+            ? distanceMiles(lat, lng, dLat, dLng)
             : 999;
           return {
             e,
@@ -567,6 +588,10 @@ Deno.serve(async (req) => {
       venueCity: e.venue_city,
       venueLat: e.venue_lat,
       venueLng: e.venue_lng,
+      eventCity: e.event_city,
+      eventState: e.event_state,
+      eventLat: e.event_lat,
+      eventLng: e.event_lng,
       imageUrl: resolvedImage,
       category: e.category,
       subcategory: e.subcategory,

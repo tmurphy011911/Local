@@ -4,6 +4,8 @@ import RevenueCat
 
 @main
 struct iOSApp: App {
+    @Environment(\.scenePhase) private var scenePhase
+
     init() {
         // Sentry/PostHog first so anything thrown by later lines is captured.
         AnalyticsBridge.installAndStart()
@@ -43,6 +45,16 @@ struct iOSApp: App {
                 .onOpenURL { url in
                     handleDeepLink(url)
                 }
+        }
+        .onChange(of: scenePhase) { phase in
+            // iOS PostHog runs on default batching and we never wire an
+            // app-lifecycle flush, so interaction events queued late in a
+            // short session are lost when the app is killed from background.
+            // Flush on every background transition so the queue ships.
+            if phase == .background {
+                Analytics.shared.track(event: AnalyticsEvent.Events.shared.appBackgrounded())
+                Analytics.shared.flush()
+            }
         }
     }
 

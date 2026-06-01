@@ -32,6 +32,7 @@ data class OnboardingData(
 )
 
 data class VenueSummary(
+    val id: String? = null,
     val name: String,
     val city: String,
     val distanceMiles: Double? = null,

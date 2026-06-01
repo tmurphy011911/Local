@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Wraps the Android 12+ SplashScreen API. Pre-12 devices get a static
+        splash (cream + app icon) via the same theme — the library polyfills.
+        See docs/splash-spec-v1.1.md §10.
+    -->
+    <style name="Theme.App.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/splash_cream</item>
+        <!-- Leave windowSplashScreenAnimatedIcon unset: the system falls back
+             to the adaptive icon foreground from @mipmap/ic_launcher. When
+             the icon-replacement PR ships, that mipmap updates and the
+             system splash icon updates with it automatically. -->
+        <item name="postSplashScreenTheme">@android:style/Theme.Material.Light.NoActionBar</item>
+    </style>
+</resources>

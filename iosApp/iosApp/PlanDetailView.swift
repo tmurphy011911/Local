@@ -286,10 +286,12 @@ struct PlanDetailView: View {
                     }
                 },
                 onMarkUnavailable: {
+                    // Same chooser as the ticket flow — Replace event opens
+                    // Bo with a swap prompt, Remove event drops the slot.
                     activeStopSheet = nil
-                    PlanDetailBridge.shared.onSwapForUnavailable?(
-                        KotlinInt(int: Int32(dayIdx)), slot.id, slot.name, "reservation"
-                    )
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        activeStopSheet = .unavailableReservation(slot: slot, dayIdx: dayIdx)
+                    }
                 },
                 onChooseDetails: {
                     activeStopSheet = nil
@@ -328,16 +330,57 @@ struct PlanDetailView: View {
                     }
                 },
                 onMarkUnavailable: {
+                    // Bounce through a tiny chooser sheet — "Replace event"
+                    // routes to the existing onReplaceSlot (opens Bo with a
+                    // replacement prompt), "Remove event" calls onRemoveSlot.
+                    // Two-step animation: dismiss tickets, brief delay, then
+                    // present the chooser so sheets don't fight presentation.
                     activeStopSheet = nil
-                    PlanDetailBridge.shared.onSwapForUnavailable?(
-                        KotlinInt(int: Int32(dayIdx)), slot.id, slot.name, "ticket"
-                    )
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        activeStopSheet = .unavailableTicket(slot: slot, dayIdx: dayIdx)
+                    }
                 },
                 onChooseDetails: {
                     activeStopSheet = nil
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
                         activeStopSheet = .ticketDetails(slot: slot, dayIdx: dayIdx, isEditing: false)
                     }
+                },
+                onDismiss: { activeStopSheet = nil }
+            )
+        case .unavailableTicket(let slot, let dayIdx):
+            UnavailableActionSheet(
+                title: "No tickets for \(slot.name)",
+                subtitle: "Swap it for something else or take it off the plan.",
+                onReplace: {
+                    activeStopSheet = nil
+                    PlanDetailBridge.shared.onReplaceSlot?(
+                        KotlinInt(int: Int32(dayIdx)), slot.id, slot.name
+                    )
+                },
+                onRemove: {
+                    activeStopSheet = nil
+                    PlanDetailBridge.shared.onRemoveSlot?(
+                        KotlinInt(int: Int32(dayIdx)), slot.id
+                    )
+                },
+                onDismiss: { activeStopSheet = nil }
+            )
+        case .unavailableReservation(let slot, let dayIdx):
+            UnavailableActionSheet(
+                title: "No reservations for \(slot.name)",
+                subtitle: "Swap it for something else or take it off the plan.",
+                onReplace: {
+                    activeStopSheet = nil
+                    PlanDetailBridge.shared.onReplaceSlot?(
+                        KotlinInt(int: Int32(dayIdx)), slot.id, slot.name
+                    )
+                },
+                onRemove: {
+                    activeStopSheet = nil
+                    PlanDetailBridge.shared.onRemoveSlot?(
+                        KotlinInt(int: Int32(dayIdx)), slot.id
+                    )
                 },
                 onDismiss: { activeStopSheet = nil }
             )
@@ -1379,6 +1422,19 @@ struct PlanDetailView: View {
 
 // MARK: - Stop card
 
+/// Press-shrink for slot cards. Lives in the ButtonStyle (not a separate
+/// gesture) so isPressed flips instantly on touch-down and the tap action
+/// fires reliably on touch-up. Inner chip Buttons and the ellipsis Menu
+/// keep working — SwiftUI's nested-button hit-testing absorbs their taps
+/// before the outer Button sees them.
+private struct PressableCardStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+            .animation(.spring(response: 0.28, dampingFraction: 0.7), value: configuration.isPressed)
+    }
+}
+
 private struct StopCard: View {
     let slot: PlanDetailSlot
     let readOnly: Bool
@@ -1396,16 +1452,30 @@ private struct StopCard: View {
     @Environment(\.openURL) private var openURL
     @State private var showDirections = false
     @State private var showRemoveConfirm = false
-    /// Drives the press-shrink animation. A simultaneous zero-distance drag
-    /// flips this on touch-down and off on release, without consuming taps
-    /// from the ellipsis Menu / chip Buttons inside the card.
-    @State private var isPressed = false
 
     var body: some View {
         // Body — three single-line rows. The timeline rail (TIME + dot
         // + line) now lives in the parent stop list so it spans the
         // full vertical span across cards instead of breaking inside
         // each card.
+        //
+        // Wrapped in a Button so the tap-to-detail action and the
+        // press-shrink animation share a single, reliable gesture path.
+        // Earlier we used .simultaneousGesture(DragGesture) + .onTapGesture
+        // — the drag silently locked out the tap on a quick press, and
+        // the .onLongPressGesture fallback felt mushy due to gesture-
+        // coordinator disambiguation lag. ButtonStyle drives isPressed
+        // instantly on touch-down and Button.action fires reliably on
+        // touch-up, with nested chip/Menu buttons absorbing their own
+        // taps as SwiftUI does by default.
+        Button(action: {
+            PlanDetailBridge.shared.onSlotTap?(
+                KotlinInt(int: Int32(dayIdx)),
+                slot.id,
+                slot.eventId,
+                slot.venueName ?? slot.name
+            )
+        }) {
         HStack(alignment: .top, spacing: 0) {
             VStack(alignment: .leading, spacing: 5) {
                 // Row 1: name + inline status badges + overflow menu.
@@ -1530,16 +1600,6 @@ private struct StopCard: View {
                 .fill(pdLine)
                 .offset(y: 4)
         )
-        // Press-shrink — touch-down dips the card to 0.97 with a quick
-        // spring; release returns to 1.0. simultaneousGesture keeps the
-        // ellipsis Menu and chip Buttons inside the card tappable.
-        .scaleEffect(isPressed ? 0.97 : 1.0)
-        .animation(.spring(response: 0.28, dampingFraction: 0.7), value: isPressed)
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 0)
-                .onChanged { _ in if !isPressed { isPressed = true } }
-                .onEnded { _ in isPressed = false }
-        )
         // BOOK AHEAD as a corner badge — flush with the top-right corner
         // of the card so the title row never gets truncated by an inline
         // chip. Same condition as before (restaurant + no reservation +
@@ -1562,19 +1622,8 @@ private struct StopCard: View {
                     )
             }
         }
-        // Tap → open native event/venue detail. Routes through the
-        // PlanDetailBridge so AppNavigation can wire `showNativeEventDetail`
-        // / `showNativeVenueDetail` with the same handlers used for taps
-        // from the Plans tab and Home feed.
-        .contentShape(Rectangle())
-        .onTapGesture {
-            PlanDetailBridge.shared.onSlotTap?(
-                KotlinInt(int: Int32(dayIdx)),
-                slot.id,
-                slot.eventId,
-                slot.venueName ?? slot.name
-            )
         }
+        .buttonStyle(PressableCardStyle())
         .confirmationDialog(
             "Get directions to \(slot.name)",
             isPresented: $showDirections,
@@ -1670,8 +1719,12 @@ private struct StopCard: View {
         case .ticketed:
             switch slot.ticketState {
             case .bought:
+                // Short label so the badge fits next to "Directions" on one
+                // line. Was "Got Tickets · N tickets" — wrapped on narrow
+                // cards and pushed Directions off-screen on iPhones. The
+                // green check + "N tickets" still communicates the bought state.
                 stateBadge(
-                    label: "Got Tickets · \(slot.ticketCount ?? 1) \(pluralize(slot.ticketCount ?? 1, "ticket", "tickets"))",
+                    label: "\(slot.ticketCount ?? 1) \(pluralize(slot.ticketCount ?? 1, "ticket", "tickets"))",
                     systemIcon: "checkmark.circle.fill",
                     color: pdGreen,
                     enabled: !readOnly
@@ -1883,7 +1936,12 @@ private struct GroupSizeSheet: View {
         _size = State(initialValue: max(1, currentSize))
     }
 
-    private var canSave: Bool { size != currentSize && size >= 1 && size <= 500 }
+    // Enable Save whenever the value is in range. The old `size != currentSize`
+    // guard blocked the common first-open case where the default (1) is also
+    // the desired value — user couldn't confirm "just me." Saving an unchanged
+    // value is harmless (idempotent write), and Cancel is right there for users
+    // who genuinely want to back out.
+    private var canSave: Bool { size >= 1 && size <= 500 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -2138,6 +2196,14 @@ enum StopSheet: Identifiable {
     case tickets(slot: PlanDetailSlot, dayIdx: Int)
     case ticketDetails(slot: PlanDetailSlot, dayIdx: Int, isEditing: Bool)
     case swap(slot: PlanDetailSlot, dayIdx: Int)
+    // Shown after the user taps "No tickets available" / "No reservations
+    // available" — two CTAs (Replace event / Remove event) so the user
+    // decides what to do with the dead slot. Previously these jumped
+    // straight to Bo via onSwapForUnavailable; the explicit choice reads
+    // better and avoids a chat round-trip when the user just wants to
+    // drop the stop.
+    case unavailableTicket(slot: PlanDetailSlot, dayIdx: Int)
+    case unavailableReservation(slot: PlanDetailSlot, dayIdx: Int)
     var id: String {
         switch self {
         case .reservation(let s, _): return "res-\(s.id)"
@@ -2145,6 +2211,8 @@ enum StopSheet: Identifiable {
         case .tickets(let s, _): return "tix-\(s.id)"
         case .ticketDetails(let s, _, _): return "tixd-\(s.id)"
         case .swap(let s, _): return "swap-\(s.id)"
+        case .unavailableTicket(let s, _): return "unavail-tix-\(s.id)"
+        case .unavailableReservation(let s, _): return "unavail-res-\(s.id)"
         }
     }
 }
@@ -2412,6 +2480,64 @@ private struct TicketsSheet: View {
             .clipShape(RoundedRectangle(cornerRadius: 14))
         }
         .buttonStyle(.plain)
+    }
+}
+
+/// Two-CTA chooser shown after the user marks a slot as having no
+/// tickets / reservations available. Pure router — Replace fires the
+/// existing `onReplaceSlot` Bo flow, Remove fires `onRemoveSlot`. No new
+/// bridge methods needed. Title/subtitle are passed in so the same view
+/// serves both the ticket and reservation flows.
+private struct UnavailableActionSheet: View {
+    let title: String
+    let subtitle: String
+    let onReplace: () -> Void
+    let onRemove: () -> Void
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title)
+                .font(.system(size: 20, weight: .black))
+                .foregroundColor(pdInk)
+            Text(subtitle)
+                .font(.system(size: 13))
+                .foregroundColor(pdInk3)
+            Spacer().frame(height: 8)
+
+            Button(action: onReplace) {
+                HStack(spacing: 8) {
+                    Image(systemName: "sparkles").font(.system(size: 14, weight: .bold))
+                    Text("Replace event").font(.system(size: 15, weight: .black))
+                }
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(pdCoral)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+            .buttonStyle(.plain)
+
+            Button(action: onRemove) {
+                HStack(spacing: 8) {
+                    Image(systemName: "trash").font(.system(size: 13, weight: .bold))
+                    Text("Remove event").font(.system(size: 14, weight: .bold))
+                    Spacer()
+                    Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold)).foregroundColor(pdInk4)
+                }
+                .foregroundColor(pdInk)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 14)
+                .background(pdShade)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+            }
+            .buttonStyle(.plain)
+
+            Spacer().frame(height: 4)
+        }
+        .padding(20)
+        .presentationDetents([.fraction(0.36)])
+        .presentationDragIndicator(.visible)
     }
 }
 

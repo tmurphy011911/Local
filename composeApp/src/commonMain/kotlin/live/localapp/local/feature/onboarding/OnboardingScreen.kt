@@ -203,6 +203,7 @@ fun OnboardingScreen(
         if (fills != null) {
             OnboardingTracker(
                 fills = fills,
+                accentColor = accentColorForStep(state.currentStep),
                 modifier = Modifier
                     .windowInsetsPadding(WindowInsets.statusBars)
                     .padding(top = 6.dp, start = 20.dp, end = 20.dp),
@@ -212,7 +213,15 @@ fun OnboardingScreen(
 }
 
 @Composable
-private fun OnboardingTracker(fills: List<Float>, modifier: Modifier = Modifier) {
+private fun OnboardingTracker(
+    fills: List<Float>,
+    accentColor: androidx.compose.ui.graphics.Color,
+    modifier: Modifier = Modifier,
+) {
+    val animatedAccent by androidx.compose.animation.animateColorAsState(
+        targetValue = accentColor,
+        animationSpec = tween(450),
+    )
     Row(
         modifier = modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.spacedBy(5.dp),
@@ -234,9 +243,25 @@ private fun OnboardingTracker(fills: List<Float>, modifier: Modifier = Modifier)
                         .fillMaxWidth(animatedFill)
                         .height(4.dp)
                         .clip(RoundedCornerShape(3.dp))
-                        .background(AppColors.Coral),
+                        .background(animatedAccent),
                 )
             }
         }
     }
 }
+
+/** Maps each onboarding step to its primary accent color so the progress
+ *  tracker matches what the user sees on screen. */
+private fun accentColorForStep(step: OnboardingStep): androidx.compose.ui.graphics.Color =
+    when (step) {
+        OnboardingStep.LOCATION,
+        OnboardingStep.MANUAL_ADDRESS -> AppColors.Sky
+        OnboardingStep.NEIGHBOURHOODS,
+        OnboardingStep.VENUES,
+        OnboardingStep.CATEGORIES,
+        OnboardingStep.FAVOURITES -> AppColors.Plum
+        OnboardingStep.NOTIFICATIONS -> AppColors.Sun
+        OnboardingStep.SUCCESS -> AppColors.Sage
+        OnboardingStep.PHONE,
+        OnboardingStep.SPLASH -> AppColors.Coral
+    }

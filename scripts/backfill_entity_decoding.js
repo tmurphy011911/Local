@@ -15,7 +15,7 @@
 const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
 const WRITE = process.env.WRITE === "1";
 const TABLES = [
-  { table: "events", cols: ["title", "description"] },
+  { table: "events", cols: ["title", "description", "venue_name"] },
   { table: "venues", cols: ["name", "description"] },
 ];
 

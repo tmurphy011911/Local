@@ -132,9 +132,29 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node sync_municipal_feeds.js
 
-  dedupe-pass:
+  split-aggregator-events:
+    # Re-attribute events from aggregator venues (Harvard Square, Creative
+    # Legion, etc.) to the actual venues where they occur. Must run AFTER
+    # extract-venues (so newly-discovered venues are matchable) and BEFORE
+    # dedupe-pass (so dedupe groups by the corrected lat/lng).
     runs-on: ubuntu-latest
     needs: extract-venues
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Split aggregator events
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WRITE: '1'
+        run: node split_aggregator_events.js
+
+  dedupe-pass:
+    runs-on: ubuntu-latest
+    needs: split-aggregator-events
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

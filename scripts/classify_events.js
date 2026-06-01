@@ -408,7 +408,7 @@ SUBCATEGORY RULES:
 IMPORTANT classification rules:
 - Film screenings and movie showings are "arts" with sub_subcategory "film"
 - A venue's default classification is often WRONG. Classify by the EVENT content, not the venue.
-- ANY event with "vs" or "vs." in the title is almost certainly "sports" — games, matches, competitions. Never classify these as music/arts/etc.
+- ANY event whose title pits two sides against each other is almost certainly "sports" — games, matches, competitions. This includes "vs", "vs.", a standalone single-letter " v " or " v. " (Ticketmaster's format, e.g. "New England Patriots v Buffalo Bills", "2026 World Cup: Haiti v Scotland"), and "@" (e.g. "Yankees @ Red Sox"). It still applies when the matchup follows a prefix like "Preseason Game 1: Team A v Team B". Never classify these as music/arts/etc. For these matchup titles, ALWAYS populate team_name with the local/home team (the side belonging to the event's metro), using the canonical "City Nickname" form.
 - Pro sports teams (MLB, NBA, NFL, NHL, MLS, and equivalents in any metro) are ALWAYS subcategory "sports" with sub_subcategory matching the sport (hockey, basketball, baseball, football, soccer, etc.).
 - Pro sports teams in major leagues (MLB, NBA, NFL, NHL, MLS) should get the "pro-sports" tag. Minor-league affiliates (AAA/AA baseball, AHL hockey, USL soccer, etc.) get "minor-league" sub_subcategory, not "pro-sports".
 - Free events should get the "free" tag

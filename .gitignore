@@ -38,3 +38,7 @@ node
 
 # HTML prototypes
 *.html
+
+# Local script logs / data dumps (not source)
+.splitter-logs/
+scripts/.manifests/

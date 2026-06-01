@@ -115,7 +115,7 @@ struct ComposeView: UIViewControllerRepresentable {
             isFree, priceDisplay, ticketUrl, sourceUrl,
             category, subcategory, source,
             cardX, cardY, cardW, cardH, cardImageUrl,
-            isFavorited, timeKnown in
+            isFavorited, timeKnown, venueDistanceMiles in
 
             DispatchQueue.main.async {
                 guard let window = composeVC.view.window ?? UIApplication.shared.connectedScenes
@@ -146,7 +146,9 @@ struct ComposeView: UIViewControllerRepresentable {
                     source: source,
                     showDirections: detailBridge.showDirections,
                     isFavorited: isFavorited.boolValue,
-                    timeKnown: timeKnown.boolValue
+                    timeKnown: timeKnown.boolValue,
+                    venueDistanceMiles: venueDistanceMiles.doubleValue,
+                    venueUpcomingEventCount: 0
                 )
 
                 let cardFrame = CGRect(
@@ -190,6 +192,19 @@ struct ComposeView: UIViewControllerRepresentable {
         detailBridge.dismissEventDetail = {
             DispatchQueue.main.async {
                 transition.dismiss()
+            }
+        }
+
+        // Async venue upcoming-event count arrives after the detail is presented
+        // (events carry no venue FK, so the count needs a name+city lookup).
+        // Broadcast so the presented EventDetailView swaps in the real count.
+        detailBridge.updateVenueEventCount = { eventId, count in
+            DispatchQueue.main.async {
+                NotificationCenter.default.post(
+                    name: .eventVenueCountDidUpdate,
+                    object: nil,
+                    userInfo: ["eventId": eventId as String, "count": Int(truncating: count)]
+                )
             }
         }
     }

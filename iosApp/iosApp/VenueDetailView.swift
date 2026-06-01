@@ -158,6 +158,22 @@ private extension Color {
 
 extension Notification.Name {
     static let venueEventsDidUpdate = Notification.Name("venueEventsDidUpdate")
+    /// Posted when the event detail's venue upcoming-event count resolves async.
+    static let eventVenueCountDidUpdate = Notification.Name("eventVenueCountDidUpdate")
+}
+
+/// Max upcoming events the venue events query returns (mirrors Kotlin's
+/// VENUE_UPCOMING_EVENTS_CAP). Counts at this value are shown as "N+" since the
+/// true total may be higher.
+let venueUpcomingEventsCap = 50
+
+/// "1 event", "12 events", or "50+ events" when capped. Returns nil for <= 0.
+/// `noun` lets callers say "upcoming event" on the venue page.
+func formatVenueEventCount(_ count: Int, noun: String = "event") -> String? {
+    guard count > 0 else { return nil }
+    let plural = count == 1 ? noun : "\(noun)s"
+    if count >= venueUpcomingEventsCap { return "\(venueUpcomingEventsCap)+ \(plural)" }
+    return "\(count) \(plural)"
 }
 
 struct VenueDetailView: View {
@@ -169,7 +185,7 @@ struct VenueDetailView: View {
     /// ready to book or leave the app.
     let hidesPrimaryCTAs: Bool
 
-    @State private var mapsExpanded = false
+    @State private var showDirections = false
     @State private var selectedDateFilter: DateFilter = .all
     @State private var isFavorited: Bool
     // Events now load async after present(). Seed with whatever the venue came with
@@ -361,6 +377,53 @@ struct VenueDetailView: View {
         }
     }
 
+    // MARK: - Info Chips
+
+    /// "City · X.X mi" — distance dropped when unknown.
+    private var venueLocationLine: String? {
+        var parts: [String] = []
+        let city = venue.city.trimmingCharacters(in: .whitespaces)
+        if !city.isEmpty { parts.append(city) }
+        if let dist = venue.distanceMiles {
+            if dist < 0.1 { parts.append("Nearby") }
+            else if dist < 10 { parts.append(String(format: "%.1f mi", dist)) }
+            else { parts.append(String(format: "%.0f mi", dist)) }
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
+    }
+
+    /// Prefer the freshly-loaded live count; fall back to the seeded count.
+    private var venueEventCountForChip: Int {
+        liveEvents.isEmpty ? venue.upcomingEventCount : liveEvents.count
+    }
+
+    /// "4.5 · Arts Center" — category dropped when blank.
+    private func venueRatingLine(_ rating: Double) -> String {
+        let r = String(format: "%.1f", rating)
+        let cat = venue.categoryDisplay
+        return cat.isEmpty ? r : "\(r) \u{00B7} \(cat)"
+    }
+
+    private func venueInfoChip(systemName: String, iconColor: Color, text: String) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(AppColor.mist)
+                RoundedRectangle(cornerRadius: 8)
+                    .stroke(AppColor.pebble, lineWidth: 1.5)
+                Image(systemName: systemName)
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .foregroundColor(iconColor)
+            }
+            .frame(width: 32, height: 32)
+
+            Text(text)
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundColor(AppColor.ink2)
+                .lineLimit(2)
+        }
+    }
+
     // MARK: - Content
 
     private var contentSection: some View {
@@ -371,28 +434,34 @@ struct VenueDetailView: View {
                 .foregroundColor(AppColor.ink)
                 .lineSpacing(6)
 
-            Spacer().frame(height: 4)
+            Spacer().frame(height: 12)
 
-            // Subtitle: Category · City · Distance
-            if !venue.subtitleParts.isEmpty {
-                Text(venue.subtitleParts)
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(AppColor.ink3)
-            }
-
-            Spacer().frame(height: 14)
-
-            // Google Rating
-            if let rating = venue.googleRating, rating > 0 {
-                HStack(spacing: 4) {
-                    starsView(rating: rating)
-                    Text(String(format: "%.1f", rating))
-                        .font(.system(size: 13, weight: .bold))
-                        .foregroundColor(AppColor.ink2)
+            // Info chips — icon-tile rows matching the event detail design
+            // language (replaces the old run-on subtitle + star row).
+            VStack(alignment: .leading, spacing: 10) {
+                // Location: City · Distance
+                if let locationText = venueLocationLine {
+                    venueInfoChip(systemName: "mappin.and.ellipse", iconColor: AppColor.sky, text: locationText)
                 }
-
-                Spacer().frame(height: 14)
+                // Upcoming-event count
+                if let countText = formatVenueEventCount(venueEventCountForChip, noun: "upcoming event") {
+                    venueInfoChip(
+                        systemName: "calendar",
+                        iconColor: AppColor.coral,
+                        text: countText
+                    )
+                }
+                // Rating · Category
+                if let rating = venue.googleRating, rating > 0 {
+                    venueInfoChip(
+                        systemName: "star.fill",
+                        iconColor: AppColor.sun,
+                        text: venueRatingLine(rating)
+                    )
+                }
             }
+
+            Spacer().frame(height: 16)
 
             // Description
             if let desc = venue.description, !desc.isEmpty {
@@ -409,34 +478,34 @@ struct VenueDetailView: View {
             // Directions chip per stop, so showing it here too is redundant
             // and visually heavy.
             if venue.hasLocation && !VenueDetailTransitionController.fromPlanContext {
-                Button(action: {
-                    withAnimation(.easeInOut(duration: 0.2)) { mapsExpanded.toggle() }
-                }) {
-                    HStack(spacing: 4) {
+                Button(action: { showDirections = true }) {
+                    HStack(spacing: 6) {
                         Image(systemName: "mappin.and.ellipse")
-                            .font(.system(size: 12, weight: .semibold))
-                        Text(mapsExpanded ? "Close Directions" : "Get Directions")
-                            .font(.system(size: 13, weight: .bold))
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
+                        Text("Directions")
+                            .font(.system(size: 13, weight: .bold, design: .rounded))
                     }
                     .foregroundColor(AppColor.sky)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .frame(maxWidth: .infinity)
+                    .background(AppColor.skyLt)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(AppColor.sky.opacity(0.35), lineWidth: 1.5))
                 }
-
-                if mapsExpanded {
-                    HStack(spacing: 8) {
-                        directionsOption(label: "Apple Maps") {
-                            let urlStr = "https://maps.apple.com/?q=\(venue.name)&ll=\(venue.lat),\(venue.lng)"
-                            if let url = URL(string: urlStr.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? urlStr) {
-                                UIApplication.shared.open(url)
-                            }
-                        }
-                        directionsOption(label: "Google Maps") {
-                            if let url = URL(string: "https://maps.google.com/?q=\(venue.lat),\(venue.lng)") {
-                                UIApplication.shared.open(url)
-                            }
-                        }
-                    }
-                    .padding(.top, 6)
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                .buttonStyle(.plain)
+                // Same native menu as the plan detail page — Apple/Google Maps
+                // plus Uber/Lyft, via a system confirmation dialog.
+                .confirmationDialog(
+                    "Get directions to \(venue.name)",
+                    isPresented: $showDirections,
+                    titleVisibility: .visible
+                ) {
+                    Button("Apple Maps") { openMap(.apple) }
+                    Button("Google Maps") { openMap(.google) }
+                    Button("Uber") { openRideshare(.uber) }
+                    Button("Lyft") { openRideshare(.lyft) }
+                    Button("Cancel", role: .cancel) {}
                 }
 
                 Spacer().frame(height: 16)
@@ -711,7 +780,8 @@ struct VenueDetailView: View {
                 nil,
                 0, 0, 0, 0, event.imageUrl,
                 KotlinBoolean(value: false),
-                KotlinBoolean(value: true)
+                KotlinBoolean(value: true),
+                KotlinDouble(value: venue.distanceMiles ?? -1)
             )
         }
     }
@@ -800,7 +870,8 @@ struct VenueDetailView: View {
                 nil,
                 0, 0, 0, 0, event.imageUrl,
                 KotlinBoolean(value: false),
-                KotlinBoolean(value: true)
+                KotlinBoolean(value: true),
+                KotlinDouble(value: venue.distanceMiles ?? -1)
             )
         }
     }
@@ -872,18 +943,38 @@ struct VenueDetailView: View {
         .padding(.bottom, 24)
     }
 
-    private func directionsOption(label: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Text(label)
-                .font(.system(size: 12, weight: .bold))
-                .foregroundColor(AppColor.sky)
-                .padding(.horizontal, 12)
-                .padding(.vertical, 6)
-                .background(AppColor.skyLt)
-                .clipShape(Capsule())
-                .overlay(Capsule().stroke(AppColor.sky, lineWidth: 1))
+    // MARK: - Directions (mirrors PlanDetailView's map / rideshare launchers)
+
+    private enum MapApp { case apple, google }
+    private enum RideApp { case uber, lyft }
+
+    private func openMap(_ app: MapApp) {
+        let q = venue.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        let url: URL?
+        switch app {
+        case .apple:
+            url = URL(string: "http://maps.apple.com/?daddr=\(venue.lat),\(venue.lng)&q=\(q)")
+        case .google:
+            // Try the Google Maps app first; falls through to the web app
+            // automatically if it isn't installed.
+            url = URL(string: "comgooglemaps://?daddr=\(venue.lat),\(venue.lng)&q=\(q)")
+                ?? URL(string: "https://www.google.com/maps/dir/?api=1&destination=\(venue.lat),\(venue.lng)")
         }
-        .buttonStyle(.plain)
+        if let u = url { UIApplication.shared.open(u) }
+    }
+
+    private func openRideshare(_ app: RideApp) {
+        let nick = venue.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        let url: URL?
+        switch app {
+        case .uber:
+            url = URL(string: "uber://?action=setPickup&pickup=my_location&dropoff[latitude]=\(venue.lat)&dropoff[longitude]=\(venue.lng)&dropoff[nickname]=\(nick)")
+                ?? URL(string: "https://m.uber.com/ul/?action=setPickup&pickup=my_location&dropoff[latitude]=\(venue.lat)&dropoff[longitude]=\(venue.lng)")
+        case .lyft:
+            url = URL(string: "lyft://ridetype?id=lyft&destination[latitude]=\(venue.lat)&destination[longitude]=\(venue.lng)")
+                ?? URL(string: "https://ride.lyft.com/ridetype?id=lyft&destination[latitude]=\(venue.lat)&destination[longitude]=\(venue.lng)")
+        }
+        if let u = url { UIApplication.shared.open(u) }
     }
 
     private func secondaryButton(systemName: String, label: String, isActive: Bool, action: @escaping () -> Void) -> some View {

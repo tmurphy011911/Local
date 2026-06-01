@@ -78,7 +78,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -104,7 +103,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
-import kotlinx.coroutines.launch
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
@@ -116,6 +114,7 @@ import live.localapp.local.snakeToTitleCase
 import live.localapp.local.domain.model.Venue
 import live.localapp.local.domain.repository.CategoryInfo
 import live.localapp.local.domain.repository.VenueWithMeta
+import live.localapp.local.domain.repository.VENUE_UPCOMING_EVENTS_CAP
 import live.localapp.local.domain.repository.CommunityInterestRepository
 import live.localapp.local.ui.home.HomeViewModel
 import live.localapp.local.domain.repository.InteractionType
@@ -234,11 +233,12 @@ fun PlacesScreen(
                     SearchTab.PLACES -> {
                         if (state.isLoading && state.venues.isEmpty()) {
                             PlacesSkeletonLoader()
-                        } else if (state.filteredVenues.isEmpty()) {
+                        } else if (state.filteredVenues.isEmpty() && state.savedVenues.isEmpty()) {
                             // Don't paint a silently blank grid — surface
                             // empty-or-error state with a retry. Covers
                             // server-returned-zero, fetch failure, and the
-                            // empty-cached-page paths.
+                            // empty-cached-page paths. Saved venues always
+                            // render, so fall through to the grid when any exist.
                             ExploreEmptyState(
                                 hasError = state.error != null,
                                 onRetry = { viewModel.refresh() },
@@ -251,6 +251,7 @@ fun PlacesScreen(
                             // when the sort changes.
                             VenueGrid(
                                 venues = state.filteredVenues,
+                                savedVenues = state.savedVenues,
                                 favoriteIds = state.favoriteVenueIds,
                                 hasMore = state.hasMore,
                                 onLoadMore = { viewModel.loadMore() },
@@ -275,7 +276,11 @@ fun PlacesScreen(
                     SearchTab.EVENTS -> {
                         if (state.isEventsLoading && state.filteredEvents.isEmpty()) {
                             EventsSkeletonLoader()
-                        } else if (state.filteredEvents.isEmpty()) {
+                        } else if (state.filteredEvents.isEmpty() && state.savedEvents.isEmpty()) {
+                            // Only the true empty state hides the list. Saved
+                            // events always render (independent of the date
+                            // filter), so a zero-result filter must still fall
+                            // through to EventGrid when saved events exist.
                             ExploreEmptyState(
                                 hasError = state.error != null,
                                 onRetry = { viewModel.refresh() },
@@ -502,63 +507,14 @@ private fun ExploreEmptyState(
     hasError: Boolean,
     onRetry: () -> Unit,
 ) {
-    val (headline, sub) = if (hasError) {
-        "Couldn't load this list" to "Check your connection and try again."
-    } else {
-        "Nothing here yet" to "Try a different filter, or pull to refresh."
-    }
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(horizontal = 32.dp, vertical = 48.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Icon(
-            imageVector = Icons.Outlined.Search,
-            contentDescription = null,
-            tint = AppColors.Ink3,
-            modifier = Modifier.size(40.dp),
-        )
-        Spacer(Modifier.height(16.dp))
-        Text(
-            text = headline,
-            style = TextStyle(
-                fontFamily = AppFonts.Heading,
-                fontWeight = FontWeight.SemiBold,
-                fontSize = 18.sp,
-                color = AppColors.Ink,
-            ),
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            text = sub,
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = FontWeight.Normal,
-                fontSize = 14.sp,
-                color = AppColors.Ink3,
-            ),
-        )
-        Spacer(Modifier.height(20.dp))
-        Box(
-            modifier = Modifier
-                .clip(RoundedCornerShape(50))
-                .background(AppColors.Coral)
-                .clickable { onRetry() }
-                .padding(horizontal = 24.dp, vertical = 12.dp),
-        ) {
-            Text(
-                text = "Retry",
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp,
-                    color = Color.White,
-                ),
-            )
-        }
-    }
+    // Bank 2 — Bo empty state. Same component for the error path; the bank
+    // copy is friendly enough to read either way without needing two banks.
+    live.localapp.local.ui.emptystate.BoEmptyState(
+        bank = live.localapp.local.ui.emptystate.EmptyStateCopy.NO_PLACES,
+        ctaLabel = "Refresh",
+        onCta = onRetry,
+        rotationKey = hasError,
+    )
 }
 
 @Composable
@@ -668,6 +624,11 @@ private fun EventDateFilterRow(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 FilterChip(
+                    label = EventDateFilter.CUSTOM.label,
+                    selected = false,
+                    onClick = openPicker,
+                )
+                FilterChip(
                     label = EventDateFilter.TODAY.label,
                     selected = false,
                     onClick = { onSelectPreset(EventDateFilter.TODAY) },
@@ -683,14 +644,14 @@ private fun EventDateFilterRow(
                     onClick = { onSelectPreset(EventDateFilter.THIS_WEEKEND) },
                 )
                 FilterChip(
+                    label = EventDateFilter.NEXT_WEEKEND.label,
+                    selected = false,
+                    onClick = { onSelectPreset(EventDateFilter.NEXT_WEEKEND) },
+                )
+                FilterChip(
                     label = EventDateFilter.NEXT_30_DAYS.label,
                     selected = false,
                     onClick = { onSelectPreset(EventDateFilter.NEXT_30_DAYS) },
-                )
-                FilterChip(
-                    label = EventDateFilter.CUSTOM.label,
-                    selected = false,
-                    onClick = openPicker,
                 )
             }
         } else {
@@ -937,6 +898,7 @@ private fun FilterChip(
 @Composable
 private fun VenueGrid(
     venues: List<VenueWithMeta>,
+    savedVenues: List<VenueWithMeta>,
     favoriteIds: Set<String>,
     hasMore: Boolean = false,
     onLoadMore: () -> Unit = {},
@@ -946,13 +908,7 @@ private fun VenueGrid(
      *  switching sort doesn't strand the user mid-list. */
     scrollResetKey: Any? = null,
 ) {
-    // Saved venues — filter from current venues list
-    val savedVenues = remember(venues, favoriteIds) {
-        venues.filter { it.venue.id in favoriteIds }
-    }
-
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-    val coroutineScope = rememberCoroutineScope()
     LaunchedEffect(scrollResetKey) {
         if (scrollResetKey != null) listState.scrollToItem(0)
     }
@@ -980,14 +936,9 @@ private fun VenueGrid(
                 isFavorited = venueWithMeta.venue.id in favoriteIds,
                 onClick = { bounds -> onVenueClick(venueWithMeta, bounds) },
                 onFavoriteToggle = {
-                    // Same pattern as Events — scroll to top on save (so the
-                    // Saved Places carousel that just grew/appeared is
-                    // visible) but not on un-save.
-                    val wasFavorited = venueWithMeta.venue.id in favoriteIds
+                    // Saving keeps the user's scroll position — the saved
+                    // venue still surfaces in the Saved Places carousel above.
                     onFavoriteToggle(venueWithMeta)
-                    if (!wasFavorited) {
-                        coroutineScope.launch { listState.animateScrollToItem(0) }
-                    }
                 },
             )
         }
@@ -1268,10 +1219,11 @@ private fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -
 
         Spacer(Modifier.width(8.dp))
 
-        // Heart — inline, matches EventRowCard (28dp white circle, 16dp coral icon)
+        // Heart — pinned to the top-right corner, matches EventRowCard.
         Box(
             modifier = Modifier
-                .padding(end = 12.dp)
+                .align(Alignment.Top)
+                .padding(top = 8.dp, end = 8.dp)
                 .size(28.dp)
                 .clip(CircleShape)
                 .background(AppColors.White)
@@ -1511,33 +1463,46 @@ fun VenueDetailPage(
                         v.name,
                         style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 24.sp, color = AppColors.Ink),
                     )
-                    Spacer(Modifier.height(4.dp))
-                    val parts = listOfNotNull(
-                        venueWithMeta.primaryCategory?.replaceFirstChar { it.uppercaseChar() },
-                        v.city,
-                        venueWithMeta.distanceMiles?.let { formatDistance(it) },
-                    )
-                    Text(
-                        parts.joinToString(" \u00B7 "),
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Ink3),
-                    )
-
-                    // Address
-                    if (!v.address.isNullOrBlank()) {
-                        Spacer(Modifier.height(4.dp))
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(14.dp), tint = AppColors.Ink3)
-                            Spacer(Modifier.width(4.dp))
-                            Text(
-                                v.address,
-                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    }
 
                     Spacer(Modifier.height(14.dp))
+
+                    // Icon-chip stack \u2014 matches the event detail design language.
+                    // Location (city \u00B7 distance), upcoming-event count, rating \u00B7 category.
+                    val locationText = listOfNotNull(
+                        v.city.takeIf { it.isNotBlank() },
+                        venueWithMeta.distanceMiles?.let { formatDistance(it) },
+                    ).joinToString(" \u00B7 ")
+                    if (locationText.isNotEmpty()) {
+                        VenueInfoChip(icon = Icons.Outlined.Place, iconTint = AppColors.Sky, text = locationText)
+                        Spacer(Modifier.height(10.dp))
+                    }
+
+                    val venueEventCount = if (events.isNotEmpty()) events.size else venueWithMeta.upcomingEventCount
+                    if (venueEventCount > 0) {
+                        val countLabel = when {
+                            venueEventCount == 1 -> "1 upcoming event"
+                            venueEventCount >= VENUE_UPCOMING_EVENTS_CAP -> "$VENUE_UPCOMING_EVENTS_CAP+ upcoming events"
+                            else -> "$venueEventCount upcoming events"
+                        }
+                        VenueInfoChip(
+                            icon = Icons.Outlined.CalendarMonth,
+                            iconTint = AppColors.Coral,
+                            text = countLabel,
+                        )
+                        Spacer(Modifier.height(10.dp))
+                    }
+
+                    val rating = v.googleRating
+                    if (rating != null && rating > 0) {
+                        val ratingText = listOfNotNull(
+                            (kotlin.math.round(rating * 10) / 10.0).toString(),
+                            venueWithMeta.primaryCategory?.replaceFirstChar { it.uppercaseChar() },
+                        ).joinToString(" \u00B7 ")
+                        VenueInfoChip(icon = Icons.Filled.Star, iconTint = AppColors.Sun, text = ratingText)
+                        Spacer(Modifier.height(10.dp))
+                    }
+
+                    Spacer(Modifier.height(4.dp))
 
                     Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                         SheetButton(
@@ -1708,6 +1673,31 @@ fun VenueDetailPage(
                 )
             }
         }
+    }
+}
+
+/**
+ * Icon-chip info row for the venue detail page — mirrors the event detail
+ * screen's InfoRow so both surfaces share one visual language.
+ */
+@Composable
+private fun VenueInfoChip(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    iconTint: Color,
+    text: String,
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier.size(32.dp).background(AppColors.Mist, AppShapes.IconBox).border(1.5.dp, AppColors.Pebble, AppShapes.IconBox),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, null, Modifier.size(16.dp), tint = iconTint)
+        }
+        Spacer(Modifier.width(10.dp))
+        Text(
+            text,
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = AppColors.Ink2, lineHeight = 18.sp),
+        )
     }
 }
 
@@ -2024,7 +2014,6 @@ private fun EventGrid(
     scrollResetKey: Any? = null,
 ) {
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
-    val coroutineScope = rememberCoroutineScope()
     LaunchedEffect(scrollResetKey) {
         if (scrollResetKey != null) listState.scrollToItem(0)
     }
@@ -2065,22 +2054,11 @@ private fun EventGrid(
             EventRowCard(
                 event = events[i],
                 isFavorited = events[i].id in favoriteIds,
-                userLat = userLat,
-                userLng = userLng,
                 onClick = { bounds -> onEventClick(events[i], bounds) },
                 onFavoriteToggle = {
-                    // Capture favorite-before-toggle state BEFORE dispatching
-                    // so we know which direction this is. Tap-to-save scrolls
-                    // the list to the top so the Saved Events section that
-                    // just grew (or appeared) is visible immediately —
-                    // otherwise the user has to manually scroll up to find it.
-                    // Tap-to-unsave does NOT scroll — leaves the user where
-                    // they were in the list.
-                    val wasFavorited = events[i].id in favoriteIds
+                    // Saving keeps the user's scroll position — the saved
+                    // event still surfaces in the Saved Events section above.
                     onFavoriteToggle(events[i])
-                    if (!wasFavorited) {
-                        coroutineScope.launch { listState.animateScrollToItem(0) }
-                    }
                 },
             )
         }
@@ -2266,8 +2244,6 @@ private fun SavedAlbumEventCard(
 private fun EventRowCard(
     event: live.localapp.local.domain.model.Event,
     isFavorited: Boolean,
-    userLat: Double?,
-    userLng: Double?,
     onClick: (Rect) -> Unit,
     onFavoriteToggle: () -> Unit,
 ) {
@@ -2305,85 +2281,79 @@ private fun EventRowCard(
 
         Spacer(Modifier.width(12.dp))
 
-        Column(modifier = Modifier.weight(1f).padding(vertical = 10.dp)) {
+        // Metadata mirrors the home EventCard fields (venue name, date, then
+        // "city · distance" on one line).
+        val card = event.toCardData()
+        Column(
+            modifier = Modifier.weight(1f).fillMaxHeight().padding(vertical = 10.dp),
+            verticalArrangement = Arrangement.SpaceBetween,
+        ) {
             Text(
                 event.title,
                 style = TextStyle(
                     fontFamily = AppFonts.Heading,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 15.sp,
+                    fontSize = 14.sp,
                     color = AppColors.Ink,
-                    lineHeight = 18.sp,
+                    lineHeight = 17.sp,
                 ),
-                maxLines = 2,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            Spacer(Modifier.height(3.dp))
-            val metaParts = buildList {
-                event.venueName?.takeIf { it.isNotBlank() }?.let { add(it) }
-                val distLabel = distanceLabel(event, userLat, userLng)
-                if (distLabel.isNotBlank()) add(distLabel)
-            }
-            if (metaParts.isNotEmpty()) {
-                Text(
-                    metaParts.joinToString(" · "),
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 11.sp,
-                        color = AppColors.Ink3,
-                    ),
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (event.dateDisplay.isNotBlank() || event.priceDisplay.isNotBlank() || event.isFree) {
-                Spacer(Modifier.height(3.dp))
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    if (event.dateDisplay.isNotBlank()) {
-                        Text(
-                            event.dateDisplay,
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 11.sp,
-                                color = AppColors.Ink2,
-                            ),
-                        )
-                    }
-                    if (event.isFree) {
-                        if (event.dateDisplay.isNotBlank()) Spacer(Modifier.width(8.dp))
-                        Text(
-                            "Free",
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 11.sp,
-                                color = AppColors.Sage,
-                            ),
-                        )
-                    } else if (event.priceDisplay.isNotBlank()) {
-                        if (event.dateDisplay.isNotBlank()) Spacer(Modifier.width(8.dp))
-                        Text(
-                            event.priceDisplay,
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 11.sp,
-                                color = AppColors.Ink3,
-                            ),
-                        )
-                    }
+            Column {
+                if (card.venueName.isNotEmpty()) {
+                    Text(
+                        card.venueName,
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 11.sp,
+                            color = AppColors.Ink3,
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                if (card.date.isNotEmpty()) {
+                    Text(
+                        card.date,
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp,
+                            color = AppColors.Ink2,
+                        ),
+                        maxLines = 1,
+                    )
+                }
+                // City and distance share one line: "Boston · 4.2 mi".
+                val locationLine = listOfNotNull(
+                    card.city.takeIf { it.isNotEmpty() },
+                    card.distance.takeIf { it.isNotEmpty() },
+                ).joinToString(" · ")
+                if (locationLine.isNotEmpty()) {
+                    Text(
+                        locationLine,
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.SemiBold,
+                            fontSize = 11.sp,
+                            color = AppColors.Ink3,
+                        ),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                 }
             }
         }
 
         Spacer(Modifier.width(8.dp))
 
-        // Heart — matches venue card style (28dp white circle, 16dp coral)
+        // Heart — pinned to the top-right corner of the card.
         Box(
             modifier = Modifier
-                .padding(end = 12.dp)
+                .align(Alignment.Top)
+                .padding(top = 8.dp, end = 8.dp)
                 .size(28.dp)
                 .clip(CircleShape)
                 .background(AppColors.White)

@@ -221,32 +221,13 @@ private fun PhoneInputContent(
         ) {
             Spacer(Modifier.height(48.dp))
 
-            // Logo
-            Box(
-                modifier = Modifier
-                    .size(72.dp)
-                    .background(AppColors.Coral, RoundedCornerShape(22.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "L",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Heading,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 40.sp,
-                        color = AppColors.White,
-                    ),
-                )
-            }
-
-            Spacer(Modifier.height(28.dp))
-
+            // "Welcome to local" — "local" uses the splash wordmark coloring (coral l's, ink "oca")
             Text(
                 buildAnnotatedString {
                     append("Welcome to ")
-                    withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = AppColors.Coral)) {
-                        append("Local")
-                    }
+                    withStyle(SpanStyle(color = AppColors.Coral)) { append("l") }
+                    withStyle(SpanStyle(color = AppColors.Ink)) { append("oca") }
+                    withStyle(SpanStyle(color = AppColors.Coral)) { append("l") }
                 },
                 style = TextStyle(
                     fontFamily = AppFonts.Heading,

@@ -10,8 +10,10 @@ import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.auth.auth
 import kotlinx.coroutines.launch
 import live.localapp.local.domain.repository.UserPreferencesRepository
+import live.localapp.local.feature.auth.ColdStartRouter
 import live.localapp.local.feature.auth.PhoneAuthScreen
 import live.localapp.local.feature.auth.PhoneAuthViewModel
+import live.localapp.local.feature.auth.RouteDestination
 import live.localapp.local.feature.onboarding.OnboardingScreen
 import live.localapp.local.feature.onboarding.OnboardingViewModel
 import live.localapp.local.domain.model.Event
@@ -20,7 +22,9 @@ import live.localapp.local.domain.model.Venue
 import live.localapp.local.domain.repository.EventRepository
 import live.localapp.local.domain.repository.PlanRepository
 import live.localapp.local.domain.repository.VenueRepository
+import live.localapp.local.domain.service.SplashConfigService
 import live.localapp.local.feature.onboarding.SplashScreen
+import live.localapp.local.feature.onboarding.SplashVariant
 import androidx.compose.runtime.rememberCoroutineScope
 import live.localapp.local.platform.checkClipboardForDeepLink
 import live.localapp.local.platform.clearClipboardDeepLink
@@ -62,6 +66,20 @@ fun App() {
 
         val supabaseClient = remember { KoinPlatform.getKoin().get<SupabaseClient>() }
         val userPrefsRepo = remember { KoinPlatform.getKoin().get<UserPreferencesRepository>() }
+        val coldStartRouter = remember(supabaseClient, userPrefsRepo) {
+            ColdStartRouter(supabaseClient, userPrefsRepo)
+        }
+
+        // Splash kill switch. Reads the cached flag synchronously for this
+        // cold start (default true) and fires an async refresh from Supabase
+        // that lands on the *next* launch. When the flag is false, the splash
+        // collapses to a static wordmark frame.
+        val splashConfig = remember { SplashConfigService(supabaseClient) }
+        val splashVariant = remember {
+            if (splashConfig.isAnimationEnabled()) SplashVariant.Animated
+            else SplashVariant.Static
+        }
+        LaunchedEffect(Unit) { splashConfig.refreshFromRemoteAsync() }
 
         // Resolve the PlanSyncer once at startup so its drain loop is alive
         // for the full session and any persisted ops from a prior run drain
@@ -70,6 +88,7 @@ fun App() {
         remember { KoinPlatform.getKoin().get<live.localapp.local.data.sync.PlanSyncer>() }
 
         var appState by remember { mutableStateOf(AppState.SPLASH) }
+        var justOnboarded by remember { mutableStateOf(false) }
         var userLat by remember { mutableStateOf<Double?>(null) }
         var userLng by remember { mutableStateOf<Double?>(null) }
         // Set by the splash's session-check LaunchedEffect. The splash always
@@ -180,12 +199,16 @@ fun App() {
 
         when (appState) {
             AppState.SPLASH -> {
-                SplashScreen(onComplete = {
-                    if (appState == AppState.SPLASH) {
-                        appState = postSplashRoute
-                            ?: if (deepLinkContent != null) AppState.DEEP_LINK else AppState.AUTH
-                    }
-                })
+                SplashScreen(
+                    onComplete = {
+                        if (appState == AppState.SPLASH) {
+                            appState = postSplashRoute
+                                ?: if (deepLinkContent != null) AppState.DEEP_LINK else AppState.AUTH
+                        }
+                    },
+                    appReady = postSplashRoute != null,
+                    variant = splashVariant,
+                )
 
                 // While splash plays, check for deep link + existing session
                 LaunchedEffect(Unit) {
@@ -231,35 +254,35 @@ fun App() {
                     // cut the splash off mid-play. Instead we stash the resolved
                     // route in postSplashRoute and let SplashScreen.onComplete
                     // pick it up when the animation finishes naturally.
-                    try {
-                        val session = supabaseClient.auth.currentSessionOrNull()
-                        if (session != null) {
-                            val userId = session.user?.id ?: ""
-                            if (userId.isNotEmpty()) {
-                                authUserId = userId
-                                val recovered = userPrefsRepo.recoverProfileByAuthId(userId)
-                                if (recovered != null) {
-                                    postSplashRoute = AppState.HOME
-                                    return@LaunchedEffect
-                                }
-                            }
+                    //
+                    // postSplashRoute also doubles as the "app-ready" signal
+                    // for the splash tap-line gate, so we must set it on every
+                    // path — including timeouts / errors — via the router's
+                    // unauthenticated fallback.
+                    //
+                    // All session + profile logic lives in ColdStartRouter
+                    // (feature/auth/ColdStartRouter.kt). The router waits for
+                    // Supabase to finish hydrating, classifies the user, and
+                    // returns one of {Home, Onboarding(resume), Auth, DeepLink}.
+                    // See that file for the full state machine and security
+                    // invariants (no-session-no-home, clear-on-RefreshFailure).
+                    postSplashRoute = when (
+                        val dest = coldStartRouter.resolve(deepLinkPending = deepLinkContent != null)
+                    ) {
+                        is RouteDestination.Home -> {
+                            authUserId = dest.authUserId
+                            AppState.HOME
                         }
-                        val alreadyOnboarded = userPrefsRepo.isOnboardingComplete()
-                        if (alreadyOnboarded) {
-                            postSplashRoute = AppState.HOME
-                            return@LaunchedEffect
+                        is RouteDestination.Onboarding -> {
+                            authUserId = dest.authUserId
+                            // ONBOARDING resume vs fresh is handled by the
+                            // OnboardingViewModel — see its init path. We just
+                            // hand it a valid authUserId so the eventual
+                            // user_profiles upsert lands on the right row.
+                            AppState.ONBOARDING
                         }
-                        val recoveredId = userPrefsRepo.recoverProfile()
-                        if (recoveredId != null) {
-                            postSplashRoute = AppState.HOME
-                            return@LaunchedEffect
-                        }
-                        // Not authenticated — splash onComplete will set AUTH or DEEP_LINK
-                    } catch (_: Exception) {
-                        val alreadyOnboarded = userPrefsRepo.isOnboardingComplete()
-                        if (alreadyOnboarded) {
-                            postSplashRoute = AppState.HOME
-                        }
+                        RouteDestination.DeepLink -> AppState.DEEP_LINK
+                        RouteDestination.Auth -> AppState.AUTH
                     }
                 }
             }
@@ -337,7 +360,13 @@ fun App() {
                             appState = AppState.HOME
                         }
                     },
-                    onSkip = { appState = AppState.HOME },
+                    // The X-close affordance on PhoneAuthScreen would otherwise
+                    // let an unauthenticated user reach HOME with authUserId=""
+                    // and silently RLS-fail every query. We only expose it under
+                    // the test-bypass flag so the bypass is impossible in prod.
+                    onSkip = if (live.localapp.local.Config.TEST_AUTH_BYPASS) {
+                        { appState = AppState.HOME }
+                    } else null,
                 )
             }
 
@@ -356,6 +385,17 @@ fun App() {
                         userLat = lat
                         userLng = lng
                         viewModel.saveOnboardingPreferences {
+                            // HomeViewModel is a singleton — its initial pref
+                            // load happened before auth/onboarding (userId
+                            // was null then). Without this refresh the For
+                            // You feed keeps firing anon edge-fn calls and
+                            // favVenue/neighborhood rails never appear.
+                            try {
+                                KoinPlatform.getKoin()
+                                    .get<live.localapp.local.ui.home.HomeViewModel>()
+                                    .refreshUserPreferences()
+                            } catch (_: Throwable) { /* never block nav */ }
+                            justOnboarded = true
                             appState = AppState.HOME
                         }
                     },
@@ -389,6 +429,7 @@ fun App() {
                     },
                     showUpdateBanner = !updateBannerDismissed && versionResult?.status == live.localapp.local.domain.service.VersionStatus.UPDATE_AVAILABLE,
                     onDismissUpdateBanner = { updateBannerDismissed = true },
+                    showTutorial = justOnboarded,
                 )
             }
         }

@@ -38,6 +38,28 @@ if (!SUPABASE_SERVICE_KEY) {
 }
 const DRY_RUN = process.env.DRY_RUN === "1";
 
+// Safety gate for the unattended (daily/weekly CI) job: if a phase wants to
+// soft-delete more than this fraction of its population, abort instead of
+// writing — a sudden spike usually means a signature bug, not real dups.
+// Override with FORCE=1 for an intentional large collapse (e.g. the first run
+// after the title-suffix cleanup). ~26% event dups is normal here, so default
+// to 0.45.
+const MAX_DUP_FRACTION = parseFloat(process.env.MAX_DUP_FRACTION || "0.45");
+const FORCE = process.env.FORCE === "1";
+
+function assertUnderGate(label, dupRows, population) {
+  const frac = population > 0 ? dupRows / population : 0;
+  const pct = (frac * 100).toFixed(1);
+  if (frac > MAX_DUP_FRACTION && !FORCE) {
+    throw new Error(
+      `ABORT (${label}): ${dupRows}/${population} rows (${pct}%) exceed the ` +
+        `${(MAX_DUP_FRACTION * 100).toFixed(0)}% safety gate. Re-run with FORCE=1 ` +
+        `if this is intentional.`
+    );
+  }
+  console.log(`  Safety gate OK (${label}): ${pct}% ≤ ${(MAX_DUP_FRACTION * 100).toFixed(0)}%`);
+}
+
 // ── Source-rank tables (higher = preferred canonical) ─────────────────────
 
 const EVENT_SOURCE_RANK = {
@@ -55,14 +77,18 @@ function eventSourceRank(source) {
   return EVENT_SOURCE_RANK[source] ?? 60;
 }
 
-const VENUE_SOURCE_RANK = {
-  google_places: 100,
-  manual: 90,
-  discover_venues: 80,
-  event_extraction: 50,
-};
-function venueSourceRank(source) {
-  return VENUE_SOURCE_RANK[source] ?? 70;
+// The `venues` table has no `source` column, so we can't rank a canonical by
+// provenance. Instead score by how complete the row is — a venue with a photo,
+// website, address and description is the better one to keep. Each present
+// field is worth a point.
+function venueCompleteness(v) {
+  return (
+    (v.photo_url ? 1 : 0) +
+    (v.website ? 1 : 0) +
+    (v.address ? 1 : 0) +
+    (v.description ? 1 : 0) +
+    (v.events_url ? 1 : 0)
+  );
 }
 
 // ── PostgREST helpers ─────────────────────────────────────────────────────
@@ -76,19 +102,25 @@ function headers(extra = {}) {
   };
 }
 
+// Keyset-paginate on the primary key. Offset/Range paging over 100k+ rows with
+// an `order=created_at` sort intermittently trips Supabase's 8s statement
+// timeout (deep offsets re-scan from the top each page). Paging by `id=gt.<last>`
+// rides the PK index, so every page is cheap and constant-time. Callers MUST
+// include `id` in their select; any caller-supplied `order=` is ignored.
 async function pagedSelect(table, query, pageSize = 1000) {
+  const baseQuery = query.replace(/&?order=[^&]*/g, "");
   const out = [];
-  let from = 0;
+  let after = "00000000-0000-0000-0000-000000000000";
   while (true) {
-    const url = `${SUPABASE_URL}/rest/v1/${table}?${query}`;
-    const res = await fetch(url, {
-      headers: headers({ Range: `${from}-${from + pageSize - 1}` }),
-    });
+    const url =
+      `${SUPABASE_URL}/rest/v1/${table}?${baseQuery}` +
+      `&id=gt.${after}&order=id.asc&limit=${pageSize}`;
+    const res = await fetch(url, { headers: headers() });
     if (!res.ok) throw new Error(`Select ${table}: ${res.status} ${await res.text()}`);
     const rows = await res.json();
     out.push(...rows);
     if (rows.length < pageSize) break;
-    from += pageSize;
+    after = rows[rows.length - 1].id;
   }
   return out;
 }
@@ -102,9 +134,18 @@ async function patch(table, filter, body) {
 
 // ── Signatures ────────────────────────────────────────────────────────────
 
+// Trailing "- <Month> <Day>" suffix that crawlers used to bake into recurring
+// titles (e.g. "Trivia Night - March 31"). The date lives in start_at now, so
+// strip it here defensively: otherwise a source that still ships date-in-title
+// gets a different signature than the clean-title version of the same event and
+// the two never dedupe against each other.
+const TITLE_DATE_SUFFIX =
+  /\s*[-–—]\s*(jan(uary)?|feb(ruary)?|mar(ch)?|apr(il)?|may|jun(e)?|jul(y)?|aug(ust)?|sep(t(ember)?)?|oct(ober)?|nov(ember)?|dec(ember)?)\s+\d{1,2}(st|nd|rd|th)?(,?\s*\d{4})?\s*$/i;
+
 function normalizeTitle(s) {
   return (s || "")
     .toLowerCase()
+    .replace(TITLE_DATE_SUFFIX, "")
     .replace(/[^a-z0-9 ]/g, "")
     .replace(/^(the|a|an)\s+/, "")
     .replace(/\s+/g, " ")
@@ -184,7 +225,9 @@ async function dedupeEvents() {
     groups.get(sig).push(e);
   }
 
+  // Plan first (collect canonical + dup ids), gate-check the total, THEN write.
   let dupGroups = 0, dupRows = 0, repointed = 0;
+  const plan = [];
   for (const [sig, rows] of groups) {
     if (rows.length < 2) continue;
     dupGroups++;
@@ -200,8 +243,13 @@ async function dedupeEvents() {
     if (process.env.VERBOSE === "1") {
       console.log(`  [${rows.length}] "${canonical.title.slice(0, 50)}" canonical=${canonical.id.slice(0,8)} (${canonical.source}); dropping ${dups.map(d => d.source).join(",")}`);
     }
-    const dupIds = dups.map(d => d.id);
-    const moved = await repointInteractions("event", dupIds, canonical.id);
+    plan.push({ canonicalId: canonical.id, dupIds: dups.map(d => d.id) });
+  }
+
+  assertUnderGate("events", dupRows, events.length);
+
+  for (const { canonicalId, dupIds } of plan) {
+    const moved = await repointInteractions("event", dupIds, canonicalId);
     repointed += moved;
     const idList = dupIds.map(id => `"${id}"`).join(",");
     await patch("events", `id=in.(${idList})`, { is_active: false, status: "duplicate" });
@@ -219,7 +267,7 @@ async function dedupeVenues() {
   // is_active may not exist on every deployment; coalesce.
   const venues = await pagedSelect(
     "venues",
-    `select=id,name,lat,lng,source,public_interest_rank,city,created_at&order=created_at.asc`
+    `select=id,name,lat,lng,public_interest_rank,city,created_at,photo_url,website,address,description,events_url&order=created_at.asc`
   );
   console.log(`Loaded ${venues.length} venues`);
 
@@ -228,7 +276,7 @@ async function dedupeVenues() {
   const eventCountByGeo = new Map();
   const eventGeoCounts = await pagedSelect(
     "events",
-    `select=venue_lat,venue_lng&is_active=eq.true&venue_lat=not.is.null`
+    `select=id,venue_lat,venue_lng&is_active=eq.true&venue_lat=not.is.null`
   );
   for (const e of eventGeoCounts) {
     const k = geoBucket(e.venue_lat, e.venue_lng, 4);
@@ -243,18 +291,20 @@ async function dedupeVenues() {
     groups.get(sig).push(v);
   }
 
+  // Plan first, gate-check the total, THEN write.
   let dupGroups = 0, dupRows = 0, repointed = 0;
+  const plan = [];
   for (const [sig, rows] of groups) {
     if (rows.length < 2) continue;
     dupGroups++;
     rows.sort((a, b) => {
-      const ar = venueSourceRank(a.source), br = venueSourceRank(b.source);
-      if (ar !== br) return br - ar;
       const ap = a.public_interest_rank ?? 0, bp = b.public_interest_rank ?? 0;
-      if (ap !== bp) return bp - ap;
+      if (ap !== bp) return bp - ap;                       // higher rank wins
+      const ac = venueCompleteness(a), bc = venueCompleteness(b);
+      if (ac !== bc) return bc - ac;                       // more complete wins
       const ae = eventCountByGeo.get(geoBucket(a.lat, a.lng, 4)) || 0;
       const be = eventCountByGeo.get(geoBucket(b.lat, b.lng, 4)) || 0;
-      if (ae !== be) return be - ae;
+      if (ae !== be) return be - ae;                       // more events wins
       return (a.created_at || "").localeCompare(b.created_at || ""); // oldest wins
     });
     const canonical = rows[0];
@@ -263,8 +313,13 @@ async function dedupeVenues() {
     if (process.env.VERBOSE === "1") {
       console.log(`  [${rows.length}] "${canonical.name.slice(0, 50)}" canonical=${canonical.id.slice(0,8)}; dropping ${dups.map(d => d.id.slice(0,8)).join(",")}`);
     }
-    const dupIds = dups.map(d => d.id);
-    const moved = await repointInteractions("venue", dupIds, canonical.id);
+    plan.push({ canonicalId: canonical.id, dupIds: dups.map(d => d.id) });
+  }
+
+  assertUnderGate("venues", dupRows, venues.length);
+
+  for (const { canonicalId, dupIds } of plan) {
+    const moved = await repointInteractions("venue", dupIds, canonicalId);
     repointed += moved;
     const idList = dupIds.map(id => `"${id}"`).join(",");
     // Try is_active first; fall back to status if column doesn't exist.

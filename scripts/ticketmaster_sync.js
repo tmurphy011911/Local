@@ -59,6 +59,23 @@ function detectSubcategory(tm) {
   if (venueName.includes("library")) return "library";
   if (venueName.includes("gallery") || venueName.includes("art center")) return "gallery";
 
+  // Sports — MUST come before the generic `return genre` fallback below.
+  // Ticketmaster files many minor-league / independent games (WooSox, MiLB,
+  // indie soccer, etc.) under the "Miscellaneous" segment with a useless
+  // genre.name of "Miscellaneous", which would otherwise land in `subcategory`
+  // verbatim. The carousel sports pool gates on subcategory ∈ {sports, hockey,
+  // baseball, ...} (carousels/index.ts), so "miscellaneous" makes the whole
+  // team rail invisible. And because the daily upsert (resolution=merge-
+  // duplicates) overwrites subcategory every run, it re-clobbers any classifier
+  // or manual backfill that fixed it — the WooSox-rail-vanished regression.
+  // Detect games by sport genre OR a "Team A vs/v/@ Team B" title and return a
+  // real sport value: visible immediately, and stable across re-syncs.
+  const sportGenre = SPORTS_GENRES.find((s) => genre.includes(s) || subGenre.includes(s));
+  if (sportGenre) return sportGenre;
+  // Single-letter " v " covers Ticketmaster's "New England Patriots v Buffalo
+  // Bills" format; also "vs", "vs.", "v.", and "@" (e.g. "Yankees @ Red Sox").
+  if (/\s(?:vs?\.?|@)\s/i.test(eventName)) return "sports";
+
   // Genre-based
   if (genre.includes("theatre") || genre.includes("theater") ||
       genre === "musical" || subGenre.includes("play") || subGenre.includes("musical"))

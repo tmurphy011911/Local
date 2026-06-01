@@ -111,6 +111,24 @@ fun isLocationInSupportedState(lat: Double?, lng: Double?): Boolean {
     }
 }
 
+// Sample cities per supported state. Drives the placeholder in Bo's scope
+// editor sheet so users in PA don't see MA towns as examples.
+private val PLACEHOLDER_CITIES_BY_STATE = mapOf(
+    "MA" to listOf("Brookline", "Cambridge", "Hyannis"),
+    "RI" to listOf("Providence", "Newport", "Warwick"),
+    "PA" to listOf("Philadelphia", "Pittsburgh", "Lancaster"),
+)
+private val DEFAULT_PLACEHOLDER_CITIES = listOf("a city or neighborhood")
+
+fun scopeEditorPlaceholder(lat: Double?, lng: Double?): String {
+    val cities = if (lat != null && lng != null) {
+        SUPPORTED_STATE_BOUNDS.firstOrNull { s ->
+            lat >= s.latMin && lat <= s.latMax && lng >= s.lngMin && lng <= s.lngMax
+        }?.let { PLACEHOLDER_CITIES_BY_STATE[it.code] } ?: DEFAULT_PLACEHOLDER_CITIES
+    } else DEFAULT_PLACEHOLDER_CITIES
+    return "e.g. ${cities.joinToString(", ")}"
+}
+
 class HomeViewModel(
     private val carouselRepository: CarouselRepository,
     private val userPreferencesRepository: UserPreferencesRepository,
@@ -167,15 +185,92 @@ class HomeViewModel(
         loadSavedThisWeek()
     }
 
+    /**
+     * Re-run the prefs load + carousel fetch. Use this after onboarding
+     * completes: HomeViewModel is a Koin singleton, so its initial
+     * loadUserPreferencesThenCarousels() ran before auth/onboarding (no
+     * userId), leaving state.userPreferences = null. Without this hook
+     * the For You feed keeps firing anonymous edge-fn calls forever and
+     * favVenue/neighborhood rails never appear.
+     */
+    fun refreshUserPreferences() {
+        loadUserPreferencesThenCarousels()
+    }
+
     private fun loadUserPreferencesThenCarousels() {
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true) }
+            // Hydrate the location chip from the local cache up-front so the
+            // chip always renders something for a logged-in user on cold
+            // start, even while the Supabase round-trip is in flight. Order
+            // of preference: cached manual address → last reverse-geocoded
+            // GPS city → onboarding city. The remote load below reconciles.
+            val cache = userPreferencesRepository.getCachedManualLocation()
+            val cachedGps = userPreferencesRepository.getCachedGpsLocationName().orEmpty()
+            val cachedCity = userPreferencesRepository.getCachedUserCity().orEmpty()
+                .replaceFirstChar { c -> c.uppercase() }
+            // Only default to CURRENT_LOCATION when the user explicitly chose it
+            // AND we actually hold location permission. A null/unknown cached mode
+            // (or a stored "current" we can't act on) falls back to MANUAL rather
+            // than silently flipping a hand-entered address to GPS and firing the
+            // OS prompt. Mirrors the permission gate applied to the remote load below.
+            val cachedMode = when {
+                cache.locationMode == "manual" -> LocationMode.MANUAL
+                live.localapp.local.platform.checkLocationPermissionGranted() -> LocationMode.CURRENT_LOCATION
+                else -> LocationMode.MANUAL
+            }
+            val cachedManualName = cache.manualLocationName.orEmpty()
+            val fallbackName = when {
+                cachedMode == LocationMode.MANUAL && cachedManualName.isNotBlank() -> cachedManualName
+                cachedGps.isNotBlank() -> cachedGps
+                cachedCity.isNotBlank() -> cachedCity
+                else -> ""
+            }
+            if (fallbackName.isNotBlank() || cache.locationMode != null) {
+                _uiState.update {
+                    it.copy(
+                        locationMode = cachedMode,
+                        manualLocationName = cachedManualName,
+                        manualLat = cache.manualLat,
+                        manualLng = cache.manualLng,
+                        gpsLocationName = cachedGps,
+                        userLat = if (cachedMode == LocationMode.MANUAL) cache.manualLat ?: it.userLat else it.userLat,
+                        userLng = if (cachedMode == LocationMode.MANUAL) cache.manualLng ?: it.userLng else it.userLng,
+                        locationName = if (it.locationName.isBlank() && fallbackName.isNotBlank()) fallbackName else it.locationName,
+                        isUnsupportedState = if (cachedMode == LocationMode.MANUAL && cache.manualLat != null && cache.manualLng != null)
+                            !isLocationInSupportedState(cache.manualLat, cache.manualLng) else it.isUnsupportedState,
+                    )
+                }
+            }
+
             // Try local cache first, recover from Supabase if lost
             val userId = userPreferencesRepository.getLocalUserId()
                 ?: userPreferencesRepository.recoverProfile()
             if (userId != null) {
-                val prefs = userPreferencesRepository.loadPreferences(userId)
-                if (prefs != null) {
+                val remote = userPreferencesRepository.loadPreferences(userId)
+                if (remote != null) {
+                    // Backfill any manual-location fields missing from the remote row
+                    // with the locally-cached values. Covers the race where the user
+                    // picked an address then killed the app before the Supabase write
+                    // completed — the chip would otherwise revert to the default city.
+                    val cacheBeforeMerge = userPreferencesRepository.getCachedManualLocation()
+                    val remoteHasManual = remote.manualLocationName != null || remote.manualLat != null
+                    val prefs = remote.copy(
+                        locationMode = if (!remoteHasManual && cacheBeforeMerge.locationMode != null) cacheBeforeMerge.locationMode else remote.locationMode,
+                        manualLocationName = remote.manualLocationName ?: cacheBeforeMerge.manualLocationName,
+                        manualLat = remote.manualLat ?: cacheBeforeMerge.manualLat,
+                        manualLng = remote.manualLng ?: cacheBeforeMerge.manualLng,
+                    )
+                    // Mirror remote into the local cache so future cold starts can
+                    // hydrate immediately. Covers users whose address was saved
+                    // before the local-cache code existed — their cache is empty
+                    // until this runs once.
+                    userPreferencesRepository.cacheManualLocationLocally(
+                        locationMode = prefs.locationMode,
+                        manualLocationName = prefs.manualLocationName,
+                        manualLat = prefs.manualLat,
+                        manualLng = prefs.manualLng,
+                    )
                     val cityDisplay = prefs.city.replaceFirstChar { c -> c.uppercase() }
                     val hasPermission = live.localapp.local.platform.checkLocationPermissionGranted()
                     val storedMode = if (prefs.locationMode == "manual") LocationMode.MANUAL else LocationMode.CURRENT_LOCATION
@@ -230,8 +325,7 @@ class HomeViewModel(
                 prefs.city.replaceFirstChar { c -> c.uppercase() }
             } else current.locationName
             _uiState.update { it.copy(userLat = lat, userLng = lng, locationName = locName, isUnsupportedState = !isLocationInSupportedState(lat, lng)) }
-            carouselRepository.invalidateAll()
-            loadCarousels()
+            reloadCarouselsForLocationChange()
             fetchYocalPromptsIfNeeded(lat, lng)
             // Fire-and-forget reverse geocode to populate the GPS-specific city name
             // shown in Location Settings. Coarse-rounded key avoids re-fetching on
@@ -261,6 +355,10 @@ class HomeViewModel(
             val display = if (city.isNotBlank() && stateCode.isNotBlank()) "$city, $stateCode"
                 else city
             if (display.isNotBlank()) {
+                // Cache the resolved name so the chip can render it instantly
+                // on the next cold start, instead of waiting on the geocode
+                // round-trip and showing a blank pill.
+                userPreferencesRepository.cacheGpsLocationNameLocally(display)
                 _uiState.update {
                     it.copy(
                         gpsLocationName = display,
@@ -278,19 +376,50 @@ class HomeViewModel(
     fun setLocationMode(mode: LocationMode) {
         val current = _uiState.value
         _uiState.update { it.copy(locationMode = mode) }
+        // Mirror the mode flip locally so it survives a kill before the
+        // Supabase write lands. Manual coords/name are preserved so the user
+        // can flip back to MANUAL without re-entering the address.
+        userPreferencesRepository.cacheManualLocationLocally(
+            locationMode = if (mode == LocationMode.MANUAL) "manual" else "current",
+            manualLocationName = current.manualLocationName,
+            manualLat = current.manualLat,
+            manualLng = current.manualLng,
+        )
         when (mode) {
             LocationMode.MANUAL -> {
                 if (current.manualLat != null && current.manualLng != null) {
                     _uiState.update { it.copy(userLat = current.manualLat, userLng = current.manualLng, locationName = current.manualLocationName) }
-                    carouselRepository.invalidateAll()
-                    loadCarousels()
+                    reloadCarouselsForLocationChange()
                 }
             }
             LocationMode.CURRENT_LOCATION -> {
                 // Restore the GPS-resolved name immediately so the pill flips back
-                // from the manual address. Coords will sync when RequestLocationEffect fires.
+                // from the manual address. If we already have a GPS fix from the
+                // session's RequestLocationEffect, we can also restore the coords
+                // and trigger a hard reload right now so the user doesn't sit on
+                // the previous manual market's carousels waiting for the next GPS
+                // tick. The lat/lng we keep around from setUserLocation lives in
+                // userPreferences.userLat/userLng (synced via saveLocationPrefs).
                 if (current.gpsLocationName.isNotBlank()) {
                     _uiState.update { it.copy(locationName = current.gpsLocationName) }
+                }
+                val prefs = current.userPreferences
+                val gpsLat = prefs?.userLat
+                val gpsLng = prefs?.userLng
+                if (gpsLat != null && gpsLng != null) {
+                    _uiState.update {
+                        it.copy(userLat = gpsLat, userLng = gpsLng,
+                                isUnsupportedState = !isLocationInSupportedState(gpsLat, gpsLng))
+                    }
+                    reloadCarouselsForLocationChange()
+                } else {
+                    // No cached GPS coords — still clear the stale manual rails
+                    // and show the skeleton; the next RequestLocationEffect tick
+                    // will land setUserLocation and trigger the fetch.
+                    carouselRepository.invalidateAll()
+                    _uiState.update {
+                        it.copy(carouselsByCategory = emptyMap(), isLoading = true, error = null)
+                    }
                 }
             }
         }
@@ -299,6 +428,14 @@ class HomeViewModel(
 
     fun setManualLocation(lat: Double, lng: Double, name: String) {
         val displayName = name.removeSuffix(", USA").removeSuffix(", United States").replace(Regex(",\\s*[A-Z]{2}$"), "")
+        // Cache locally up-front so the selection survives an immediate app
+        // kill that races the Supabase write below.
+        userPreferencesRepository.cacheManualLocationLocally(
+            locationMode = "manual",
+            manualLocationName = displayName,
+            manualLat = lat,
+            manualLng = lng,
+        )
         _uiState.update {
             it.copy(
                 manualLat = lat, manualLng = lng, manualLocationName = displayName,
@@ -307,8 +444,7 @@ class HomeViewModel(
                 isUnsupportedState = !isLocationInSupportedState(lat, lng),
             )
         }
-        carouselRepository.invalidateAll()
-        loadCarousels()
+        reloadCarouselsForLocationChange()
         // Wipe stale prompts and refetch for the new metro.
         _uiState.update { it.copy(yocalPrompts = emptyList()) }
         lastYocalPromptsGrid = null
@@ -359,7 +495,7 @@ class HomeViewModel(
         reviewPromptService.onPositiveMoment(live.localapp.local.domain.service.ReviewTrigger.EVENT_SHARED)
     }
 
-    fun toggleEventFavorite(eventId: String, category: String? = null) {
+    fun toggleEventFavorite(eventId: String, category: String? = null, source: String = "home_card") {
         val isFav = eventId in _uiState.value.favoriteEventIds
         if (isFav) {
             communityInterestRepository.removeFavorite(eventId, InteractionType.EVENT)
@@ -369,9 +505,15 @@ class HomeViewModel(
                     savedThisWeek = it.savedThisWeek.filterNot { e -> e.id == eventId },
                 )
             }
+            live.localapp.local.observability.Analytics.track(
+                live.localapp.local.observability.AnalyticsEvent.eventUnsaved(eventId = eventId)
+            )
         } else {
             communityInterestRepository.recordFavorite(eventId, InteractionType.EVENT, category)
             _uiState.update { it.copy(favoriteEventIds = it.favoriteEventIds + eventId) }
+            live.localapp.local.observability.Analytics.track(
+                live.localapp.local.observability.AnalyticsEvent.eventSaved(eventId = eventId, source = source)
+            )
             // Badge: track event saved
             badgeService.recordAction(BadgeAction.EVENT_SAVED, deriveUserState())
             // Review prompt on 5th save
@@ -395,7 +537,37 @@ class HomeViewModel(
     }
 
     fun setRadiusFilter(miles: Double?) {
+        if (_uiState.value.radiusFilter == miles) return
         _uiState.update { it.copy(radiusFilter = miles) }
+        // Radius affects which events the edge function returns (it drives
+        // the bbox + post-filter), so a fresh fetch is required. Without
+        // this, the user would just see the previously-fetched pool
+        // re-sliced client-side, leaving top rails sparse when expanding
+        // and unchanged when shrinking (cache keys on tab:uid only).
+        reloadCarouselsForLocationChange()
+    }
+
+    /**
+     * Hard reload for any location-affecting change (radius, address, GPS
+     * mode toggle). Clears the visible carousels so the skeleton loader
+     * paints immediately — without this, isLoading stays false (it's
+     * guarded by `it.carousels.isEmpty()` in loadCarousels) and the user
+     * sees stale rails until the new fetch lands, which is misleading
+     * when the pool they're looking at no longer matches their settings.
+     *
+     * Invalidates all carouselRepository caches (in-memory + disk
+     * boundary) so the fresh fetch can't be short-circuited.
+     */
+    private fun reloadCarouselsForLocationChange() {
+        carouselRepository.invalidateAll()
+        _uiState.update {
+            it.copy(
+                carouselsByCategory = emptyMap(),
+                isLoading = true,
+                error = null,
+            )
+        }
+        loadCarousels(skipDiskCache = true)
     }
 
     /** Derive the US state from the user's city preference. */
@@ -471,16 +643,22 @@ class HomeViewModel(
         }
     }
 
-    private fun loadCarousels(loadCategories: Boolean = true) {
+    private fun loadCarousels(loadCategories: Boolean = true, skipDiskCache: Boolean = false) {
         carouselJob?.cancel()
         carouselJob = viewModelScope.launch {
             // Stale-while-revalidate: paint disk-cached carousels immediately
             // (sub-100ms), then fire the fresh fetch. The user sees the
             // previous session's home tab on cold open instead of a blank
             // loading state for the 3-8s the edge function takes.
+            //
+            // skipDiskCache short-circuits this path for "hard reload" cases
+            // (radius change, address change, GPS-mode toggle) where the
+            // disk-cached payload was fetched against a different radius /
+            // location AND we want the user to see the skeleton, not stale
+            // rails, until the fresh response with their new settings lands.
             val state = _uiState.value
             val category = state.selectedCategory
-            try {
+            if (!skipDiskCache) try {
                 val cached = carouselRepository.getCachedCarouselsFromDisk(
                     category = if (category == "foryou") null else category,
                     userPreferences = state.userPreferences,
@@ -517,6 +695,10 @@ class HomeViewModel(
                 val lat = s.userLat ?: s.userPreferences?.userLat ?: 42.3601
                 val lng = s.userLng ?: s.userPreferences?.userLng ?: -71.0589
 
+                // "Any" radius = null in UI; we pass 200 mi to the edge fn
+                // (covers all of New England comfortably; the MV bbox + per-
+                // subcategory caps keep payload bounded).
+                val radiusMiles = state.radiusFilter?.toInt() ?: 200
                 // ONE edge-function call. The carousels response includes categories, so
                 // we fetch carousels first then read cachedCategories. Previously we fired
                 // getAvailableCategories AND getCarousels in parallel, which caused TWO
@@ -527,6 +709,7 @@ class HomeViewModel(
                     category = if (category == "foryou") null else category,
                     userPreferences = state.userPreferences,
                     locationName = state.locationName,
+                    radiusMiles = radiusMiles,
                 )
                 val categories = if (loadCategories || state.availableCategories.isEmpty()) {
                     carouselRepository.getAvailableCategories(
@@ -566,10 +749,12 @@ class HomeViewModel(
                         val retryCategory = s.selectedCategory
                         val retryLat = s.userLat ?: s.userPreferences?.userLat ?: 42.3601
                         val retryLng = s.userLng ?: s.userPreferences?.userLng ?: -71.0589
+                        val retryRadius = s.radiusFilter?.toInt() ?: 200
                         val carousels = carouselRepository.getCarousels(
                             retryLat, retryLng,
                             if (retryCategory == "foryou") null else retryCategory,
                             s.userPreferences, s.locationName,
+                            radiusMiles = retryRadius,
                         )
                         val cats = carouselRepository.getAvailableCategories(s.userPreferences, retryLat, retryLng)
                         _uiState.update { cur ->

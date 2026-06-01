@@ -21,6 +21,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import live.localapp.local.domain.model.Event
+import live.localapp.local.domain.repository.CommunityInterestRepository
+import live.localapp.local.domain.repository.InteractionType
 import live.localapp.local.domain.repository.NeighborhoodInfo
 import live.localapp.local.domain.repository.OnboardingRepository
 import live.localapp.local.domain.repository.UserPreferences
@@ -98,6 +100,7 @@ data class OnboardingState(
 class OnboardingViewModel(
     private val onboardingRepository: OnboardingRepository,
     private val userPreferencesRepository: UserPreferencesRepository,
+    private val communityInterestRepository: CommunityInterestRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(OnboardingState())
@@ -350,12 +353,38 @@ class OnboardingViewModel(
                     manualLng = if (isManual) s.userLng else null,
                 )
 
+                // Mirror the chosen location into the local cache up-front, before
+                // the Supabase round-trip. Home's cold-start hydration reads this
+                // cache first; without it a freshly-onboarded manual user falls back
+                // to the CURRENT_LOCATION default until (and unless) the remote read
+                // lands — the regression where Home showed "Current Location" for
+                // someone who entered their address by hand.
+                userPreferencesRepository.cacheManualLocationLocally(
+                    locationMode = prefs.locationMode,
+                    manualLocationName = prefs.manualLocationName,
+                    manualLat = prefs.manualLat,
+                    manualLng = prefs.manualLng,
+                )
+
                 // If we have an auth user ID, save with that specific ID
                 val uid = authUserId
                 if (uid != null) {
                     userPreferencesRepository.savePreferencesWithId(uid, prefs)
                 } else {
                     userPreferencesRepository.savePreferences(prefs)
+                }
+
+                // Mirror onboarding venue picks into community_interactions so
+                // they show up as already-saved on the Places + Plans screens
+                // (which read favorite venue ids from community_interactions,
+                // not from user_profiles.selected_venues). Fire-and-forget per
+                // venue — recordFavorite is non-blocking and idempotent (upsert
+                // semantics inside CommunityInterestRepositoryImpl).
+                val selectedVenuesWithIds = s.venues
+                    .filter { it.name.lowercase().replace(" ", "-") in s.selectedVenues }
+                    .mapNotNull { v -> v.id?.takeIf { it.isNotBlank() }?.let { it to v.name } }
+                for ((venueId, _) in selectedVenuesWithIds) {
+                    communityInterestRepository.recordFavorite(venueId, InteractionType.PLACE, null)
                 }
             } catch (e: Exception) {
                 // DB save failed (e.g. test user with non-UUID ID) — cache locally so app still works

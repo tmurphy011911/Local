@@ -25,10 +25,12 @@ private data class EventSummaryDto(
     @SerialName("venue_lng") val venueLng: Double? = null,
     val category: String,
     val subcategory: String? = null,
+    @SerialName("start_at") val startAt: String? = null,
 )
 
 @Serializable
 private data class VenueRankDto(
+    val id: String? = null,
     val name: String,
     val city: String? = null,
     @SerialName("public_interest_rank") val publicInterestRank: Int? = null,
@@ -36,9 +38,13 @@ private data class VenueRankDto(
 )
 
 @Serializable
-private data class VenueCityStateDto(
-    val city: String,
+private data class VenueFullDto(
+    val id: String? = null,
+    val name: String,
+    val city: String? = null,
     val state: String? = null,
+    @SerialName("public_interest_rank") val publicInterestRank: Int? = null,
+    @SerialName("photo_url") val photoUrl: String? = null,
 )
 
 class OnboardingRepositoryImpl(
@@ -50,84 +56,165 @@ class OnboardingRepositoryImpl(
         userLat: Double,
         userLng: Double,
     ): OnboardingData {
-        // Paginate to get all events (Supabase caps at 1000 per request)
-        val events = mutableListOf<EventSummaryDto>()
-        // Map user city to metro area (events.city is the metro, not the venue city)
-        val metro = cityToMetro(city)
-        println("OnboardingRepo: city='$city' metro='$metro' lat=$userLat lng=$userLng")
+        println("OnboardingRepo: city='$city' lat=$userLat lng=$userLng")
 
-        // Use 75-mile geo-radius instead of metro city name
-        val radiusMiles = 75.0
+        // Tightened from 75 → 30 miles. 75mi bbox was 150x150mi (~22,500 sq mi)
+        // of unindexed lat/lng scan, reliably hitting the 8s Postgres statement
+        // timeout cold. 30mi covers all the Boston-metro neighborhoods that
+        // actually surface on the screen (Waltham→Boston is ~10mi) and shrinks
+        // the scan ~6×, keeping queries under 2s cold.
+        val radiusMiles = 30.0
         val latDelta = radiusMiles / 69.0
         val lngDelta = radiusMiles / 50.0
-        var offset = 0
-        val pageSize = 1000
-        while (true) {
-            val page = supabaseClient.from("events")
-                .select(columns = Columns.list("id", "venue_city", "venue_state", "venue_name", "venue_lat", "venue_lng", "category", "subcategory")) {
-                    filter {
-                        eq("is_active", true)
-                        gte("venue_lat", userLat - latDelta)
-                        lte("venue_lat", userLat + latDelta)
-                        gte("venue_lng", userLng - lngDelta)
-                        lte("venue_lng", userLng + lngDelta)
-                    }
-                    range(offset.toLong(), (offset + pageSize - 1).toLong())
-                }
-                .decodeList<EventSummaryDto>()
-            events.addAll(page)
-            if (page.size < pageSize) break
-            offset += pageSize
-        }
-        println("OnboardingRepo: loaded ${events.size} events for metro='$metro'")
 
-        // Get state codes from venues table (more reliable than events)
-        // Geo-filter to match the event radius — no need for the full table
-        val venueStates = try {
-            supabaseClient.from("venues")
-                .select(columns = Columns.list("city", "state")) {
-                    filter {
-                        eq("is_active", true)
-                        gte("lat", userLat - latDelta)
-                        lte("lat", userLat + latDelta)
-                        gte("lng", userLng - lngDelta)
-                        lte("lng", userLng + lngDelta)
+        // Single consolidated venues fetch in the 75mi radius — used for state codes,
+        // ranks/photos, and (in Kotlin) to filter the metro's events to those near us.
+        val venuesInRadius: List<VenueFullDto> = try {
+            val all = mutableListOf<VenueFullDto>()
+            var vOffset = 0
+            val vPageSize = 1000
+            while (true) {
+                val page = supabaseClient.from("venues")
+                    .select(columns = Columns.list("id", "name", "city", "state", "public_interest_rank", "photo_url")) {
+                        filter {
+                            eq("is_active", true)
+                            gte("lat", userLat - latDelta)
+                            lte("lat", userLat + latDelta)
+                            gte("lng", userLng - lngDelta)
+                            lte("lng", userLng + lngDelta)
+                        }
+                        range(vOffset.toLong(), (vOffset + vPageSize - 1).toLong())
                     }
+                    .decodeList<VenueFullDto>()
+                all.addAll(page)
+                if (page.size < vPageSize) break
+                vOffset += vPageSize
+            }
+            all
+        } catch (e: Exception) {
+            println("OnboardingRepo: venues query failed: ${e.message}")
+            emptyList()
+        }
+        println("OnboardingRepo: loaded ${venuesInRadius.size} venues in ${radiusMiles}mi radius")
+
+        // Events: single query with server-side lat/lng bbox. Empirically 1.9s
+        // cold / 0.4s warm against the Waltham 75mi bbox returning ~39K rows
+        // worth of `id` count, capped to the 5000 soonest by start_at.
+        //
+        // Why no events.city filter: the crawler now writes town-level cities
+        // (waltham/cambridge/medford/…) where the original onboarding code
+        // assumed metro-level ("boston"). Chunked IN-list fan-outs over the
+        // metro towns ran afoul of Supabase's connection pool — individual
+        // queries that were 3s in isolation queued past the 8s Postgres
+        // statement_timeout when 35 fired in parallel. The bbox filter
+        // bypasses the city question entirely: pick up everything that
+        // geographically belongs to the user's area, then let the venue.name
+        // → venue.city lookup decide which curated neighborhood each event
+        // counts toward.
+        val nowIso = kotlin.time.Clock.System.now().toString()
+        // Keyset pagination: PostgREST caps responses at 1000 rows. OFFSET
+        // pagination times out cold for deeper pages because each page
+        // re-scans from start. Cursor-based pagination on start_at runs the
+        // index from where the previous page left off — each page is ~1s
+        // warm regardless of depth. Sequential 5 pages ≈ 5s total wall-clock,
+        // fits comfortably inside the loading-screen progress.
+        val allMetroEvents: List<EventSummaryDto> = run {
+            val acc = mutableListOf<EventSummaryDto>()
+            var cursor = nowIso
+            var pageNum = 0
+            while (pageNum < EVENTS_PAGE_COUNT) {
+                val page: List<EventSummaryDto> = try {
+                    supabaseClient.from("events")
+                        .select(columns = Columns.list("id", "venue_city", "venue_state", "venue_name", "venue_lat", "venue_lng", "category", "subcategory", "start_at")) {
+                            filter {
+                                eq("is_active", true)
+                                gt("start_at", cursor)
+                                gte("venue_lat", userLat - latDelta)
+                                lte("venue_lat", userLat + latDelta)
+                                gte("venue_lng", userLng - lngDelta)
+                                lte("venue_lng", userLng + lngDelta)
+                            }
+                            order("start_at", Order.ASCENDING)
+                            limit(EVENTS_PAGE_SIZE.toLong())
+                        }
+                        .decodeList<EventSummaryDto>()
+                } catch (e: Exception) {
+                    println("OnboardingRepo: events page $pageNum failed: ${e.message?.take(200)}")
+                    emptyList()
                 }
-                .decodeList<VenueCityStateDto>()
-                .groupBy { it.city }
-                .mapValues { (_, venues) ->
-                    venues.mapNotNull { it.state }
-                        .groupingBy { it }.eachCount()
-                        .maxByOrNull { it.value }?.key
-                }
-        } catch (_: Exception) {
-            emptyMap()
+                if (page.isEmpty()) break
+                acc.addAll(page)
+                cursor = page.last().startAt ?: break
+                pageNum++
+                if (page.size < EVENTS_PAGE_SIZE) break
+            }
+            acc
+        }
+        println("OnboardingRepo: loaded ${allMetroEvents.size} upcoming events in 75mi bbox (keyset)")
+
+        // Narrow to events near the user: keep if venue_lat/lng on the row is in
+        // radius, OR if the event's venue_name is one we found in the radius
+        // (catches the common "event row has null coords but venue has coords" case).
+        val venueNamesInRadius = venuesInRadius.map { it.name.lowercase().trim() }.toHashSet()
+        val events = allMetroEvents.filter { e ->
+            val lat = e.venueLat
+            val lng = e.venueLng
+            val inGeoBox = lat != null && lng != null &&
+                lat in (userLat - latDelta)..(userLat + latDelta) &&
+                lng in (userLng - lngDelta)..(userLng + lngDelta)
+            if (inGeoBox) return@filter true
+            val name = e.venueName?.lowercase()?.trim() ?: return@filter false
+            name in venueNamesInRadius
+        }
+        println("OnboardingRepo: ${events.size} events in ${radiusMiles}mi radius after Kotlin filter")
+
+        // venue_name (lowercased) → curated venue row (city, state, photo, rank).
+        // This is the single source of truth for "which neighborhood is this venue in"
+        // — events.venue_city is heterogeneous (sometimes "Boston" for Waltham venues,
+        // sometimes "Lexington (chamber)" qualifier-tagged) and can't be trusted for
+        // grouping. The venues table is curated.
+        val venuesByLowerName: Map<String, VenueFullDto> = venuesInRadius
+            .associateBy { it.name.lowercase().trim() }
+
+        // Skip any city value that has a parenthesized qualifier like
+        // "Lexington (chamber)" or "Berkshires (visitor)" — those are tagging
+        // conventions for satellite/touring venues, not real neighborhoods.
+        fun cleanCity(c: String?): String? =
+            c?.trim()?.takeIf { it.isNotBlank() && '(' !in it && ')' !in it }
+
+        val venueRanks: Map<String, VenueRankDto> = venuesInRadius
+            .associateBy({ it.name.lowercase() }, {
+                VenueRankDto(
+                    id = it.id,
+                    name = it.name,
+                    city = cleanCity(it.city),
+                    publicInterestRank = it.publicInterestRank,
+                    photoUrl = it.photoUrl,
+                )
+            })
+
+        val venueStates: Map<String, String?> = venuesInRadius
+            .mapNotNull { v -> cleanCity(v.city)?.let { it to v.state } }
+            .groupBy({ it.first }, { it.second })
+            .mapValues { (_, states) ->
+                states.filterNotNull()
+                    .groupingBy { it }.eachCount()
+                    .maxByOrNull { it.value }?.key
+            }
+
+        // Each event's neighborhood = its venue's curated city (not event.venueCity).
+        // Events with no matching venue in the radius get dropped from per-city counts.
+        fun eventCity(e: EventSummaryDto): String? {
+            val key = e.venueName?.lowercase()?.trim() ?: return null
+            return cleanCity(venuesByLowerName[key]?.city)
         }
 
         // Only count meaningful upcoming events per city (exclude always_on, no-public-interest)
-        val upcomingByCity = events
+        val upcomingByCity: Map<String, Int> = events
             .filter { it.category != "always_on" && it.subcategory != "no-public-interest" }
-            .groupBy { it.venueCity }
-            .mapValues { it.value.size }
-
-        // Get venue ranks + photos — geo-filtered to match event radius
-        val venueRanks = try {
-            supabaseClient.from("venues")
-                .select(columns = Columns.list("name", "city", "public_interest_rank", "photo_url")) {
-                    filter {
-                        eq("is_active", true)
-                        gte("lat", userLat - latDelta)
-                        lte("lat", userLat + latDelta)
-                        gte("lng", userLng - lngDelta)
-                        lte("lng", userLng + lngDelta)
-                    }
-                }
-                .decodeList<VenueRankDto>()
-                .associateBy { it.name.lowercase() }
-        } catch (_: Exception) {
-            emptyMap()
-        }
+            .mapNotNull { eventCity(it) }
+            .groupingBy { it }
+            .eachCount()
 
         // Build city → photo map from top venue photos (most reliable, actual places in the app)
         val cityPhotoMap = mutableMapOf<String, String>()
@@ -138,11 +225,19 @@ class OnboardingRepositoryImpl(
                 if (v.city!! !in cityPhotoMap) cityPhotoMap[v.city] = v.photoUrl!!
             }
 
-        // Sort neighborhoods by proximity: compute centroid lat/lng per city
-        val neighborhoods = events
-            .groupBy { it.venueCity }
+        // Neighborhoods: keyed on venue.city, distance = centroid of matching venues.
+        val venuesByCity: Map<String, List<VenueFullDto>> = venuesInRadius
+            .mapNotNull { v -> cleanCity(v.city)?.let { it to v } }
+            .groupBy({ it.first }, { it.second })
+
+        val neighborhoods = venuesByCity
             .map { (cityName, group) ->
-                val withCoords = group.filter { it.venueLat != null && it.venueLng != null }
+                // Need venue coords for distance; we already filtered venues by lat/lng
+                // upstream, so the underlying rows exist in the DB even if we didn't
+                // hydrate them on VenueFullDto. Estimate distance from any event with
+                // coords whose venue is in this city, falling back to null.
+                val sampleEvents = events.filter { eventCity(it) == cityName }
+                val withCoords = sampleEvents.filter { it.venueLat != null && it.venueLng != null }
                 val dist = if (withCoords.isNotEmpty()) {
                     val avgLat = withCoords.sumOf { it.venueLat!! } / withCoords.size
                     val avgLng = withCoords.sumOf { it.venueLng!! } / withCoords.size
@@ -156,6 +251,7 @@ class OnboardingRepositoryImpl(
                     photoUrl = cityPhotoMap[cityName],
                 )
             }
+            .filter { it.eventCount > 0 }
             .sortedBy { it.distanceMiles ?: Double.MAX_VALUE }
 
         // Group by venue name, take first event with coordinates for location
@@ -169,8 +265,9 @@ class OnboardingRepositoryImpl(
                 } else null
                 val venueData = venueRanks[name.lowercase()]
                 VenueSummary(
+                    id = venueData?.id,
                     name = name,
-                    city = rep.venueCity,
+                    city = venueData?.city ?: cleanCity(rep.venueCity) ?: "",
                     distanceMiles = dist,
                     publicInterestRank = venueData?.publicInterestRank ?: 0,
                     photoUrl = venueData?.photoUrl,
@@ -252,21 +349,53 @@ class OnboardingRepositoryImpl(
         limit: Int,
     ): List<Event> {
         val now = kotlin.time.Clock.System.now().toString()
-        val metro = cityToMetro(city)
-        val events = supabaseClient.from("events")
-            .select {
-                filter {
-                    eq("city", metro)
-                    eq("is_active", true)
-                    gte("start_at", now)
-                    neq("subcategory", "no-public-interest")
-                    neq("category", "always_on")
+        // Tightened from 75 → 30 miles. 75mi bbox was 150x150mi (~22,500 sq mi)
+        // of unindexed lat/lng scan, reliably hitting the 8s Postgres statement
+        // timeout cold. 30mi covers all the Boston-metro neighborhoods that
+        // actually surface on the screen (Waltham→Boston is ~10mi) and shrinks
+        // the scan ~6×, keeping queries under 2s cold.
+        val radiusMiles = 30.0
+        val latDelta = radiusMiles / 69.0
+        val lngDelta = radiusMiles / 50.0
+        // Server-side lat/lng bbox instead of events.city filter — see note
+        // in loadOnboardingData. Single fast query, no fan-out.
+        // Keyset pagination — see note in loadOnboardingData.
+        val events = run {
+            val acc = mutableListOf<Event>()
+            var cursor = now
+            var pageNum = 0
+            while (pageNum < EVENTS_PAGE_COUNT) {
+                val page: List<Event> = try {
+                    supabaseClient.from("events")
+                        .select {
+                            filter {
+                                eq("is_active", true)
+                                gt("start_at", cursor)
+                                gte("venue_lat", userLat - latDelta)
+                                lte("venue_lat", userLat + latDelta)
+                                gte("venue_lng", userLng - lngDelta)
+                                lte("venue_lng", userLng + lngDelta)
+                                neq("subcategory", "no-public-interest")
+                                neq("category", "always_on")
+                            }
+                            order("start_at", Order.ASCENDING)
+                            limit(EVENTS_PAGE_SIZE.toLong())
+                        }
+                        .decodeList<EventDto>()
+                        .map { it.toDomain() }
+                } catch (e: Exception) {
+                    println("OnboardingRepo.getTopEvents: page $pageNum failed: ${e.message?.take(200)}")
+                    emptyList()
                 }
-                order("start_at", Order.ASCENDING)
-                limit(500)
+                if (page.isEmpty()) break
+                acc.addAll(page)
+                val lastStartAt = page.lastOrNull()?.startAt?.toString() ?: break
+                cursor = lastStartAt
+                pageNum++
+                if (page.size < EVENTS_PAGE_SIZE) break
             }
-            .decodeList<EventDto>()
-            .map { it.toDomain() }
+            acc
+        }
 
         // Filter by user's selected categories if any
         val catFiltered = if (categories.isNullOrEmpty()) {
@@ -297,35 +426,34 @@ class OnboardingRepositoryImpl(
     }
 }
 
-/** Map a specific city name to its metro area key used in the events.city column. */
-private fun cityToMetro(city: String): String {
-    val bostonMetro = setOf(
-        "boston", "cambridge", "somerville", "brookline", "waltham", "newton",
-        "quincy", "medford", "malden", "everett", "revere", "chelsea",
-        "arlington", "belmont", "watertown", "lexington", "concord",
-        "needham", "wellesley", "natick", "framingham", "dedham",
-        "milton", "braintree", "weymouth", "norwood", "canton",
-        "stoneham", "woburn", "burlington", "bedford", "lincoln",
-        "sudbury", "wayland", "weston", "dover", "westwood",
-        "hingham", "cohasset", "scituate", "marshfield", "duxbury",
-        "plymouth", "barnstable", "falmouth", "chatham", "provincetown",
-        "salem", "marblehead", "gloucester", "rockport", "ipswich",
-        "newburyport", "lowell", "lawrence", "haverhill", "andover",
-        "worcester", "auburn", "shrewsbury", "westborough", "grafton",
-        "sturbridge", "webster", "southbridge",
-        "springfield", "northampton", "amherst", "holyoke", "chicopee",
-        "west springfield", "westfield", "easthampton",
-        "providence", "warwick", "cranston", "pawtucket", "woonsocket",
-        "newport", "bristol",
-        "portland", "south portland", "scarborough",
-        "hartford", "new haven", "stamford", "bridgeport", "waterbury",
-        "new london", "mystic", "norwich",
-    )
-    val troyMetro = setOf("troy", "albany", "schenectady", "saratoga springs")
-
-    return when (city.lowercase().trim()) {
-        in bostonMetro -> "boston"
-        in troyMetro -> "troy"
-        else -> city.lowercase().trim()
-    }
-}
+/**
+ * Sequential keyset pagination for the bbox-filtered events query.
+ *
+ * PostgREST caps each response at 1000 rows (Supabase's `max-rows`). To
+ * get the ~5K rows onboarding wants for accurate per-neighborhood counts
+ * across the Boston metro, we use cursor-based pagination on start_at:
+ * each page is `start_at > <previous-page's-last-start_at>` LIMIT 1000.
+ *
+ * Empirically:
+ *   - Single page (cold cache): ~2-3s
+ *   - Single page (warm): ~400ms-1s
+ *   - 5 sequential keyset pages: ~5-9s wall-clock, ~1s per page after warmup
+ *
+ * Why not OFFSET-based parallel pagination: deeper OFFSET pages (e.g.
+ * range 3000-3999) reliably hit Postgres' 8s statement_timeout cold,
+ * because each page re-scans the bbox from the beginning. Keyset starts
+ * exactly where the last page left off via the (start_at) index.
+ *
+ * History:
+ * - Original: filter events by `events.city = "boston"`. Silently dropped
+ *   town-keyed crawler rows (Waltham showed 1 event).
+ * - Attempt 1: chunked IN-list of metro towns (~35 parallel queries).
+ *   Hit statement timeouts under connection-pool pressure.
+ * - Attempt 2: single query with server-side lat/lng bbox + limit 5000.
+ *   PostgREST capped response at 1000.
+ * - Attempt 3: 5 parallel pages via Range header. Deeper OFFSET pages
+ *   timed out cold (5 hitting at once amplified the slow-OFFSET issue).
+ * - Current: keyset pagination, sequential.
+ */
+private const val EVENTS_PAGE_SIZE = 1000
+private const val EVENTS_PAGE_COUNT = 5

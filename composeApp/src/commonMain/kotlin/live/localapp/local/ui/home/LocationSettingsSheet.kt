@@ -315,6 +315,14 @@ private fun ManualAddressOption(
     var displayAddress by remember { mutableStateOf(manualLocationName) }
     var suggestions by remember { mutableStateOf<List<PlaceSuggestion>>(emptyList()) }
     var isEditing by remember { mutableStateOf(false) }
+
+    // The prop can change after first composition (e.g. cache/network hydrate
+    // arrives after the sheet was opened). `remember` would otherwise keep
+    // the original — usually empty — value and the subtitle would never
+    // appear under "Manual Address". Don't clobber the user's in-progress edit.
+    LaunchedEffect(manualLocationName) {
+        if (!isEditing) displayAddress = manualLocationName
+    }
     var resolveError by remember { mutableStateOf<String?>(null) }
     var isResolving by remember { mutableStateOf(false) }
     val httpClient = remember { HttpClient() }

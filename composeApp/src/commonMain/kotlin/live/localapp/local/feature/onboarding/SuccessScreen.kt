@@ -71,12 +71,20 @@ fun SuccessScreen(
     venueCount: Int?,
     onComplete: () -> Unit,
 ) {
-    val eventsReady = eventCount != null && eventCount > 0
-    val venuesReady = venueCount != null && venueCount > 0
+    // "Loaded" = query returned, regardless of count. A zero result is still
+    // a completed query — the cascade must advance or the user gets stuck.
+    val eventsLoaded = eventCount != null
+    val venuesLoaded = venueCount != null
 
-    // Reactive labels — show actual numbers when ready
-    val eventsLabel = if (eventsReady) "${formatNumber(eventCount!!)} events loaded" else "Finding events..."
-    val venuesLabel = if (venuesReady) "${formatNumber(venueCount!!)} venues matched" else "Discovering venues..."
+    // Reactive labels — show actual numbers when loaded.
+    // 5000 is the EVENTS_PAGE_COUNT × PostgREST page cap from
+    // OnboardingRepositoryImpl. When we hit it, the real total is higher
+    // — show "5,000+" rather than implying we counted everything.
+    val eventsLabel = if (eventsLoaded) {
+        val displayCount = if (eventCount!! >= 5000) "${formatNumber(5000)}+" else formatNumber(eventCount)
+        "$displayCount events loaded"
+    } else "Finding events..."
+    val venuesLabel = if (venuesLoaded) "${formatNumber(venueCount!!)} venues matched" else "Discovering venues..."
 
     val cards = listOf(
         LoadingCard(Icons.Outlined.Place, "Location confirmed"),
@@ -95,18 +103,26 @@ fun SuccessScreen(
     }
 
     // Events card: mark done when data arrives
-    LaunchedEffect(eventsReady, cardStates) {
-        if (eventsReady && cardStates[1] == 1) {
+    LaunchedEffect(eventsLoaded, cardStates) {
+        if (eventsLoaded && cardStates[1] == 1) {
             delay(300) // brief pause so the fill animation is visible
             cardStates = listOf(2, 2, 1, 0) // events done, venues start
         }
     }
 
-    // Venues card: mark done when data arrives
-    LaunchedEffect(venuesReady, cardStates) {
-        if (venuesReady && cardStates[2] == 1) {
+    // Venues card: mark done when data arrives. Each LaunchedEffect makes
+    // exactly one state change — chaining two assignments separated by a
+    // delay would self-cancel (mutating cardStates re-launches this effect).
+    LaunchedEffect(venuesLoaded, cardStates) {
+        if (venuesLoaded && cardStates[2] == 1) {
             delay(300)
             cardStates = listOf(2, 2, 2, 1) // venues done, map starts
+        }
+    }
+
+    // Map card: brief delay then mark done.
+    LaunchedEffect(cardStates) {
+        if (cardStates[3] == 1) {
             delay(800)
             cardStates = listOf(2, 2, 2, 2) // map done
         }
@@ -120,10 +136,13 @@ fun SuccessScreen(
         }
     }
 
-    // Safety timeout
-    LaunchedEffect(Unit) {
-        delay(10000)
-        onComplete()
+    // Safety timeout — only fires if neither query ever completed (network
+    // dropped mid-load). The events query is keyset-paginated and can take
+    // 5-9s cold; the 10s blanket timeout used to cut the animation cascade
+    // short. Once data arrives the normal cascade handles completion.
+    LaunchedEffect(eventsLoaded, venuesLoaded) {
+        delay(30000)
+        if (!eventsLoaded && !venuesLoaded) onComplete()
     }
 
     Box(

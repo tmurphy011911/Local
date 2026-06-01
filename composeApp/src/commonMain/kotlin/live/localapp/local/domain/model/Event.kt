@@ -26,6 +26,10 @@ data class Event(
     val venueState: String? = null,
     val venueLat: Double?,
     val venueLng: Double?,
+    val eventCity: String? = null,
+    val eventState: String? = null,
+    val eventLat: Double? = null,
+    val eventLng: Double? = null,
     val city: String,
     val source: String? = null,
     val sourceUrl: String? = null,
@@ -40,6 +44,21 @@ data class Event(
      */
     val timeKnown: Boolean = true,
 ) {
+    /**
+     * City to render on cards / chips. Prefers the physical event location
+     * (eventCity) over the host-venue city (venueCity), because the venue is
+     * often an organization headquartered far from the actual event site.
+     * Strips a trailing source qualifier the crawler leaks into the city
+     * field, e.g. "Philadelphia, PA (CVB)" -> "Philadelphia, PA".
+     */
+    val displayCity: String
+        get() {
+            val city = eventCity?.takeIf { it.isNotBlank() } ?: venueCity
+            return if (city.endsWith(")") && city.contains(" ("))
+                city.substringBeforeLast(" (").trim()
+            else city
+        }
+
     val priceDisplay: String
         get() = when {
             isFree -> "Free"

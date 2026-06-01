@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.tooling.preview.Preview
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.WindowCompat
 import com.revenuecat.purchases.LogLevel
 import com.revenuecat.purchases.Purchases
@@ -18,6 +19,16 @@ import live.localapp.local.observability.AnalyticsEvent
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        // Install the SplashScreen API *before* super.onCreate. The library
+        // shows the @style/Theme.App.Starting frame (cream + app icon) and
+        // hands off to the Compose splash. See docs/splash-spec-v1.1.md §10.
+        //
+        // Hold the system splash on screen until composeReady flips true,
+        // which MainActivity.composeReady flips below as soon as setContent
+        // returns. After that, the Compose splash takes over the animation.
+        val splashScreen = installSplashScreen()
+        splashScreen.setKeepOnScreenCondition { !composeReady }
+
         enableEdgeToEdge()
         WindowCompat.getInsetsController(window, window.decorView)?.apply {
             isAppearanceLightStatusBars = true   // dark icons on light bg
@@ -53,7 +64,15 @@ class MainActivity : ComponentActivity() {
         setContent {
             App()
         }
+        // setContent is synchronous about *enqueueing* the composition, so
+        // flipping this immediately is safe — the first Compose frame will
+        // paint the cream Splash background, blending cleanly out of the
+        // identical-colored system splash.
+        composeReady = true
     }
+
+    @Volatile
+    private var composeReady: Boolean = false
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
@@ -66,6 +85,18 @@ class MainActivity : ComponentActivity() {
         if (uri.host == "localapp.live" && path.matches(Regex("/[pev]/[A-Za-z0-9_-]+"))) {
             DeepLinkHandler.pendingPath = path
         }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // Parity with iOS scenePhase .background (iOSApp.swift): emit the
+        // session-end signal and drain PostHog's queue before the process can
+        // be killed in the background, so late interaction events (event_saved,
+        // etc.) aren't lost. Single-activity Compose app, so onStop ≈ app
+        // backgrounded. Analytics.flush() is designed for shutdown (Sentry
+        // capped at 2s), so calling it here is safe.
+        Analytics.track(AnalyticsEvent.appBackgrounded())
+        Analytics.flush()
     }
 
     override fun onDestroy() {

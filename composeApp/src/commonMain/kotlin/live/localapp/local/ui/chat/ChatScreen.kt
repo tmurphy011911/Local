@@ -162,9 +162,9 @@ fun ChatScreen(
     // versions only used LaunchedEffect and never worked on iOS, so we're
     // belt-and-suspenders: every scroll API is tried, and the call site is
     // wired in two places so neither timing path can drop it.
-    suspend fun anchorLatestUserMessage(tag: String) {
+    suspend fun anchorTo(tag: String, predicate: (ChatMessage) -> Boolean) {
         val msgs = viewModel.uiState.value.messages
-        val targetIdx = msgs.indexOfLast { it.role == MessageRole.USER }
+        val targetIdx = msgs.indexOfLast(predicate)
         println("[ChatScroll/$tag] start targetIdx=$targetIdx msgCount=${msgs.size}")
         if (targetIdx < 0) return
         repeat(30) { attempt ->
@@ -204,9 +204,25 @@ fun ChatScreen(
         println("[ChatScroll/$tag] exhausted 30 attempts, first=${listState.firstVisibleItemIndex}@${listState.firstVisibleItemScrollOffset}")
     }
 
+    suspend fun anchorLatestUserMessage(tag: String) =
+        anchorTo(tag) { it.role == MessageRole.USER }
+
     val lastUserMessageId = state.messages.lastOrNull { it.role == MessageRole.USER }?.id
     LaunchedEffect(lastUserMessageId) {
         if (lastUserMessageId != null) anchorLatestUserMessage("reactive")
+    }
+
+    // Plan cards aren't user messages, so the anchor above never moves them.
+    // A freshly built (or updated) plan card must snap to the top of the
+    // viewport — otherwise a tall card lands wherever the prior scroll left
+    // it, scrolled off the top with dead space beneath. Anchor on the plan
+    // card's id so this also fires when an update appends a new card.
+    val isPlanCard: (ChatMessage) -> Boolean = {
+        it.content is MessageContent.MultiDayPlanRef || it.content is MessageContent.DayCardRef
+    }
+    val lastPlanCardId = state.messages.lastOrNull(isPlanCard)?.id
+    LaunchedEffect(lastPlanCardId) {
+        if (lastPlanCardId != null) anchorTo("plan-card", isPlanCard)
     }
 
     // Navigate to Plans when plan is approved
@@ -476,7 +492,7 @@ fun ChatScreen(
 
             // Streaming text / searching / typing indicator
             if (state.isSearching) {
-                item { SearchingIndicator() }
+                item { SearchingIndicator(narration = state.searchingNarration, localIdioms = state.localIdioms) }
             } else if (state.streamingText.isNotEmpty()) {
                 item { MessageRow(role = MessageRole.AI, text = state.streamingText) }
             } else if (state.isTyping) {
@@ -578,16 +594,16 @@ private fun ChatHeader(
                 modifier = Modifier.weight(1f),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
+                Text(
+                    "Ask Bo",
+                    style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = AppColors.Ink),
+                )
+                Spacer(Modifier.width(8.dp))
                 live.localapp.local.ui.character.Bo(
                     size = 28.dp,
                     showSparkles = false,
                     showShadow = false,
                     modifier = Modifier.size(28.dp),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "Plan with Bo",
-                    style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = AppColors.Ink),
                 )
             }
 
@@ -1052,49 +1068,100 @@ private val searchingPhrases = listOf(
 )
 
 @Composable
-private fun SearchingIndicator() {
+private fun SearchingIndicator(
+    narration: List<String> = emptyList(),
+    localIdioms: List<String> = emptyList(),
+) {
+    // Rotating playful gerund — the always-present "thinking" line that sits
+    // at the bottom while Bo works. Rotates every 2.5s.
     var phraseIndex by remember { mutableStateOf((0 until searchingPhrases.size).random()) }
-    val currentPhrase = searchingPhrases[phraseIndex % searchingPhrases.size]
-
-    // Rotate every 2.5 seconds
+    // Every ~3rd rotation, surface a hyperlocal idiom for the user's location
+    // (when Claude has generated some) to forge a place-specific connection;
+    // otherwise fall back to the generic whimsical gerunds.
+    val currentGerund = remember(phraseIndex, localIdioms) {
+        if (localIdioms.isNotEmpty() && phraseIndex % 3 == 2) {
+            localIdioms[(phraseIndex / 3) % localIdioms.size]
+        } else {
+            searchingPhrases[phraseIndex % searchingPhrases.size]
+        }
+    }
     LaunchedEffect(Unit) {
         while (true) {
             delay(2500L)
             phraseIndex++
         }
     }
-
-    // Fade transition on phrase change
-    val alpha = remember { Animatable(1f) }
+    // Fade the gerund on each rotation.
+    val gerundAlpha = remember { Animatable(1f) }
     LaunchedEffect(phraseIndex) {
-        alpha.snapTo(0f)
-        alpha.animateTo(1f, animationSpec = tween(400))
+        gerundAlpha.snapTo(0f)
+        gerundAlpha.animateTo(1f, animationSpec = tween(400))
     }
+
+    // Stagger the reveal: even though a batch of narration steps arrives all at
+    // once (after the ~10s round finishes), reveal them one at a time so the
+    // wait feels like progress. visibleCount persists across appends so already
+    // shown steps never re-hide.
+    var visibleCount by remember { mutableStateOf(0) }
+    LaunchedEffect(narration.size) {
+        while (visibleCount < narration.size) {
+            delay(700L)
+            visibleCount++
+        }
+    }
+    val visibleNarration = narration.take(visibleCount)
 
     Row(
         modifier = Modifier.padding(horizontal = 4.dp),
         horizontalArrangement = Arrangement.Start,
     ) {
         val bubbleShape = RoundedCornerShape(18.dp, 18.dp, 18.dp, 4.dp)
-        Box {
-            Box(
-                Modifier
-                    .background(AppColors.White, bubbleShape)
-                    .border(1.dp, AppColors.Pebble.copy(alpha = 0.6f), bubbleShape)
-                    .border(2.dp, Color(0xFFE2DCF0), bubbleShape)
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-            ) {
-                Text(
-                    currentPhrase,
-                    modifier = Modifier.graphicsLayer { this.alpha = alpha.value },
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 13.sp,
-                        color = AppColors.Ink3,
-                    ),
-                )
+        Column(
+            Modifier
+                .background(AppColors.White, bubbleShape)
+                .border(1.dp, AppColors.Pebble.copy(alpha = 0.6f), bubbleShape)
+                .border(2.dp, Color(0xFFE2DCF0), bubbleShape)
+                .padding(horizontal = 14.dp, vertical = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            // Completed narration steps stack up and persist, each with a
+            // check. Derived from Bo's tool args (e.g. "Searching within 20
+            // miles of Waltham"). Animate the latest line in.
+            visibleNarration.forEachIndexed { i, step ->
+                val rowAlpha = remember(step) { Animatable(0f) }
+                LaunchedEffect(step) { rowAlpha.animateTo(1f, animationSpec = tween(300)) }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.graphicsLayer { this.alpha = rowAlpha.value },
+                ) {
+                    Text(
+                        "✓",
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp, color = AppColors.Ink3.copy(alpha = 0.5f),
+                        ),
+                    )
+                    Text(
+                        step,
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold,
+                            fontSize = 13.sp, color = AppColors.Ink3.copy(alpha = 0.7f),
+                        ),
+                    )
+                }
             }
+            // Live "thinking" line — always present while searching.
+            Text(
+                currentGerund,
+                modifier = Modifier.graphicsLayer { this.alpha = gerundAlpha.value },
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 13.sp,
+                    color = AppColors.Ink3,
+                ),
+            )
         }
     }
 }
@@ -1256,6 +1323,7 @@ private fun MultiDayPlanCard(
                     val slot = currentDay.slots[slotIndex]
                     SlotCard(
                         slot = slot,
+                        dateLabel = currentDay.label,
                         onEventClick = {
                             if (slot.eventId != null) onEventClick(slot.eventId)
                             else if (!slot.isCustom && slot.name.length > 2) onEventClick("venue:${slot.name}")
@@ -1439,6 +1507,7 @@ private fun DayCard(
                 val slot = day.slots[slotIndex]
                 SlotCard(
                     slot = slot,
+                    dateLabel = day.label,
                     onEventClick = {
                         if (slot.eventId != null) onEventClick(slot.eventId)
                         else if (!slot.isCustom && slot.name.length > 2) onEventClick("venue:${slot.name}")
@@ -1512,6 +1581,7 @@ private fun DayCard(
 @Composable
 private fun SlotCard(
     slot: ItinerarySlot,
+    dateLabel: String = "",
     onEventClick: () -> Unit = {},
 ) {
     val uriHandler = LocalUriHandler.current
@@ -1590,24 +1660,26 @@ private fun SlotCard(
             } else { stripEmoji(slot.detail) }
             Text(displayDetail, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, color = subColor), maxLines = 1)
 
-            // Inline actions — only rating + reserve (directions/tickets live on the detail page)
-            val hasActions = slot.venueRating != null || slot.reservationUrl != null
-            if (hasActions) {
-                Spacer(Modifier.height(4.dp))
-                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    if (slot.venueRating != null) {
-                        Text("★ ${slot.venueRating}", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = AppColors.Sun))
-                    }
-                    if (slot.reservationUrl != null) {
-                        Text(
-                            "Reserve",
-                            modifier = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
-                                val deepUrl = buildReservationDeepLink(slot.reservationUrl, slot.time)
-                                uriHandler.openUri(deepUrl)
-                            },
-                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = if (hasImage) AppColors.White else AppColors.Coral),
-                        )
-                    }
+            // Inline actions — rating + reserve, or date/time when there's no
+            // rating. This row is always rendered so cards without a star
+            // rating keep the same height as cards that have one.
+            Spacer(Modifier.height(4.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (slot.venueRating != null) {
+                    Text("★ ${slot.venueRating}", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = AppColors.Sun))
+                } else {
+                    val dateTime = listOf(dateLabel.trim(), slot.time.trim()).filter { it.isNotBlank() }.joinToString(" · ")
+                    Text(dateTime, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, color = subColor))
+                }
+                if (slot.reservationUrl != null) {
+                    Text(
+                        "Reserve",
+                        modifier = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
+                            val deepUrl = buildReservationDeepLink(slot.reservationUrl, slot.time)
+                            uriHandler.openUri(deepUrl)
+                        },
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = if (hasImage) AppColors.White else AppColors.Coral),
+                    )
                 }
             }
         }

@@ -7,6 +7,8 @@ import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.query.Order
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import live.localapp.local.domain.repository.CachedManualLocation
+import live.localapp.local.domain.repository.ProfileStatus
 import live.localapp.local.domain.repository.UserPreferences
 import live.localapp.local.domain.repository.UserPreferencesRepository
 
@@ -98,6 +100,7 @@ class UserPreferencesRepositoryImpl(
         prefs.userLng?.let { settings.putDouble(KEY_USER_LNG, it) }
         prefs.firstName?.takeIf { it.isNotBlank() }?.let { settings.putString(KEY_FIRST_NAME, it) }
             ?: settings.remove(KEY_FIRST_NAME)
+        if (prefs.city.isNotBlank()) settings.putString(KEY_USER_CITY, prefs.city)
 
         return result
     }
@@ -133,6 +136,7 @@ class UserPreferencesRepositoryImpl(
             ).also { prefs ->
                 prefs.firstName?.takeIf { it.isNotBlank() }?.let { settings.putString(KEY_FIRST_NAME, it) }
                     ?: settings.remove(KEY_FIRST_NAME)
+                if (prefs.city.isNotBlank()) settings.putString(KEY_USER_CITY, prefs.city)
             }
         } catch (_: Exception) {
             null
@@ -163,6 +167,7 @@ class UserPreferencesRepositoryImpl(
             dto.userLat?.let { settings.putDouble(KEY_USER_LAT, it) }
             dto.userLng?.let { settings.putDouble(KEY_USER_LNG, it) }
             dto.firstName?.takeIf { it.isNotBlank() }?.let { settings.putString(KEY_FIRST_NAME, it) }
+            if (dto.city.isNotBlank()) settings.putString(KEY_USER_CITY, dto.city)
             userId
         } catch (_: Exception) {
             null
@@ -179,6 +184,27 @@ class UserPreferencesRepositoryImpl(
             dto != null && dto.onboardingComplete
         } catch (_: Exception) {
             false
+        }
+    }
+
+    override suspend fun getProfileStatus(authUserId: String): ProfileStatus {
+        return try {
+            val dto = supabaseClient.from("user_profiles")
+                .select {
+                    filter { eq("id", authUserId) }
+                }
+                .decodeSingleOrNull<UserProfileDto>()
+            when {
+                dto == null -> ProfileStatus.Missing
+                dto.onboardingComplete -> ProfileStatus.Complete
+                else -> ProfileStatus.Incomplete
+            }
+        } catch (_: Exception) {
+            // Network failure / decode error — treat as Missing so the router
+            // sends the user to ONBOARDING rather than HOME. Worst case is one
+            // extra screen; better than landing a half-set-up user on a Home
+            // they can't recover from.
+            ProfileStatus.Missing
         }
     }
 
@@ -199,6 +225,7 @@ class UserPreferencesRepositoryImpl(
             dto.userLat?.let { settings.putDouble(KEY_USER_LAT, it) }
             dto.userLng?.let { settings.putDouble(KEY_USER_LNG, it) }
             dto.firstName?.takeIf { it.isNotBlank() }?.let { settings.putString(KEY_FIRST_NAME, it) }
+            if (dto.city.isNotBlank()) settings.putString(KEY_USER_CITY, dto.city)
             authUserId
         } catch (_: Exception) {
             null
@@ -250,6 +277,7 @@ class UserPreferencesRepositoryImpl(
         prefs.userLng?.let { settings.putDouble(KEY_USER_LNG, it) }
         prefs.firstName?.takeIf { it.isNotBlank() }?.let { settings.putString(KEY_FIRST_NAME, it) }
             ?: settings.remove(KEY_FIRST_NAME)
+        if (prefs.city.isNotBlank()) settings.putString(KEY_USER_CITY, prefs.city)
 
         return id
     }
@@ -260,7 +288,51 @@ class UserPreferencesRepositoryImpl(
         settings.remove(KEY_USER_LAT)
         settings.remove(KEY_USER_LNG)
         settings.remove(KEY_FIRST_NAME)
+        settings.remove(KEY_LOCATION_MODE)
+        settings.remove(KEY_MANUAL_LOCATION_NAME)
+        settings.remove(KEY_MANUAL_LAT)
+        settings.remove(KEY_MANUAL_LNG)
+        settings.remove(KEY_GPS_LOCATION_NAME)
+        settings.remove(KEY_USER_CITY)
     }
+
+    override fun cacheManualLocationLocally(
+        locationMode: String,
+        manualLocationName: String?,
+        manualLat: Double?,
+        manualLng: Double?,
+    ) {
+        settings.putString(KEY_LOCATION_MODE, locationMode)
+        if (manualLocationName.isNullOrBlank()) settings.remove(KEY_MANUAL_LOCATION_NAME)
+        else settings.putString(KEY_MANUAL_LOCATION_NAME, manualLocationName)
+        if (manualLat == null) settings.remove(KEY_MANUAL_LAT)
+        else settings.putDouble(KEY_MANUAL_LAT, manualLat)
+        if (manualLng == null) settings.remove(KEY_MANUAL_LNG)
+        else settings.putDouble(KEY_MANUAL_LNG, manualLng)
+    }
+
+    override fun getCachedManualLocation(): CachedManualLocation = CachedManualLocation(
+        locationMode = settings.getStringOrNull(KEY_LOCATION_MODE),
+        manualLocationName = settings.getStringOrNull(KEY_MANUAL_LOCATION_NAME),
+        manualLat = if (settings.hasKey(KEY_MANUAL_LAT)) settings.getDouble(KEY_MANUAL_LAT, 0.0) else null,
+        manualLng = if (settings.hasKey(KEY_MANUAL_LNG)) settings.getDouble(KEY_MANUAL_LNG, 0.0) else null,
+    )
+
+    override fun cacheGpsLocationNameLocally(name: String) {
+        if (name.isBlank()) settings.remove(KEY_GPS_LOCATION_NAME)
+        else settings.putString(KEY_GPS_LOCATION_NAME, name)
+    }
+
+    override fun getCachedGpsLocationName(): String? =
+        settings.getStringOrNull(KEY_GPS_LOCATION_NAME)
+
+    override fun cacheUserCityLocally(city: String) {
+        if (city.isBlank()) settings.remove(KEY_USER_CITY)
+        else settings.putString(KEY_USER_CITY, city)
+    }
+
+    override fun getCachedUserCity(): String? =
+        settings.getStringOrNull(KEY_USER_CITY)
 
     /** Record an app open and return the updated streak count. Max +1 per calendar day. */
     fun recordAppOpenAndGetStreak(): Int {
@@ -299,5 +371,11 @@ class UserPreferencesRepositoryImpl(
         private const val KEY_LAST_OPEN_DATE = "streak_last_open"
         private const val KEY_STREAK_DAYS = "streak_days"
         private const val KEY_FIRST_NAME = "first_name"
+        private const val KEY_LOCATION_MODE = "location_mode"
+        private const val KEY_MANUAL_LOCATION_NAME = "manual_location_name"
+        private const val KEY_MANUAL_LAT = "manual_lat"
+        private const val KEY_MANUAL_LNG = "manual_lng"
+        private const val KEY_GPS_LOCATION_NAME = "gps_location_name"
+        private const val KEY_USER_CITY = "user_city"
     }
 }

@@ -1088,12 +1088,16 @@ type EventFilterType =
   | { type: "empty" }
   | { type: "category"; value: string }
   | { type: "source"; value: string }
+  // "Experiences" tab: combined pool of curated experiences and tour
+  // events. Reached via "experiences" OR "tours" so existing deep links
+  // / bookmarks to the old Tours tab redirect into this single tab.
+  | { type: "experiences_combined" }
   | { type: "exclude_known" };
 
 function resolveFilter(category: string | null): EventFilterType {
   if (!category || category.toLowerCase() === "foryou") return { type: "none" };
   const lc = category.toLowerCase();
-  if (lc === "experiences") return { type: "source", value: "curated" };
+  if (lc === "experiences" || lc === "tours") return { type: "experiences_combined" };
   if (lc === "nightlife") return { type: "category", value: "nightlife" };
   if (knownSubcategories.includes(lc)) return { type: "category", value: lc };
   if (parentCategories.has(lc)) return { type: "category", value: lc };
@@ -1125,6 +1129,16 @@ function applyFilter(events: ProcessedEvent[], filter: EventFilterType): Process
       // Experiences tab — must NOT apply isGeneralFeedEvent (it would
       // strip the very rows the tab exists to show).
       return events.filter(e => e.source === filter.value);
+    case "experiences_combined":
+      // Combined Experiences + Tours tab. Curated rows are intentionally
+      // exempt from isGeneralFeedEvent (recurrence semantics don't apply
+      // to them). Tour events also bypass the recurrence filter because
+      // their cadence is the point — a Freedom Trail walking tour
+      // running weekly belongs on the Experiences tab, not stripped to
+      // a "Weekly Happenings" rail.
+      return events.filter(e =>
+        e.source === "curated" || (e.subcategory ?? "").toLowerCase() === "tours"
+      );
     case "exclude_known":
       return events.filter(e =>
         isGeneralFeedEvent(e) && !knownSubcategories.includes((e.subcategory ?? "other").toLowerCase())
@@ -1439,7 +1453,24 @@ function resolveCarouselFromPool(
       if (!carouselCat) return [];
       if (userFilter.type === "category" && userFilter.value !== carouselCat) return [];
       if (userFilter.type === "none") {
-        return pool.filter(e => (e.subcategory ?? "").toLowerCase() === carouselCat);
+        // For You feed: match the carousel's category by either exact
+        // subcategory OR (when the carousel category is a parent like
+        // "sports", "music", "arts") any subcategory that rolls up to
+        // it. Without this, the "Sports" rail on For You was returning
+        // only events literally tagged subcategory='sports' (which is
+        // the bucket for unclassified sports stuff — motorsports,
+        // wrestling-tour misclassifications, etc.) and missing every
+        // Red Sox / Bruins / Celtics / Revolution game because those
+        // are tagged with the specific sport (baseball / hockey /
+        // basketball / soccer). Same logic applyFilter uses for
+        // parent-category tab loads.
+        const isParent = parentCategories.has(carouselCat);
+        return pool.filter(e => {
+          const subcat = (e.subcategory ?? "").toLowerCase();
+          if (subcat === carouselCat) return true;
+          if (isParent && (subcategoryToParent[subcat] ?? "") === carouselCat) return true;
+          return false;
+        });
       }
       return pool;
     }
@@ -1458,9 +1489,30 @@ function resolveCarouselFromPool(
     case "tag":
       return carousel.filter_value === "free" ? pool.filter(e => e.is_free) : pool;
     case "top_weekly": {
-      // Adaptive window: try 7 days; if the pool is thin, widen to 14, then 30.
-      // Title is "Top Events Happening Soon" regardless of which window wins,
-      // so users never see a sparse rail on slow weekdays / sparse subcategories.
+      // ── Subcategory-tab fast path ────────────────────────────────
+      // On a subcategory tab the user has scoped to one niche (Music,
+      // Comedy, For Kids…) and explicitly wants saturation IN that niche.
+      // rankForColdStart's single-category branch caps per-venue and
+      // per-sub_subcategory at 3 each, which on Music can leave the
+      // "Top Events Happening Soon" rail showing 2-3 events while the
+      // adjacent "Live Music" rail shows 25 from the same pool. Skip
+      // the diversification here; use a simple score+date sort over a
+      // 30-day window so the headline rail is always populated.
+      if (userFilter.type === "category" && userFilter.value !== "sports") {
+        const cutoff = daysFromNowIso(30);
+        return pool
+          .filter(e => (e.start_at ?? "") <= cutoff)
+          .map(e => ({ e, s: coldStartScore(e, prefs, affinityMap) }))
+          .sort((a, b) => b.s - a.s)
+          .map(p => p.e)
+          .slice(0, CAROUSEL_DISPLAY_LIMIT);
+      }
+      // ── For You / general path ───────────────────────────────────
+      // Adaptive window: try 7 days; if the pool is thin, widen to 14,
+      // then 30. Title is "Top Events Happening Soon" regardless of
+      // which window wins, so users never see a sparse rail on slow
+      // weekdays. rankForColdStart's cross-category diversification IS
+      // wanted here — keeps For You from being all-Fenway.
       const windows = [7, 14, 30];
       const minPoolSizes = [12, 8, 0];
       let chosen: ProcessedEvent[] = [];
@@ -1647,9 +1699,9 @@ function buildCarousels(
     // Pool: Free
     const freeEvents = filtered.filter(e => e.is_free).slice(0, CAROUSEL_DISPLAY_LIMIT);
 
-    // Pool: Experiences
+    // Pool: Experiences (curated + tours — matches the combined Experiences tab)
     const experiences = allEvents
-      .filter(e => e.source === "curated")
+      .filter(e => e.source === "curated" || (e.subcategory ?? "").toLowerCase() === "tours")
       .map(e => withDistance(e, userLat, userLng))
       .filter(e => maxRadius === Infinity || (e.distance_miles ?? 999) <= maxRadius)
       .sort(sortFn)
@@ -1720,7 +1772,7 @@ function buildCarousels(
         if (freeFiltered.length > 0) {
           result.push({
             slug: "free-events",
-            title: "No Cover, No Problem",
+            title: "For Free",
             subtitle: null,
             filter_type: "free",
             events: freeFiltered,
@@ -1783,6 +1835,15 @@ function buildCarousels(
     // "Your Weekend Lineup" rail. (On category tabs the title gets rewritten
     // to "<Category> This Weekend" below, which is meaningfully different.)
     if (filter.type === "none" && carousel.title.trim().toLowerCase() === "this weekend") {
+      continue;
+    }
+    // Skip the DB "Free Events" tag carousel on For You — it duplicates the
+    // dynamic "For Free" rail (slug=free-events) built above in the
+    // interleave. Subcategory tabs still get the DB version (scoped to the
+    // tab's category, e.g. "Free Music Events").
+    if (filter.type === "none"
+        && carousel.filter_type === "tag"
+        && (carousel.filter_value ?? "").toLowerCase() === "free") {
       continue;
     }
     const events = resolveCarouselFromPool(filtered, carousel, filter, prefs, affinityMap)
@@ -1854,8 +1915,12 @@ function buildCarousels(
     result.push(...dynamicSections);
   }
 
-  // Experiences tab dynamic sub-carousels
-  if (filter.type === "source") {
+  // Experiences tab dynamic sub-carousels (also covers the new combined
+  // Experiences+Tours tab — the `experiences_combined` filter already
+  // narrows the pool to curated + tours, so buildDynamicSubcarousels'
+  // group-by-sub_subcategory and group-by-venue passes produce themed
+  // rails like "Walking Tours", "At Freedom Trail", etc.).
+  if (filter.type === "source" || filter.type === "experiences_combined") {
     result.push(...buildDynamicSubcarousels(filtered, "experiences", "Experiences"));
   }
 
@@ -1925,7 +1990,10 @@ const subcategoryToParent: Record<string, string> = {
 // (incident 2026-05-19).
 const parentCategories = new Set([
   "music", "sports", "arts", "nightlife", "theatre", "comedy",
-  "food", "outdoors", "museums", "tours", "libraries", "for-kids",
+  "food", "outdoors", "museums", "libraries", "for-kids",
+  // "tours" intentionally omitted — tour events are now surfaced via
+  // the "Experiences" tab alongside curated experiences (single
+  // consolidated entry point with the tours icon).
 ]);
 
 function buildCategories(
@@ -1938,6 +2006,11 @@ function buildCategories(
   for (const e of allEvents) {
     const rawSubcat = (e.subcategory ?? "").toLowerCase();
     if (!rawSubcat || rawSubcat === "no-public-interest" || rawSubcat === "cafe") continue;
+    // Tours are surfaced via the combined Experiences tab below — skip
+    // them here so they don't get bucketed into "other" (the fallback
+    // when a subcategory has no parent mapping after Tours was removed
+    // from parentCategories).
+    if (rawSubcat === "tours") continue;
     // Map to parent category if not already a parent
     const parent = parentCategories.has(rawSubcat) ? rawSubcat : (subcategoryToParent[rawSubcat] ?? "other");
     counts.set(parent, (counts.get(parent) ?? 0) + 1);
@@ -1964,14 +2037,19 @@ function buildCategories(
     event_count: count,
   }));
 
-  // Count curated experiences
-  const experiencesCount = allEvents.filter(e => e.source === "curated").length;
+  // Combined Experiences tab = curated experiences + tour events.
+  // Uses the Tours icon (product decision: tours icon best represents
+  // the consolidated "things to go do" feel). Tab id stays "experiences"
+  // so the existing client-side routing & analytics keep working.
+  const experiencesCount = allEvents.filter(e =>
+    e.source === "curated" || (e.subcategory ?? "").toLowerCase() === "tours"
+  ).length;
   if (experiencesCount > 0) {
     const insertIndex = Math.min(3, categories.length);
     categories.splice(insertIndex, 0, {
       id: "experiences",
       label: "Experiences",
-      icon_url: iconUrlFor("experiences"),
+      icon_url: iconUrlFor("tours"),
       event_count: experiencesCount,
     });
   }
@@ -2189,12 +2267,55 @@ async function fetchUserPreferences(
   supabase: ReturnType<typeof createClient>,
   userId: string,
 ): Promise<UserPreferences | null> {
-  const { data, error } = await supabase
-    .from("user_profiles")
-    .select("*")
-    .eq("id", userId)
-    .maybeSingle();
-  if (error || !data) return null;
+  // Fetch the profile AND the user's heart-saved venue ids in parallel.
+  // Onboarding picks (user_profiles.selected_venues) and Places-tab heart
+  // saves (community_interactions, item_type='place') write to different
+  // tables; the For You feed only renders "Coming Up at <venue>" rails
+  // for venues in prefs.selected_venues. Without merging here, anything
+  // a user hearts after onboarding never gets a rail.
+  const [profileResp, favRowsResp] = await Promise.all([
+    supabase.from("user_profiles").select("*").eq("id", userId).maybeSingle(),
+    supabase
+      .from("community_interactions")
+      .select("item_id")
+      .eq("user_id", userId)
+      .eq("item_type", "place")
+      .eq("interaction_type", "favorite"),
+  ]);
+  if (profileResp.error || !profileResp.data) return null;
+  const data = profileResp.data;
+
+  // Resolve heart-saved item_ids → venue names. Single indexed lookup;
+  // skipped entirely when the user has no hearts (avoids a wasted call
+  // on cold-start anonymous-ish accounts).
+  const itemIds = (favRowsResp.data ?? [])
+    .map((r: { item_id?: string }) => r.item_id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+  let heartSavedNames: string[] = [];
+  if (itemIds.length > 0) {
+    const { data: venueRows } = await supabase
+      .from("venues")
+      .select("name")
+      .in("id", itemIds);
+    heartSavedNames = (venueRows ?? [])
+      .map((r: { name?: string }) => r.name)
+      .filter((n): n is string => typeof n === "string" && n.length > 0);
+  }
+
+  // Merge onboarding-selected venues with heart-saved venues, case-
+  // insensitive dedupe so the same venue from both sources doesn't
+  // produce two carousels.
+  const onboardingVenues: string[] = data.selected_venues ?? [];
+  const seenLc = new Set(onboardingVenues.map(v => v.toLowerCase()));
+  const mergedVenues = [...onboardingVenues];
+  for (const name of heartSavedNames) {
+    const lc = name.toLowerCase();
+    if (!seenLc.has(lc)) {
+      mergedVenues.push(name);
+      seenLc.add(lc);
+    }
+  }
+
   return {
     id: data.id,
     first_name: data.first_name ?? null,
@@ -2204,7 +2325,7 @@ async function fetchUserPreferences(
     user_lat: data.user_lat ?? null,
     user_lng: data.user_lng ?? null,
     selected_neighborhoods: data.selected_neighborhoods ?? [],
-    selected_venues: data.selected_venues ?? [],
+    selected_venues: mergedVenues,
     selected_categories: data.selected_categories ?? [],
     notif_tickets: data.notif_tickets ?? true,
     notif_nearby: data.notif_nearby ?? true,
@@ -2285,7 +2406,12 @@ Deno.serve(async (req) => {
     const url = new URL(req.url);
     const lat = parseFloat(url.searchParams.get("lat") ?? "42.3601");
     const lng = parseFloat(url.searchParams.get("lng") ?? "-71.0589");
-    const userId = url.searchParams.get("user_id") ?? null;
+    // `user_id` from the query string is the legacy (spoofable) identifier.
+    // Phase 1 of the IDOR fix: when a client sends a real user access token
+    // (X-User-Token), we verify it server-side and trust its subject over the
+    // param (see the per-user fetch below). Old clients that only send the
+    // param keep working until phase 2 drops the fallback.
+    let userId = url.searchParams.get("user_id") ?? null;
     const category = url.searchParams.get("category") ?? "foryou";
     const locationName = url.searchParams.get("location_name") ?? "";
     const radiusMiles = parseInt(url.searchParams.get("radius") ?? "75", 10);
@@ -2304,7 +2430,17 @@ Deno.serve(async (req) => {
     // The refresh script bypasses this read by sending X-Refresh-Cache:1,
     // so we don't return stale data to ourselves while warming the cache.
     const isRefreshing = req.headers.get("X-Refresh-Cache") === "1";
-    if (!isRefreshing) {
+    // The precomputed payload is ANONYMOUS — it carries none of the per-user
+    // rails (fav-venue, neighborhood, fav-category, affinity, "Picked for
+    // You"). Those are only built on the personalized feeds (foryou /
+    // locations → filter.type "none"). Serving the cache to a logged-in user
+    // on those feeds silently drops their personalized rails (the bug where
+    // "Coming Up at Fenway" / "In Newton" never appeared post-onboarding).
+    // For personalized requests, fall through to the slow path, which still
+    // amortizes the heavy event/venue fetch via the in-memory dataCache and
+    // only rebuilds the cheap per-user rails fresh.
+    const isPersonalized = userId != null && resolveFilter(category).type === "none";
+    if (!isRefreshing && !isPersonalized) {
       try {
         const latBucket = Math.round(lat * 10) / 10;
         const lngBucket = Math.round(lng * 10) / 10;
@@ -2349,9 +2485,10 @@ Deno.serve(async (req) => {
         // tolerates one missed cron without falling back to slow path.
         const ageMs = row?.computed_at ? Date.now() - new Date(row.computed_at as string).getTime() : Infinity;
         if (row?.payload && ageMs < 30 * 60 * 1000) {
-          // TODO(personalization): when user_id is present, layer favorites/
-          // affinity scoring on top here. For v1 we return the precomputed
-          // anonymous payload — same fidelity as the previous foryou cache.
+          // This branch only runs for non-personalized requests now
+          // (anonymous callers, or subcategory tabs that are identical for
+          // every user). Personalized foryou/locations requests skip the
+          // cache above and take the slow path so their per-user rails build.
           const isFallback = (row as any).lat_bucket !== latBucket || (row as any).lng_bucket !== lngBucket;
           return jsonCompressed(req, row.payload, {
             extraHeaders: {
@@ -2416,6 +2553,19 @@ Deno.serve(async (req) => {
       venueCache = venues;
       carouselsConfig = config;
       dataCache = { allEvents, rawSportsEvents, venueCache, carouselsConfig, timestamp: Date.now(), geoKey: cacheGeoKey } as any;
+    }
+
+    // IDOR fix (phase 1): if the caller presented a user access token, verify
+    // it and trust its subject over the spoofable `user_id` query param. We do
+    // this on the slow path only — warm-cache requests for anonymous content
+    // never need a precise user id, so they skip the auth round-trip. A
+    // missing/expired/invalid token falls back to the query param for now.
+    const userToken = req.headers.get("X-User-Token");
+    if (userToken) {
+      try {
+        const { data: { user } } = await supabase.auth.getUser(userToken);
+        if (user?.id) userId = user.id;
+      } catch (_) { /* invalid/expired token — keep param fallback (phase 1) */ }
     }
 
     // Per-user data — always fetched fresh (fast, single-row queries)

@@ -3,6 +3,24 @@ package live.localapp.local.domain.repository
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.model.Venue
 
+/**
+ * Max number of upcoming events [VenueRepository.getUpcomingEventsForVenue]
+ * returns. Counts that hit this cap should be rendered as "N+" since the true
+ * total may be higher (see [formatVenueEventCount]).
+ */
+const val VENUE_UPCOMING_EVENTS_CAP = 50
+
+/**
+ * Formats an upcoming-event count for a venue chip, e.g. "1 event", "12 events",
+ * or "50+ events" when the count is capped. Returns null for zero/negative.
+ */
+fun formatVenueEventCount(count: Int): String? {
+    if (count <= 0) return null
+    val suffix = if (count == 1) "event" else "events"
+    return if (count >= VENUE_UPCOMING_EVENTS_CAP) "$VENUE_UPCOMING_EVENTS_CAP+ $suffix"
+    else "$count $suffix"
+}
+
 data class VenueWithMeta(
     val venue: Venue,
     val distanceMiles: Double? = null,

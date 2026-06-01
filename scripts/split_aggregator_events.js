@@ -108,10 +108,19 @@ function decodeEntities(s) {
 
 // ── Title-pattern fallback ──────────────────────────────────────────────
 
-// Aggregator-specific shorthand (fill in as we discover patterns)
+// Aggregator-specific shorthand (fill in as we discover patterns).
+// Order matters — first match wins.
 const TITLE_HINTS = [
   // "in the performance space" / "in the lounge" → Club Passim
   { match: /in the (performance space|lounge)\b/i, venueName: "Club Passim" },
+  // Harvard Square deep-links — these venues rarely include "at <name>" in
+  // their titles, so we pattern-match the artist/series instead.
+  { match: /\bregattabar\b/i, venueName: "Regattabar" },
+  { match: /\bthe sinclair\b/i, venueName: "The Sinclair" },
+  { match: /\bsanders theatre\b/i, venueName: "Sanders Theatre" },
+  { match: /\bbrattle theatre\b/i, venueName: "Brattle Theatre" },
+  { match: /\bbeat brew hall\b/i, venueName: "Beat Brew Hall" },
+  { match: /\bclub passim\b/i, venueName: "Club Passim" },
 ];
 
 function parseTitleVenue(title) {

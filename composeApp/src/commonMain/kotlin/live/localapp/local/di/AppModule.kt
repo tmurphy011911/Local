@@ -1,6 +1,7 @@
 package live.localapp.local.di
 
 import com.russhwolf.settings.Settings
+import live.localapp.local.data.featureflags.FeatureFlagsRepository
 import live.localapp.local.data.remote.SupabaseClientFactory
 import live.localapp.local.data.repository.HttpExploreRepository
 import live.localapp.local.data.bo.BoTools
@@ -47,7 +48,7 @@ val appModule = module {
     single { SupabaseClientFactory.create() }
     single<CommunityInterestRepository> { CommunityInterestRepositoryImpl(get(), get()) }
     single<EventRepository> { EventRepositoryImpl(get()) }
-    single<CarouselRepository> { ServerCarouselRepository() }
+    single<CarouselRepository> { ServerCarouselRepository(get()) }
     single<OnboardingRepository> { OnboardingRepositoryImpl(get()) }
     single<UserPreferencesRepository> { UserPreferencesRepositoryImpl(get()) }
     single<VenueRepository> { VenueRepositoryImpl(get()) }
@@ -68,15 +69,16 @@ val appModule = module {
     // for the whole session even if no ViewModel has touched it yet.
     single { PlanSyncer(get(), get(), get()) }
     single { PlanRealtimeWatcher(get()) }
+    single { FeatureFlagsRepository(get()) }
     single<live.localapp.local.domain.repository.YocalPromptsRepository> { live.localapp.local.data.repository.HttpYocalPromptsRepository() }
     single<live.localapp.local.domain.repository.BoChipsRepository> { live.localapp.local.data.repository.HttpBoChipsRepository() }
     single { HomeViewModel(get(), get(), get(), get(), get(), get(), get()) }
     single { ChatViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get()) }
-    single { PlacesViewModel(get(), get(), get(), get()) }
+    single { PlacesViewModel(get(), get(), get(), get(), get()) }
     single { PlansViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
     single { ProgressViewModel(get(), get(), get(), get()) }
     single { TasteProfileViewModel(get(), get()) }
-    factory { OnboardingViewModel(get(), get()) }
+    factory { OnboardingViewModel(get(), get(), get()) }
     factory { PhoneAuthViewModel(get(), get()) }
     factory { (plan: live.localapp.local.domain.model.Plan) -> PlanChatViewModel(plan, get(), get(), get(), get(), get(), get(), get(), get(), get()) }
 }

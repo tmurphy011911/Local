@@ -1,5 +1,6 @@
 package live.localapp.local.platform
 
+import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
 import live.localapp.local.ChatBridge
 import live.localapp.local.ChatSheetBridge
@@ -253,6 +254,38 @@ actual fun showNativeEventDetail(
     EventDetailBridge.onDismissed = onDismissed
     EventDetailBridge.onFavorited = onFavorited
     EventDetailBridge.showDirections = showDirections
+
+    // Tapping the venue card on the native event detail opens that venue's
+    // native detail screen. Events carry no venue FK, so resolve by name+city.
+    EventDetailBridge.onVenueTap = onVenueTap@{ name, city ->
+        if (name.isBlank()) return@onVenueTap
+        MainScope().launch {
+            val venueRepo = org.koin.mp.KoinPlatform.getKoin()
+                .get<live.localapp.local.domain.repository.VenueRepository>()
+            val venue = try {
+                venueRepo.findVenueByNameAndCity(name, city)
+            } catch (_: Exception) { null } ?: return@launch
+            val upcoming = try {
+                venueRepo.getUpcomingEventsForVenue(name, city)
+            } catch (_: Exception) { emptyList() }
+            showNativeVenueDetail(
+                VenueWithMeta(
+                    venue = venue,
+                    distanceMiles = event.distanceMiles,
+                    upcomingEventCount = upcoming.size,
+                    upcomingEvents = upcoming,
+                    primaryCategory = venue.category,
+                    googleRating = venue.googleRating,
+                ),
+                cardX, cardY, cardW, cardH,
+                onDismissed = {},
+                isFavorited = false,
+                onFavorited = null,
+                hidesPrimaryCTAs = false,
+            )
+        }
+    }
+
     EventDetailBridge.showEventDetail?.invoke(
         event.id,
         event.title,
@@ -277,7 +310,23 @@ actual fun showNativeEventDetail(
         cardImageUrl,
         isFavorited,
         event.timeKnown,
+        event.distanceMiles ?: -1.0,
     )
+
+    // Resolve the venue's upcoming-event count async (events carry no venue FK,
+    // so this requires a name+city lookup) and push it to Swift once known.
+    val venueName = event.venueName
+    if (!venueName.isNullOrBlank()) {
+        MainScope().launch {
+            val count = try {
+                org.koin.mp.KoinPlatform.getKoin()
+                    .get<live.localapp.local.domain.repository.VenueRepository>()
+                    .getUpcomingEventsForVenue(venueName, event.venueCity)
+                    .size
+            } catch (_: Exception) { return@launch }
+            EventDetailBridge.updateVenueEventCount?.invoke(event.id, count)
+        }
+    }
 }
 
 actual fun showNativePlanDetail(

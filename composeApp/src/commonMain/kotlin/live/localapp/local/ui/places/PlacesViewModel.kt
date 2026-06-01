@@ -16,6 +16,7 @@ import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.repository.CommunityInterestRepository
 import live.localapp.local.domain.repository.EventPage
+import live.localapp.local.domain.repository.EventRepository
 import live.localapp.local.domain.repository.ExploreRepository
 import live.localapp.local.domain.repository.PlacePage
 import live.localapp.local.domain.repository.InteractionType
@@ -51,6 +52,7 @@ enum class EventDateFilter(val label: String, val slug: String) {
     TODAY("Today", "today"),
     TOMORROW("Tomorrow", "tomorrow"),
     THIS_WEEKEND("This Weekend", "this_weekend"),
+    NEXT_WEEKEND("Next Weekend", "next_weekend"),
     NEXT_30_DAYS("Next 30 Days", "next_30_days"),
     CUSTOM("Select Date", "custom"),
 }
@@ -96,6 +98,9 @@ data class PlacesUiState(
     val favoriteVenueIds: Set<String> = emptySet(),
     val favoriteEventIds: Set<String> = emptySet(),
     val savedEvents: List<Event> = emptyList(),
+    // Saved venues for the Places-tab carousel — sourced from the full favorite
+    // set, independent of the current sort/search page (mirrors savedEvents).
+    val savedVenues: List<VenueWithMeta> = emptyList(),
     // Cursor-based pagination replaces the old window-based approach. `hasMore`
     // is still surfaced so the list screen's infinite-scroll trigger keeps working.
     val venueCursor: String? = null,
@@ -113,6 +118,7 @@ class PlacesViewModel(
     private val userPreferencesRepository: UserPreferencesRepository,
     private val communityInterestRepository: CommunityInterestRepository,
     private val exploreRepository: ExploreRepository,
+    private val eventRepository: EventRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(PlacesUiState())
@@ -417,15 +423,12 @@ class PlacesViewModel(
             val key = state0.eventsCacheKey()
             val hit = eventsCache[key]
             if (hit != null && nowMs() - hit.savedAt < cacheTtlMs) {
-                val favs = state0.favoriteEventIds
-                val saved = hit.page.items.filter { e -> e.id in favs }
                 _uiState.update {
                     it.copy(
                         filteredEvents = hit.page.items,
                         events = hit.page.items,
                         eventCursor = hit.page.cursor,
                         eventsHasMore = hit.page.hasMore,
-                        savedEvents = saved,
                         isEventsLoading = false,
                         error = null,
                     )
@@ -494,14 +497,11 @@ class PlacesViewModel(
 
                 _uiState.update {
                     val merged = if (reset) page.items else it.filteredEvents + page.items
-                    val favs = it.favoriteEventIds
-                    val saved = merged.filter { e -> e.id in favs }
                     it.copy(
                         filteredEvents = merged,
                         events = merged,
                         eventCursor = page.cursor,
                         eventsHasMore = page.hasMore,
-                        savedEvents = saved,
                         isEventsLoading = false,
                         error = null,
                     )
@@ -551,6 +551,31 @@ class PlacesViewModel(
         }
     }
 
+    /**
+     * Resolve a venue by its denormalized name + city (events carry no venue FK
+     * in the read path — see EventDto) and open the venue detail overlay. Used by
+     * the event-detail "view venue" affordance. No-op if no matching venue row
+     * exists, so the caller can fall back gracefully.
+     */
+    fun openVenueByNameAndCity(name: String, city: String, distanceMiles: Double? = null) {
+        if (name.isBlank()) return
+        viewModelScope.launch {
+            val venue = try {
+                venueRepository.findVenueByNameAndCity(name, city)
+            } catch (_: Exception) {
+                null
+            } ?: return@launch
+            selectVenue(
+                VenueWithMeta(
+                    venue = venue,
+                    distanceMiles = distanceMiles,
+                    googleRating = venue.googleRating,
+                    primaryCategory = venue.category,
+                )
+            )
+        }
+    }
+
     fun dismissSheet() {
         _uiState.update { it.copy(selectedVenue = null, selectedVenueEvents = emptyList()) }
     }
@@ -561,26 +586,69 @@ class PlacesViewModel(
         val current = _uiState.value.favoriteVenueIds
         if (venueId in current) {
             communityInterestRepository.removeFavorite(venueId, InteractionType.PLACE)
-            _uiState.update { it.copy(favoriteVenueIds = current - venueId) }
+            _uiState.update {
+                it.copy(
+                    favoriteVenueIds = current - venueId,
+                    // savedVenues is independent of the active sort/search page —
+                    // drop the unsaved venue directly rather than re-deriving.
+                    savedVenues = it.savedVenues.filterNot { v -> v.venue.id == venueId },
+                )
+            }
         } else {
             communityInterestRepository.recordFavorite(venueId, InteractionType.PLACE, category)
-            _uiState.update { it.copy(favoriteVenueIds = current + venueId) }
+            // The just-saved venue is on screen (filtered list or saved carousel)
+            // — add it optimistically, with full meta where available.
+            val state = _uiState.value
+            val venue = (state.filteredVenues + state.savedVenues).firstOrNull { it.venue.id == venueId }
+            _uiState.update {
+                it.copy(
+                    favoriteVenueIds = current + venueId,
+                    savedVenues = if (venue != null && it.savedVenues.none { v -> v.venue.id == venueId }) {
+                        it.savedVenues + venue
+                    } else {
+                        it.savedVenues
+                    },
+                )
+            }
         }
     }
 
-    fun toggleEventFavorite(eventId: String, category: String? = null) {
+    fun toggleEventFavorite(eventId: String, category: String? = null, source: String = "places_card") {
         val current = _uiState.value.favoriteEventIds
         if (eventId in current) {
             communityInterestRepository.removeFavorite(eventId, InteractionType.EVENT)
-            _uiState.update { it.copy(favoriteEventIds = current - eventId) }
+            _uiState.update {
+                it.copy(
+                    favoriteEventIds = current - eventId,
+                    // savedEvents is independent of the active date filter — drop
+                    // the unsaved event from it directly rather than re-deriving
+                    // from filteredEvents (which a filter may have excluded).
+                    savedEvents = it.savedEvents.filterNot { e -> e.id == eventId },
+                )
+            }
+            live.localapp.local.observability.Analytics.track(
+                live.localapp.local.observability.AnalyticsEvent.eventUnsaved(eventId = eventId)
+            )
         } else {
             communityInterestRepository.recordFavorite(eventId, InteractionType.EVENT, category)
-            _uiState.update { it.copy(favoriteEventIds = current + eventId) }
-        }
-        // Re-derive savedEvents carousel
-        val state = _uiState.value
-        _uiState.update {
-            it.copy(savedEvents = state.filteredEvents.filter { e -> e.id in state.favoriteEventIds })
+            live.localapp.local.observability.Analytics.track(
+                live.localapp.local.observability.AnalyticsEvent.eventSaved(eventId = eventId, source = source)
+            )
+            // The just-saved event is on screen (in the filtered list or the
+            // saved section) — add it optimistically so the saved carousel
+            // updates without a round-trip and regardless of the active filter.
+            val state = _uiState.value
+            val event = (state.filteredEvents + state.savedEvents).firstOrNull { it.id == eventId }
+            _uiState.update {
+                it.copy(
+                    favoriteEventIds = current + eventId,
+                    savedEvents = if (event != null && it.savedEvents.none { e -> e.id == eventId }) {
+                        it.savedEvents + event
+                    } else {
+                        it.savedEvents
+                    },
+                )
+            }
         }
     }
 
@@ -595,6 +663,16 @@ class PlacesViewModel(
                     favoriteEventIds = eventIds.toSet(),
                 )
             }
+            // Hydrate the saved carousels from the full favorite sets,
+            // independent of the active filters — by-id fetches surface saved
+            // items even when they fall outside the current page.
+            val savedEvents = if (eventIds.isEmpty()) emptyList() else eventRepository.getEventsByIds(eventIds)
+            val savedVenues = if (venueIds.isEmpty()) {
+                emptyList()
+            } else {
+                venueRepository.getVenuesByIds(venueIds).map { VenueWithMeta(venue = it, primaryCategory = it.category) }
+            }
+            _uiState.update { it.copy(savedEvents = savedEvents, savedVenues = savedVenues) }
         }
     }
 
