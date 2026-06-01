@@ -391,7 +391,14 @@ function categoryDisplayName(key: string): string {
   return categoryDisplayNames[key.toLowerCase()] || key.charAt(0).toUpperCase() + key.slice(1);
 }
 
+// Genres the generic title-caser can't render correctly (acronyms, "&", etc.).
+const genreDisplayOverrides: Record<string, string> = {
+  "r&b": "R&B",
+};
+
 function subSubcategoryDisplayName(key: string): string {
+  const override = genreDisplayOverrides[key.toLowerCase()];
+  if (override) return override;
   return key.split("-").map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
 }
 
@@ -1548,6 +1555,9 @@ function buildCarousels(
   venueCache: Map<string, VenueInfo>,
   communityScores: Map<string, CommunityScore>,
   affinityMap: Map<string, number>,
+  // City-scoped events fetched directly (bypassing the metro-wide MV sample)
+  // so neighborhood rails reflect their named city. Empty on non-For-You paths.
+  cityEvents: ProcessedEvent[] = [],
 ): CarouselSection[] {
   const filter = resolveFilter(category);
   if (filter.type === "empty") return [];
@@ -1646,8 +1656,16 @@ function buildCarousels(
         if (n.toLowerCase() !== nearestCity.toLowerCase()) neighborhoods.push(n);
       }
     }
+    // Source pool for neighborhood rails: the general pool plus the
+    // city-scoped fetch (deduped by id). cityEvents guarantees the named
+    // city's events are present even when the rank-stratified MV omitted them.
+    const neighborhoodPool = (() => {
+      if (cityEvents.length === 0) return allEvents;
+      const seen = new Set(allEvents.map(e => e.id));
+      return [...allEvents, ...cityEvents.filter(e => !seen.has(e.id))];
+    })();
     for (const neighborhood of neighborhoods) {
-      const neighborhoodEvents = allEvents
+      const neighborhoodEvents = neighborhoodPool
         .filter(e => e.venue_city.toLowerCase().includes(neighborhood.toLowerCase()))
         .map(e => withDistance(e, userLat, userLng))
         .sort(sortFn)
@@ -2188,6 +2206,60 @@ async function fetchAllEvents(
   return [...mvProcessed, ...venueDiverseProcessed, ...alwaysOnProcessed];
 }
 
+// City-scoped fetch for the neighborhood rails ("The <City> Scene",
+// "In <City>", etc.). mv_events_for_geo is a rank-stratified metro-wide
+// SAMPLE — for a dense metro it returns only ~900 rows, so a single city's
+// lower-interest (often recurring) events get crowded out. Measured: only 9
+// of ~120 upcoming Brookline events survive into the MV. A city-named rail
+// must reflect that city, so we pull its events directly from `events`.
+//
+// Matches the rail's own filter (venue_city CONTAINS the name), bounded by
+// the same geo box + a 90-day horizon (mirrors the MV window) and capped per
+// city to keep the payload small. Ordering is by start_at (soonest first) to
+// pick a sensible candidate set; final display rank is re-applied in-memory by
+// the rail's sortFn, so this is "top N by rank" at the display layer.
+async function fetchCityEvents(
+  supabase: ReturnType<typeof createClient>,
+  lat: number,
+  lng: number,
+  radiusMiles: number,
+  cities: string[],
+): Promise<EventRow[]> {
+  if (cities.length === 0) return [];
+  const latDelta = radiusMiles / 69.0;
+  const lngDelta = radiusMiles / 50.0;
+  const minLat = lat - latDelta, maxLat = lat + latDelta;
+  const minLng = lng - lngDelta, maxLng = lng + lngDelta;
+  const startFrom = nowIso();
+  const startTo = daysFromNowIso(90);
+  const PER_CITY = 80;
+
+  const pages = await Promise.all(cities.map(async (city) => {
+    const { data, error } = await supabase
+      .from("events")
+      .select("*")
+      .eq("is_active", true)
+      .ilike("venue_city", `%${city}%`)
+      .gte("start_at", startFrom)
+      .lte("start_at", startTo)
+      .gte("venue_lat", minLat)
+      .lte("venue_lat", maxLat)
+      .gte("venue_lng", minLng)
+      .lte("venue_lng", maxLng)
+      .order("start_at", { ascending: true })
+      .limit(PER_CITY);
+    if (error) {
+      console.error(`[carousels] fetchCityEvents(${city}) failed:`, error);
+      return [];
+    }
+    return (data ?? []) as EventRow[];
+  }));
+  // Dedup across cities by id (overlapping substring matches are possible).
+  const byId = new Map<string, EventRow>();
+  for (const row of pages.flat()) byId.set(row.id, row);
+  return [...byId.values()];
+}
+
 // fetchRawSportsEvents removed — rawSportsEvents is now derived inline
 // in the slow-path handler block by filtering the MV-backed fetchAllEvents
 // result. Same row set, no second 7×1000 paginated scan.
@@ -2578,10 +2650,27 @@ Deno.serve(async (req) => {
     const weights = weightsForUser(lat, lng, radiusMiles);
     const nearestCity = locationName || nearestCityName(lat, lng);
 
+    // City-scoped pool for the neighborhood rails. Fetched per-request (NOT in
+    // the shared geo cache — selected_neighborhoods are per-user) and only on
+    // the For-You / Locations path, the only place neighborhood rails build.
+    // The current-location rail sources `nearestCity`; each onboarding rail
+    // sources its own selected neighborhood city.
+    let cityEvents: ProcessedEvent[] = [];
+    if (resolveFilter(category).type === "none") {
+      const targetCities = [nearestCity];
+      for (const n of userPreferences?.selected_neighborhoods ?? []) {
+        if (!targetCities.some(c => c.toLowerCase() === n.toLowerCase())) {
+          targetCities.push(n);
+        }
+      }
+      const cityRows = await fetchCityEvents(supabase, lat, lng, radiusMiles, targetCities);
+      cityEvents = cleanEvents(deduplicateCrossSource(cityRows), venueCache);
+    }
+
     const carouselSections = buildCarousels(
       allEvents, rawSportsEvents, carouselsConfig, category,
       lat, lng, userPreferences, nearestCity,
-      weights, venueCache, communityScores, affinityMap,
+      weights, venueCache, communityScores, affinityMap, cityEvents,
     );
 
     const categories = buildCategories(allEvents, userPreferences);
