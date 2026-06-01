@@ -19,6 +19,11 @@ const { SUPABASE_URL } = require("./lib/secrets");
 const SERVICE_KEY = (process.env.SUPABASE_SERVICE_KEY || "").replace(/\s/g, "");
 const WRITE = process.env.WRITE === "1";
 const STATE = process.env.STATE || null;
+// Run ONLY the high-confidence Ticketmaster-event-id pass (Pass 0), skipping
+// the broader fuzzy Passes 1-2. Use this to apply the bulletproof cross-source
+// id merges in isolation without touching the larger, riskier fuzzy-title
+// backlog (which warrants its own review). 2026-06-01.
+const PASS0_ONLY = process.env.PASS0_ONLY === "1";
 
 if (!SERVICE_KEY) { console.error("Missing SUPABASE_SERVICE_KEY"); process.exit(1); }
 
@@ -56,20 +61,32 @@ function normalizeVenue(name) {
   return (name || "").toLowerCase().replace(/[^\w]/g, "").trim();
 }
 
-// Extract a Ticketmaster event id from a source_url or ticket_url. TM ticket
-// pages embed the canonical event id as the `/event/<ID>` path segment
-// (e.g. .../event/0100642EA838A90A). Crucially, BOTH the native ticketmaster
-// rows AND venue-crawl rows (whose ticket_url deep-links to the same TM page)
-// carry the SAME id for one show — so two rows sharing it are guaranteed the
-// same ticketed event regardless of title wording, start-time jitter, or
-// source. That makes it a far stronger cross-source dedupe key than fuzzy
-// title + time bucketing (which miss the artist-name vs artist-tour-title
-// case, e.g. "A$AP Rocky" crawl @7:30 vs "A$AP Rocky - Don't Be Dumb World
-// Tour" ticketmaster @8:30). Returns an uppercased id or null.
+// Extract a Ticketmaster *classic* event id from a source_url or ticket_url.
+// TM ticket pages embed the canonical event id as the `/event/<ID>` path
+// segment. Crucially, BOTH native ticketmaster rows AND venue-crawl rows
+// (whose ticket_url deep-links to the same TM page) carry the SAME id for one
+// show — so two rows sharing it are guaranteed the same ticketed event
+// regardless of title wording, start-time jitter, or source. That makes it a
+// far stronger cross-source dedupe key than fuzzy title + time bucketing
+// (which miss the artist-name vs artist-tour-title case, e.g. "A$AP Rocky"
+// crawl @7:30 vs "A$AP Rocky - Don't Be Dumb World Tour" ticketmaster @8:30,
+// both `/event/0100642EA838A90A`).
+//
+// We deliberately match ONLY the classic 16-hex-char id (`[0-9A-F]{16}`).
+// Ticketmaster ALSO exposes a "Discovery" short-id form (`/event/Z7r9jZ1A7xoFK`)
+// whose ids share a long market-wide prefix (`Z7r9jZ1A7…`) and differ only in
+// a short suffix — and that suffix gets lost to dashes/query-params, collapsing
+// unrelated shows onto the shared prefix (Phish, Lion King, MiLB games all
+// merging). The hex form has no such prefix structure and is non-ambiguous.
+// The Discovery space is left to the fuzzy passes; same-source Discovery dupes
+// are already blocked upstream by the per-source dedupe_hash. Returns an
+// uppercased 16-hex id or null.
 function ticketmasterEventId(...urls) {
   for (const u of urls) {
     if (!u) continue;
-    const m = String(u).match(/ticketmaster\.[a-z.]+\/(?:[^?#]*\/)?event\/([0-9A-Za-z]{8,})/i);
+    // Require the captured token to end at a path/query/fragment/string
+    // boundary so we never grab a truncated prefix of a longer token.
+    const m = String(u).match(/ticketmaster\.[a-z.]+\/(?:[^?#]*\/)?event\/([0-9A-Fa-f]{16})(?=[/?#]|$)/i);
     if (m) return m[1].toUpperCase();
   }
   return null;
@@ -227,7 +244,7 @@ async function fetchAllUpcoming() {
   while (true) {
     let url =
       `${SUPABASE_URL}/rest/v1/events` +
-      `?select=id,title,category,start_at,time_known,venue_name,venue_state,source,source_url,image_url,description,ticket_url,price_min,confidence_score,is_active` +
+      `?select=id,title,category,start_at,time_known,venue_name,venue_state,source,source_url,image_url,description,ticket_url,price_min,confidence_score,is_active,duplicate_of` +
       `&is_active=eq.true` +
       `&start_at=gte.${today}` +
       `&order=id.asc` +
@@ -269,10 +286,22 @@ async function main() {
     if (!tmGroups.has(tmId)) tmGroups.set(tmId, []);
     tmGroups.get(tmId).push(e);
   }
+  // A genuine per-show id should bind a tiny handful of rows (one per source
+  // that listed the show). If an id gathers more than this, treat it as a
+  // suspect non-unique token and skip it rather than over-merge — the fuzzy
+  // passes can still catch any real dupes inside. Belt-and-suspenders on top
+  // of the hex-only restriction.
+  const MAX_TM_GROUP = 8;
   let pass0Groups = 0;
   let pass0Pairs = 0;
+  let pass0Skipped = 0;
   for (const [tmId, list] of tmGroups) {
     if (list.length < 2) continue;
+    if (list.length > MAX_TM_GROUP) {
+      console.warn(`  Pass 0: skipping suspect id ${tmId} (${list.length} rows > ${MAX_TM_GROUP})`);
+      pass0Skipped++;
+      continue;
+    }
     // Pick a single winner for the whole id group, then everyone else loses.
     let winner = list[0];
     for (let i = 1; i < list.length; i++) winner = pickWinner(winner, list[i]);
@@ -289,7 +318,12 @@ async function main() {
     }
     pass0Groups++;
   }
-  console.log(`Pass 0 (ticketmaster event id): ${pass0Groups} groups, ${pass0Pairs} pairs`);
+  console.log(`Pass 0 (ticketmaster event id): ${pass0Groups} groups, ${pass0Pairs} pairs` +
+    (pass0Skipped ? ` (${pass0Skipped} suspect ids skipped)` : ""));
+
+  if (PASS0_ONLY) {
+    console.log("PASS0_ONLY=1 — skipping fuzzy Passes 1-2.");
+  }
 
   // PASS 1: same source_url + same ET calendar date + title similarity.
   // Two rows with the same canonical source URL on the same date are the same
@@ -301,6 +335,7 @@ async function main() {
   // a URL on the same day. Reuse dupConfidence to require title similarity.
   const urlGroups = new Map();
   for (const e of events) {
+    if (PASS0_ONLY) break;
     if (!e.source_url || !e.start_at) continue;
     if (claimedLosers.has(e.id)) continue; // already handled in pass 0
     const key = `${e.source_url}::${localDateET(e.start_at)}`;
@@ -345,6 +380,7 @@ async function main() {
   // venue crawl), or rows missing source_url entirely.
   const groups = new Map();
   for (const e of events) {
+    if (PASS0_ONLY) break;
     if (!e.venue_name || !e.start_at) continue;
     if (claimedLosers.has(e.id)) continue; // already handled in pass 1
     const key = `${normalizeVenue(e.venue_name)}::${localDateET(e.start_at)}`;
@@ -414,6 +450,29 @@ async function main() {
   }
 
   if (pairs.length === 0) return;
+
+  // Rollback manifest — capture each loser's prior state BEFORE the write so a
+  // botched run can be reverted (set is_active/duplicate_of back). All losers
+  // come from the is_active=true fetch, so prevIsActive is always true, but we
+  // record it explicitly rather than assume. Written to scripts/.manifests/.
+  const fs = require("fs");
+  const path = require("path");
+  const manifestDir = path.join(__dirname, ".manifests");
+  fs.mkdirSync(manifestDir, { recursive: true });
+  const manifestPath = path.join(
+    manifestDir,
+    `dedup_events_${PASS0_ONLY ? "pass0_" : ""}${Date.now()}.json`
+  );
+  const manifest = pairs.map((p) => ({
+    loserId: p.loser.id,
+    winnerId: p.winner.id,
+    prevIsActive: p.loser.is_active,
+    prevDuplicateOf: p.loser.duplicate_of ?? null,
+    loserTitle: p.loser.title,
+    reasons: p.reasons,
+  }));
+  fs.writeFileSync(manifestPath, JSON.stringify(manifest, null, 2));
+  console.log(`Rollback manifest written: ${manifestPath}`);
 
   // Apply: PATCH each loser. Group by winner_id so we can batch in.()
   const byWinner = new Map();
