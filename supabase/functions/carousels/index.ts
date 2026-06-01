@@ -1570,6 +1570,9 @@ function buildCarousels(
   // City-scoped events fetched directly (bypassing the metro-wide MV sample)
   // so neighborhood rails reflect their named city. Empty on non-For-You paths.
   cityEvents: ProcessedEvent[] = [],
+  // Venue-scoped events fetched directly (same rationale) so fav-venue rails
+  // show a venue's full upcoming slate. Empty on non-For-You paths.
+  venueEvents: ProcessedEvent[] = [],
 ): CarouselSection[] {
   const filter = resolveFilter(category);
   if (filter.type === "empty") return [];
@@ -1641,21 +1644,30 @@ function buildCarousels(
     }
 
     // Pool: Favorite venues
+    // Source pool: general pool plus the venue-scoped direct fetch (deduped by
+    // id). venueEvents guarantees a favorited venue's full slate is present
+    // even when the rank-stratified MV omitted most of it (e.g. a library with
+    // 47 upcoming events that only surfaced 1 in the metro-wide sample).
+    const favVenuePool = (() => {
+      if (venueEvents.length === 0) return allEvents;
+      const seen = new Set(allEvents.map(e => e.id));
+      return [...allEvents, ...venueEvents.filter(e => !seen.has(e.id))];
+    })();
     const favVenueCarousels: CarouselSection[] = [];
     if (prefs) {
       for (const venue of prefs.selected_venues) {
-        const venueEvents = allEvents
+        const venueRailEvents = favVenuePool
           .filter(e => (e.venue_name ?? "").toLowerCase().includes(venue.toLowerCase()))
           .map(e => withDistance(e, userLat, userLng))
           .sort(sortFn)
           .slice(0, CAROUSEL_DISPLAY_LIMIT);
-        if (venueEvents.length === 0) continue;
+        if (venueRailEvents.length === 0) continue;
         favVenueCarousels.push({
           slug: `fav-venue-${venue.toLowerCase().replace(/ /g, "-")}`,
           title: `Coming Up at ${venue}`,
           subtitle: null,
           filter_type: "favorite_venue",
-          events: venueEvents,
+          events: venueRailEvents,
         });
       }
     }
@@ -1853,9 +1865,36 @@ function buildCarousels(
   }
 
   // Standard DB-driven carousels
+  //
+  // For-You interest gating: the static `carousels` config includes fixed
+  // category rails (Live Music, Sports, Nightlife, Outdoors, …) that would
+  // otherwise render for EVERY user regardless of stated interest. On the For
+  // You feed we instead surface only the category rails the user actually cares
+  // about — onboarding `selected_categories` ∪ affinity (taps/saves), each
+  // mapped up to its parent category. FALLBACK: if the user has no interest
+  // signal at all (cold start, nothing to personalize from), we show the full
+  // category catalog so the feed isn't sparse. Category tabs are unaffected —
+  // the explicit tab IS the interest signal there.
+  const toParentCat = (c: string): string => {
+    const lc = c.toLowerCase();
+    return parentCategories.has(lc) ? lc : (subcategoryToParent[lc] ?? lc);
+  };
+  const interestParents = new Set<string>();
+  for (const c of prefs?.selected_categories ?? []) interestParents.add(toParentCat(c));
+  for (const [c] of affinityMap) interestParents.add(toParentCat(c));
+  const hasInterestSignal = interestParents.size > 0;
+
   const standardCarousels: CarouselSection[] = [];
   for (const carousel of carousels) {
     if (carousel.filter_type === "category" && filter.type !== "none" && filter.type !== "category") {
+      continue;
+    }
+    // For You + has interest signal: skip category rails outside the user's
+    // interests. No signal → fall through (show all, discovery fallback).
+    if (filter.type === "none"
+        && carousel.filter_type === "category"
+        && hasInterestSignal
+        && !interestParents.has((carousel.filter_value ?? "").toLowerCase())) {
       continue;
     }
     if (carousel.filter_type === "date_range" && filter.type === "category") {
@@ -2284,6 +2323,53 @@ async function fetchCityEvents(
   return [...byId.values()];
 }
 
+// Venue-scoped direct fetch — sibling of fetchCityEvents, for the
+// "Coming Up at <venue>" fav-venue rails. The shared rank-stratified MV
+// (mv_events_for_geo) returns a metro-wide sample, so a single favorited
+// venue's events get crowded out (e.g. Public Library of Brookline had 47
+// upcoming but only ~1 survived the sample). This queries the events table
+// directly per favorited venue so the full slate is available to the rail.
+async function fetchVenueEvents(
+  supabase: ReturnType<typeof createClient>,
+  lat: number,
+  lng: number,
+  radiusMiles: number,
+  venues: string[],
+): Promise<EventRow[]> {
+  if (venues.length === 0) return [];
+  const latDelta = radiusMiles / 69.0;
+  const lngDelta = radiusMiles / 50.0;
+  const minLat = lat - latDelta, maxLat = lat + latDelta;
+  const minLng = lng - lngDelta, maxLng = lng + lngDelta;
+  const startFrom = nowIso();
+  const startTo = daysFromNowIso(90);
+  const PER_VENUE = 80;
+
+  const pages = await Promise.all(venues.map(async (venue) => {
+    const { data, error } = await supabase
+      .from("events")
+      .select("*")
+      .eq("is_active", true)
+      .ilike("venue_name", `%${venue}%`)
+      .gte("start_at", startFrom)
+      .lte("start_at", startTo)
+      .gte("venue_lat", minLat)
+      .lte("venue_lat", maxLat)
+      .gte("venue_lng", minLng)
+      .lte("venue_lng", maxLng)
+      .order("start_at", { ascending: true })
+      .limit(PER_VENUE);
+    if (error) {
+      console.error(`[carousels] fetchVenueEvents(${venue}) failed:`, error);
+      return [];
+    }
+    return (data ?? []) as EventRow[];
+  }));
+  const byId = new Map<string, EventRow>();
+  for (const row of pages.flat()) byId.set(row.id, row);
+  return [...byId.values()];
+}
+
 // fetchRawSportsEvents removed — rawSportsEvents is now derived inline
 // in the slow-path handler block by filtering the MV-backed fetchAllEvents
 // result. Same row set, no second 7×1000 paginated scan.
@@ -2686,6 +2772,7 @@ Deno.serve(async (req) => {
     // The current-location rail sources `nearestCity`; each onboarding rail
     // sources its own selected neighborhood city.
     let cityEvents: ProcessedEvent[] = [];
+    let venueEvents: ProcessedEvent[] = [];
     if (resolveFilter(category).type === "none") {
       const targetCities = [nearestCity];
       for (const n of userPreferences?.selected_neighborhoods ?? []) {
@@ -2693,14 +2780,21 @@ Deno.serve(async (req) => {
           targetCities.push(n);
         }
       }
-      const cityRows = await fetchCityEvents(supabase, lat, lng, radiusMiles, targetCities);
+      // Parallel: city-scoped pool (neighborhood rails) + venue-scoped pool
+      // (fav-venue rails). Both bypass the rank-stratified MV's metro-wide
+      // sampling so the named city/venue's full slate is available per-request.
+      const [cityRows, venueRows] = await Promise.all([
+        fetchCityEvents(supabase, lat, lng, radiusMiles, targetCities),
+        fetchVenueEvents(supabase, lat, lng, radiusMiles, userPreferences?.selected_venues ?? []),
+      ]);
       cityEvents = cleanEvents(deduplicateCrossSource(cityRows), venueCache);
+      venueEvents = cleanEvents(deduplicateCrossSource(venueRows), venueCache);
     }
 
     const carouselSections = buildCarousels(
       allEvents, rawSportsEvents, carouselsConfig, category,
       lat, lng, userPreferences, nearestCity,
-      weights, venueCache, communityScores, affinityMap, cityEvents,
+      weights, venueCache, communityScores, affinityMap, cityEvents, venueEvents,
     );
 
     const categories = buildCategories(allEvents, userPreferences);
