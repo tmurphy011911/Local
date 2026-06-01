@@ -1012,19 +1012,6 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             streakDays = homeState.streakDays,
                             isUnsupportedState = homeState.isUnsupportedState,
                             radiusFilter = homeState.radiusFilter,
-                            onBuildPlanFromEvent = { eventId, eventTitle ->
-                                // Embed the literal event ID so Bo treats this
-                                // as a "use this exact event_id, don't search
-                                // for similar" — otherwise Bo paraphrases the
-                                // title, search_events returns near-misses or
-                                // nothing, and Bo falls back to recommending
-                                // the venue instead of the event.
-                                pendingChatMessage =
-                                    "I'd like to build a plan around my saved event \"$eventTitle\" (event_id: evt:$eventId). " +
-                                    "Use this exact event_id in the present_plan slot — don't search for it again."
-                                chatOpenCount++
-                                openChatOrLogin()
-                            },
                             onBuildPlanFromTemplate = { templateMessage ->
                                 pendingChatMessage = templateMessage
                                 chatOpenCount++

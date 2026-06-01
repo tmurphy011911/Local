@@ -102,7 +102,6 @@ fun PlansScreen(
     onPlanClick: (Plan, androidx.compose.ui.geometry.Rect) -> Unit = { _, _ -> },
     onInviteClick: (Plan) -> Unit = {},
     onEventClick: (String, androidx.compose.ui.geometry.Rect) -> Unit = { _, _ -> },
-    onBuildPlanFromEvent: ((eventId: String, eventTitle: String) -> Unit)? = null,
     onBuildPlanFromTemplate: ((String) -> Unit)? = null,
     onSharePlan: ((Plan) -> Unit)? = null,
     userInitial: String = "",
@@ -312,7 +311,10 @@ fun PlansScreen(
                             SavedEventCard(
                                 event = event,
                                 onClick = { _ ->
-                                    onBuildPlanFromEvent?.invoke(event.id, event.title)
+                                    val venuePart = event.venueName?.let { " at $it" } ?: ""
+                                    onBuildPlanFromTemplate?.invoke(
+                                        "Help me build a plan around ${event.title}$venuePart on ${event.dateDisplay}",
+                                    )
                                 },
                             )
                         }
