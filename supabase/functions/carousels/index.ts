@@ -143,6 +143,13 @@ const MIN_CAROUSEL_SIZE = 15;
 const METRO_CENTER_LAT = 42.3601;
 const METRO_CENTER_LNG = -71.0589;
 
+// Absolute distance ceiling. No event may appear in any carousel if it is
+// more than this many miles from the user's location (manual or GPS). This is
+// a hard invariant enforced in three layers: the requested radius is clamped
+// to it, weightsForUser caps maxEventRadius at it, and buildCarousels makes a
+// final pass dropping any event beyond it regardless of which rail produced it.
+const MAX_EVENT_DISTANCE_MILES = 100;
+
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 
@@ -693,7 +700,12 @@ function weightsForUser(userLat: number, userLng: number, radiusMiles: number): 
   else if (milesFromMetro <= 45.0) { proxWeight = 0.55; decay = 2.0; }
   else { proxWeight = 0.65; decay = 1.0; }
 
-  const effectiveRadius = Math.max(radiusMiles, milesFromMetro + 25.0);
+  // Far-from-metro users get a widened radius so they still see metro events,
+  // but never beyond the hard ceiling.
+  const effectiveRadius = Math.min(
+    Math.max(radiusMiles, milesFromMetro + 25.0),
+    MAX_EVENT_DISTANCE_MILES,
+  );
   const remaining = 1.0 - proxWeight;
   return {
     relevance: remaining * (40.0 / 80.0),
@@ -1969,7 +1981,19 @@ function buildCarousels(
     }
   }
 
-  return result;
+  // Hard distance ceiling — final guarantee. Some rails (neighborhood,
+  // favorite-venue, city-scoped fetch) intentionally skip the per-rail radius
+  // filter, and bounding-box fetches can include corner events past the
+  // requested radius. This pass drops anything beyond MAX_EVENT_DISTANCE_MILES
+  // from the user regardless of which rail produced it, then removes any rail
+  // left empty. Events with unknown coords (null distance) are kept, matching
+  // the existing radius-filter convention elsewhere.
+  for (const section of result) {
+    section.events = section.events.filter(
+      e => e.distance_miles == null || e.distance_miles <= MAX_EVENT_DISTANCE_MILES,
+    );
+  }
+  return result.filter(section => section.events.length > 0);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -2486,7 +2510,13 @@ Deno.serve(async (req) => {
     let userId = url.searchParams.get("user_id") ?? null;
     const category = url.searchParams.get("category") ?? "foryou";
     const locationName = url.searchParams.get("location_name") ?? "";
-    const radiusMiles = parseInt(url.searchParams.get("radius") ?? "75", 10);
+    // Clamp the requested radius to the hard ceiling so a wide client value
+    // can't widen the fetch box or any rail past MAX_EVENT_DISTANCE_MILES.
+    const requestedRadius = parseInt(url.searchParams.get("radius") ?? "75", 10);
+    const radiusMiles = Math.min(
+      Number.isFinite(requestedRadius) ? requestedRadius : 75,
+      MAX_EVENT_DISTANCE_MILES,
+    );
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
     // Cache key: rounded lat/lng so nearby requests share cache
