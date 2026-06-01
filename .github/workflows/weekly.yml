@@ -71,11 +71,24 @@ jobs:
         run: node run_crawls.js
 
   classify-events:
-    # Wait for BOTH event sources to finish loading: the long crawl + the
-    # parallel municipal-feed sync. Otherwise municipal events miss the
-    # Claude classification pass and land with raw/wrong categories.
+    # Best-effort wait for BOTH event sources: the long crawl + the parallel
+    # municipal-feed sync, so municipal events get classified in the same run
+    # when the municipal branch succeeds.
+    #
+    # But the municipal branch (discover → sync) must NOT block classification.
+    # discover-municipal-feeds routinely hits its 30m timeout; under a plain
+    # `needs:` that skips sync, which skips classify, which skips the entire
+    # downstream chain (extract → split → dedupe → backfill). The result is
+    # crawler-ingested events piling up at category="other" for weeks.
+    #
+    # The `if` guard runs classify whenever crawl-venues SUCCEEDED, regardless
+    # of the municipal branch's outcome (success / failure / skipped). Municipal
+    # events that did load still get picked up; any that didn't are caught next
+    # run (classify scopes to unclassified rows). always() is required so the
+    # job is still evaluated when an upstream need failed.
     runs-on: ubuntu-latest
     needs: [crawl-venues, sync-municipal-feeds]
+    if: ${{ always() && needs.crawl-venues.result == 'success' }}
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
