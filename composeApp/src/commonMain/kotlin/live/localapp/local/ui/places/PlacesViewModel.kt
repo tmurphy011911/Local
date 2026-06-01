@@ -541,7 +541,7 @@ class PlacesViewModel(
         }
         viewModelScope.launch {
             val events = try {
-                venueRepository.getUpcomingEventsForVenue(venue.venue.name, venue.venue.city)
+                venueRepository.getUpcomingEventsForVenue(venue.venue.name, venue.venue.city, venue.venue.latitude, venue.venue.longitude)
             } catch (_: Exception) {
                 emptyList()
             }

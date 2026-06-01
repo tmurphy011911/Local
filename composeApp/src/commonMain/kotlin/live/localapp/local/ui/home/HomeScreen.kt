@@ -1262,6 +1262,7 @@ fun Event.toCardData(showTag: Boolean = true, tagOverride: String? = null, fallb
 
 private fun formatSubcategoryDisplay(key: String): String = when (key.lowercase()) {
     "for-kids" -> "For Kids"
+    "r&b" -> "R&B"
     else -> key.split("-").joinToString(" ") { it.replaceFirstChar { c -> c.uppercase() } }
 }
 

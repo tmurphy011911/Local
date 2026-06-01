@@ -148,14 +148,29 @@ struct PlanDetailSlot: Decodable, Equatable {
         if eventId != nil {
             return ticketUrl != nil ? .ticketed : .freeRsvp
         }
+        // Venue-type nouns (match against name OR category).
         let restaurantWords = [
-            "restaurant", "bar", "brewery", "winery", "cafe", "bistro",
-            "pub", "tavern", "grill", "steakhouse", "pizzeria", "bakery", "diner",
+            "restaurant", "bar", "brewery", "winery", "cafe", "café", "bistro",
+            "pub", "tavern", "grill", "steakhouse", "pizzeria", "pizza", "bakery",
+            "diner", "eatery", "kitchen", "food", "gastropub", "trattoria",
+            "osteria", "cantina", "taqueria", "ramen", "noodle", "bbq", "barbecue",
+            "coffee", "lounge", "cocktail",
+        ]
+        // Cuisine adjectives — these only appear in a `cuisine_or_type` category
+        // (e.g. Bo's "contemporary American", "Italian") or a venue name, never
+        // in a personal-location activity label ("Dinner", "Brunch", "Drinks"),
+        // so they're safe to treat as a dining signal. `recommend_and_save_venue`
+        // is dining-only by definition, so its venue refs land here.
+        let cuisineWords = [
+            "american", "italian", "mexican", "french", "thai", "chinese",
+            "japanese", "sushi", "seafood", "mediterranean", "indian", "korean",
+            "vietnamese", "spanish", "greek", "contemporary", "wine",
         ]
         let cat = (venueCategory ?? "").lowercased()
         let n = name.lowercased()
-        if restaurantWords.contains(where: { cat.contains($0) }) ||
-            restaurantWords.contains(where: { n.contains($0) }) {
+        let isDining = restaurantWords.contains { cat.contains($0) || n.contains($0) } ||
+            cuisineWords.contains { cat.contains($0) }
+        if isDining {
             return .restaurant
         }
         // Falls back to .freeRsvp for non-event venue stops with a sourceUrl.

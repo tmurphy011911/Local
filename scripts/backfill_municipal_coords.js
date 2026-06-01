@@ -1,13 +1,20 @@
 /**
  * backfill_municipal_coords.js — populate venue_lat/venue_lng on already-
- * synced municipal_* events that landed with NULL coords.
+ * synced municipal_* events that landed with NULL coords AND have NO named
+ * venue (truly at-large civic events — a city-wide block party, a "Town of X"
+ * holiday, etc.). The metro center is the correct default ONLY for these.
  *
- * Without this, the carousel edge function's radius filter drops them all
+ * Without coords, the carousel edge function's radius filter drops them all
  * (distance_miles=NULL → treated as 999mi → fails (radius<=25) every time).
  *
- * One PATCH per metro: shifts every municipal_<metro> event with NULL
- * coords to that metro's center. Future syncs do this inline (sync_
- * municipal_feeds.js loads METRO_COORDS at startup).
+ * ⚠️ DO NOT remove the `venue_name=is.null` guard. An earlier version of this
+ * script stamped the metro center on EVERY null-coord municipal event,
+ * including ones with a real venue_name in a different town. That is exactly
+ * the bug that made Scranton / Haverford events render "Here" to a
+ * Philadelphia user (and MASS MoCA "<1 mi" to a Boston user). Events WITH a
+ * venue_name must get their coords from sync_municipal_feeds.js's
+ * resolveVenueCoords (venues-table → Claude), never from this blanket PATCH.
+ * See scripts/fix_municipal_centroid_coords.js for the retroactive repair.
  *
  * Usage:
  *   SUPABASE_SERVICE_KEY=ey... node scripts/backfill_municipal_coords.js
@@ -41,6 +48,7 @@ async function main() {
         `${SUPABASE_URL}/rest/v1/events` +
         `?source=eq.${source}` +
         `&venue_lat=is.null` +
+        `&venue_name=is.null` + // at-large civic events only — see header warning
         `&select=id&limit=500`;
       const res = await fetch(url, { headers });
       if (!res.ok) throw new Error(`select ${source}: ${res.status} ${await res.text()}`);
@@ -58,9 +66,9 @@ async function main() {
       total += ids.length;
       if (rows.length < 500) break;
     }
-    console.log(`  ${source}: backfilled ${metroTotal} (${m.lat.toFixed(2)}, ${m.lng.toFixed(2)})`);
+    console.log(`  ${source}: backfilled ${metroTotal} at-large events (${m.lat.toFixed(2)}, ${m.lng.toFixed(2)})`);
   }
-  console.log(`\nDone. Backfilled ${total} municipal events.`);
+  console.log(`\nDone. Backfilled ${total} at-large (venue_name IS NULL) municipal events.`);
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

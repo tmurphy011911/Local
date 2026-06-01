@@ -34,7 +34,19 @@ data class VenueWithMeta(
 
 interface VenueRepository {
     suspend fun getVenues(city: String, userLat: Double, userLng: Double): List<VenueWithMeta>
-    suspend fun getUpcomingEventsForVenue(venueName: String, city: String): List<Event>
+    /**
+     * Upcoming events for a venue, matched by fuzzy name. When [venueLat]/[venueLng]
+     * are supplied, results are also constrained to a small geo-bbox around the
+     * venue so same-named venues in other cities (e.g. "Institute of Contemporary
+     * Art" in Boston vs Philadelphia) don't bleed into each other. Coordinates are
+     * optional for back-compat; omit them only when the caller has no location.
+     */
+    suspend fun getUpcomingEventsForVenue(
+        venueName: String,
+        city: String,
+        venueLat: Double? = null,
+        venueLng: Double? = null,
+    ): List<Event>
     /**
      * Names of venues with public_interest_rank <= 10 — the global minimum-
      * quality floor. Returned in original (DB) casing plus normalized forms

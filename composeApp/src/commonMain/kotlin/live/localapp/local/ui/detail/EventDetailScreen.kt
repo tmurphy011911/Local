@@ -141,7 +141,7 @@ fun EventDetailScreen(
         if (name.isNullOrBlank()) return@LaunchedEffect
         venueEventCount = try {
             val repo = KoinPlatform.getKoin().get<VenueRepository>()
-            repo.getUpcomingEventsForVenue(name, event.venueCity).size
+            repo.getUpcomingEventsForVenue(name, event.venueCity, event.venueLat, event.venueLng).size
         } catch (_: Exception) {
             null
         }

@@ -1975,9 +1975,22 @@ private fun V5SlotCard(
     }
 }
 
+// Venue-type nouns — matched against name OR category.
 private val RESTAURANT_CATEGORIES = listOf(
-    "restaurant", "bar", "brewery", "winery", "cafe", "bistro", "pub", "tavern",
-    "grill", "steakhouse", "pizzeria", "bakery", "diner",
+    "restaurant", "bar", "brewery", "winery", "cafe", "café", "bistro", "pub",
+    "tavern", "grill", "steakhouse", "pizzeria", "pizza", "bakery", "diner",
+    "eatery", "kitchen", "food", "gastropub", "trattoria", "osteria", "cantina",
+    "taqueria", "ramen", "noodle", "bbq", "barbecue", "coffee", "lounge", "cocktail",
+)
+
+// Cuisine adjectives — matched against category ONLY. These appear in a
+// `cuisine_or_type` value ("contemporary American", "Italian") but never in a
+// personal-location activity label ("Dinner", "Brunch", "Drinks"), so they're a
+// safe dining signal. `recommend_and_save_venue` is dining-only by definition.
+private val CUISINE_WORDS = listOf(
+    "american", "italian", "mexican", "french", "thai", "chinese", "japanese",
+    "sushi", "seafood", "mediterranean", "indian", "korean", "vietnamese",
+    "spanish", "greek", "contemporary", "wine",
 )
 
 private fun isRestaurantSlot(slot: PlanSlot): Boolean {
@@ -1985,7 +1998,8 @@ private fun isRestaurantSlot(slot: PlanSlot): Boolean {
     val nameLower = slot.name.lowercase()
     return slot.eventId == null && (
         RESTAURANT_CATEGORIES.any { cat.contains(it) } ||
-            RESTAURANT_CATEGORIES.any { nameLower.contains(it) }
+            RESTAURANT_CATEGORIES.any { nameLower.contains(it) } ||
+            CUISINE_WORDS.any { cat.contains(it) }
         )
 }
 

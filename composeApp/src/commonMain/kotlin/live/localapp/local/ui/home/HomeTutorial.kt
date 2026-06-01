@@ -43,7 +43,6 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
-import live.localapp.local.ui.common.pressable
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 
@@ -258,7 +257,16 @@ fun HomeTutorial(cityName: String = "", onComplete: () -> Unit) {
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(top = 16.dp, end = 24.dp)
-                    .pressable(onClick = onComplete),
+                    // Plain clickable, not `pressable` — same iOS tap-dropping
+                    // bug that forced the Next CTA off `pressable` (see comment
+                    // above) also silently swallowed Skip taps, leaving users
+                    // stranded on page 1 with no way out but swiping through all
+                    // five pages. Plain clickable commits the tap reliably.
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                        onClick = onComplete,
+                    ),
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.Bold,

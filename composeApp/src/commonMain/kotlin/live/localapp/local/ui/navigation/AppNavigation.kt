@@ -601,7 +601,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 if (venue.upcomingEvents.isEmpty() && venue.upcomingEventCount > 0) {
                                     scope.launch {
                                         val events = try {
-                                            venueRepo.getUpcomingEventsForVenue(venue.venue.name, venue.venue.city)
+                                            venueRepo.getUpcomingEventsForVenue(venue.venue.name, venue.venue.city, venue.venue.latitude, venue.venue.longitude)
                                         } catch (_: Exception) {
                                             emptyList()
                                         }

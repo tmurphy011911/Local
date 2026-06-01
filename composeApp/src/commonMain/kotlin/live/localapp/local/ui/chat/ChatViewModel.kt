@@ -318,6 +318,31 @@ class ChatViewModel(
      *  but several call sites iterate, so the list stays for now. */
     private val searchResultCache = mutableListOf<Event>()
 
+    /** Venues validated this session via `recommend_and_save_venue`. Keyed by
+     *  normalized name. `validate-venue` returns rich Google metadata (lat/lng,
+     *  rating, website, photo, category, reservation_url) even when the venue
+     *  isn't persisted to our `venues` table ("validated_not_saved"). Without
+     *  caching it here, the plan builder's `venueRepo.searchByName` miss drops
+     *  ALL of it and the slot renders bare — no rating, no Directions chip (no
+     *  lat/lng), no reservation chip. */
+    private val validatedVenueCache = mutableMapOf<String, ValidatedVenue>()
+
+    private data class ValidatedVenue(
+        val name: String,
+        val city: String?,
+        val state: String?,
+        val address: String?,
+        val lat: Double?,
+        val lng: Double?,
+        val googleRating: Double?,
+        val website: String?,
+        val photoUrl: String?,
+        val category: String?,
+        val reservationUrl: String?,
+    )
+
+    private fun venueKey(s: String) = s.trim().lowercase()
+
     /**
      * The keyword Bo passed in its most recent `search_events` call. Stamped
      * onto Suggestions trays so "Find more" on a day group keeps the same
@@ -326,6 +351,14 @@ class ChatViewModel(
      * "jazz tonight") gets lost. Cleared on resetChat.
      */
     private var lastSearchKeyword: String? = null
+
+    /** The location + strictness of the most recent search_events call, so the
+     *  inline "Find more" handler re-applies the SAME city constraint. Without
+     *  this, Find more on a strict "Events in Watertown" tray drops the city
+     *  filter and appends broad 20mi-radius results (Red Sox at Fenway, A$AP
+     *  Rocky at TD Garden) into the Watertown day group. Cleared on resetChat. */
+    private var lastSearchLocation: String? = null
+    private var lastSearchStrictLocation: Boolean = false
 
     /** Cached taste profile — loaded at init, refreshed after plan approvals. */
     private var tasteProfile: TasteProfile? = null
@@ -1119,11 +1152,23 @@ class ChatViewModel(
                     (sub.isNotEmpty() && targetCategoryLower.contains(sub))
             }
 
+            // Strict-location filter — carry forward the original search's city
+            // constraint. If the brief was "Events in Watertown" (strict), Find
+            // more must NOT append broad 20mi-radius results (Red Sox at Fenway,
+            // A$AP Rocky at TD Garden) just because they fall inside the bbox.
+            val strictLocLower = lastSearchLocation?.trim()?.lowercase()
+            val matchesStrictLocation: (live.localapp.local.domain.model.Event) -> Boolean = filter@{ ev ->
+                if (!lastSearchStrictLocation || strictLocLower.isNullOrBlank()) return@filter true
+                val ec = ev.venueCity?.trim()?.lowercase() ?: return@filter false
+                ec == strictLocLower || ec.contains(strictLocLower) || strictLocLower.contains(ec)
+            }
+
             val newEvents = moreRaw
                 .asSequence()
                 .filter { it.id !in existingIds }
                 .filter(onTargetDay)
                 .filter(matchesTargetCategory)
+                .filter(matchesStrictLocation)
                 .take(30)
                 .toList()
             if (newEvents.isEmpty()) {
@@ -1357,37 +1402,51 @@ class ChatViewModel(
                     )
                 }
                 if (ref.isVenue) {
-                    // Venue ref — look up by name in the venue repo or use the name directly
+                    // Venue ref — look up by name in the venue repo. When the
+                    // venue isn't in our DB (Bo just discovered it via
+                    // recommend_and_save_venue → "validated_not_saved"), the DB
+                    // lookup misses, so fall back to the validated Google
+                    // metadata cached when that tool ran. Prefer DB fields,
+                    // backfill each null from the cache.
                     val venue = try { venueRepo.searchByName(ref.id) } catch (_: Exception) { null }
+                    val validated = validatedVenueCache[venueKey(ref.id)]
+                    val vName = venue?.name ?: validated?.name ?: ref.id
+                    val vCity = venue?.city ?: validated?.city
+                    val vRating = venue?.googleRating ?: validated?.googleRating
+                    val vAddress = venue?.address ?: validated?.address
+                    val vLat = venue?.latitude ?: validated?.lat
+                    val vLng = venue?.longitude ?: validated?.lng
+                    val vReservation = venue?.reservationUrl ?: validated?.reservationUrl
+                    val vWebsite = venue?.website ?: validated?.website
+                    val vCategory = venue?.category ?: validated?.category
+                    val vPhoto = venue?.photoUrl ?: validated?.photoUrl
                     ItinerarySlot(
                         id = generateId(),
                         time = ref.time,
                         emoji = "",
-                        name = venue?.name ?: ref.id,
+                        name = vName,
                         detail = ref.note.ifBlank {
                             buildString {
-                                if (venue != null) {
-                                    append(venue.city ?: "")
-                                    if (venue.googleRating != null) append(" · ${venue.googleRating}")
-                                }
+                                append(vCity ?: "")
+                                if (vRating != null) append(" · $vRating")
                             }.ifBlank { ref.id }
                         },
                         price = "",
                         isFree = false,
-                        imageUrl = venue?.photoUrl,
+                        imageUrl = vPhoto,
                         eventId = null,
                         isCustom = false,
-                        venueRating = venue?.googleRating,
-                        venueAddress = venue?.address,
-                        venueCity = venue?.city,
-                        venueName = venue?.name,
-                        venueLat = venue?.latitude,
-                        venueLng = venue?.longitude,
-                        reservationUrl = venue?.reservationUrl,
-                        venueWebsite = venue?.website,
-                        venueCategory = venue?.category,
+                        venueRating = vRating,
+                        venueAddress = vAddress,
+                        venueCity = vCity,
+                        venueName = vName,
+                        venueLat = vLat,
+                        venueLng = vLng,
+                        reservationUrl = vReservation,
+                        venueWebsite = vWebsite,
+                        venueCategory = vCategory,
                     )
-                    .also { println("  slot: name='${it.name}' reservationUrl=${venue?.reservationUrl} venueWebsite=${venue?.website} venueCategory=${venue?.category}") }
+                    .also { println("  slot: name='${it.name}' (db=${venue != null}, validatedCache=${validated != null}) lat=$vLat lng=$vLng rating=$vRating reservationUrl=$vReservation website=$vWebsite category=$vCategory") }
                 } else {
                     // Event ref — look up from DB (strip evt: prefix)
                     val cleanId = ref.id.removePrefix("evt:")
@@ -1594,6 +1653,8 @@ class ChatViewModel(
             conversationHistory.clear()
             searchResultCache.clear()
             lastSearchKeyword = null
+            lastSearchLocation = null
+            lastSearchStrictLocation = false
             boTools.resetCache()  // shared BoTools cache — both surfaces clear together
             // Bo scope is conversation-scoped — "Start over" ends the
             // conversation, so the chip dies with it. AppNavigation will
@@ -1629,6 +1690,10 @@ class ChatViewModel(
             // (e.g. the Build-plan-from-tray flow).
             appendTextToHistory("user", historyText)
 
+            // Stamp the turn start so bo_response_received carries real user-
+            // perceived latency (request → rendered response, retries included)
+            // instead of the hardcoded 0L it shipped with.
+            val turnStartMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
             var attempts = 0
             val maxAttempts = 2
             while (attempts < maxAttempts) {
@@ -1657,7 +1722,7 @@ class ChatViewModel(
                         } ?: 0
                         live.localapp.local.observability.Analytics.track(
                             live.localapp.local.observability.AnalyticsEvent.boResponseReceived(
-                                responseMs = 0L,
+                                responseMs = kotlin.time.Clock.System.now().toEpochMilliseconds() - turnStartMs,
                                 hadWebSearch = parsed.text.contains("web", ignoreCase = true),
                                 hadChips = parsed.chips.isNotEmpty(),
                                 resultEventCount = eventCount,
@@ -2569,6 +2634,12 @@ class ChatViewModel(
         // Bo broadening) shouldn't erase the original filter.
         if (!keyword.isNullOrBlank()) lastSearchKeyword = keyword
 
+        // Remember the location + strictness too, so "Find more" re-applies the
+        // SAME city constraint. A strict "in Watertown" search must not have its
+        // load-more leak in broad-radius Boston events.
+        lastSearchLocation = location
+        lastSearchStrictLocation = strictLocation
+
         // Phase 2: dropped searchEmptyMisses short-circuit. The cache was
         // keyed by (location, dateRange, startDate, endDate) WITHOUT
         // strict_location, so a strict-true search that returned zero
@@ -3167,6 +3238,37 @@ class ChatViewModel(
             if (response.status.value !in 200..299) {
                 """{"error": "Failed to validate venue: ${response.status.value}"}"""
             } else {
+                // Cache the validated metadata so the plan builder can hydrate
+                // the slot (rating, lat/lng, website, reservation) even when the
+                // venue isn't in our DB ("validated_not_saved"). Otherwise all
+                // this is handed to Bo as a string and then lost.
+                try {
+                    val v = claudeApi.json.parseToJsonElement(body).jsonObject["venue"]?.jsonObject
+                    if (v != null) {
+                        fun s(k: String) = v[k]?.jsonPrimitive?.contentOrNull
+                        fun d(k: String) = v[k]?.jsonPrimitive?.contentOrNull?.toDoubleOrNull()
+                        val parsed = ValidatedVenue(
+                            name = s("name") ?: name,
+                            city = s("city"),
+                            state = s("state"),
+                            address = s("address"),
+                            lat = d("lat"),
+                            lng = d("lng"),
+                            googleRating = d("google_rating"),
+                            website = s("website"),
+                            photoUrl = s("photo_url"),
+                            category = s("category") ?: s("place_type"),
+                            reservationUrl = s("reservation_url"),
+                        )
+                        // Key under both the name Bo passed and the canonical
+                        // Google name (e.g. "Vernick Food and Drink" vs
+                        // "Vernick Food & Drink") so the plan-ref lookup hits.
+                        validatedVenueCache[venueKey(name)] = parsed
+                        validatedVenueCache[venueKey(parsed.name)] = parsed
+                    }
+                } catch (e: Throwable) {
+                    println("recommendAndSaveVenue: metadata cache parse failed: ${e.message}")
+                }
                 body
             }
         } catch (e: Exception) {

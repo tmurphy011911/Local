@@ -266,7 +266,7 @@ actual fun showNativeEventDetail(
                 venueRepo.findVenueByNameAndCity(name, city)
             } catch (_: Exception) { null } ?: return@launch
             val upcoming = try {
-                venueRepo.getUpcomingEventsForVenue(name, city)
+                venueRepo.getUpcomingEventsForVenue(name, city, venue.latitude, venue.longitude)
             } catch (_: Exception) { emptyList() }
             showNativeVenueDetail(
                 VenueWithMeta(
@@ -321,7 +321,7 @@ actual fun showNativeEventDetail(
             val count = try {
                 org.koin.mp.KoinPlatform.getKoin()
                     .get<live.localapp.local.domain.repository.VenueRepository>()
-                    .getUpcomingEventsForVenue(venueName, event.venueCity)
+                    .getUpcomingEventsForVenue(venueName, event.venueCity, event.venueLat, event.venueLng)
                     .size
             } catch (_: Exception) { return@launch }
             EventDetailBridge.updateVenueEventCount?.invoke(event.id, count)

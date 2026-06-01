@@ -134,12 +134,18 @@ async function resolveVenueCoords(name, city, state) {
     });
     if (res.ok) {
       const rows = await res.json();
-      // Prefer a row whose city matches; fall back to any row with coords.
+      // When the event has a city, REQUIRE the venue row to be in that city.
+      // The old `pick || rows[0]` fallback stamped an event with a same-named
+      // venue in the WRONG city (e.g. "Memorial Park" in Scranton getting the
+      // coords of "Memorial Park" in Philadelphia) — a sibling of the
+      // metro-centroid default bug. Only fall back to rows[0] when the event
+      // has no city to disambiguate. Mirrors backfill_municipal_venue_coords.js.
       let pick = null;
       if (city) {
-        pick = rows.find((r) => (r.city || "").toLowerCase() === city.toLowerCase());
+        pick = rows.find((r) => (r.city || "").toLowerCase() === city.toLowerCase()) || null;
+      } else {
+        pick = rows[0] || null;
       }
-      pick = pick || rows[0];
       if (pick && pick.lat != null && pick.lng != null) {
         coords = { lat: pick.lat, lng: pick.lng };
       }

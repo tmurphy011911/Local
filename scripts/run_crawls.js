@@ -14,7 +14,7 @@
  */
 
 const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
-const { fetchHtml: scrapflyFetchHtml } = require("./lib/scrapfly_fetch");
+const { fetchHtml: scrapflyFetchHtml, postForm: scrapflyPostForm } = require("./lib/scrapfly_fetch");
 
 const MODEL = "claude-haiku-4-5-20251001";
 const MAX_HTML_CHARS = 50_000;
@@ -441,6 +441,7 @@ async function fetchPage(url, { stealth = false } = {}) {
         scrapflyKey: SCRAPFLY_API_KEY,
         renderJs: true,
         timeoutMs: 60_000,
+        renderingWait: 5000,  // let late-AJAX widgets (TicketWeb tw-calendar, etc.) populate before capture
       });
       return html;
     } catch (err) {
@@ -1568,6 +1569,137 @@ async function crawlSquarespace(venue, baseUrl) {
   }
 }
 
+// ── TicketWeb tw-calendar crawler (Middle East, etc.) ──
+//
+// TicketWeb's WordPress widget renders a FullCalendar shell ("Calendar
+// Loading…") and fetches each month's shows via an authenticated AJAX POST to
+// /wp-admin/admin-ajax.php (action=get_events_artist_calendar). A normal crawl
+// — even with Scrapfly JS-render — only ever sees the *current* month, so the
+// venue silently drains as shows age out. This adapter scrapes the page-level
+// nonce + the widget's params template, then walks N months forward, POSTing
+// the same request the browser would, to pull the full forward catalog.
+//
+// The POST is routed through Scrapfly (postForm) because these venues sit
+// behind Cloudflare — a direct admin-ajax POST 403s.
+const TICKETWEB_MONTHS_AHEAD = 4;
+
+async function crawlTicketWeb(venue, baseUrl, preFetchedHtml = null) {
+  try {
+    const origin = new URL(baseUrl).origin;
+
+    // Reuse the page the dispatcher already fetched when available; otherwise
+    // pull it (stealth venues must go through Scrapfly). Either way we just
+    // need the inline <script> with my_ajax_object + the params template.
+    const pageHtml = preFetchedHtml || (await fetchPage(baseUrl, { stealth: !!venue.needs_stealth }));
+
+    const ajaxMatch = pageHtml.match(/my_ajax_object\s*=\s*(\{[^}]*\})/);
+    const paramsMatch = pageHtml.match(/params:\s*'(\{.*?\})'\s*,\s*\n\s*monthview/s);
+    if (!ajaxMatch || !paramsMatch) {
+      console.log(`    TicketWeb markers not found for ${venue.name} — falling through`);
+      return null;
+    }
+
+    let ajaxObj, paramsTemplate;
+    try {
+      ajaxObj = JSON.parse(ajaxMatch[1]);
+      paramsTemplate = JSON.parse(paramsMatch[1]);
+    } catch (e) {
+      console.log(`    TicketWeb parse error for ${venue.name}: ${e.message}`);
+      return null;
+    }
+    const ajaxUrl = ajaxObj.ajax_url || `${origin}/wp-admin/admin-ajax.php`;
+    const nonce = ajaxObj.nonce;
+    if (!nonce) {
+      console.log(`    TicketWeb nonce missing for ${venue.name} — falling through`);
+      return null;
+    }
+
+    const byKey = new Map(); // dedupe across months
+    const now = new Date();
+
+    for (let i = 0; i < TICKETWEB_MONTHS_AHEAD; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+      const year = d.getFullYear();
+      const month = d.getMonth() + 1; // 1-indexed
+      const lastDay = new Date(year, month, 0).getDate();
+      const mm = String(month).padStart(2, "0");
+      const start = `${year}-${mm}-01 00:00:00`;
+      const end = `${year}-${mm}-${String(lastDay).padStart(2, "0")} 23:59:59`;
+
+      const monthParams = { ...paramsTemplate, month: String(month), year: String(year) };
+
+      const formBody = new URLSearchParams({
+        action: "get_events_artist_calendar",
+        nonce,
+        start,
+        end,
+        params: JSON.stringify(monthParams),
+        monthview: "standard",
+        calcount: "1",
+        statefilter: "",
+        cityfilter: "",
+        locationfilter: "",
+        showmobilelist: "true",
+      }).toString();
+
+      let json;
+      try {
+        const { body } = await scrapflyPostForm(ajaxUrl, {
+          scrapflyKey: SCRAPFLY_API_KEY,
+          formBody,
+          headers: { Referer: baseUrl },
+          timeoutMs: 45_000,
+        });
+        json = JSON.parse(body);
+      } catch (e) {
+        console.log(`    TicketWeb ${year}-${mm} fetch error for ${venue.name}: ${e.message}`);
+        continue;
+      }
+
+      const events = Array.isArray(json.events) ? json.events : [];
+      for (const ev of events) {
+        if (!ev || !ev.title) continue;
+        // FullCalendar start can be "YYYY-MM-DD HH:MM:SS" or ISO — normalize
+        // the space separator so tagEasternTime parses it.
+        let startStr = typeof ev.start === "string" ? ev.start.trim() : "";
+        startStr = startStr.replace(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})/, "$1T$2");
+        if (!startStr) continue;
+
+        const props = ev.extendedProps || {};
+        const sourceUrl = ev.url || props.url || null;
+        const key = (sourceUrl || `${ev.title}::${startStr}`).toLowerCase();
+        if (byKey.has(key)) continue;
+
+        byKey.set(key, {
+          title: ev.title,
+          start_date: startStr,
+          end_date: typeof ev.end === "string" ? ev.end.replace(/^(\d{4}-\d{2}-\d{2}) /, "$1T") : null,
+          description: null,
+          source_url: sourceUrl,
+          ticket_url: sourceUrl,
+          image_url: props.imageUrl ? props.imageUrl.replace(/<[^>]+>/g, "").trim() || null : null,
+          is_free: false,
+          confidence: 0.9,
+        });
+      }
+
+      await new Promise((r) => setTimeout(r, 300)); // be polite to admin-ajax
+    }
+
+    const rows = [...byKey.values()].map((e) => normalizeEvent(e, venue));
+    if (rows.length === 0) {
+      console.log(`    TicketWeb returned 0 events for ${venue.name}`);
+      return null; // let the HTML fallback have a shot rather than report success
+    }
+    await upsertEvents(rows);
+    await updateVenueCrawlStatus(venue.id, true, venue.crawl_success_rate);
+    return { venue: venue.name, events: rows.length, status: "ok (ticketweb)" };
+  } catch (err) {
+    console.log(`    TicketWeb crawl error: ${err.message}`);
+    return null;
+  }
+}
+
 // ── Platform detection helper ──
 
 async function detectAndCrawlPlatform(venue) {
@@ -1650,6 +1782,14 @@ async function crawlVenue(venue) {
 
     // Post-fetch platform detection — try structured APIs before Claude
     const htmlLc = rawHtml.toLowerCase();
+
+    // TicketWeb tw-calendar (Middle East, etc.) — must run BEFORE the generic
+    // WordPress/Tribe path, since these are WP sites that would otherwise be
+    // routed to the (nonexistent) Tribe endpoint and return nothing.
+    if (htmlLc.includes("get_events_artist_calendar") || htmlLc.includes("tw-plugin-calendar")) {
+      const twResult = await crawlTicketWeb(venue, venue.events_url, rawHtml);
+      if (twResult) return twResult;
+    }
 
     // WordPress detection
     if (htmlLc.includes("wp-content") || htmlLc.includes("wordpress") || htmlLc.includes("wp-json")) {

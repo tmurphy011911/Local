@@ -186,7 +186,13 @@ struct VenueDetailView: View {
     let hidesPrimaryCTAs: Bool
 
     @State private var showDirections = false
-    @State private var selectedDateFilter: DateFilter = .all
+    // nil = no filter (show all loaded events), mirroring Explore's default.
+    @State private var selectedDateFilter: DateFilter? = nil
+    @State private var customStart: Date? = nil
+    @State private var customEnd: Date? = nil
+    @State private var showDatePicker = false
+    @State private var pickerStart = Date()
+    @State private var pickerEnd = Date()
     @State private var isFavorited: Bool
     // Events now load async after present(). Seed with whatever the venue came with
     // (usually empty now that the grid doesn't hydrate events), then swap in the
@@ -210,35 +216,70 @@ struct VenueDetailView: View {
         self._isLoadingEvents = State(initialValue: venue.upcomingEvents.isEmpty)
     }
 
+    // Match the Explore (Events) tab filter set. `selectDate` opens a native
+    // date-range sheet; the rest are presets equivalent to the server slugs.
     enum DateFilter: String, CaseIterable {
-        case all = "All"
+        case selectDate = "Select Date"
         case today = "Today"
         case tomorrow = "Tomorrow"
-        case thisWeek = "This Week"
-        case thisWeekend = "Weekend"
+        case thisWeekend = "This Weekend"
+        case nextWeekend = "Next Weekend"
+        case next30Days = "Next 30 Days"
+    }
+
+    // Half-open [start, end) window for the selected filter, or nil for "show
+    // all". Weekend windows span Sat 00:00 → Mon 00:00 of the current/next
+    // calendar week, matching THIS_WEEKEND / NEXT_WEEKEND on Explore.
+    private func dateWindow(for filter: DateFilter) -> (Date, Date)? {
+        let cal = Calendar.current
+        let todayStart = cal.startOfDay(for: Date())
+        let weekday = cal.component(.weekday, from: todayStart) // 1=Sun..7=Sat
+        let isoDow = weekday == 1 ? 7 : weekday - 1 // Mon=1..Sun=7
+        let monday = cal.date(byAdding: .day, value: -(isoDow - 1), to: todayStart)!
+        let thisSat = cal.date(byAdding: .day, value: 5, to: monday)!
+        let nextMonday = cal.date(byAdding: .day, value: 7, to: monday)!
+        func add(_ days: Int, _ to: Date) -> Date { cal.date(byAdding: .day, value: days, to: to)! }
+        switch filter {
+        case .today: return (todayStart, add(1, todayStart))
+        case .tomorrow: return (add(1, todayStart), add(2, todayStart))
+        case .thisWeekend: return (thisSat, nextMonday)
+        case .nextWeekend: return (add(7, thisSat), add(7, nextMonday))
+        case .next30Days: return (todayStart, add(30, todayStart))
+        case .selectDate:
+            guard let s = customStart, let e = customEnd else { return nil }
+            return (cal.startOfDay(for: s), add(1, cal.startOfDay(for: e)))
+        }
     }
 
     private func filteredEvents() -> [VenueUpcomingEvent] {
-        let cal = Calendar.current
-        let now = Date()
-        let todayStart = cal.startOfDay(for: now)
-
+        guard let filter = selectedDateFilter, let window = dateWindow(for: filter) else {
+            return liveEvents
+        }
         return liveEvents.filter { event in
             guard let startAt = event.startAt, let date = parseISO(startAt) else { return true }
-            switch selectedDateFilter {
-            case .all: return true
-            case .today:
-                return cal.isDateInToday(date)
-            case .tomorrow:
-                return cal.isDateInTomorrow(date)
-            case .thisWeek:
-                let weekEnd = cal.date(byAdding: .day, value: 7, to: todayStart)!
-                return date >= todayStart && date < weekEnd
-            case .thisWeekend:
-                let weekday = cal.component(.weekday, from: date)
-                let isWeekend = weekday == 1 || weekday == 7 // Sun or Sat
-                let weekEnd = cal.date(byAdding: .day, value: 7, to: todayStart)!
-                return isWeekend && date >= todayStart && date < weekEnd
+            return date >= window.0 && date < window.1
+        }
+    }
+
+    private var dateRangeSheet: some View {
+        NavigationView {
+            Form {
+                DatePicker("Start", selection: $pickerStart, displayedComponents: .date)
+                DatePicker("End", selection: $pickerEnd, in: pickerStart..., displayedComponents: .date)
+            }
+            .navigationTitle("Select Date")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { showDatePicker = false }
+                }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") {
+                        customStart = pickerStart
+                        customEnd = pickerEnd
+                        selectedDateFilter = .selectDate
+                        showDatePicker = false
+                    }
+                }
             }
         }
     }
@@ -533,7 +574,7 @@ struct VenueDetailView: View {
 
                 Spacer().frame(height: 10)
 
-                // Date filter chips — matches plan detail day tabs style
+                // Date filter chips — match the Explore (Events) tab set.
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(DateFilter.allCases, id: \.self) { filter in
@@ -544,10 +585,19 @@ struct VenueDetailView: View {
                                 .padding(.vertical, 8)
                                 .background(selectedDateFilter == filter ? AppColor.coral : AppColor.snow)
                                 .clipShape(RoundedRectangle(cornerRadius: 12))
-                                .onTapGesture { selectedDateFilter = filter }
+                                .onTapGesture {
+                                    if filter == .selectDate {
+                                        pickerStart = customStart ?? Date()
+                                        pickerEnd = customEnd ?? Date()
+                                        showDatePicker = true
+                                    } else {
+                                        selectedDateFilter = filter
+                                    }
+                                }
                         }
                     }
                 }
+                .sheet(isPresented: $showDatePicker) { dateRangeSheet }
 
                 Spacer().frame(height: 12)
 

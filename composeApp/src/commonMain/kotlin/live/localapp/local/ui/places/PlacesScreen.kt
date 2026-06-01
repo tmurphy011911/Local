@@ -103,9 +103,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
+import kotlinx.datetime.DatePeriod
 import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.atStartOfDayIn
+import kotlinx.datetime.isoDayNumber
+import kotlinx.datetime.minus
+import kotlinx.datetime.plus
 import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.platform.hapticSelection
 import live.localapp.local.platform.rememberNativeDateRangePicker
@@ -766,6 +770,33 @@ private fun epochMillisToLocalDate(millis: Long): LocalDate =
         .toLocalDateTime(TimeZone.currentSystemDefault())
         .date
 
+// Client-side equivalent of the server `date_filter` slugs, for screens (venue
+// detail) that filter already-loaded events instead of re-querying. Returns a
+// half-open [startMillis, endMillis) window, or null for "show everything".
+// Weekend windows span Sat 00:00 → Mon 00:00 of the current/next calendar week
+// in the device timezone, matching THIS_WEEKEND / NEXT_WEEKEND on Explore.
+private fun EventDateFilter.localWindow(
+    customStart: LocalDate?,
+    customEnd: LocalDate?,
+): Pair<Long, Long>? {
+    val tz = TimeZone.currentSystemDefault()
+    val today = kotlin.time.Clock.System.now().toLocalDateTime(tz).date
+    fun LocalDate.ms() = atStartOfDayIn(tz).toEpochMilliseconds()
+    val monday = today.minus(DatePeriod(days = today.dayOfWeek.isoDayNumber - 1))
+    val thisSat = monday.plus(DatePeriod(days = 5))
+    val nextMonday = monday.plus(DatePeriod(days = 7))
+    return when (this) {
+        EventDateFilter.TODAY -> today.ms() to today.plus(DatePeriod(days = 1)).ms()
+        EventDateFilter.TOMORROW -> today.plus(DatePeriod(days = 1)).ms() to today.plus(DatePeriod(days = 2)).ms()
+        EventDateFilter.THIS_WEEKEND -> thisSat.ms() to nextMonday.ms()
+        EventDateFilter.NEXT_WEEKEND -> thisSat.plus(DatePeriod(days = 7)).ms() to nextMonday.plus(DatePeriod(days = 7)).ms()
+        EventDateFilter.NEXT_30_DAYS -> today.ms() to today.plus(DatePeriod(days = 30)).ms()
+        EventDateFilter.CUSTOM ->
+            if (customStart == null || customEnd == null) null
+            else customStart.ms() to customEnd.plus(DatePeriod(days = 1)).ms()
+    }
+}
+
 @Suppress("DEPRECATION") // monthNumber is the existing convention in this file
 private fun formatDateRangeShort(start: LocalDate, end: LocalDate): String {
     val months = arrayOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -1335,7 +1366,11 @@ fun VenueDetailPage(
     onSaveVenue: (() -> Unit)? = null,
 ) {
     var selectedEvent by remember { mutableStateOf<Event?>(null) }
-    var selectedDateFilter by remember { mutableStateOf("All") }
+    // null = no filter (show all loaded events), mirroring Explore's default.
+    var selectedDateFilter by remember { mutableStateOf<EventDateFilter?>(null) }
+    var customStart by remember { mutableStateOf<LocalDate?>(null) }
+    var customEnd by remember { mutableStateOf<LocalDate?>(null) }
+    val datePicker = rememberNativeDateRangePicker()
     val communityInterestRepo = remember { KoinPlatform.getKoin().get<CommunityInterestRepository>() }
     val v = venueWithMeta.venue
 
@@ -1538,8 +1573,15 @@ fun VenueDetailPage(
                         )
                         Spacer(Modifier.height(10.dp))
 
-                        // Date filter chips — matches plan detail day tabs style
-                        val filters = listOf("All", "Today", "Tomorrow", "This Week", "Weekend")
+                        // Date filter chips — match the Explore (Events) tab set.
+                        val filters = listOf(
+                            EventDateFilter.CUSTOM,
+                            EventDateFilter.TODAY,
+                            EventDateFilter.TOMORROW,
+                            EventDateFilter.THIS_WEEKEND,
+                            EventDateFilter.NEXT_WEEKEND,
+                            EventDateFilter.NEXT_30_DAYS,
+                        )
                         Row(
                             modifier = Modifier.horizontalScroll(rememberScrollState()),
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1547,7 +1589,7 @@ fun VenueDetailPage(
                             filters.forEach { filter ->
                                 val isSelected = selectedDateFilter == filter
                                 Text(
-                                    filter.uppercase(),
+                                    filter.label.uppercase(),
                                     style = TextStyle(
                                         fontFamily = AppFonts.Body,
                                         fontWeight = FontWeight.ExtraBold,
@@ -1560,7 +1602,22 @@ fun VenueDetailPage(
                                         .clickable(
                                             interactionSource = remember { MutableInteractionSource() },
                                             indication = null,
-                                        ) { selectedDateFilter = filter }
+                                        ) {
+                                            if (filter == EventDateFilter.CUSTOM) {
+                                                datePicker.show(
+                                                    initialStartMillis = customStart?.toLocalMidnightMillis(),
+                                                    initialEndMillis = customEnd?.toLocalMidnightMillis(),
+                                                    onPicked = { startMs, endMs ->
+                                                        customStart = epochMillisToLocalDate(startMs)
+                                                        customEnd = epochMillisToLocalDate(endMs)
+                                                        selectedDateFilter = EventDateFilter.CUSTOM
+                                                    },
+                                                    onCancelled = { /* keep current state */ },
+                                                )
+                                            } else {
+                                                selectedDateFilter = filter
+                                            }
+                                        }
                                         .padding(horizontal = 16.dp, vertical = 8.dp),
                                 )
                             }
@@ -1568,29 +1625,17 @@ fun VenueDetailPage(
 
                         Spacer(Modifier.height(12.dp))
 
-                        // Filter events by selected date range
-                        val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
-                        val dayMs = 86_400_000L
-                        val todayStartMs = (nowMs / dayMs) * dayMs // midnight UTC today
-                        val filteredEvents = events.filter { event ->
-                            if (selectedDateFilter == "All") return@filter true
-                            val startStr = event.startAt ?: return@filter true
-                            val eventMs = try {
-                                kotlinx.datetime.Instant.parse(startStr).toEpochMilliseconds()
-                            } catch (_: Exception) { return@filter true }
-                            when (selectedDateFilter) {
-                                "Today" -> eventMs >= todayStartMs && eventMs < todayStartMs + dayMs
-                                "Tomorrow" -> eventMs >= todayStartMs + dayMs && eventMs < todayStartMs + 2 * dayMs
-                                "This Week" -> eventMs >= todayStartMs && eventMs < todayStartMs + 7 * dayMs
-                                "Weekend" -> {
-                                    // Find upcoming Sat/Sun within 7 days
-                                    val tz = kotlinx.datetime.TimeZone.currentSystemDefault()
-                                    val eventDate = kotlinx.datetime.Instant.parse(startStr).toLocalDateTime(tz)
-                                    val dow = eventDate.dayOfWeek
-                                    (dow == kotlinx.datetime.DayOfWeek.SATURDAY || dow == kotlinx.datetime.DayOfWeek.SUNDAY) &&
-                                        eventMs >= todayStartMs && eventMs < todayStartMs + 7 * dayMs
-                                }
-                                else -> true
+                        // Filter the already-loaded events by the selected window.
+                        val window = selectedDateFilter?.localWindow(customStart, customEnd)
+                        val filteredEvents = if (window == null) {
+                            events
+                        } else {
+                            events.filter { event ->
+                                val startStr = event.startAt ?: return@filter true
+                                val eventMs = try {
+                                    kotlinx.datetime.Instant.parse(startStr).toEpochMilliseconds()
+                                } catch (_: Exception) { return@filter true }
+                                eventMs >= window.first && eventMs < window.second
                             }
                         }
 

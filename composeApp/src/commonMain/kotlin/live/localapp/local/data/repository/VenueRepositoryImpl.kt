@@ -95,6 +95,8 @@ class VenueRepositoryImpl(
     override suspend fun getUpcomingEventsForVenue(
         venueName: String,
         city: String,
+        venueLat: Double?,
+        venueLng: Double?,
     ): List<Event> {
         val nowIso = kotlin.time.Clock.System.now().toString()
         // Strip common prefixes for fuzzy matching (e.g. "The Wilbur Theatre" -> "Wilbur Theatre")
@@ -102,7 +104,12 @@ class VenueRepositoryImpl(
             .removePrefix("The ").removePrefix("the ")
             .trim()
         // City filter dropped on purpose — venue.city vs event.city casing mismatches
-        // were silently returning zero rows. Venue name is unique enough in practice.
+        // were silently returning zero rows. Instead, when coordinates are known we
+        // bound results to a geo-bbox so same-named venues in other cities (e.g.
+        // "Institute of Contemporary Art" Boston vs Philadelphia) can't bleed in.
+        // ~0.25° (~17mi lat) comfortably contains a single metro while staying
+        // tolerant of geocode jitter on a venue's own rows.
+        val geoDelta = 0.25
         return try {
             // Fetch generously — post-filter below drops no-public-interest rows,
             // and venues like Brown University schedule dozens of thesis defenses
@@ -115,6 +122,12 @@ class VenueRepositoryImpl(
                         eq("is_active", true)
                         ilike("venue_name", "%${coreName}%")
                         gte("start_at", nowIso)
+                        if (venueLat != null && venueLng != null) {
+                            gte("venue_lat", venueLat - geoDelta)
+                            lte("venue_lat", venueLat + geoDelta)
+                            gte("venue_lng", venueLng - geoDelta)
+                            lte("venue_lng", venueLng + geoDelta)
+                        }
                     }
                     order("start_at", Order.ASCENDING)
                     limit(500)

@@ -56,6 +56,25 @@ function normalizeVenue(name) {
   return (name || "").toLowerCase().replace(/[^\w]/g, "").trim();
 }
 
+// Extract a Ticketmaster event id from a source_url or ticket_url. TM ticket
+// pages embed the canonical event id as the `/event/<ID>` path segment
+// (e.g. .../event/0100642EA838A90A). Crucially, BOTH the native ticketmaster
+// rows AND venue-crawl rows (whose ticket_url deep-links to the same TM page)
+// carry the SAME id for one show — so two rows sharing it are guaranteed the
+// same ticketed event regardless of title wording, start-time jitter, or
+// source. That makes it a far stronger cross-source dedupe key than fuzzy
+// title + time bucketing (which miss the artist-name vs artist-tour-title
+// case, e.g. "A$AP Rocky" crawl @7:30 vs "A$AP Rocky - Don't Be Dumb World
+// Tour" ticketmaster @8:30). Returns an uppercased id or null.
+function ticketmasterEventId(...urls) {
+  for (const u of urls) {
+    if (!u) continue;
+    const m = String(u).match(/ticketmaster\.[a-z.]+\/(?:[^?#]*\/)?event\/([0-9A-Za-z]{8,})/i);
+    if (m) return m[1].toUpperCase();
+  }
+  return null;
+}
+
 // Convert a UTC ISO timestamp into a "YYYY-MM-DD" date in ET (the metro
 // timezone for the current launch market). Coarse but good enough — events
 // at the same venue are nearly always in the venue's TZ, so ET groups
@@ -237,6 +256,41 @@ async function main() {
   const pairs = []; // { winner, loser, confidence, reasons }
   const claimedLosers = new Set(); // ids already marked as losers across passes
 
+  // PASS 0: same Ticketmaster event id (extracted from source_url/ticket_url).
+  // Highest-confidence signal we have — a shared TM event id means the SAME
+  // ticketed show, even when titles, times, and sources all diverge. No title
+  // or time-skew gate here on purpose: the id IS the proof, and collapsing the
+  // start-time jitter (crawl @7:30 vs TM @8:30) is exactly the goal. Winner by
+  // source rank (ticketmaster wins its own id), then field completeness.
+  const tmGroups = new Map();
+  for (const e of events) {
+    const tmId = ticketmasterEventId(e.source_url, e.ticket_url);
+    if (!tmId) continue;
+    if (!tmGroups.has(tmId)) tmGroups.set(tmId, []);
+    tmGroups.get(tmId).push(e);
+  }
+  let pass0Groups = 0;
+  let pass0Pairs = 0;
+  for (const [tmId, list] of tmGroups) {
+    if (list.length < 2) continue;
+    // Pick a single winner for the whole id group, then everyone else loses.
+    let winner = list[0];
+    for (let i = 1; i < list.length; i++) winner = pickWinner(winner, list[i]);
+    for (const e of list) {
+      if (e.id === winner.id) continue;
+      pairs.push({
+        winner,
+        loser: e,
+        confidence: 0.99,
+        reasons: [`same ticketmaster event id ${tmId}`],
+      });
+      claimedLosers.add(e.id);
+      pass0Pairs++;
+    }
+    pass0Groups++;
+  }
+  console.log(`Pass 0 (ticketmaster event id): ${pass0Groups} groups, ${pass0Pairs} pairs`);
+
   // PASS 1: same source_url + same ET calendar date + title similarity.
   // Two rows with the same canonical source URL on the same date are the same
   // event ONLY when titles also match — the Boch/Shubert case has identical
@@ -248,6 +302,7 @@ async function main() {
   const urlGroups = new Map();
   for (const e of events) {
     if (!e.source_url || !e.start_at) continue;
+    if (claimedLosers.has(e.id)) continue; // already handled in pass 0
     const key = `${e.source_url}::${localDateET(e.start_at)}`;
     if (!urlGroups.has(key)) urlGroups.set(key, []);
     urlGroups.get(key).push(e);

@@ -57,16 +57,6 @@ fun NeighbourhoodsScreen(
     onSkipAll: () -> Unit,
     userStateCode: String? = null,
 ) {
-    fun formatNumber(n: Int): String {
-        val s = n.toString()
-        val result = StringBuilder()
-        for (i in s.indices) {
-            if (i > 0 && (s.length - i) % 3 == 0) result.append(',')
-            result.append(s[i])
-        }
-        return result.toString()
-    }
-
     var searchQuery by remember { mutableStateOf("") }
     var showAll by remember { mutableStateOf(false) }
 
@@ -74,12 +64,7 @@ fun NeighbourhoodsScreen(
         neighborhoods.map { info ->
             val showState = info.stateCode != null && info.stateCode != userStateCode
             val displayName = if (showState) "${info.name}, ${info.stateCode}" else info.name
-            val distText = info.distanceDisplay
-            val eventsText = if (info.eventCount > 0) "${formatNumber(info.eventCount)} events" else ""
-            val subtitle = listOfNotNull(
-                distText.ifEmpty { null },
-                eventsText.ifEmpty { null },
-            ).joinToString(" \u00B7 ")
+            val subtitle = info.distanceDisplay.ifEmpty { null }
             SelectionItem(
                 id = info.name.lowercase().replace(" ", "-"),
                 name = displayName,
