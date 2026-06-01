@@ -127,6 +127,7 @@ import live.localapp.local.platform.setupNativeTabBarCallbacks
 import live.localapp.local.platform.setTabBarUserInitial
 import live.localapp.local.platform.requestHeroCollapse
 import live.localapp.local.platform.checkClipboardForDeepLink
+import live.localapp.local.platform.checkInstallReferrerForDeepLink
 import live.localapp.local.platform.checkSubscriptionStatus
 import live.localapp.local.platform.purchaseSubscription
 import live.localapp.local.platform.clearClipboardDeepLink
@@ -254,10 +255,12 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         return existing.any { it.title == plan.title && it.city == plan.city }
     }
 
-    // Check clipboard for deferred deep link on launch
+    // Check for deferred deep link on launch (Play Install Referrer on Android,
+    // clipboard fallback on iOS).
     LaunchedEffect(Unit) {
-        val deepLink = checkClipboardForDeepLink() ?: return@LaunchedEffect
-        println("DeepLink: found clipboard link: $deepLink")
+        val deepLink = (checkInstallReferrerForDeepLink() ?: checkClipboardForDeepLink())
+            ?: return@LaunchedEffect
+        println("DeepLink: found deferred link: $deepLink")
         clearClipboardDeepLink()
         when {
             deepLink.startsWith("/p/") -> {

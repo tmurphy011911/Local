@@ -67,6 +67,57 @@ actual suspend fun checkClipboardForDeepLink(): String? {
     return regex.find(clip)?.groupValues?.get(1)
 }
 
+// One-shot gate, separate from the clipboard gate: the Play referrer string is
+// returned on every launch, so without this we'd re-navigate to the shared plan
+// on every cold start.
+private const val INSTALL_REFERRER_GATE_KEY = "install_referrer_deeplink_checked_v1"
+
+actual suspend fun checkInstallReferrerForDeepLink(): String? {
+    val activity = live.localapp.local.ActivityProvider.activity ?: return null
+    val prefs = activity.getSharedPreferences("local_app_prefs", android.content.Context.MODE_PRIVATE)
+    if (prefs.getBoolean(INSTALL_REFERRER_GATE_KEY, false)) return null
+    prefs.edit().putBoolean(INSTALL_REFERRER_GATE_KEY, true).apply()
+
+    val referrer = try {
+        readInstallReferrer(activity)
+    } catch (t: Throwable) {
+        println("InstallReferrer: read failed: $t")
+        null
+    } ?: return null
+
+    // Referrer carries our deep link as `dl=/p/{token}` (URL-decoded by Play).
+    // Other utm_* pairs may be appended; split and find ours.
+    val dl = referrer.split("&")
+        .firstOrNull { it.startsWith("dl=") }
+        ?.removePrefix("dl=")
+        ?: return null
+    return Regex("^(/[pev]/[A-Za-z0-9_-]+)$").find(dl)?.groupValues?.get(1)
+}
+
+private suspend fun readInstallReferrer(context: android.content.Context): String? =
+    kotlin.coroutines.suspendCoroutine { cont ->
+        val client = com.android.installreferrer.api.InstallReferrerClient.newBuilder(context).build()
+        val resumed = java.util.concurrent.atomic.AtomicBoolean(false)
+        fun finish(value: String?) {
+            if (resumed.compareAndSet(false, true)) {
+                try { client.endConnection() } catch (_: Throwable) {}
+                cont.resumeWith(Result.success(value))
+            }
+        }
+        client.startConnection(object : com.android.installreferrer.api.InstallReferrerStateListener {
+            override fun onInstallReferrerSetupFinished(responseCode: Int) {
+                if (responseCode == com.android.installreferrer.api.InstallReferrerClient.InstallReferrerResponse.OK) {
+                    finish(client.installReferrer.installReferrer)
+                } else {
+                    finish(null)
+                }
+            }
+            override fun onInstallReferrerServiceDisconnected() {
+                finish(null)
+            }
+        })
+    }
+
 actual fun clearClipboardDeepLink() {
     val activity = live.localapp.local.ActivityProvider.activity ?: return
     val clipboard = activity.getSystemService(android.content.Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager ?: return

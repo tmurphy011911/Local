@@ -11,6 +11,11 @@ expect suspend fun checkClipboardForDeepLink(): String?
 /** Clear any deep link from the clipboard after handling. */
 expect fun clearClipboardDeepLink()
 
+/** Check the Play Install Referrer for a deferred deep link path (e.g. /p/{token}),
+ *  set when an uninstalled Android user opened a share link and installed from Play.
+ *  One-shot: consumed on first launch only. Returns null on iOS. */
+expect suspend fun checkInstallReferrerForDeepLink(): String?
+
 /** Register a callback for when a Universal Link arrives. The callback receives the
  *  full path with prefix (e.g. /p/{token}, /e/{id}, /v/{id}); dispatch on prefix. */
 expect fun setDeepLinkCallback(onDeepLinkPath: (String) -> Unit)

@@ -48,6 +48,9 @@ actual suspend fun checkClipboardForDeepLink(): String? {
     return match.groupValues[1]
 }
 
+// Android-only mechanism; iOS uses the clipboard path above.
+actual suspend fun checkInstallReferrerForDeepLink(): String? = null
+
 actual fun clearClipboardDeepLink() {
     val clip = UIPasteboard.generalPasteboard.string ?: return
     if (clip.contains("localapp.live/")) {

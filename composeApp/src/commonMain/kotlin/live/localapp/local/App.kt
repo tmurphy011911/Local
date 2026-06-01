@@ -27,6 +27,7 @@ import live.localapp.local.feature.onboarding.SplashScreen
 import live.localapp.local.feature.onboarding.SplashVariant
 import androidx.compose.runtime.rememberCoroutineScope
 import live.localapp.local.platform.checkClipboardForDeepLink
+import live.localapp.local.platform.checkInstallReferrerForDeepLink
 import live.localapp.local.platform.clearClipboardDeepLink
 import live.localapp.local.platform.setDeepLinkCallback
 import live.localapp.local.ui.navigation.AppNavigation
@@ -212,8 +213,9 @@ fun App() {
 
                 // While splash plays, check for deep link + existing session
                 LaunchedEffect(Unit) {
-                    // Check clipboard for deep link
-                    val deepLink = checkClipboardForDeepLink()
+                    // Deferred deep link: Play Install Referrer (Android, reliable)
+                    // first, then clipboard fallback (iOS App Store install path).
+                    val deepLink = checkInstallReferrerForDeepLink() ?: checkClipboardForDeepLink()
                     if (deepLink != null) {
                         try {
                             when {
