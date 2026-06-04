@@ -36,10 +36,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
+import live.localapp.local.ui.common.CircleShape
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
-import androidx.compose.foundation.shape.RoundedCornerShape
+import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
@@ -103,6 +103,10 @@ fun PlansScreen(
     onInviteClick: (Plan) -> Unit = {},
     onEventClick: (String, androidx.compose.ui.geometry.Rect) -> Unit = { _, _ -> },
     onBuildPlanFromTemplate: ((String) -> Unit)? = null,
+    // Saved-event tap → "build a plan around X". Distinct from the template
+    // path because it carries the event's id + title so Bo can pin it as the
+    // plan's anchor slot (no text-search guessing on the venue name).
+    onBuildPlanFromSavedEvent: ((message: String, eventId: String, eventTitle: String) -> Unit)? = null,
     onSharePlan: ((Plan) -> Unit)? = null,
     userInitial: String = "",
     onProfileClick: () -> Unit = {},
@@ -312,9 +316,16 @@ fun PlansScreen(
                                 event = event,
                                 onClick = { _ ->
                                     val venuePart = event.venueName?.let { " at $it" } ?: ""
-                                    onBuildPlanFromTemplate?.invoke(
-                                        "Help me build a plan around ${event.title}$venuePart on ${event.dateDisplay}",
-                                    )
+                                    val message = "Help me build a plan around ${event.title}$venuePart on ${event.dateDisplay}"
+                                    // Prefer the anchor-aware path so Bo gets the
+                                    // exact event_id (no venue-name guessing). Fall
+                                    // back to the plain template path if the host
+                                    // didn't wire the anchor callback.
+                                    if (onBuildPlanFromSavedEvent != null) {
+                                        onBuildPlanFromSavedEvent.invoke(message, event.id, event.title)
+                                    } else {
+                                        onBuildPlanFromTemplate?.invoke(message)
+                                    }
                                 },
                             )
                         }

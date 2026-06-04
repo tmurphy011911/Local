@@ -1,6 +1,6 @@
 package live.localapp.local.ui.theme
 
-import androidx.compose.foundation.shape.RoundedCornerShape
+import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable

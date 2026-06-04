@@ -51,6 +51,7 @@ enum class PlaceSort(val label: String, val slug: String) {
 enum class EventDateFilter(val label: String, val slug: String) {
     TODAY("Today", "today"),
     TOMORROW("Tomorrow", "tomorrow"),
+    THIS_WEEK("This Week", "this_week"),
     THIS_WEEKEND("This Weekend", "this_weekend"),
     NEXT_WEEKEND("Next Weekend", "next_weekend"),
     NEXT_30_DAYS("Next 30 Days", "next_30_days"),
@@ -189,6 +190,28 @@ class PlacesViewModel(
     fun setActiveTab(tab: SearchTab) {
         if (_uiState.value.activeTab == tab) return
         _uiState.update { it.copy(activeTab = tab) }
+    }
+
+    /**
+     * Deep-link entry point for Home's "See All" rails. Switches to the Events
+     * sub-tab and applies a category ([category]; null/blank = "All") plus a
+     * [dateFilter] (null = default window) in a single state update, then fires
+     * one events reload. Callers flip the bottom-nav tab to Explore separately.
+     */
+    fun openEventsFiltered(category: String?, dateFilter: EventDateFilter?) {
+        val cat = category?.takeIf { it.isNotBlank() } ?: "All"
+        _uiState.update {
+            it.copy(
+                activeTab = SearchTab.EVENTS,
+                selectedFilter = cat,
+                selectedSubFilter = null,
+                dateFilter = dateFilter,
+                customStart = null,
+                customEnd = null,
+            )
+        }
+        eventsLoaded = true
+        loadEvents(reset = true)
     }
 
     private fun loadUserPreferences() {

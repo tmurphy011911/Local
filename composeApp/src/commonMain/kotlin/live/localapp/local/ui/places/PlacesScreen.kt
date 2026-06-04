@@ -48,8 +48,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.border
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import live.localapp.local.ui.common.CircleShape
+import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
@@ -643,6 +643,11 @@ private fun EventDateFilterRow(
                     onClick = { onSelectPreset(EventDateFilter.TOMORROW) },
                 )
                 FilterChip(
+                    label = EventDateFilter.THIS_WEEK.label,
+                    selected = false,
+                    onClick = { onSelectPreset(EventDateFilter.THIS_WEEK) },
+                )
+                FilterChip(
                     label = EventDateFilter.THIS_WEEKEND.label,
                     selected = false,
                     onClick = { onSelectPreset(EventDateFilter.THIS_WEEKEND) },
@@ -788,6 +793,7 @@ private fun EventDateFilter.localWindow(
     return when (this) {
         EventDateFilter.TODAY -> today.ms() to today.plus(DatePeriod(days = 1)).ms()
         EventDateFilter.TOMORROW -> today.plus(DatePeriod(days = 1)).ms() to today.plus(DatePeriod(days = 2)).ms()
+        EventDateFilter.THIS_WEEK -> today.ms() to nextMonday.ms()
         EventDateFilter.THIS_WEEKEND -> thisSat.ms() to nextMonday.ms()
         EventDateFilter.NEXT_WEEKEND -> thisSat.plus(DatePeriod(days = 7)).ms() to nextMonday.plus(DatePeriod(days = 7)).ms()
         EventDateFilter.NEXT_30_DAYS -> today.ms() to today.plus(DatePeriod(days = 30)).ms()
@@ -1578,47 +1584,53 @@ fun VenueDetailPage(
                             EventDateFilter.CUSTOM,
                             EventDateFilter.TODAY,
                             EventDateFilter.TOMORROW,
+                            EventDateFilter.THIS_WEEK,
                             EventDateFilter.THIS_WEEKEND,
                             EventDateFilter.NEXT_WEEKEND,
                             EventDateFilter.NEXT_30_DAYS,
                         )
-                        Row(
-                            modifier = Modifier.horizontalScroll(rememberScrollState()),
+                        // LazyRow + center-on-select — same idiom as the Explore
+                        // Events tab's category row: when a chip is picked, scroll
+                        // it to the visual center so the active filter is obvious.
+                        val chipListState = rememberLazyListState()
+                        val selectedChipIndex = selectedDateFilter?.let { filters.indexOf(it) } ?: -1
+                        androidx.compose.runtime.LaunchedEffect(selectedChipIndex) {
+                            if (selectedChipIndex < 0) return@LaunchedEffect
+                            val info = chipListState.layoutInfo
+                            val viewport = info.viewportEndOffset - info.viewportStartOffset
+                            val visible = info.visibleItemsInfo.firstOrNull { it.index == selectedChipIndex }
+                            if (visible != null && viewport > 0) {
+                                val itemCenter = visible.offset + visible.size / 2
+                                val nudge = itemCenter - viewport / 2
+                                if (nudge != 0) chipListState.animateScrollBy(nudge.toFloat())
+                            } else if (viewport > 0) {
+                                chipListState.animateScrollToItem(selectedChipIndex)
+                            }
+                        }
+                        LazyRow(
+                            state = chipListState,
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                         ) {
-                            filters.forEach { filter ->
-                                val isSelected = selectedDateFilter == filter
-                                Text(
-                                    filter.label.uppercase(),
-                                    style = TextStyle(
-                                        fontFamily = AppFonts.Body,
-                                        fontWeight = FontWeight.ExtraBold,
-                                        fontSize = 12.sp,
-                                        color = if (isSelected) Color.White else AppColors.Ink3,
-                                    ),
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .background(if (isSelected) AppColors.Coral else AppColors.Snow)
-                                        .clickable(
-                                            interactionSource = remember { MutableInteractionSource() },
-                                            indication = null,
-                                        ) {
-                                            if (filter == EventDateFilter.CUSTOM) {
-                                                datePicker.show(
-                                                    initialStartMillis = customStart?.toLocalMidnightMillis(),
-                                                    initialEndMillis = customEnd?.toLocalMidnightMillis(),
-                                                    onPicked = { startMs, endMs ->
-                                                        customStart = epochMillisToLocalDate(startMs)
-                                                        customEnd = epochMillisToLocalDate(endMs)
-                                                        selectedDateFilter = EventDateFilter.CUSTOM
-                                                    },
-                                                    onCancelled = { /* keep current state */ },
-                                                )
-                                            } else {
-                                                selectedDateFilter = filter
-                                            }
+                            items(filters, key = { it.name }) { filter ->
+                                FilterChip(
+                                    label = filter.label,
+                                    selected = selectedDateFilter == filter,
+                                    onClick = {
+                                        if (filter == EventDateFilter.CUSTOM) {
+                                            datePicker.show(
+                                                initialStartMillis = customStart?.toLocalMidnightMillis(),
+                                                initialEndMillis = customEnd?.toLocalMidnightMillis(),
+                                                onPicked = { startMs, endMs ->
+                                                    customStart = epochMillisToLocalDate(startMs)
+                                                    customEnd = epochMillisToLocalDate(endMs)
+                                                    selectedDateFilter = EventDateFilter.CUSTOM
+                                                },
+                                                onCancelled = { /* keep current state */ },
+                                            )
+                                        } else {
+                                            selectedDateFilter = filter
                                         }
-                                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                                    },
                                 )
                             }
                         }
@@ -1640,12 +1652,14 @@ fun VenueDetailPage(
                         }
 
                         if (filteredEvents.isEmpty()) {
-                            Text(
-                                "No events for this period",
-                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Ink3),
-                                modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp),
-                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                            )
+                            // Bo typewriter empty state — same component as the
+                            // Explore Events tab, centered in a fixed region.
+                            Box(modifier = Modifier.fillMaxWidth().height(280.dp)) {
+                                live.localapp.local.ui.emptystate.BoEmptyState(
+                                    bank = live.localapp.local.ui.emptystate.EmptyStateCopy.NO_EVENTS,
+                                    rotationKey = selectedDateFilter ?: Unit,
+                                )
+                            }
                         } else {
                             filteredEvents.forEach { event ->
                                 VenueEventListRow(event = event, onClick = { selectedEvent = event })

@@ -39,6 +39,17 @@ class PlanSyncer(
     private val _state = MutableStateFlow(SyncState())
     val state: StateFlow<SyncState> = _state.asStateFlow()
 
+    /**
+     * Invoked on the drain coroutine immediately AFTER the server confirms an
+     * op but BEFORE the op leaves the local log. Lets the owner fold the
+     * just-confirmed mutation into its server snapshot, so clearing the op
+     * can't resurrect stale state. Without this, a delete (or any edit) would
+     * flicker back: the tombstone op disappears from the log while the cached
+     * server snapshot still holds the old row, until a Realtime/refetch
+     * catches up.
+     */
+    var onSynced: ((PlanMutation) -> Unit)? = null
+
     init {
         scope.launch { runLoop() }
         // Kick once at startup so any persisted ops drain.
@@ -113,6 +124,7 @@ class PlanSyncer(
         if (deleteOp != null) {
             try {
                 planRepository.deletePlan(planId)
+                onSynced?.invoke(deleteOp.mutation)
                 log.clearForPlan(planId)
             } catch (t: Throwable) {
                 ops.forEach { log.markFailed(it.opId, t.message ?: "delete failed") }
@@ -124,6 +136,7 @@ class PlanSyncer(
         for (record in ops) {
             try {
                 rpc.apply(record.mutation)
+                onSynced?.invoke(record.mutation)
                 log.markSynced(record.opId)
             } catch (t: Throwable) {
                 log.markFailed(record.opId, t.message ?: "rpc failed")

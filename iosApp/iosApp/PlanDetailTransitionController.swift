@@ -27,10 +27,21 @@ class PlanDetailTransitionController {
         }
         let isCreator = (plan.creatorId != nil) && plan.creatorId == plan.currentUserId
 
+        // `isShared` rides on the JSON payload as a top-level flag (set by the
+        // Kotlin shared-invite paths). Parsed out-of-band here rather than added
+        // to PlanDetailPlan so the model's memberwise initializers are untouched.
+        let isShared: Bool = {
+            guard let data = planJson.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+            else { return false }
+            return (obj["isShared"] as? Bool) ?? false
+        }()
+
         let view = PlanDetailView(
             initialPlan: plan,
             isCreator: isCreator,
             currentUserId: plan.currentUserId,
+            isShared: isShared,
             onBack: { [weak self] in
                 self?.dismiss()
             }

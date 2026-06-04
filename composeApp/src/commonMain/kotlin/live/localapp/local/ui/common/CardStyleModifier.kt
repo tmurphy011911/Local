@@ -2,7 +2,7 @@ package live.localapp.local.ui.common
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.shape.RoundedCornerShape
+import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind

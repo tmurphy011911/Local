@@ -10,6 +10,11 @@ struct iOSApp: App {
         // Sentry/PostHog first so anything thrown by later lines is captured.
         AnalyticsBridge.installAndStart()
 
+        // Route Kotlin/Native uncaught exceptions through Sentry (with the
+        // Kotlin throwable type/message) before the process dies. Must come
+        // after the bridge so recordError/flush have somewhere to go.
+        IosCrashHandlerKt.installIosCrashHandler()
+
         InitKoinKt.doInitKoin()
 
         // Push super-properties + first lifecycle event through the bridge.

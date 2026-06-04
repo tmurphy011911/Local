@@ -800,6 +800,21 @@ class ClaudeApiService {
          *  surface, the next step is to keep Haiku for non-terminal rounds
          *  but switch to Sonnet on the present_plan emit only. */
         const val MODEL_PLAN = "claude-haiku-4-5-20251001"
+
+        /** Sentinel stop_reason set when an SSE stream closes without its
+         *  terminating `message_stop` event (dropped socket / network timeout).
+         *  Lets the tool loop tell an interrupted partial from a real end_turn. */
+        const val STOP_REASON_INTERRUPTED = "interrupted"
+
+        /** Delimiter the caller inserts into the system prompt to mark the
+         *  boundary between the large STATIC prefix (persona, rules, tool
+         *  guidance — identical across turns) and the small VOLATILE suffix
+         *  (current plan, prefs, taste, date anchor, web budget — changes every
+         *  turn). [cacheableSystem] splits on it so the static prefix can be
+         *  prompt-cached across turns while the volatile tail stays uncached.
+         *  Without the split, the single cached block busts every turn because
+         *  it contains the volatile content — the dominant Bo-latency cost. */
+        const val SYSTEM_PROMPT_CACHE_BREAK = "BO_SYS_CACHE_BREAK"
     }
 
     private val apiUrl = "https://api.anthropic.com/v1/messages"
@@ -842,11 +857,26 @@ class ClaudeApiService {
      * comfortably exceeds that.
      */
     private fun cacheableSystem(systemPrompt: String): JsonArray = buildJsonArray {
+        // Split the prompt at the caller-inserted cache break. The static
+        // prefix carries the cache_control breakpoint (cached ~5 min, hit on
+        // every subsequent turn + tool round); the volatile suffix is a second
+        // plain text block with NO cache_control, so it's reprocessed cheaply
+        // each turn without busting the cached prefix. If the delimiter is
+        // absent (defensive), fall back to the original single cached block.
+        val parts = systemPrompt.split(SYSTEM_PROMPT_CACHE_BREAK, limit = 2)
+        val staticPrefix = parts[0]
+        val volatileSuffix = parts.getOrNull(1)
         add(buildJsonObject {
             put("type", JsonPrimitive("text"))
-            put("text", JsonPrimitive(systemPrompt))
+            put("text", JsonPrimitive(staticPrefix))
             put("cache_control", buildJsonObject { put("type", JsonPrimitive("ephemeral")) })
         })
+        if (!volatileSuffix.isNullOrBlank()) {
+            add(buildJsonObject {
+                put("type", JsonPrimitive("text"))
+                put("text", JsonPrimitive(volatileSuffix))
+            })
+        }
     }
 
     /**
@@ -958,10 +988,17 @@ class ClaudeApiService {
             var responseId = ""
             var currentTextBuffer = StringBuilder()
             var currentTextIndex = -1
+            // Truncation guard: Anthropic always terminates a healthy SSE stream with a
+            // `message_stop` event. If the channel closes (flaky network / dropped socket)
+            // before we see it, the response is incomplete — Bo would otherwise commit the
+            // partial text as a finished reply (e.g. describing one event then trailing off).
+            // We record whether we saw the terminator so the tool loop can retry instead.
+            var sawMessageStop = false
 
-            while (!channel.isClosedForRead) {
-                val line = channel.readUTF8Line() ?: break
-                if (!line.startsWith("data: ")) continue
+            try {
+                while (!channel.isClosedForRead) {
+                    val line = channel.readUTF8Line() ?: break
+                    if (!line.startsWith("data: ")) continue
                 val data = line.removePrefix("data: ").trim()
                 if (data.isEmpty() || data == "[DONE]") continue
 
@@ -1072,12 +1109,33 @@ class ClaudeApiService {
                         }
 
                         "message_stop" -> {
-                            // Stream complete
+                            // Stream complete — the only clean terminator.
+                            sawMessageStop = true
                         }
                     }
                 } catch (e: Exception) {
                     println("SSE parse error: ${e.message} for data: ${data.take(200)}")
                 }
+                }
+            } catch (e: Exception) {
+                // Network read failed mid-stream (dropped socket, timeout). Fall through
+                // and mark the response as truncated below so the caller can retry.
+                println("SSE stream read error: ${e.message}")
+            }
+
+            // Flush any text block that was still in flight when the stream ended (a
+            // truncated stream never emits the final content_block_stop, so its partial
+            // text would otherwise be lost from the response entirely).
+            if (currentTextIndex >= 0 && currentTextBuffer.isNotEmpty()) {
+                while (contentBlocks.size <= currentTextIndex) contentBlocks.add(ClaudeContentBlock())
+                contentBlocks[currentTextIndex] = ClaudeContentBlock(type = "text", text = currentTextBuffer.toString())
+            }
+
+            // If we never saw the clean terminator, the stream was cut short. Use a
+            // sentinel stop_reason so sendWithToolLoop can distinguish an interrupted
+            // partial from a genuine end_turn and retry instead of committing it.
+            if (!sawMessageStop && stopReason == null) {
+                stopReason = STOP_REASON_INTERRUPTED
             }
 
             // Build final ClaudeResponse

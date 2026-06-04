@@ -70,6 +70,10 @@ val appModule = module {
     single { PlanSyncer(get(), get(), get()) }
     single { PlanRealtimeWatcher(get()) }
     single { FeatureFlagsRepository(get()) }
+    // Single owner of deep-link resolution (runtime Universal Links + deferred
+    // install referrer / clipboard). See DeepLinkController for why this is a
+    // singleton rather than per-screen callbacks.
+    single { live.localapp.local.feature.deeplink.DeepLinkController(get(), get(), get()) }
     single<live.localapp.local.domain.repository.YocalPromptsRepository> { live.localapp.local.data.repository.HttpYocalPromptsRepository() }
     single<live.localapp.local.domain.repository.BoChipsRepository> { live.localapp.local.data.repository.HttpBoChipsRepository() }
     single { HomeViewModel(get(), get(), get(), get(), get(), get(), get()) }

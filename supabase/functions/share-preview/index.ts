@@ -28,9 +28,13 @@ const BRAND = {
   white: "#FFFFFF",
 };
 
-const APP_STORE_URL = "https://apps.apple.com/app/id6740043653";
+const APP_STORE_URL = "https://apps.apple.com/app/id6761425705";
 const PLAY_STORE_URL =
   "https://play.google.com/store/apps/details?id=live.localapp.local";
+
+// Single fixed share card used for ALL link previews (plan/event/venue).
+// Served from the Cloudflare worker on the same origin as the links.
+const SHARE_IMAGE_URL = "https://localapp.live/share-card.png";
 
 // Universal Links / App Links open the app directly when installed, so this
 // HTML only renders for users without the app — pick the right store by platform.
@@ -119,7 +123,6 @@ async function handlePlanPreview(supabase: any, token: string, storeUrl: string)
   const allSlots = p.days.flatMap((d) => d.slots);
   const totalStops = allSlots.length;
   const venueNames = allSlots.map((s) => s.name).slice(0, 3).join(", ");
-  const firstImage = allSlots.find((s) => s.image_url)?.image_url;
 
   const description = `${p.city} · ${totalStops} ${totalStops === 1 ? "stop" : "stops"} · ${venueNames}`;
   const shareUrl = `https://localapp.live/p/${token}`;
@@ -138,10 +141,11 @@ async function handlePlanPreview(supabase: any, token: string, storeUrl: string)
   <meta property="og:description" content="${esc(description)}" />
   <meta property="og:url" content="${shareUrl}" />
   <meta property="og:site_name" content="Local" />
-  ${firstImage ? `<meta property="og:image" content="${esc(firstImage)}" />` : ""}
+  <meta property="og:image" content="${SHARE_IMAGE_URL}" />
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="${esc(p.name)}" />
   <meta name="twitter:description" content="${esc(description)}" />
+  <meta name="twitter:image" content="${SHARE_IMAGE_URL}" />
   <script>
     // Copy share URL to clipboard for deferred deep linking after App Store install
     try { navigator.clipboard.writeText("${shareUrl}"); } catch(e) {
@@ -190,7 +194,11 @@ async function handleEventPreview(supabase: any, id: string, storeUrl: string) {
     <meta property="og:description" content="${esc(desc)}" />
     <meta property="og:url" content="https://localapp.live/e/${event.id}" />
     <meta property="og:site_name" content="Local" />
-    ${event.image_url ? `<meta property="og:image" content="${esc(event.image_url)}" />` : ""}
+    <meta property="og:image" content="${SHARE_IMAGE_URL}" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${esc(event.title)}" />
+    <meta name="twitter:description" content="${esc(desc)}" />
+    <meta name="twitter:image" content="${SHARE_IMAGE_URL}" />
   `;
 
   const eventUrl = `https://localapp.live/e/${event.id}`;
@@ -231,7 +239,11 @@ async function handleVenuePreview(supabase: any, id: string, storeUrl: string) {
     <meta property="og:description" content="${esc(desc)}" />
     <meta property="og:url" content="${venueUrl}" />
     <meta property="og:site_name" content="Local" />
-    ${venue.photo_url ? `<meta property="og:image" content="${esc(venue.photo_url)}" />` : ""}
+    <meta property="og:image" content="${SHARE_IMAGE_URL}" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="${esc(venue.name)}" />
+    <meta name="twitter:description" content="${esc(desc)}" />
+    <meta name="twitter:image" content="${SHARE_IMAGE_URL}" />
   `;
 
   return htmlResponse(`<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${esc(venue.name)} — Local</title>${ogTags}

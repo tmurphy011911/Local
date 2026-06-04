@@ -31,9 +31,6 @@ sealed class RouteDestination {
 
     /** No (or unrecoverable) session — user must sign in. */
     object Auth : RouteDestination()
-
-    /** Pending deep link (shared plan/event/venue) — show that first. */
-    object DeepLink : RouteDestination()
 }
 
 /**
@@ -73,10 +70,14 @@ class ColdStartRouter(
     private val userPrefsRepo: UserPreferencesRepository,
 ) {
     /**
-     * @param deepLinkPending true if [App] already resolved a shared
-     *   plan/event/venue payload and wants the router to honor it.
+     * Resolves the *auth-based* landing destination only. Deep links are no
+     * longer a concern here — [live.localapp.local.feature.deeplink.DeepLinkController]
+     * owns the pending shared link and the UI layers overlay it on top of
+     * whatever this returns (logged-out → preview before Auth, logged-in →
+     * overlay on Home). Keeping the router purely auth-driven removed the
+     * snapshot race where a link arriving after [resolve] ran was missed.
      */
-    suspend fun resolve(deepLinkPending: Boolean): RouteDestination {
+    suspend fun resolve(): RouteDestination {
         // Wait for Supabase auth to hydrate from disk. `currentSessionOrNull()`
         // returns null while sessionStatus == Initializing, which would
         // otherwise bounce logged-in users to AUTH on cold start. 3s is enough
@@ -89,29 +90,25 @@ class ColdStartRouter(
         return when (status) {
             is SessionStatus.Authenticated -> resolveAuthenticated(
                 userId = status.session.user?.id.orEmpty(),
-                deepLinkPending = deepLinkPending,
             )
             is SessionStatus.NotAuthenticated,
             is SessionStatus.RefreshFailure -> resolveUnauthenticated(
                 clearCache = status is SessionStatus.RefreshFailure,
-                deepLinkPending = deepLinkPending,
             )
             // Timeout (status == null) or anything we don't recognize — treat
             // as unauthenticated. The user can retry by signing in.
             else -> resolveUnauthenticated(
                 clearCache = false,
-                deepLinkPending = deepLinkPending,
             )
         }
     }
 
     private suspend fun resolveAuthenticated(
         userId: String,
-        deepLinkPending: Boolean,
     ): RouteDestination {
         if (userId.isEmpty()) {
             // Authenticated status but no user id — defensive fallback.
-            return resolveUnauthenticated(clearCache = false, deepLinkPending = deepLinkPending)
+            return resolveUnauthenticated(clearCache = false)
         }
 
         // Attach analytics to the user. Sign-in's identify() only runs on the
@@ -130,13 +127,11 @@ class ColdStartRouter(
         // and any other prompts to finish setup). The splash router does not
         // detour a logged-in user through Onboarding — that flow is only
         // reachable post-OTP for genuinely new accounts.
-        return if (deepLinkPending) RouteDestination.DeepLink
-        else RouteDestination.Home(authUserId = userId)
+        return RouteDestination.Home(authUserId = userId)
     }
 
     private fun resolveUnauthenticated(
         clearCache: Boolean,
-        deepLinkPending: Boolean,
     ): RouteDestination {
         // Test-auth bypass: this mode never creates a real Supabase session
         // (verifyOtp mints a local "test-<phone>" user), so a "logged in" test
@@ -148,8 +143,7 @@ class ColdStartRouter(
         if (live.localapp.local.Config.TEST_AUTH_BYPASS && !clearCache) {
             val localId = userPrefsRepo.getLocalUserId()
             if (localId != null && userPrefsRepo.isOnboardingComplete()) {
-                return if (deepLinkPending) RouteDestination.DeepLink
-                else RouteDestination.Home(authUserId = localId)
+                return RouteDestination.Home(authUserId = localId)
             }
         }
         if (clearCache) {
@@ -158,7 +152,7 @@ class ColdStartRouter(
             // different account) starts clean.
             runCatching { userPrefsRepo.clearLocal() }
         }
-        return if (deepLinkPending) RouteDestination.DeepLink else RouteDestination.Auth
+        return RouteDestination.Auth
     }
 
     companion object {

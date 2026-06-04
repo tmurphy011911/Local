@@ -318,6 +318,19 @@ class ChatViewModel(
      *  but several call sites iterate, so the list stays for now. */
     private val searchResultCache = mutableListOf<Event>()
 
+    /**
+     * The exact event_ids the user picked when they tapped "Build a plan with
+     * my N picks" (suggestion-tray Create Plan CTA). Set in [sendBuildIntent]
+     * for the build-NEW path; consumed + cleared in the PLAN branch of
+     * [handleClaudeResponse]. Bo occasionally enumerates all N events in its
+     * prose but emits fewer than N refs in `present_plan` — dropping a stop the
+     * user explicitly chose. We hold the authoritative pick list here so the
+     * plan builder can detect the omission and re-inject any missing pick,
+     * rather than silently trusting Bo's tool call. Empty when the current turn
+     * isn't a build-from-picks turn.
+     */
+    private var pendingBuildExpectedIds: List<String> = emptyList()
+
     /** Venues validated this session via `recommend_and_save_venue`. Keyed by
      *  normalized name. `validate-venue` returns rich Google metadata (lat/lng,
      *  rating, website, photo, category, reservation_url) even when the venue
@@ -877,9 +890,14 @@ class ChatViewModel(
         events: List<live.localapp.local.domain.model.Event>,
         addingToExisting: Boolean,
     ): String {
-        val verb = if (addingToExisting) "I'll add these" else "I'll create a plan with these"
-        val noun = if (events.size == 1) "event" else "events"
-        val intro = "$verb ${events.size} $noun:"
+        // Singular vs plural so it never reads "these 1 event". Singular drops
+        // the count entirely ("this event"); plural keeps it ("these 3 events").
+        val intro = if (events.size == 1) {
+            if (addingToExisting) "I'll add this event:" else "I'll create a plan with this event:"
+        } else {
+            if (addingToExisting) "I'll add these ${events.size} events:"
+            else "I'll create a plan with these ${events.size} events:"
+        }
         // Order chronologically by start_at so the bullets read in the same
         // sequence the plan will. Events with no start_at sink to the bottom.
         val sorted = events.sortedWith(
@@ -988,6 +1006,12 @@ class ChatViewModel(
         extras: String?,
     ) {
         if (eventIds.isEmpty()) return
+        // Remember the authoritative pick set for post-build reconciliation.
+        // Only the build-NEW path (present_plan) reconciles here; the
+        // add-to-existing path goes through update_plan / PLAN_UPDATE, which
+        // has its own merge semantics, so we clear the guard for it.
+        pendingBuildExpectedIds = if (addingToExisting) emptyList()
+            else eventIds.map { it.removePrefix("evt:") }
         val extrasInstruction = when (extras) {
             "meals" -> " The user wants meal stops layered in — add restaurant slots (use recommend_and_save_venue) in any gap > 2 hours and at appropriate meal times."
             "drinks" -> " The user wants drink stops layered in — add bar/lounge/cocktail slots (use recommend_and_save_venue) in any gap > 2 hours and at appropriate evening times."
@@ -1324,8 +1348,18 @@ class ChatViewModel(
                 println("  ref: id='${ref.id}' time='${ref.time}' isVenue=${ref.isVenue} note='${ref.note.take(50)}'")
             }
 
-            // Collect all event IDs (non-venue refs), strip any "evt:" prefix Claude may add
-            val eventIds = parsedDay.events.filter { !it.isVenue }.map { it.id.removePrefix("evt:") }
+            // Collect all event IDs (non-venue refs), strip any "evt:" prefix Claude may add.
+            // CRITICAL: drop blanks. Bo sometimes emits a plan slot with neither event_id
+            // nor venue_name (only a free-text note like "at Island Creek Raw Bar"); that
+            // produces an EventRef with id="" and isVenue=false. An empty id reaching the
+            // batched events fetch builds `id=in.(,<uuid>,)`, which Postgres rejects with
+            // "invalid input syntax for type uuid: ''" — the whole plan build throws, Bo
+            // retries, and ends up narrating the plan in plain text. Filtering blanks here
+            // is the deterministic guard; the slot loop below recovers those refs as venues.
+            val eventIds = parsedDay.events
+                .filter { !it.isVenue }
+                .map { it.id.removePrefix("evt:") }
+                .filter { it.isNotBlank() }
             val eventsById = if (eventIds.isNotEmpty()) {
                 val fetched = eventRepo.getEventsByIds(eventIds)
                 println("buildPlanFromRefs: fetched ${fetched.size}/${eventIds.size} events from DB")
@@ -1337,6 +1371,23 @@ class ChatViewModel(
             println("buildPlanFromRefs: cache has ${cacheById.size} events")
 
             val slots = parsedDay.events.mapNotNull { ref ->
+                // Fix B — degenerate ref recovery. Bo sometimes emits a plan slot
+                // with neither event_id nor venue_name, only a free-text note like
+                // "at Island Creek Raw Bar". That parses to id="" / isVenue=false.
+                // Fix A already filters these out of the DB fetch (so they can't
+                // crash the batched query), but if we let them fall through to the
+                // event branch below they'd be dropped silently ("event '' not
+                // found"), losing the stop Bo intended. Recover the venue name from
+                // the note and render a venue slot instead.
+                if (!ref.isBoWeb && !ref.isVenue && ref.id.removePrefix("evt:").isBlank()) {
+                    val recovered = buildVenueSlotFromMismatchedNote(ref)
+                    if (recovered != null) {
+                        println("buildPlanFromRefs: recovered blank-id ref as venue slot '${recovered.name}' from note '${ref.note.take(60)}'")
+                        return@mapNotNull recovered
+                    }
+                    println("buildPlanFromRefs: blank-id ref with no recoverable venue in note '${ref.note.take(60)}' — dropping")
+                    return@mapNotNull null
+                }
                 if (ref.isBoWeb) {
                     // Bo-Web event: hydrate from the save_web_finding cache that
                     // was populated when Bo invoked the tool earlier this turn.
@@ -1637,6 +1688,69 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * Guard against Bo silently dropping a stop the user explicitly chose.
+     *
+     * The build-from-picks handoff ([sendBuildIntent]) passes the exact picked
+     * event_ids to Bo and asks it to echo them into `present_plan`. Bo usually
+     * complies, but sometimes its prose enumerates all N picks while its tool
+     * call emits only N-1 refs — so the rebuilt plan card is missing a stop the
+     * user picked (e.g. "3 picks" → 2-stop card). Since [expectedIds] is the
+     * authoritative client-side pick list, we detect any pick absent from the
+     * built plan and re-inject it by resolving the event and routing it through
+     * [buildPlanFromRefs] (one synthetic single-event day per missing pick, so
+     * each produced day carries the correct DB-derived label). The new slot is
+     * then merged into the day whose label matches; if no day matches, the day
+     * is appended. No-op when [expectedIds] is empty or all picks survived.
+     */
+    private suspend fun reconcileExpectedPicks(
+        days: List<ItineraryDay>,
+        expectedIds: List<String>,
+    ): List<ItineraryDay> {
+        if (expectedIds.isEmpty()) return days
+        val present = days
+            .flatMap { it.slots }
+            .mapNotNull { it.eventId?.removePrefix("evt:") }
+            .toSet()
+        val missing = expectedIds.distinct().filter { it !in present }
+        if (missing.isEmpty()) return days
+
+        println("reconcileExpectedPicks: Bo omitted ${missing.size}/${expectedIds.size} picked event(s) from present_plan: $missing — re-injecting")
+
+        // Resolve + build slots by reusing buildPlanFromRefs. One synthetic day
+        // per missing pick; buildPlanFromRefs derives each day's label from the
+        // event's own start_at, so labels line up with the existing plan days.
+        val synthParsed = ParsedChatResponse(
+            type = ParsedResponseType.PLAN,
+            text = "",
+            days = missing.map { id ->
+                live.localapp.local.data.remote.ParsedDay(
+                    label = "",
+                    events = listOf(
+                        live.localapp.local.data.remote.EventRef(id = id, time = "", note = "", isVenue = false),
+                    ),
+                )
+            },
+        )
+        val rebuilt = buildPlanFromRefs(synthParsed)
+        if (rebuilt.isEmpty()) {
+            println("reconcileExpectedPicks: could not resolve any omitted pick (DB/cache miss) — leaving plan as-is")
+            return days
+        }
+
+        val merged = days.toMutableList()
+        rebuilt.forEach { newDay ->
+            val idx = merged.indexOfFirst { it.label == newDay.label }
+            if (idx >= 0) {
+                val combined = sortSlotsByTime(merged[idx].slots + newDay.slots)
+                merged[idx] = merged[idx].copy(slots = combined)
+            } else {
+                merged.add(newDay)
+            }
+        }
+        return merged
+    }
+
     fun resetChat() {
         live.localapp.local.observability.Analytics.track(
             live.localapp.local.observability.AnalyticsEvent.boThreadCleared()
@@ -1652,6 +1766,7 @@ class ChatViewModel(
             welcomeJob?.cancelAndJoin()
             conversationHistory.clear()
             searchResultCache.clear()
+            pendingBuildExpectedIds = emptyList()
             lastSearchKeyword = null
             lastSearchLocation = null
             lastSearchStrictLocation = false
@@ -1694,12 +1809,25 @@ class ChatViewModel(
             // perceived latency (request → rendered response, retries included)
             // instead of the hardcoded 0L it shipped with.
             val turnStartMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
+
+            // Browse fast-path: when the user's text maps to a concrete search
+            // (e.g. "Live music this week"), run it now and prime history so the
+            // single Claude call goes straight to present_suggestions — halving
+            // the round-trips. Skipped when historyText carries a technical
+            // instruction (build-from-tray etc.) rather than the literal text.
+            // Done ONCE here (not per-retry attempt) so a retry reuses the
+            // already-primed history instead of double-searching.
+            val browseInput = if (historyText == text) inferBrowseSearchInput(text) else null
+            val primeStartMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
+            val forcePresentSuggestions = browseInput != null && primeBrowseSearch(browseInput)
+            println("⏱️ bo-latency: prime phase ${kotlin.time.Clock.System.now().toEpochMilliseconds() - primeStartMs}ms (browseInput=$browseInput forcePresent=$forcePresentSuggestions)")
+
             var attempts = 0
             val maxAttempts = 2
             while (attempts < maxAttempts) {
                 try {
                     val systemPrompt = buildSystemPrompt()
-                    val parsed = sendWithToolLoop(systemPrompt)
+                    val parsed = sendWithToolLoop(systemPrompt, forcePresentSuggestions)
                     val shape = when (parsed.type) {
                         ParsedResponseType.SUGGESTIONS -> {
                             val sj = parsed.structuredJson?.jsonObject
@@ -2065,7 +2193,142 @@ class ChatViewModel(
         return steps.distinct().take(4)
     }
 
-    private suspend fun sendWithToolLoop(systemPrompt: String): ParsedChatResponse {
+    // ════════════════════════════════════════════════════════════════
+    // Browse fast-path (one-call latency optimization)
+    //
+    // For unambiguous "browse" turns ("Live music this week", "Things to
+    // do tonight", "Comedy this weekend") the search params are knowable
+    // from the user's text alone. The normal flow burns TWO sequential
+    // Haiku calls — call #1 decides "I should search", call #2 shapes the
+    // tray from the results. We cut call #1 entirely: run search_events
+    // ourselves, prime the conversation with a synthetic tool exchange,
+    // then force Bo straight to present_suggestions. Bo still curates,
+    // groups, labels, and writes rationales (call #2 is preserved) — only
+    // the redundant "decide to search" round disappears (~half the wait).
+    //
+    // Conservative by design: [inferBrowseSearchInput] returns null (→
+    // normal LLM flow) for anything plan-shaped, venue-specific, or
+    // factual. A miss just costs the old two-call path; a false fire would
+    // at worst produce a suggestions tray, which is the right default for a
+    // browse anyway.
+    // ════════════════════════════════════════════════════════════════
+
+    /**
+     * Maps a browse-style user message to concrete search_events params, or
+     * returns null when the turn isn't an unambiguous browse (plan-shaped,
+     * venue-specific, or factual). Only fires when at least one concrete
+     * signal (category or date range) is present.
+     */
+    private fun inferBrowseSearchInput(userText: String): JsonObject? {
+        val lower = userText.lowercase().trim()
+        if (lower.isBlank() || lower.length > 60) return null
+
+        // Plan-shaped → let the LLM drive the multi-step build flow.
+        val planSignals = listOf(
+            "plan", "build", "itinerary", "trip", "vacation", "getaway",
+            "date night", "put together", "schedule", "make a", "make me",
+            "for us", "day trip", "weekend in", "weekend away", "around",
+        )
+        if (planSignals.any { lower.contains(it) }) return null
+        // Venue-specific ("what's on at X") or factual openers aren't browses.
+        if (lower.contains(" at ")) return null
+        val factualStarts = listOf(
+            "is ", "are ", "does ", "do ", "can ", "how ", "when ",
+            "where ", "why ", "who ", "should ",
+        )
+        if (factualStarts.any { lower.startsWith(it) }) return null
+
+        // Category keyword → canonical category (the set search_events +
+        // present_suggestions understand).
+        val categoryMap = listOf(
+            listOf("live music", "music", "concert", "concerts", "band", "bands", "gig") to "music",
+            listOf("comedy", "standup", "stand-up", "stand up", "comedian") to "comedy",
+            listOf("theatre", "theater", "play", "plays", "musical", "broadway") to "theatre",
+            listOf("art ", "arts", "gallery", "galleries", "exhibit", "exhibition") to "arts",
+            listOf("sports", "sport", "game", "games") to "sports",
+            listOf("food", "eat", "dining", "restaurant", "restaurants", "foodie", "brunch") to "food",
+            listOf("museum", "museums") to "museums",
+            listOf("outdoor", "outdoors", "hike", "hiking", "nature") to "outdoors",
+            listOf("kids", "kid", "family", "children", "for kids", "family-friendly") to "for-kids",
+            listOf("tour", "tours") to "tours",
+            listOf("library", "libraries", "story time", "storytime") to "libraries",
+        )
+        val category = categoryMap.firstOrNull { (keys, _) -> keys.any { lower.contains(it) } }?.second
+
+        // Date phrase → canonical date_range. Check the more-specific
+        // "next ..." forms before the bare token.
+        val dateRange = when {
+            lower.contains("next weekend") -> "next_weekend"
+            lower.contains("next week") -> "next_week"
+            lower.contains("this weekend") || lower.contains("the weekend") -> "this_weekend"
+            lower.contains("this week") -> "this_week"
+            lower.contains("this month") -> "this_month"
+            lower.contains("tonight") || lower.contains("today") -> "today"
+            lower == "weekend" -> "this_weekend"
+            else -> null
+        }
+
+        if (category == null && dateRange == null) return null
+
+        return kotlinx.serialization.json.buildJsonObject {
+            if (category != null) put("category", JsonPrimitive(category))
+            if (dateRange != null) put("date_range", JsonPrimitive(dateRange))
+        }
+    }
+
+    /**
+     * Pre-run search_events for a recognized browse turn and inject a
+     * synthetic assistant(tool_use) + user(tool_result) pair into
+     * [conversationHistory], so the upcoming single Claude call can go
+     * straight to present_suggestions. Returns true when priming succeeded
+     * (≥ 3 events) and the caller should force present_suggestions; false
+     * when the search was thin — in which case nothing was added to history
+     * and the normal LLM flow handles the "few results, widen?" path.
+     */
+    private suspend fun primeBrowseSearch(input: JsonObject): Boolean {
+        val resultJson = executeToolCall("search_events", input)
+        val eventCount = try {
+            (Json.parseToJsonElement(resultJson).jsonObject["events"] as? kotlinx.serialization.json.JsonArray)?.size ?: 0
+        } catch (_: Throwable) { 0 }
+        if (eventCount < 3) {
+            println("primeBrowseSearch: only $eventCount event(s) for $input — falling back to normal LLM flow")
+            return false
+        }
+
+        val synthId = "toolu_preload_${kotlin.time.Clock.System.now().toEpochMilliseconds()}"
+        val assistantBlocks = kotlinx.serialization.json.buildJsonArray {
+            add(kotlinx.serialization.json.buildJsonObject {
+                put("type", JsonPrimitive("tool_use"))
+                put("id", JsonPrimitive(synthId))
+                put("name", JsonPrimitive("search_events"))
+                put("input", input)
+            })
+        }
+        val toolResultBlocks = kotlinx.serialization.json.buildJsonArray {
+            add(kotlinx.serialization.json.buildJsonObject {
+                put("type", JsonPrimitive("tool_result"))
+                put("tool_use_id", JsonPrimitive(synthId))
+                put("content", JsonPrimitive(resultJson))
+            })
+        }
+        conversationHistory.add(ClaudeMessage.blocks("assistant", assistantBlocks))
+        conversationHistory.add(ClaudeMessage.blocks("user", toolResultBlocks))
+
+        // Surface the same searching narration the in-loop path would have.
+        val narration = narrateToolCalls(
+            listOf(live.localapp.local.data.remote.ToolCall(synthId, "search_events", input)),
+        )
+        if (narration.isNotEmpty()) {
+            _uiState.update { it.copy(isSearching = true, searchingNarration = narration.distinct().takeLast(6)) }
+        }
+        println("primeBrowseSearch: primed $eventCount events for $input — forcing present_suggestions (one-call path)")
+        return true
+    }
+
+    private suspend fun sendWithToolLoop(
+        systemPrompt: String,
+        forcePresentSuggestions: Boolean = false,
+    ): ParsedChatResponse {
         val maxToolRounds = 5
         var toolRounds = 0
         // One-shot retry guard for the empty-response path. Anthropic occasionally
@@ -2074,6 +2337,13 @@ class ChatViewModel(
         // generating" made Bo look broken; instead we retry once with a
         // continuation nudge before showing the user anything.
         var emptyResponseRetried = false
+        // One-shot retry guard for a truncated SSE stream. A flaky network can
+        // close the socket mid-response (no terminating message_stop); the
+        // streaming layer flags that with stopReason == STOP_REASON_INTERRUPTED.
+        // Without this, Bo commits the partial text as a finished reply — the
+        // "described one event then trailed off" bug. We re-send the identical
+        // request once to let the full answer come through.
+        var truncationRetried = false
         // Track whether ANY search_events call this turn returned events. If we
         // hit the tool-round cap with this still false, every DB search came
         // back empty (or timed out) — we want the forcing message to push Bo
@@ -2145,13 +2415,41 @@ class ChatViewModel(
             // mode at the API layer. Bo must either call another data tool
             // or a terminal tool (present_plan / present_suggestions /
             // present_event_brief / etc.) — prose is unreachable.
-            val choice: kotlinx.serialization.json.JsonObject? = if (toolRounds == 0) null
-            else kotlinx.serialization.json.buildJsonObject { put("type", JsonPrimitive("any")) }
+            // When the browse fast-path pre-ran the search and primed history,
+            // force present_suggestions on round 0 so Bo emits the tray in a
+            // single call (no "decide to search" round). Otherwise: free on
+            // round 0 (Bo may ask a clarifying question), force any tool after.
+            val choice: kotlinx.serialization.json.JsonObject? = when {
+                toolRounds == 0 && forcePresentSuggestions ->
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("type", JsonPrimitive("tool"))
+                        put("name", JsonPrimitive("present_suggestions"))
+                    }
+                toolRounds == 0 -> null
+                else -> kotlinx.serialization.json.buildJsonObject { put("type", JsonPrimitive("any")) }
+            }
+            val roundStartMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
             val response = sendStreaming(augmentedSystemPrompt, toolsForRound(), isToolRound = true, model = currentModel, toolChoice = choice)
+            println("⏱️ bo-latency: Claude round $toolRounds (model=$currentModel choice=${choice?.get("name") ?: choice?.get("type") ?: "free"}) ${kotlin.time.Clock.System.now().toEpochMilliseconds() - roundStartMs}ms")
             tallyWebCalls(response, webCallTally)
 
             val toolCalls = claudeApi.extractToolCalls(response)
             val text = claudeApi.extractText(response) ?: ""
+
+            // Truncation recovery: the stream closed before its terminating
+            // message_stop (dropped socket / network timeout). Any text is a
+            // partial thought and any tool JSON may be incomplete — committing
+            // it produces the "Bo described one event then trailed off" bug.
+            // Re-send the identical request once (nothing was appended to
+            // history this round, so the next iteration retries cleanly). If it
+            // truncates again, fall through and degrade gracefully.
+            if (response.stopReason == live.localapp.local.data.remote.ClaudeApiService.STOP_REASON_INTERRUPTED &&
+                !truncationRetried
+            ) {
+                println("ChatVM: stream truncated (no message_stop) — retrying round once")
+                truncationRetried = true
+                continue
+            }
 
             // Surface what Bo is about to do as human-readable narration,
             // derived from the data-tool args (not Claude prose — the
@@ -2791,15 +3089,23 @@ class ChatViewModel(
         searchResultCache.addAll(events)
         events.forEach { boTools.searchResultCache[it.id] = it }
 
-        // Cap what Claude sees in the tool result. 300 is the right balance
-        // between "Bo sees the whole pool" and "we don't blow the context
-        // window every turn". Each compact row is ~50 tokens, so 300 events
-        // ≈ 15k tokens per tool result — affordable on Sonnet, fine on Opus.
-        // Replayed across ~3 tool rounds per turn this comes in well under
-        // the model context. If we ever want to expose the full 500 the RPC
-        // returned, cursor pagination is the right path (next session).
+        // Cap what Claude sees in the tool result. This is the single biggest
+        // latency lever on a browse/plan turn: each compact row is ~50 tokens,
+        // and Claude must READ the entire tool_result before it can emit a tray
+        // or plan. At the old cap of 300 (~15k tokens) Bo — now on Haiku, not
+        // Sonnet/Opus — spent most of the turn just ingesting events it would
+        // never surface (a tray shows ~15-30, a plan a handful). The tool_result
+        // is new every turn, so prompt caching can't amortize it either.
+        //
+        // 80 keeps the stratified pool's most-relevant head (the RPC already
+        // sorts by breadth/niche/keyword relevance), which is far more than any
+        // tray or plan uses, while cutting the tool_result to ~4k tokens — a 4×
+        // reduction in the dominant cost. The FULL pool (up to 500) still lives
+        // in searchResultCache for client-side hydration and the "Find more"
+        // load-more path, so nothing the user can reach is lost — Bo just stops
+        // reading rows it was always going to discard.
         val totalFound = events.size
-        val displayEvents = events.take(300)
+        val displayEvents = events.take(80)
 
         // ── JSON tool result (Phase 1 refactor) ────────────────────────
         // Bo reads JSON natively — no parsing of "=== Saturday ===" headers
@@ -3444,7 +3750,24 @@ class ChatViewModel(
                 val builtDays = buildPlanFromRefs(parsed)
                 val datedDays = validatePlanDates(builtDays)
                 val sequencedDays = enforceSequentialDayLabels(datedDays)
-                val validatedDays = removeDuplicateSlots(sequencedDays)
+                val dedupedDays = removeDuplicateSlots(sequencedDays)
+                // Re-inject any event the user explicitly picked OR anchored
+                // (tapped a saved event → "build a plan around X") that Bo
+                // omitted from present_plan (prose lists N, tool call emits
+                // < N, or Bo fails to text-match the anchor venue and drops
+                // it entirely). No-op unless this turn began as a build-from-
+                // picks handoff or a saved-event anchor tap. Both guards are
+                // cleared so they never bleed into a later turn's plan.
+                val anchorId = _uiState.value.pendingAnchorEventId?.removePrefix("evt:")
+                val expectedIds = (pendingBuildExpectedIds + listOfNotNull(anchorId)).distinct()
+                val validatedDays = reconcileExpectedPicks(dedupedDays, expectedIds)
+                pendingBuildExpectedIds = emptyList()
+                // Clear the anchor only once a plan actually materialized — if
+                // Bo asked a clarifying question first (INFO turn), the anchor
+                // must survive to the eventual plan turn.
+                if (anchorId != null) {
+                    _uiState.update { it.copy(pendingAnchorEventId = null, pendingAnchorEventTitle = null) }
+                }
 
                 // If every day got dropped (empty refs from Bo, or every
                 // event_id missed the DB / Bo-Web cache), don't render a
@@ -4522,10 +4845,6 @@ ABSOLUTE RULES (highest priority — these override every other rule and example
 6. NEVER USE "Other" OR "Upcoming" AS A present_suggestions GROUP LABEL. The DB's `category="other"` and `category="upcoming"` are classifier residue, not real domains — the events inside are book talks, jazz nights, exhibits, lectures, drop-ins, community classes that just weren't classified. When you'd otherwise label a group "Other"/"Upcoming", instead inspect the events' subcategory/title and pick a concrete label: Music, Comedy, Theatre, Arts, Sports, Food, Outdoors, Family, Lectures & Book Talks, Exhibits, Community, Drop-ins, Tours, Workshops. If a bucket is genuinely heterogeneous, split it into 2-3 narrower groups by subcategory or DROP it entirely. Better 3 sharp groups than 4 with an "Other" filler.
 7. PRESENT_SUGGESTIONS QUANTITY (hard rule, applies whenever you call present_suggestions). For BROWSING-BROADLY queries — a date with no narrow filter ("things to do May 15", "what's happening Friday"), a vibe ("fun things tonight"), or any open-ended discovery — pack each group with 6-12 events and use 4-8 groups total. Aim for ≥30 events in the tray. If search_events returned 30+ rows, you have enough material; do NOT cherry-pick 2-3 per group. Show density, let the user scroll. For NARROW queries (specific category like "jazz this week", specific venue, single subcategory), 3-5 events per group is fine. When in doubt, lean toward MORE events, not fewer — the user explicitly asked to browse.
 
-INTENT: ${detectIntent(lastUserMessage)}
-- info: user is asking quick questions / browsing options. Stay short, list 2-3 specific picks, do NOT proactively offer a plan unless asked. Tools are search-only.
-- plan: user wants a buildable itinerary. Call present_plan immediately — the user sets group size from the plan detail screen, not in chat. Don't narrate the plan in prose.
-
 BREVITY (hard rule, mobile chat):
 - Non-plan responses: 1-3 sentences max. No multi-paragraph essays. No bullet lists in chat — surface choices via plan cards, not prose.
 - One question at a time. Never stack two clarifying questions in the same response.
@@ -4560,6 +4879,7 @@ RESPONSE SHAPING (Phase 6 — when to use structured tools):
 - present_suggestions CATEGORY LABELS — never use "Other" as a tray group label. The DB's category="other" is a classifier residue, not a real bucket — the events inside are usually book talks, lectures, community classes, jazz nights, drop-ins, etc. that just weren't classified properly. When you'd otherwise label a group "Other", instead: (a) read the events' subcategory or title and pick a concrete label ("Lectures & Book Talks", "Community Classes", "Drop-ins"), OR (b) split that bucket into 2-3 narrower groups by subcategory, OR (c) drop the group entirely if the events are heterogeneous junk. Same rule for the bucket label "Upcoming" — that's also a time-state, not a category. Use real domain words the user recognizes: Music, Comedy, Theatre, Arts, Sports, Food, Outdoors, Family, Lectures, Community.
 - For SINGLE-EVENT factual questions ("what time is Springsteen?", "how much for LCD tickets?"), call present_event_brief with a one-line answer.
 - For SINGLE-VENUE factual questions ("what's at TD Garden?", "when does the ICA close?"), call present_venue_brief.
+- COUNT HONESTY (venue prose answers): when a single-venue search returned only 1-2 events and you answer in `type: chat` prose (no structured tool), you MUST name EVERY event you found and your count must match what you surfaced. NEVER write "those two events" / "both events" / "the N events at X" unless you actually listed that many to the user in this conversation. If the venue search returned 2 events, mention BOTH in your first answer — do not describe one and silently imply a second exists, then reference "two events" in a later turn. (If enumerating two feels clunky, call present_venue_brief so all upcoming events render as tappable cards — preferred for 2+ events at one venue.)
 - For QUICK FACTS without a card-worthy follow-up, call present_quick_fact.
 - For OUT-OF-SCOPE questions (history, geography, definitions, news, weather alone, sports scores, advice — anything not local-event discovery), call present_scope_redirect with 1-3 redirect chips. Do NOT free-text the off-topic answer.
 - present_plan / update_plan are still the right tools for full plans. The new tools complement them, they don't replace them.
@@ -4660,6 +4980,10 @@ GUIDELINES:
 - BASIC MARKDOWN IS OK FOR NARRATIVE PROSE. The chat renders **bold** and `- ` / `* ` bullet prefixes inline. Use them sparingly to add hierarchy in factual answers ("**Hours:** 11am–9pm Tue–Sun"). Do NOT use headings (#), italic markers (*foo*), inline code, or numbered lists — those render literally.
 - HARD RULE — events ALWAYS go through structured tools, never markdown. Never describe a list of events as a markdown bullet list (e.g. "**Music:**\n- Concert A\n- Concert B"). For events, call present_suggestions; for a single event, present_event_brief; for a single venue, present_venue_brief. The tray cards are tappable and the user can add them to a plan; markdown bullets in chat text are dead pixels they can't interact with.
 - Don't ask more than one clarifying question before building a plan. If the user gives you enough to work with, just build it.
+${live.localapp.local.data.remote.ClaudeApiService.SYSTEM_PROMPT_CACHE_BREAK}
+INTENT: ${detectIntent(lastUserMessage)}
+- info: user is asking quick questions / browsing options. Stay short, list 2-3 specific picks, do NOT proactively offer a plan unless asked. Tools are search-only.
+- plan: user wants a buildable itinerary. Call present_plan immediately — the user sets group size from the plan detail screen, not in chat. Don't narrate the plan in prose.
 
 $prefsContext
 

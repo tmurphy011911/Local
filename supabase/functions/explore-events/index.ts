@@ -204,6 +204,18 @@ function resolveDateWindow(
       const end = start + DAY;
       return { startIso: new Date(start).toISOString(), endIso: new Date(end).toISOString() };
     }
+    case "this_week": {
+      // Now through the end of the current week — i.e. up to the upcoming
+      // Monday local-00:00 (covers the rest of Mon–Sun). If today is Monday
+      // we still want the full week ahead, so 0 days-until rolls to 7.
+      let daysUntilMon = (1 - localDow + 7) % 7;
+      if (daysUntilMon === 0) daysUntilMon = 7;
+      const mon = startOfTodayUtcMs + daysUntilMon * DAY;
+      return {
+        startIso: new Date(Math.max(now, startOfTodayUtcMs)).toISOString(),
+        endIso: new Date(mon).toISOString(),
+      };
+    }
     case "this_weekend": {
       // Fri local-00:00 through Mon local-00:00.
       let daysUntilFri = (5 - localDow + 7) % 7;

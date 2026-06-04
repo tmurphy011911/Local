@@ -44,11 +44,11 @@ struct PaywallView: View {
             VStack(spacing: 0) {
                 closeButton
                 Spacer().frame(height: 16)
-                appIcon
+                wordmark
                 Spacer().frame(height: 20)
                 headline
                 Spacer().frame(height: 28)
-                benefits
+                comparisonMatrix
                 Spacer()
                 pricingToggle
                 Spacer().frame(height: 16)
@@ -78,63 +78,74 @@ struct PaywallView: View {
         }
     }
 
-    // MARK: - App Icon
+    // MARK: - Wordmark
 
-    private var appIcon: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 14)
-                .fill(coral)
-                .frame(width: 56, height: 56)
-            Text("L")
-                .font(Font.custom("Fraunces", size: 28).weight(.black))
-                .foregroundColor(.white)
-        }
+    // Coral "l"s, white "oca", straight on the dark page.
+    private var wordmark: some View {
+        (Text("l").foregroundColor(coral)
+            + Text("oca").foregroundColor(.white)
+            + Text("l").foregroundColor(coral))
+            .font(Font.custom("Fraunces", size: 44).weight(.black))
+            .tracking(-1)
     }
 
     // MARK: - Headline
 
     private var headline: some View {
-        VStack(spacing: 4) {
-            Text("Local Pro")
-                .font(Font.custom("Fraunces", size: 28).weight(.black))
-                .foregroundColor(.white)
-            Text("Plan together, effortlessly")
-                .font(Font.custom("Fraunces", size: 16).weight(.bold).italic())
+        VStack(spacing: 6) {
+            Text("Plan together, effortlessly.")
+                .font(Font.custom("Fraunces", size: 18).weight(.bold).italic())
                 .foregroundColor(coral)
+                .multilineTextAlignment(.center)
+            BoTagline(fullText: "You and me.")
         }
     }
 
-    // MARK: - Benefits
+    // MARK: - Comparison Matrix
 
-    private var benefits: some View {
-        VStack(spacing: 14) {
-            benefitRow(icon: "calendar", title: "Unlimited Plans", sub: "Build as many shareable plans as you want")
-            benefitRow(icon: "square.and.arrow.up", title: "Easily Share", sub: "One tap to send your plan to friends and family")
-            benefitRow(icon: "bell.badge", title: "Weekly Snapshot", sub: "Personalized event picks delivered to you each week")
-            benefitRow(icon: "person.3", title: "Group Coordination", sub: "Share, vote, and confirm plans with your crew")
-        }
+    private struct MatrixItem {
+        let feature: String
+        let free: String
+        let pro: String
     }
 
-    private func benefitRow(icon: String, title: String, sub: String) -> some View {
-        HStack(spacing: 12) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(coral.opacity(0.15))
-                    .frame(width: 36, height: 36)
-                Image(systemName: icon)
-                    .font(.system(size: 16))
-                    .foregroundColor(coral)
+    private let matrixRows = [
+        MatrixItem(feature: "Saved Events", free: "5", pro: "Unlimited"),
+        MatrixItem(feature: "Saved Places", free: "5", pro: "Unlimited"),
+        MatrixItem(feature: "Plans Created", free: "1", pro: "Unlimited"),
+    ]
+
+    private var comparisonMatrix: some View {
+        VStack(spacing: 0) {
+            matrixRow(feature: "", free: "Free", pro: "Pro", isHeader: true)
+            ForEach(matrixRows, id: \.feature) { row in
+                Rectangle()
+                    .fill(Color.white.opacity(0.06))
+                    .frame(height: 1)
+                matrixRow(feature: row.feature, free: row.free, pro: row.pro)
             }
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(Font.custom("Nunito", size: 14).weight(.heavy))
-                    .foregroundColor(.white)
-                Text(sub)
-                    .font(Font.custom("Nunito", size: 11).weight(.semibold))
-                    .foregroundColor(.white.opacity(0.5))
-            }
-            Spacer()
         }
+        .padding(.horizontal, 18)
+        .background(Color.white.opacity(0.04))
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func matrixRow(feature: String, free: String, pro: String, isHeader: Bool = false) -> some View {
+        HStack(spacing: 0) {
+            Text(feature)
+                .font(Font.custom("Nunito", size: 14).weight(.heavy))
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text(free)
+                .font(Font.custom("Nunito", size: isHeader ? 11 : 13).weight(isHeader ? .bold : .semibold))
+                .foregroundColor(.white.opacity(isHeader ? 0.5 : 0.45))
+                .frame(width: 72)
+            Text(pro)
+                .font(Font.custom("Nunito", size: isHeader ? 11 : 13).weight(isHeader ? .black : .heavy))
+                .foregroundColor(coral)
+                .frame(width: 88)
+        }
+        .padding(.vertical, 13)
     }
 
     // MARK: - Pricing Cards
@@ -291,4 +302,56 @@ struct PaywallView: View {
         }
     }
 
+}
+
+// MARK: - Bo Tagline
+
+/// Bo slides up from below, a coral cursor fades in and blinks, then the
+/// tagline streams character-by-character — mirrors the splash/empty-state
+/// BoTapLine on Android, retuned coral-on-dark for the paywall.
+private struct BoTagline: View {
+    let fullText: String
+
+    @State private var revealed = 0
+    @State private var boOffset: CGFloat = 24
+    @State private var boOpacity: Double = 0
+    @State private var cursorOpacity: Double = 0
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image("BoTiny")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 26, height: 26)
+                .offset(y: boOffset)
+                .opacity(boOpacity)
+
+            HStack(spacing: 1) {
+                Text(String(fullText.prefix(revealed)))
+                    .font(Font.custom("Fraunces", size: 16).weight(.bold).italic())
+                    .foregroundColor(coral)
+                Rectangle()
+                    .fill(coral)
+                    .frame(width: 2, height: 17)
+                    .opacity(cursorOpacity)
+            }
+        }
+        .task {
+            // Let the paywall settle on screen before Bo makes an entrance.
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.72)) {
+                boOffset = 0
+                boOpacity = 1
+            }
+            withAnimation(.linear(duration: 0.35)) { cursorOpacity = 1 }
+            try? await Task.sleep(nanoseconds: 720_000_000)
+            guard !fullText.isEmpty else { return }
+            for i in 1...fullText.count {
+                revealed = i
+                try? await Task.sleep(nanoseconds: 45_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            withAnimation(.easeOut(duration: 0.26)) { cursorOpacity = 0 }
+        }
+    }
 }

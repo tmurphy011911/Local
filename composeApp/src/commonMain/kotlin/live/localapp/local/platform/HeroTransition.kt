@@ -129,6 +129,11 @@ expect fun showNativePlanDetail(
     onSeeMoreSwapOptions: (Int, String, String) -> Unit = { _, _, _ -> },
     onSwapForUnavailable: (Int, String, String, String) -> Unit = { _, _, _, _ -> },
     onSlotTap: (Int, String, String?, String?) -> Unit = { _, _, _, _ -> },
+    /** When true, the native detail renders in read-only "shared invite" mode:
+     *  owner/editor controls are hidden and a single "Save to My Plans" CTA is
+     *  shown, which invokes [onSaveToPlan]. */
+    isShared: Boolean = false,
+    onSaveToPlan: () -> Unit = {},
 )
 
 /** Push updated plan state to a presented native plan detail view. No-op on Android. */

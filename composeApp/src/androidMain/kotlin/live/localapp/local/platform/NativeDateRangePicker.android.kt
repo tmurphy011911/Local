@@ -15,6 +15,27 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import kotlinx.datetime.Instant
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.atStartOfDayIn
+import kotlinx.datetime.toLocalDateTime
+
+// Material3 DateRangePicker reports selections as UTC-midnight epoch millis,
+// but the shared (commonMain) round-trip helpers interpret millis in the
+// system timezone — matching what the iOS native picker emits. Left unconverted,
+// a user west of UTC sees every endpoint shift back a day (June 11 00:00 UTC →
+// June 10 local). Normalize at this boundary so Android emits the same
+// local-midnight contract iOS uses.
+private fun utcMidnightToLocalMidnight(utcMillis: Long): Long {
+    val date = Instant.fromEpochMilliseconds(utcMillis).toLocalDateTime(TimeZone.UTC).date
+    return date.atStartOfDayIn(TimeZone.currentSystemDefault()).toEpochMilliseconds()
+}
+
+private fun localMidnightToUtcMidnight(localMillis: Long): Long {
+    val date = Instant.fromEpochMilliseconds(localMillis)
+        .toLocalDateTime(TimeZone.currentSystemDefault()).date
+    return date.atStartOfDayIn(TimeZone.UTC).toEpochMilliseconds()
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,8 +58,8 @@ actual fun rememberNativeDateRangePicker(): NativeDateRangePickerController {
     val request = pendingRequest
     if (request != null) {
         val state = rememberDateRangePickerState(
-            initialSelectedStartDateMillis = request.initialStart,
-            initialSelectedEndDateMillis = request.initialEnd,
+            initialSelectedStartDateMillis = request.initialStart?.let(::localMidnightToUtcMidnight),
+            initialSelectedEndDateMillis = request.initialEnd?.let(::localMidnightToUtcMidnight),
         )
         DatePickerDialog(
             onDismissRequest = {
@@ -52,7 +73,10 @@ actual fun rememberNativeDateRangePicker(): NativeDateRangePickerController {
                         val s = state.selectedStartDateMillis
                         val e = state.selectedEndDateMillis
                         if (s != null && e != null) {
-                            request.onPicked(s, e)
+                            request.onPicked(
+                                utcMidnightToLocalMidnight(s),
+                                utcMidnightToLocalMidnight(e),
+                            )
                             pendingRequest = null
                         }
                     },

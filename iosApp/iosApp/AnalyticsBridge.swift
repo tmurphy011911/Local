@@ -36,6 +36,27 @@ enum AnalyticsBridge {
                 options.dsn = dsn
                 options.tracesSampleRate = 0.0      // crash + errors only
                 options.enableAutoSessionTracking = true
+
+                // --- Capture EVERY class of crash, not just Swift NSExceptions ---
+                // Signal/Mach crashes (incl. the SIGABRT a Kotlin/Native uncaught
+                // exception raises) — on by default, pinned explicit so a future
+                // SDK default-flip can't silently drop them.
+                options.enableCrashHandler = true
+                options.attachStacktrace = true
+                // Watchdog / OOM terminations (FRONTBOARD 0x8BADF00D & 0x8C... ).
+                // This is the bucket the plan-view freeze fell into: the OS
+                // SIGKILLs us and no crash handler runs, so Sentry only learns
+                // of it by detecting the abnormal termination on the *next*
+                // launch. Without this, those kills are invisible.
+                options.enableWatchdogTerminationTracking = true
+                // Main-thread hangs. The plan-view crash burned 29s on the main
+                // thread before the 10s watchdog fired — App Hang tracking would
+                // have reported it as a hang at the 2s mark, *before* the kill,
+                // with a real main-thread stack. This is the single most useful
+                // addition for diagnosing UI freezes like that one.
+                options.enableAppHangTracking = true
+                options.appHangTimeoutInterval = 2.0
+
                 #if DEBUG
                 options.environment = "dev"
                 #else

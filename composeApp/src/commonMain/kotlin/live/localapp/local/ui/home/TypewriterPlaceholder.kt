@@ -9,14 +9,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
+import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -46,7 +48,49 @@ fun TypewriterPlaceholder(
     startDelayMs: Long = 650,
     charDelayMs: Long = 38,
     holdAfterMs: Long = 400,
+    pending: Boolean = false,
+    animate: Boolean = true,
+    haptics: Boolean = true,
+    onAnimated: (String) -> Unit = {},
 ) {
+    // [pending]: no prompt has been chosen yet (e.g. foryou is still waiting on
+    // the hyperlocal prompt fetch within its grace window). Show just a blinking
+    // cursor so the bar isn't blank; when a prompt commits we switch to typing it.
+    if (pending) {
+        val pendingAlpha = remember { Animatable(1f) }
+        LaunchedEffect(Unit) {
+            while (true) {
+                pendingAlpha.animateTo(0f, tween(durationMillis = 420))
+                pendingAlpha.animateTo(1f, tween(durationMillis = 420))
+            }
+        }
+        Row(modifier = modifier, verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .width(2.dp)
+                    .height(cursorHeight)
+                    .alpha(pendingAlpha.value)
+                    .background(cursorColor, RoundedCornerShape(1.dp)),
+            )
+        }
+        return
+    }
+
+    // When [animate] is false the prompt has already been typed once (e.g. the
+    // card scrolled off and back, which disposes and recreates this composable).
+    // Render the finished text immediately — no replay, no cursor — so scrolling
+    // never re-triggers the typewriter. Only a genuinely new prompt animates.
+    if (!animate) {
+        val staticScroll = rememberScrollState()
+        Row(
+            modifier = modifier.horizontalScroll(staticScroll, enabled = false),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(fullText, style = style, maxLines = 1, softWrap = false)
+        }
+        return
+    }
+
     var typed by remember(fullText) { mutableStateOf("") }
     var blinking by remember(fullText) { mutableStateOf(true) }
     val cursorAlpha = remember(fullText) { Animatable(1f) }
@@ -69,25 +113,43 @@ fun TypewriterPlaceholder(
         delay(startDelayMs)
         for (i in 1..fullText.length) {
             typed = fullText.substring(0, i)
-            if (!fullText[i - 1].isWhitespace()) hapticSelection()
+            if (haptics && !fullText[i - 1].isWhitespace()) hapticSelection()
             delay(charDelayMs)
         }
         delay(holdAfterMs)
         blinking = false
         cursorAlpha.animateTo(0f, tween(durationMillis = 260))
+        onAnimated(fullText)
+    }
+
+    // If the card is scrolled off-screen (disposed) mid-animation, the typewriter
+    // LaunchedEffect above is cancelled and never reaches onAnimated — so without
+    // this the prompt would be considered "not yet shown" and would replay from
+    // scratch when scrolled back. Marking it shown on dispose makes scroll-away
+    // count as completed: returning to the card renders the finished text (via the
+    // !animate branch) instead of re-typing. Only a genuine category switch (which
+    // changes the committed prompt) animates again.
+    DisposableEffect(fullText) {
+        onDispose { onAnimated(fullText) }
     }
 
     // Auto-scroll the row so the cursor (the *end* of what's been typed) is
     // always pinned to the right side. When the prompt is longer than the
     // input bar, the user sees the trailing characters of what's currently
     // being typed instead of the head being chopped at the right edge.
+    //
+    // Driven off snapshotFlow(maxValue) rather than a LaunchedEffect(typed):
+    // keying on `typed` cancelled+relaunched a coroutine — and ran a full
+    // scroll-mutex acquisition + scrollTo — on *every* character, including
+    // the common case where the prompt still fits (maxValue == 0) and there
+    // is nothing to scroll. That per-character churn produced a visible hitch
+    // mid-type. Here we only react when maxValue actually changes (the content
+    // grew past the edge), so short prompts do zero scroll work and long ones
+    // snap to the new end exactly once per growth.
     val scrollState = rememberScrollState()
-    LaunchedEffect(typed) {
-        // Animate to maxValue each time a new character lands. maxValue
-        // updates after layout, so a single scrollTo is enough; we don't
-        // need a frame delay because horizontalScroll re-measures on the
-        // same recomposition pass.
-        scrollState.scrollTo(scrollState.maxValue)
+    LaunchedEffect(fullText) {
+        snapshotFlow { scrollState.maxValue }
+            .collect { max -> scrollState.scrollTo(max) }
     }
     Row(
         modifier = modifier.horizontalScroll(scrollState, enabled = false),

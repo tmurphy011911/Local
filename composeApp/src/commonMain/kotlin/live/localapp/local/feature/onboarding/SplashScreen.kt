@@ -20,7 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
+import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -74,26 +74,26 @@ private data class ReelItem(val word: String, val color: Color)
 
 private val REEL_ITEMS: List<ReelItem> = listOf(
     ReelItem("event", AppColors.Coral),
-    ReelItem("workshop", AppColors.Plum),
-    ReelItem("story time", AppColors.Sun),
-    ReelItem("trivia night", AppColors.Sage),
-    ReelItem("open mic", AppColors.Sky),
-    ReelItem("festival", AppColors.Plum),
-    ReelItem("showcase", AppColors.Sun),
-    ReelItem("class", AppColors.Sage),
-    ReelItem("show", AppColors.Sky),
+    ReelItem("concert", AppColors.Plum),
+    ReelItem("show", AppColors.Sun),
+    ReelItem("exhibit", AppColors.Sage),
+    ReelItem("comedy", AppColors.Sky),
+    ReelItem("market", AppColors.Plum),
+    ReelItem("workshop", AppColors.Sun),
+    ReelItem("story time", AppColors.Sage),
+    ReelItem("trivia night", AppColors.Sky),
+    ReelItem("open mic", AppColors.Plum),
+    ReelItem("festival", AppColors.Sun),
+    ReelItem("showcase", AppColors.Sage),
+    ReelItem("class", AppColors.Sky),
     ReelItem("game", AppColors.Plum),
     ReelItem("tour", AppColors.Sun),
     ReelItem("fair", AppColors.Sage),
     ReelItem("mixer", AppColors.Sky),
-    ReelItem("market", AppColors.Plum),
-    ReelItem("comedy", AppColors.Sun),
-    ReelItem("place", AppColors.Sage),
-    ReelItem("brunch", AppColors.Sky),
-    ReelItem("pop-up", AppColors.Plum),
-    ReelItem("exhibit", AppColors.Sun),
-    ReelItem("matinee", AppColors.Sage),
-    ReelItem("concert", AppColors.Sky),
+    ReelItem("place", AppColors.Plum),
+    ReelItem("brunch", AppColors.Sun),
+    ReelItem("pop-up", AppColors.Sage),
+    ReelItem("matinee", AppColors.Sky),
     ReelItem("tasting", AppColors.Plum),
     ReelItem("reading", AppColors.Sun),
     ReelItem("screening", AppColors.Sage),
@@ -115,17 +115,19 @@ private const val EYEBROW_TRAVEL_DP = 16            // dp it travels from below
 private const val POST_EYEBROW_BREATH_MS = 200L     // before reel mounts
 private const val REEL_READ_PAUSE_MS = 350L         // user reads "Every single event"
 private const val REEL_MOUNT_FADE_MS = 280          // soft fade-in for the first reel item
-// Fast cadence: a brief wind-up (MAX→MIN over the first few items) then hold
-// MIN all the way to the final word — no deceleration at the tail. The reel
-// stays fast and "event" slams to a stop instead of easing in.
-private const val REEL_MIN_STEP_MS = 80             // sustained step (flat cadence)
-private const val REEL_MAX_STEP_MS = 130            // wind-up starting step
-private const val REEL_WINDUP_STEPS = 3             // items to ramp up to speed
+// Two-gear cadence: the first REEL_SLOW_STEPS words hold a slow, readable
+// beat (all the same speed), then every remaining word flips to very fast
+// through the final word. No ramp between the gears — it's a hard shift.
+private const val REEL_SLOW_STEP_MS = 300           // first slow words (deliberate)
+private const val REEL_FAST_STEP_MS = 45            // top speed (very fast)
+private const val REEL_SLOW_STEPS = 5               // slow words held up front
+private const val REEL_RAMP_STEPS = 6               // steps to accelerate slow → top speed
 private const val REEL_LANDING_DELAY_MS = 80
-// Landing on "event": carry slightly PAST center, then slam back down hard.
-private const val REEL_OVERSHOOT_DP = 14
-private const val REEL_OVERSHOOT_MS = 120           // fast glide past resting spot
-private const val REEL_SLAM_MS = 110                // sharp return — the "hit"
+// Landing on "event": carry well PAST center, then slam back down hard with a
+// double-thud haptic and a punch-then-recoil scale. Dialed up for drama.
+private const val REEL_OVERSHOOT_DP = 26
+private const val REEL_OVERSHOOT_MS = 130           // glide further past resting spot
+private const val REEL_SLAM_MS = 85                 // sharper, faster return — the "hit"
 
 private const val TAGLINE_DELAY_AFTER_REEL_MS = 250L
 private const val TAGLINE_FADE_MS = 480
@@ -190,7 +192,7 @@ fun SplashScreen(
             }
             .semantics(mergeDescendants = true) {
                 contentDescription =
-                    "Local — every single event, one single app. Tap to continue."
+                    "Local — every event, all in one place. Tap to continue."
             },
         contentAlignment = Alignment.Center,
     ) {
@@ -377,7 +379,7 @@ private fun SplashCanvas(
             Spacer(Modifier.height(56.dp))
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(8.dp))
 
         Tagline(visible = taglineVisible)
 
@@ -528,7 +530,7 @@ private fun Eyebrow(visible: Boolean) {
         }
     }
     Text(
-        text = "Every single",
+        text = "Every",
         style = TextStyle(
             fontFamily = AppFonts.Heading,
             fontWeight = FontWeight.Medium,
@@ -575,8 +577,8 @@ private fun Reel(index: Int, landed: Boolean, reduceMotion: Boolean) {
         }
         val isLanding = index == items.lastIndex
         if (isLanding) {
-            // Stay fast into the final word: carry slightly PAST the resting
-            // spot, then slam back down and fire a hard haptic on impact.
+            // Stay fast into the final word: carry well PAST the resting spot,
+            // then slam back down with a hard double-thud + scale punch.
             val overshootPx = with(density) { REEL_OVERSHOOT_DP.dp.toPx() }
             translate.animateTo(
                 targetValue = target - overshootPx,
@@ -586,20 +588,25 @@ private fun Reel(index: Int, landed: Boolean, reduceMotion: Boolean) {
                 targetValue = target,
                 animationSpec = tween(REEL_SLAM_MS, easing = REEL_SLAM_EASING),
             )
+            // Hard hit on impact — a heavy double-thud reads weightier than one.
             haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            // Impact squash — quick pop on the hit, then settle.
-            landingScale.snapTo(1.12f)
-            landingScale.animateTo(
-                targetValue = 1f,
-                animationSpec = tween(260, easing = REEL_LANDING_EASING),
-            )
+            // Punch big, recoil (squash), then settle — a real impact.
+            launch {
+                landingScale.snapTo(1.24f)
+                landingScale.animateTo(0.96f, animationSpec = tween(90, easing = LinearEasing))
+                landingScale.animateTo(1f, animationSpec = tween(260, easing = REEL_LANDING_EASING))
+            }
+            delay(45)
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
         } else {
             val nextGap = if (index == 0) {
-                REEL_MIN_STEP_MS
+                REEL_FAST_STEP_MS
             } else {
-                computeReelIntervals().getOrNull(index - 1) ?: REEL_MIN_STEP_MS
+                computeReelIntervals().getOrNull(index - 1) ?: REEL_FAST_STEP_MS
             }
-            val duration = (nextGap * 0.9f).toInt().coerceIn(60, 200)
+            // Slide each word over ~90% of its gap (capped) so slow words read
+            // deliberately and fast words blur continuously into the next.
+            val duration = (nextGap * 0.9f).toInt().coerceIn(60, 240)
             translate.animateTo(
                 targetValue = target,
                 animationSpec = tween(duration, easing = REEL_CYCLE_EASING),
@@ -710,7 +717,7 @@ private fun Tagline(visible: Boolean) {
     }
 
     Text(
-        text = "One single app.",
+        text = "all in one place",
         style = TextStyle(
             fontFamily = AppFonts.Heading,
             fontWeight = FontWeight.Medium,
@@ -859,23 +866,26 @@ private fun BoTapLine(visible: Boolean, reduceMotion: Boolean) {
 private fun reelItemCount(): Int = REEL_ITEMS.size
 
 /**
- * Intervals between reel items: a brief wind-up that ramps MAX→MIN over the
- * first REEL_WINDUP_STEPS items, then holds MIN (top speed) for every step
- * through the last word. No tail deceleration — the reel stays fast and the
- * landing on "event" is handled separately as an overshoot-then-slam. Returns ms.
+ * Intervals between reel items: the first REEL_SLOW_STEPS words hold
+ * REEL_SLOW_STEP_MS (a slow, even, readable beat), then the cadence ramps
+ * smoothly down over REEL_RAMP_STEPS words from slow → REEL_FAST_STEP_MS (top
+ * speed) and holds top speed through the last word. The landing on "event" is
+ * handled separately as an overshoot-then-slam. Returns ms.
  */
 private fun computeReelIntervals(): IntArray {
     val n = reelItemCount()
     val out = IntArray(n - 1)
     for (k in 1 until n) {
         val idx = k - 1
-        val ms = if (idx < REEL_WINDUP_STEPS) {
-            val t = idx.toFloat() / REEL_WINDUP_STEPS.toFloat()
-            REEL_MAX_STEP_MS - (REEL_MAX_STEP_MS - REEL_MIN_STEP_MS) * t
-        } else {
-            REEL_MIN_STEP_MS.toFloat()
+        out[idx] = when {
+            idx < REEL_SLOW_STEPS -> REEL_SLOW_STEP_MS
+            idx < REEL_SLOW_STEPS + REEL_RAMP_STEPS -> {
+                // Accelerate: interpolate slow → fast across the ramp window.
+                val t = (idx - REEL_SLOW_STEPS + 1).toFloat() / REEL_RAMP_STEPS.toFloat()
+                (REEL_SLOW_STEP_MS + (REEL_FAST_STEP_MS - REEL_SLOW_STEP_MS) * t).toInt()
+            }
+            else -> REEL_FAST_STEP_MS
         }
-        out[idx] = ms.toInt()
     }
     return out
 }

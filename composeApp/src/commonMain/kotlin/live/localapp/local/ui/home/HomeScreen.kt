@@ -40,8 +40,8 @@ import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.withFrameNanos
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import live.localapp.local.ui.common.CircleShape
+import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.window.Dialog
 import androidx.compose.material.icons.Icons
@@ -160,9 +160,8 @@ private fun String.toTitleCase(): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onConciergeSend: (String) -> Unit = { onConciergeClick() }, onProfileClick: () -> Unit = {}, onLocationClick: () -> Unit = {}, onFavorite: ((Event) -> Unit)? = null, showUpdateBanner: Boolean = false, onDismissUpdateBanner: () -> Unit = {}) {
+fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onConciergeSend: (String) -> Unit = { onConciergeClick() }, onProfileClick: () -> Unit = {}, onLocationClick: () -> Unit = {}, onFavorite: ((Event) -> Unit)? = null, showUpdateBanner: Boolean = false, onDismissUpdateBanner: () -> Unit = {}, onSeeAllVenue: (venueName: String, venueCity: String?) -> Unit = { _, _ -> }, onSeeAllEvents: (category: String?, dateFilter: live.localapp.local.ui.places.EventDateFilter?) -> Unit = { _, _ -> }) {
     val state by viewModel.uiState.collectAsState()
-    var seeAllSection by remember { mutableStateOf<CarouselSection?>(null) }
     var previouslyLoading by remember { mutableStateOf(true) }
     val haptic = LocalHapticFeedback.current
 
@@ -178,19 +177,6 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
             )
         }
         previouslyLoading = state.isLoading
-    }
-
-    // See All sheet
-    seeAllSection?.let { section ->
-        SeeAllSheet(
-            section = section,
-            onDismiss = { seeAllSection = null },
-            onEventClick = { event ->
-                onEventClick(event, null)
-            },
-            onFavorite = onFavorite,
-            favoriteIds = state.favoriteEventIds,
-        )
     }
 
     // Radius-filtered carousel list — memoized so it's not rebuilt every recomposition.
@@ -238,6 +224,56 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
             )
         }
 
+        // Concierge typewriter prompt — chosen here, above the LazyColumn, on
+        // purpose. The card lives in a LazyColumn item and LazyColumn disposes
+        // off-screen items; keeping the choice + animation state up here means
+        // scrolling the card away and back can't re-roll or replay it.
+        //
+        // For "foryou" we prefer the hyperlocal (server) prompts, but those are
+        // gated on location + a network fetch that can be slow or fail. So we
+        // hold a blinking cursor (committed == null) for up to the grace window
+        // waiting for them; if they land we type the local prompt first (no
+        // overwrite), if the window expires we commit the generic fallback and
+        // never overwrite it afterward. Non-"foryou" tabs have static local
+        // lists, so they commit immediately. The choice is sticky per category
+        // and only re-rolls on a genuine category switch.
+        val conciergeCategory = state.selectedCategory
+        var committedPrompt by remember { mutableStateOf<String?>(null) }
+        var animatedPrompt by remember { mutableStateOf<String?>(null) }
+        LaunchedEffect(conciergeCategory) {
+            committedPrompt = null
+            // Reset the "already animated" marker on a genuine category switch so
+            // the new prompt always types out. Scrolling does NOT re-run this
+            // effect (it's hoisted above the LazyColumn), so a scrolled-away card
+            // keeps its marker and renders static on return — no replay.
+            animatedPrompt = null
+            val staticList = categoryPromptsFor(conciergeCategory)
+            val source = staticList ?: run {
+                // foryou: hold the cursor briefly waiting for the hyperlocal
+                // pool, then fall back. The fetch is kicked off in parallel at
+                // app launch (HomeViewModel.init), so on a normal launch the
+                // prompts are already in hand and this resolves immediately. The
+                // window only matters on a cold/slow network — and there we keep
+                // it short so the bar doesn't sit on a blank cursor: better to
+                // type a generic prompt promptly than to stare at a blinking
+                // cursor. The choice stays sticky, so no visible overwrite once
+                // it commits.
+                val graceMs = 2500L
+                kotlinx.coroutines.withTimeoutOrNull(graceMs) {
+                    var prompts = viewModel.uiState.value.yocalPrompts
+                    while (prompts.isEmpty()) {
+                        kotlinx.coroutines.delay(50)
+                        prompts = viewModel.uiState.value.yocalPrompts
+                    }
+                    prompts
+                } ?: FALLBACK_YOCAL_PROMPTS
+            }
+            committedPrompt = source.shuffled().firstOrNull() ?: FALLBACK_YOCAL_PROMPTS.random()
+        }
+        val conciergePrompt = committedPrompt
+        val conciergePending = conciergePrompt == null
+        val animateConciergePrompt = conciergePrompt != null && conciergePrompt != animatedPrompt
+
         PullToRefreshBox(
             isRefreshing = state.isRefreshing,
             onRefresh = { viewModel.refresh() },
@@ -252,8 +288,13 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                 item { GreetingSection(state) }
                 item {
                     AiConciergeCard(
-                        prompts = state.yocalPrompts,
-                        selectedCategory = state.selectedCategory,
+                        displayPrompt = conciergePrompt.orEmpty(),
+                        pending = conciergePending,
+                        animatePrompt = animateConciergePrompt,
+                        // No per-character haptics on For You — keep them on every
+                        // other category tab.
+                        promptHaptics = conciergeCategory != "foryou",
+                        onPromptAnimated = { animated -> animatedPrompt = animated },
                         onSend = onConciergeSend,
                     )
                 }
@@ -294,12 +335,20 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                     val isForYou = state.selectedCategory == "foryou"
                     displayCarousels.forEach { section ->
                         item(key = section.slug) {
+                            val dest = seeAllDestFor(section, state.selectedCategory)
                             CarouselSectionView(
                                 section, onEventClick,
                                 showTags = isForYou,
                                 onFavorite = onFavorite,
                                 favoriteIds = state.favoriteEventIds,
-                                onSeeAll = { seeAllSection = it },
+                                onSeeAll = dest?.let { d ->
+                                    {
+                                        when (d) {
+                                            is SeeAllDest.Venue -> onSeeAllVenue(d.name, d.city)
+                                            is SeeAllDest.Events -> onSeeAllEvents(d.category, d.dateFilter)
+                                        }
+                                    }
+                                },
                             )
                         }
                     }
@@ -405,13 +454,99 @@ private fun EmptyState(title: String, subtitle: String, onClick: (() -> Unit)? =
     }
 }
 
+// ── "See All" routing ──
+
+/** Where a carousel's "See All" should take the user. null = hide "See All". */
+private sealed interface SeeAllDest {
+    /** Open the venue's detail page (fav-venue "At {Venue}" rails). */
+    data class Venue(val name: String, val city: String?) : SeeAllDest
+    /** Open the Explore tab's events page with an optional category + date filter. */
+    data class Events(val category: String?, val dateFilter: live.localapp.local.ui.places.EventDateFilter?) : SeeAllDest
+}
+
+/**
+ * Maps a home-feed carousel to its "See All" destination, or null when the rail
+ * has no sensible deep-link (in which case "See All" is hidden). Discriminates
+ * purely on the stable [CarouselSection.slug] + filterType, so it needs no
+ * extra payload from the edge function. [selectedCategory] is the current home
+ * page ("foryou" or a subcategory id).
+ */
+private fun seeAllDestFor(
+    section: CarouselSection,
+    selectedCategory: String,
+): SeeAllDest? {
+    val ft = section.filterType.lowercase()
+    val slug = section.slug.lowercase()
+
+    // 1. Venue rails ("At {Venue}") → that venue's page.
+    //    Two sources: the For-You fav-venue rail (filter_type "favorite_venue")
+    //    and the per-subcategory venue rails (filter_type "dynamic_sub",
+    //    slug "{sub}-venue-{name}"). Both carry the venue name in the title.
+    if (ft == "favorite_venue" || (ft == "dynamic_sub" && slug.contains("-venue-"))) {
+        val name = section.title.removePrefix("At ").trim()
+        if (name.isBlank()) return null
+        return SeeAllDest.Venue(name, section.events.firstOrNull()?.venueCity)
+    }
+
+    // 2. "Top Events Happening Soon" (top_weekly) — only meaningful on a
+    //    subcategory page, where it inherits that subcategory's context.
+    if (ft == "top_weekly") {
+        val cat = selectedCategory.takeIf { it.isNotBlank() && !it.equals("foryou", ignoreCase = true) }
+            ?: return null
+        return SeeAllDest.Events(cat, live.localapp.local.ui.places.EventDateFilter.NEXT_30_DAYS)
+    }
+
+    // 3. Date-window rails → events page with the matching date filter.
+    //    "Your Weekend Lineup" (weekend) + DB "This Weekend" → This Weekend
+    //    "Coming Up" (next_2_weeks) → This Week
+    //    "This Month" (this_month) → Next 30 Days
+    if (ft == "date_range" || ft == "weekend") {
+        val dateFilter = when {
+            ft == "weekend" || slug == "this_weekend" -> live.localapp.local.ui.places.EventDateFilter.THIS_WEEKEND
+            slug == "next_2_weeks" -> live.localapp.local.ui.places.EventDateFilter.THIS_WEEK
+            slug == "this_month" -> live.localapp.local.ui.places.EventDateFilter.NEXT_30_DAYS
+            else -> return null
+        }
+        return SeeAllDest.Events(null, dateFilter)
+    }
+
+    // 4. Category-style rails that map onto an Explore filter. The explore
+    //    events endpoint filters on `category.eq.<x> OR subcategory.eq.<x>`,
+    //    so both parent-category rails ("Arts & Culture" → arts) and the
+    //    affinity / fav-category rails keyed on a SUBCATEGORY ("For Library
+    //    Lovers" → libraries, "Museum Picks For You" → museums) resolve
+    //    correctly. Pass the rail's category through directly — gating on the
+    //    parent-category list was silently dropping every subcategory-keyed
+    //    affinity rail, which is the bulk of the For-You feed.
+    val catId = when (ft) {
+        "category" -> slug                              // DB category rail: slug == category id
+        "affinity" -> slug.removePrefix("affinity-")
+        "favorite_category" -> slug.removePrefix("fav-cat-")
+        else -> null
+    }
+    if (catId != null && catId.isNotBlank()) {
+        // Generic buckets have no meaningful Explore filter → land unfiltered.
+        if (catId in GENERIC_CATEGORY_IDS) return SeeAllDest.Events(null, null)
+        return SeeAllDest.Events(catId, live.localapp.local.ui.places.EventDateFilter.NEXT_30_DAYS)
+    }
+
+    return null
+}
+
+private val GENERIC_CATEGORY_IDS = setOf("other", "general", "unknown")
+
 // ── Dynamic Carousel Section ──
 
 @Composable
-private fun CarouselSectionView(section: CarouselSection, onEventClick: (Event, CardTransitionInfo?) -> Unit, showTags: Boolean = true, onFavorite: ((Event) -> Unit)? = null, favoriteIds: Set<String> = emptySet(), onSeeAll: ((CarouselSection) -> Unit)? = null) {
+private fun CarouselSectionView(section: CarouselSection, onEventClick: (Event, CardTransitionInfo?) -> Unit, showTags: Boolean = true, onFavorite: ((Event) -> Unit)? = null, favoriteIds: Set<String> = emptySet(), onSeeAll: (() -> Unit)? = null) {
     SectionHeader(
         title = section.title,
-        onSeeAll = if (section.events.size >= 4) {{ onSeeAll?.invoke(section) }} else null,
+        // "See All" shows whenever the rail maps to a navigable destination
+        // (the caller passes null otherwise, via seeAllDestFor). No event-count
+        // gate: the destination is a broader page (full category / Next-30-days
+        // / the venue's whole slate) than the rail's capped preview, so it's
+        // meaningful even when the rail itself only shows a couple of cards.
+        onSeeAll = onSeeAll,
     )
     EventCardRow(section.slug, section.events, onEventClick, showTags = showTags, showSaves = section.showSaves, onFavorite = onFavorite, favoriteIds = favoriteIds)
 }
@@ -1387,30 +1522,14 @@ private fun GreetingSection(state: HomeUiState) {
 
 @Composable
 private fun AiConciergeCard(
-    prompts: List<String> = emptyList(),
-    selectedCategory: String = "foryou",
+    displayPrompt: String,
+    pending: Boolean = false,
+    animatePrompt: Boolean = true,
+    promptHaptics: Boolean = true,
+    onPromptAnimated: (String) -> Unit = {},
     onSend: (String) -> Unit = {},
 ) {
     val haptic = LocalHapticFeedback.current
-
-    // For "foryou" we use the location-specific prompts from the edge function
-    // (or the generic fallback). For any other category we swap to a curated
-    // category-specific pool so the blurb matches what the user is browsing.
-    // Shuffle so cycling mixes venues (the edge function returns prompts
-    // grouped 4–6 per venue, which would otherwise surface 5 Fenway prompts
-    // in a row).
-    val activePrompts = remember(prompts, selectedCategory) {
-        val categorySpecific = categoryPromptsFor(selectedCategory)
-        val source = when {
-            categorySpecific != null -> categorySpecific
-            prompts.isNotEmpty() -> prompts
-            else -> FALLBACK_YOCAL_PROMPTS
-        }
-        source.shuffled()
-    }
-    // Re-rolls when activePrompts changes (composition re-entry, OR the user
-    // switches category — which gives a fresh typewriter run on tap).
-    val displayPrompt = remember(activePrompts) { activePrompts.random() }
 
     var input by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
     var focused by remember { mutableStateOf(false) }
@@ -1524,7 +1643,7 @@ private fun AiConciergeCard(
                                 .onFocusChanged { state ->
                                     val gainedFocus = state.isFocused && !focused
                                     focused = state.isFocused
-                                    if (gainedFocus && input.text.isEmpty()) {
+                                    if (gainedFocus && input.text.isEmpty() && displayPrompt.isNotBlank()) {
                                         // Pre-fill with the prompt that was on screen, with the
                                         // entire range selected so a single delete press wipes
                                         // it (matches placeholder convention) and typing replaces it.
@@ -1547,6 +1666,10 @@ private fun AiConciergeCard(
                                     color = AppColors.White.copy(alpha = 0.85f),
                                 ),
                                 cursorColor = AppColors.White,
+                                pending = pending,
+                                animate = animatePrompt,
+                                haptics = promptHaptics,
+                                onAnimated = onPromptAnimated,
                             )
                         }
                     }

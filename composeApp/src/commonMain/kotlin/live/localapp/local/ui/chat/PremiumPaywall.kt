@@ -15,40 +15,55 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import live.localapp.local.ui.common.CircleShape
+import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Notifications
-import androidx.compose.material.icons.outlined.Restaurant
-import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material.icons.outlined.People
-import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.text.InlineTextContent
+import androidx.compose.foundation.text.appendInlineContent
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.Placeholder
+import androidx.compose.ui.text.PlaceholderVerticalAlign
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import local.composeapp.generated.resources.Res
+import local.composeapp.generated.resources.bo_tiny
+import org.jetbrains.compose.resources.painterResource
 import live.localapp.local.ui.common.pressable
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
+import live.localapp.local.ui.theme.AppType
 
 @Composable
 fun PremiumPaywall(
@@ -104,57 +119,41 @@ fun PremiumPaywall(
 
             Spacer(Modifier.height(16.dp))
 
-            // App icon
-            Box(
-                modifier = Modifier
-                    .size(56.dp)
-                    .background(AppColors.Coral, RoundedCornerShape(14.dp)),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "L",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Heading,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 28.sp,
-                        color = Color.White,
-                    ),
-                )
-            }
+            // Wordmark — coral "l"s, white "oca", straight on the dark page.
+            Text(
+                buildAnnotatedString {
+                    "local".forEach { ch ->
+                        if (ch == 'l') {
+                            withStyle(SpanStyle(color = AppColors.Coral)) { append(ch) }
+                        } else {
+                            append(ch)
+                        }
+                    }
+                },
+                style = AppType.Logo.copy(fontSize = 44.sp, color = Color.White),
+            )
 
             Spacer(Modifier.height(20.dp))
 
-            // Headline
+            // Static tagline; Bo writes the second half beneath it.
             Text(
-                "Local Pro",
-                style = TextStyle(
-                    fontFamily = AppFonts.Heading,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 28.sp,
-                    color = Color.White,
-                ),
-            )
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "Plan together, effortlessly",
+                "Plan together, effortlessly.",
                 style = TextStyle(
                     fontFamily = AppFonts.Heading,
                     fontWeight = FontWeight.Bold,
-                    fontSize = 16.sp,
                     fontStyle = FontStyle.Italic,
+                    fontSize = 18.sp,
                     color = AppColors.Coral,
                 ),
+                textAlign = TextAlign.Center,
             )
+            Spacer(Modifier.height(6.dp))
+            PaywallBoTagline("You and me.")
 
             Spacer(Modifier.height(28.dp))
 
-            // Benefits
-            Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                BenefitRow(Icons.Outlined.CalendarMonth, "Unlimited Plans", "Build as many shareable plans as you want")
-                BenefitRow(Icons.Outlined.Share, "Easily Share", "One tap to send your plan to friends and family")
-                BenefitRow(Icons.Outlined.Notifications, "Weekly Snapshot", "Personalized event picks delivered to you each week")
-                BenefitRow(Icons.Outlined.People, "Group Coordination", "Share, vote, and confirm plans with your crew")
-            }
+            // Free vs Pro comparison matrix
+            ComparisonMatrix()
 
             Spacer(Modifier.weight(1f))
 
@@ -237,40 +236,169 @@ fun PremiumPaywall(
     }
 }
 
+/**
+ * Bo slides up from below, a coral cursor fades in, then the tagline streams
+ * character-by-character with a per-glyph haptic — mirrors the splash/empty-state
+ * BoTapLine, retuned coral-on-dark for the paywall.
+ */
 @Composable
-private fun BenefitRow(icon: ImageVector, title: String, subtitle: String) {
+private fun PaywallBoTagline(text: String) {
+    val density = LocalDensity.current
+    val travelPx = with(density) { 24.dp.toPx() }
+    val haptic = LocalHapticFeedback.current
+
+    val boTranslate = remember { Animatable(travelPx) }
+    val boAlpha = remember { Animatable(0f) }
+    val cursorAlpha = remember { Animatable(0f) }
+    var revealed by remember { mutableStateOf(0) }
+
+    LaunchedEffect(Unit) {
+        // Let the paywall settle on screen before Bo makes an entrance.
+        delay(450)
+        coroutineScope {
+            launch {
+                boTranslate.animateTo(0f, tween(500, easing = CubicBezierEasing(0.2f, 0.85f, 0.3f, 1.05f)))
+            }
+            launch {
+                boAlpha.animateTo(1f, tween(350, easing = LinearEasing))
+            }
+            launch {
+                cursorAlpha.animateTo(1f, tween(350, easing = LinearEasing))
+            }
+        }
+        delay(220)
+        while (revealed < text.length) {
+            delay(45)
+            revealed++
+            if (!text[revealed - 1].isWhitespace()) {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            }
+        }
+        delay(350)
+        cursorAlpha.animateTo(0f, tween(260, easing = LinearEasing))
+    }
+
+    val cursorId = "cursor"
+    val annotated = buildAnnotatedString {
+        append(text.take(revealed))
+        appendInlineContent(cursorId, "​")
+    }
+    val inlineContent = mapOf(
+        cursorId to InlineTextContent(
+            placeholder = Placeholder(
+                width = 5.sp,
+                height = 16.sp,
+                placeholderVerticalAlign = PlaceholderVerticalAlign.Center,
+            ),
+            children = {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .padding(start = 2.dp)
+                        .graphicsLayer { alpha = cursorAlpha.value }
+                        .background(AppColors.Coral),
+                )
+            },
+        ),
+    )
+
     Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Image(
+            painter = painterResource(Res.drawable.bo_tiny),
+            contentDescription = null,
+            modifier = Modifier
+                .size(26.dp)
+                .graphicsLayer {
+                    translationY = boTranslate.value
+                    alpha = boAlpha.value
+                },
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            annotated,
+            inlineContent = inlineContent,
+            style = TextStyle(
+                fontFamily = AppFonts.Heading,
+                fontWeight = FontWeight.Bold,
+                fontStyle = FontStyle.Italic,
+                fontSize = 16.sp,
+                color = AppColors.Coral,
+            ),
+        )
+    }
+}
+
+@Composable
+private fun ComparisonMatrix() {
+    val rows = listOf(
+        Triple("Saved Events", "5", "Unlimited"),
+        Triple("Saved Places", "5", "Unlimited"),
+        Triple("Plans Created", "1", "Unlimited"),
+    )
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color.White.copy(alpha = 0.04f))
+            .padding(horizontal = 18.dp),
+    ) {
+        MatrixRow(feature = "", free = "Free", pro = "Pro", isHeader = true)
+        rows.forEach { (feature, free, pro) ->
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(Color.White.copy(alpha = 0.06f)),
+            )
+            MatrixRow(feature = feature, free = free, pro = pro)
+        }
+    }
+}
+
+@Composable
+private fun MatrixRow(feature: String, free: String, pro: String, isHeader: Boolean = false) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Box(
-            modifier = Modifier
-                .size(36.dp)
-                .background(AppColors.Coral.copy(alpha = 0.15f), RoundedCornerShape(10.dp)),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp), tint = AppColors.Coral)
-        }
-        Spacer(Modifier.width(12.dp))
-        Column {
-            Text(
-                title,
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 14.sp,
-                    color = Color.White,
-                ),
-            )
-            Text(
-                subtitle,
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 11.sp,
-                    color = Color.White.copy(alpha = 0.5f),
-                ),
-            )
-        }
+        Text(
+            feature,
+            modifier = Modifier.weight(1f),
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = FontWeight.ExtraBold,
+                fontSize = 14.sp,
+                color = Color.White,
+            ),
+        )
+        Text(
+            free,
+            modifier = Modifier.width(72.dp),
+            textAlign = TextAlign.Center,
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = if (isHeader) FontWeight.Bold else FontWeight.SemiBold,
+                fontSize = if (isHeader) 11.sp else 13.sp,
+                color = Color.White.copy(alpha = if (isHeader) 0.5f else 0.45f),
+            ),
+        )
+        Text(
+            pro,
+            modifier = Modifier.width(88.dp),
+            textAlign = TextAlign.Center,
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = if (isHeader) FontWeight.Black else FontWeight.ExtraBold,
+                fontSize = if (isHeader) 11.sp else 13.sp,
+                color = AppColors.Coral,
+            ),
+        )
     }
 }
 

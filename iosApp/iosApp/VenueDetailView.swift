@@ -190,9 +190,6 @@ struct VenueDetailView: View {
     @State private var selectedDateFilter: DateFilter? = nil
     @State private var customStart: Date? = nil
     @State private var customEnd: Date? = nil
-    @State private var showDatePicker = false
-    @State private var pickerStart = Date()
-    @State private var pickerEnd = Date()
     @State private var isFavorited: Bool
     // Events now load async after present(). Seed with whatever the venue came with
     // (usually empty now that the grid doesn't hydrate events), then swap in the
@@ -261,27 +258,22 @@ struct VenueDetailView: View {
         }
     }
 
-    private var dateRangeSheet: some View {
-        NavigationView {
-            Form {
-                DatePicker("Start", selection: $pickerStart, displayedComponents: .date)
-                DatePicker("End", selection: $pickerEnd, in: pickerStart..., displayedComponents: .date)
-            }
-            .navigationTitle("Select Date")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { showDatePicker = false }
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Done") {
-                        customStart = pickerStart
-                        customEnd = pickerEnd
-                        selectedDateFilter = .selectDate
-                        showDatePicker = false
-                    }
-                }
-            }
-        }
+    /// Opens the same native single-calendar range picker the Explore events
+    /// page uses (via the shared NativeDateRangePickerBridge presenter), keeping
+    /// iOS venue-detail in parity with Explore + the Compose VenueDetailPage.
+    private func presentDateRangePicker() {
+        let startMs = customStart.map { Int64($0.timeIntervalSince1970 * 1000) }
+        let endMs = customEnd.map { Int64($0.timeIntervalSince1970 * 1000) }
+        NativeDateRangePickerBridgeSetup.presentRangePicker(
+            initialStart: startMs,
+            initialEnd: endMs,
+            onPicked: { s, e in
+                customStart = Date(timeIntervalSince1970: TimeInterval(s) / 1000.0)
+                customEnd = Date(timeIntervalSince1970: TimeInterval(e) / 1000.0)
+                selectedDateFilter = .selectDate
+            },
+            onCancelled: {}
+        )
     }
 
     private func parseISO(_ str: String) -> Date? {
@@ -575,40 +567,53 @@ struct VenueDetailView: View {
                 Spacer().frame(height: 10)
 
                 // Date filter chips — match the Explore (Events) tab set.
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 8) {
-                        ForEach(DateFilter.allCases, id: \.self) { filter in
-                            Text(filter.rawValue.uppercased())
-                                .font(.system(size: 12, weight: .heavy))
-                                .foregroundColor(selectedDateFilter == filter ? .white : AppColor.ink3)
-                                .padding(.horizontal, 16)
-                                .padding(.vertical, 8)
-                                .background(selectedDateFilter == filter ? AppColor.coral : AppColor.snow)
-                                .clipShape(RoundedRectangle(cornerRadius: 12))
-                                .onTapGesture {
-                                    if filter == .selectDate {
-                                        pickerStart = customStart ?? Date()
-                                        pickerEnd = customEnd ?? Date()
-                                        showDatePicker = true
-                                    } else {
-                                        selectedDateFilter = filter
+                // ScrollViewReader centers the selected chip on tap, mirroring
+                // the events tab's center-on-select behavior.
+                ScrollViewReader { proxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(DateFilter.allCases, id: \.self) { filter in
+                                let isSelected = selectedDateFilter == filter
+                                Text(filter.rawValue)
+                                    .font(.system(size: 12, weight: .heavy))
+                                    .foregroundColor(isSelected ? .white : AppColor.ink2)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 20)
+                                            .fill(isSelected ? AppColor.coral : AppColor.white)
+                                    )
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 20)
+                                            .strokeBorder(AppColor.coral, lineWidth: isSelected ? 0 : 1)
+                                    )
+                                    .id(filter)
+                                    .onTapGesture {
+                                        if filter == .selectDate {
+                                            presentDateRangePicker()
+                                        } else {
+                                            selectedDateFilter = filter
+                                        }
                                     }
-                                }
+                            }
+                        }
+                    }
+                    .onChange(of: selectedDateFilter) { newValue in
+                        guard let target = newValue else { return }
+                        withAnimation(.easeInOut(duration: 0.3)) {
+                            proxy.scrollTo(target, anchor: .center)
                         }
                     }
                 }
-                .sheet(isPresented: $showDatePicker) { dateRangeSheet }
 
                 Spacer().frame(height: 12)
 
                 // Event list
                 let events = filteredEvents()
                 if events.isEmpty {
-                    Text("No events for this period")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(AppColor.ink3)
-                        .padding(.vertical, 16)
-                        .frame(maxWidth: .infinity)
+                    // Bo typewriter empty state — matches the Explore Events tab.
+                    BoTypewriterEmptyState(rotationKey: selectedDateFilter)
+                        .frame(maxWidth: .infinity, minHeight: 280)
                 } else {
                     LazyVStack(spacing: 0) {
                         ForEach(events) { event in
@@ -1062,5 +1067,92 @@ struct VenueDetailView: View {
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(AppColor.pebble, lineWidth: 1.5))
         }
         .buttonStyle(.plain)
+    }
+}
+
+// MARK: - Bo typewriter empty state
+
+/// Native replica of the Compose `BoEmptyState` (commonMain) used on the
+/// Explore Events tab: tiny Bo slides up + fades in, then the line streams
+/// character-by-character with a per-glyph haptic and a coral cursor block.
+/// Re-rolls the copy line whenever `rotationKey` changes (e.g. a new filter).
+private struct BoTypewriterEmptyState: View {
+    let rotationKey: AnyHashable
+
+    @State private var line: String = BoTypewriterEmptyState.bank.randomElement() ?? ""
+    @State private var revealed: Int = 0
+    @State private var boOffset: CGFloat = 30
+    @State private var boOpacity: Double = 0
+    @State private var streamTask: Task<Void, Never>? = nil
+
+    init(rotationKey: AnyHashable) { self.rotationKey = rotationKey }
+
+    // Verbatim subset of EmptyStateCopy.NO_EVENTS (commonMain). Source of truth
+    // lives in EmptyStateCopy.kt — keep this in sync if the bank's voice changes.
+    static let bank: [String] = [
+        "Even I need a day off sometimes.",
+        "Empty-handed today.",
+        "Nothing on the radar.",
+        "Looks like a quiet one.",
+        "Coming up blank.",
+        "No events found. Yet.",
+        "The city's playing coy.",
+        "Drew a blank.",
+        "Quiet as a Sunday morning in here.",
+        "The schedule is suspiciously empty.",
+        "Today's giving me nothing.",
+        "Nothing booked. Nothing brewing.",
+    ]
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image("BoTiny")
+                .resizable()
+                .scaledToFit()
+                .frame(width: 28, height: 28)
+                .offset(y: boOffset)
+                .opacity(boOpacity)
+
+            HStack(alignment: .center, spacing: 2) {
+                Text(String(line.prefix(revealed)))
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(AppColor.ink3)
+                    .multilineTextAlignment(.leading)
+                RoundedRectangle(cornerRadius: 1)
+                    .fill(AppColor.coral)
+                    .frame(width: 3, height: 15)
+                    .opacity(boOpacity)
+            }
+        }
+        .padding(.horizontal, 32)
+        .onAppear { start() }
+        .onDisappear { streamTask?.cancel() }
+        .onChange(of: rotationKey) { _ in
+            line = BoTypewriterEmptyState.bank.randomElement() ?? ""
+            start()
+        }
+    }
+
+    private func start() {
+        streamTask?.cancel()
+        revealed = 0
+        boOffset = 30
+        boOpacity = 0
+        withAnimation(.timingCurve(0.2, 0.85, 0.3, 1.05, duration: 0.5)) { boOffset = 0 }
+        withAnimation(.linear(duration: 0.35)) { boOpacity = 1 }
+        streamTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 220_000_000) // breath before typing
+            let chars = Array(line)
+            var i = 0
+            while i < chars.count {
+                if Task.isCancelled { return }
+                try? await Task.sleep(nanoseconds: 55_000_000)
+                i += 1
+                revealed = i
+                if !chars[i - 1].isWhitespace {
+                    UISelectionFeedbackGenerator().selectionChanged()
+                }
+            }
+        }
     }
 }

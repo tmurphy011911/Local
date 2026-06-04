@@ -21,7 +21,12 @@ enum NativeDateRangePickerBridgeSetup {
         }
     }
 
-    private static func presentRangePicker(
+    /// Presents the same native single-calendar range picker Explore uses.
+    /// Callable directly from native screens (e.g. VenueDetailView) so the
+    /// "Select Date" chip opens an identical sheet without going through the
+    /// Kotlin bridge. Epoch-millis in, epoch-millis out (UTC-naive: each value
+    /// is `Date.timeIntervalSince1970 * 1000`).
+    static func presentRangePicker(
         initialStart: Int64?,
         initialEnd: Int64?,
         onPicked: @escaping (Int64, Int64) -> Void,

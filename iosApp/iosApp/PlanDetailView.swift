@@ -42,6 +42,9 @@ struct PlanDetailView: View {
     let isCreator: Bool
     let currentUserId: String?
     let onBack: () -> Void
+    /// Read-only "shared invite" mode: hides owner controls and swaps the
+    /// bottom Share CTA for a single "Save to My Plans" accept button.
+    let isShared: Bool
 
     @State private var plan: PlanDetailPlan
     @State private var selectedDayIndex: Int
@@ -73,11 +76,13 @@ struct PlanDetailView: View {
         initialPlan: PlanDetailPlan,
         isCreator: Bool,
         currentUserId: String?,
+        isShared: Bool = false,
         onBack: @escaping () -> Void
     ) {
         self.initialPlan = initialPlan
         self.isCreator = isCreator
         self.currentUserId = currentUserId
+        self.isShared = isShared
         self.onBack = onBack
         _plan = State(initialValue: initialPlan)
         _selectedDayIndex = State(initialValue: initialPlan.defaultActiveDayIndex)
@@ -118,8 +123,13 @@ struct PlanDetailView: View {
                 .offset(y: -12)
             }
 
-            // Persistent Share Plan CTA pinned to the bottom of the screen.
-            shareCtaBar
+            // Persistent bottom CTA. Shared-invite previews show "Save to My
+            // Plans"; owned/joined plans show the Share Plan CTA.
+            if isShared {
+                saveCtaBar
+            } else {
+                shareCtaBar
+            }
         }
         .onChange(of: selectedDayIndex) { _, _ in
             // Clear stale route metrics on day change. The new day's
@@ -576,12 +586,14 @@ struct PlanDetailView: View {
                             .foregroundColor(.white)
                     }
                     Spacer()
-                    glassButton {
-                        PlanDetailBridge.shared.onShare?()
-                    } content: {
-                        Image(systemName: "square.and.arrow.up")
-                            .font(.system(size: 14, weight: .bold))
-                            .foregroundColor(.white)
+                    if !isShared {
+                        glassButton {
+                            PlanDetailBridge.shared.onShare?()
+                        } content: {
+                            Image(systemName: "square.and.arrow.up")
+                                .font(.system(size: 14, weight: .bold))
+                                .foregroundColor(.white)
+                        }
                     }
                     if isCreator {
                         Menu {
@@ -1009,6 +1021,31 @@ struct PlanDetailView: View {
             // 2pt coralDk border overlay, flat coralDk drop-shadow at y=4
             // (radius=0). Creates a stacked "block" depth instead of a soft
             // gradient — consistent across primary CTAs in the app.
+            .background(pdCoral)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(pdCoralDk, lineWidth: 2))
+            .shadow(color: pdCoralDk.opacity(0.4), radius: 0, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
+        .padding(.bottom, 16)
+    }
+
+    // MARK: - Save to My Plans CTA (shared-invite mode)
+
+    private var saveCtaBar: some View {
+        Button {
+            PlanDetailBridge.shared.onSaveToPlan?()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "calendar.badge.plus")
+                    .font(.system(size: 15, weight: .heavy))
+                Text("Save to My Plans")
+                    .font(.system(size: 16, weight: .heavy))
+            }
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
             .background(pdCoral)
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).stroke(pdCoralDk, lineWidth: 2))

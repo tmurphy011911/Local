@@ -458,6 +458,13 @@ struct ChatView: View {
                 quickRepliesRow
             }
 
+            // Suggestion-card follow-up chips ("Search wider", "Different day",
+            // …), hoisted out of the card to sit above the input bar in the
+            // opener-chip style. Only shown for the latest suggestion card.
+            if latestSuggestionFooter != nil && !state.showPlanSuccess {
+                suggestionFooterRow
+            }
+
             // Input bar (hidden during celebration)
             if !state.showPlanSuccess {
                 inputBar
@@ -689,6 +696,18 @@ struct ChatView: View {
                     // sheet skip the animation for this message.
                     TypewriterCompletionStore.shared.completed.insert(message.id)
                 }
+                // LazyVStack destroys offscreen rows; TypewritingAiBubble's
+                // `.task` is cancelled on disappear and re-runs on reappear,
+                // restarting the typewriter from scratch (the "events
+                // re-stream when I scroll back" bug). The natural-completion
+                // closure above only fires if the bubble stays on screen long
+                // enough — any bubble scrolled away mid-type never records, so
+                // it replays. Lock it to static full-text the instant it
+                // leaves the viewport: once seen, never re-animate.
+                .onDisappear {
+                    typedMessageIds.insert(message.id)
+                    TypewriterCompletionStore.shared.completed.insert(message.id)
+                }
             }
 
             if !message.isUser { Spacer(minLength: 40) }
@@ -800,6 +819,9 @@ struct ChatView: View {
                 }
             },
             onOpenEvent: { ev in
+                // Drop the Bo input focus so the keyboard collapses before the
+                // native event detail is presented over the chat.
+                inputFocused = false
                 ChatBridge.shared.onEventTap?(ev.eventId, ev.imageUrl)
             },
             onFooterAction: { intent in
@@ -914,6 +936,41 @@ struct ChatView: View {
                             .background(reply.isGreen ? C.sage : .white)
                             .clipShape(Capsule())
                             .overlay(Capsule().stroke(C.pebble, lineWidth: reply.isGreen ? 0 : 1.5))
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+        }
+    }
+
+    /// The follow-up footer of the MOST RECENT suggestion card, if it's the
+    /// latest message and has actions. Hoisted above the input bar so the
+    /// "Search wider / Different day" chips stay reachable instead of being
+    /// buried at the bottom of a card the user has scrolled past. Tied to the
+    /// latest turn, mirroring quick-reply semantics — once the user sends
+    /// another message, the new last message has no footer and this hides.
+    private var latestSuggestionFooter: SuggestionFooterSnapshot? {
+        guard let footer = state.messages.last?.structured?.footer,
+              !footer.actions.isEmpty else { return nil }
+        return footer
+    }
+
+    /// Renders `latestSuggestionFooter`'s actions as opener-style quick-reply
+    /// capsules. Tapping sends the action's canonical `intent` back to Bo.
+    private var suggestionFooterRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 8) {
+                ForEach(Array((latestSuggestionFooter?.actions ?? []).enumerated()), id: \.offset) { _, action in
+                    Button(action: { ChatBridge.shared.sendMessage?(action.intent) }) {
+                        Text(action.label)
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundColor(C.ink)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(.white)
+                            .clipShape(Capsule())
+                            .overlay(Capsule().stroke(C.pebble, lineWidth: 1.5))
                     }
                 }
             }
@@ -1313,6 +1370,9 @@ private struct SlotCardView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .overlay(RoundedRectangle(cornerRadius: 12).stroke(C.pebble, lineWidth: 1))
         .onTapGesture {
+            // Collapse any open keyboard before the native detail is presented
+            // so it doesn't float over the event/venue page.
+            UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
             if let eventId = slot.eventId {
                 ChatBridge.shared.onEventTap?(eventId, slot.imageUrl)
             } else {
@@ -1355,6 +1415,16 @@ private struct SearchingIndicatorView: View {
     @State private var revealCount: Int = 0
     @State private var opacity: Double = 1.0
     @State private var caretOn: Bool = true
+    // The phrase currently being typed out, pinned for the whole rotation. We
+    // CANNOT derive the displayed text from `fullPhrase` directly: `fullPhrase`
+    // depends on `localIdioms`, which arrives asynchronously from Bo mid-search.
+    // If that update lands while a rotation is typing, `fullPhrase` would flip
+    // to a longer idiom while the typewriter only reveals up to the OLD phrase's
+    // length — freezing the idiom half-shown (the "cut off halfway" bug). By
+    // snapshotting the phrase into @State at the start of each rotation and
+    // reading the display from it, an async idiom update only takes effect on
+    // the NEXT rotation, so every phrase types out in full.
+    @State private var activePhrase: String = ""
     // Staggered reveal: a batch of steps arrives at once after the round
     // finishes, so reveal them one at a time. Persists across appends.
     @State private var visibleSteps: Int = 0
@@ -1369,7 +1439,7 @@ private struct SearchingIndicatorView: View {
         return searchingPhrases[phraseIndex % searchingPhrases.count]
     }
     private var revealed: String {
-        let chars = Array(fullPhrase)
+        let chars = Array(activePhrase)
         return String(chars.prefix(min(revealCount, chars.count)))
     }
 
@@ -1446,13 +1516,26 @@ private struct SearchingIndicatorView: View {
                 visibleSteps += 1
             }
         }
-        .task {
+        .task(id: localIdioms) {
             // Typewriter loop for the gerund line: reveal chars at ~28ms, hold,
             // fade, rotate to the next gerund. Slight per-char jitter.
+            //
+            // The `id: localIdioms` is load-bearing, not cosmetic. `localIdioms`
+            // is a plain stored property (not @State), so a bare `.task` would
+            // capture whatever it was on FIRST appearance — which is EMPTY,
+            // because Bo generates the idioms asynchronously a beat after the
+            // searching indicator shows. A bare task keeps running with that
+            // frozen empty array forever, so `fullPhrase`'s `phraseIndex % 3 == 2`
+            // idiom branch can never fire and idioms never appear (the bug).
+            // Keying the task on `localIdioms` restarts the loop once, when the
+            // idioms land, so the closure re-captures the populated array.
             while !Task.isCancelled {
                 opacity = 1.0
                 revealCount = 0
-                let chars = Array(fullPhrase)
+                // Snapshot the phrase for this whole rotation so an async
+                // `localIdioms` arrival can't swap it mid-type (see activePhrase).
+                activePhrase = fullPhrase
+                let chars = Array(activePhrase)
                 for i in 1...max(chars.count, 1) {
                     let jitter = UInt64.random(in: 0...20_000_000)
                     try? await Task.sleep(nanoseconds: 26_000_000 + jitter)
@@ -1872,35 +1955,13 @@ struct SuggestionTrayView: View {
                     .contentMargins(.horizontal, 14, for: .scrollContent)
                 }
             }
-
-            if let footer = suggestions.footer, !footer.actions.isEmpty {
-                Spacer().frame(height: 14)
-                if !footer.text.isEmpty {
-                    Text(footer.text)
-                        .font(STF.body(12, .semibold))
-                        .foregroundColor(STC.ink3)
-                        .padding(.horizontal, 14)
-                    Spacer().frame(height: 6)
-                }
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 6) {
-                        ForEach(Array(footer.actions.enumerated()), id: \.offset) { _, action in
-                            Button(action: { onFooterAction(action.intent) }) {
-                                Text(action.label)
-                                    .font(STF.body(12, .bold))
-                                    .foregroundColor(STC.sky)
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 6)
-                                    .background(STC.skyLt)
-                                    .clipShape(Capsule())
-                                    .overlay(Capsule().stroke(STC.sky, lineWidth: 1))
-                            }
-                            .buttonStyle(.plain)
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                }
-            }
+            // NOTE: the footer action chips ("Search wider", "Different day",
+            // etc.) used to render here, inside the card. They now live in a
+            // persistent row above the input bar (see `suggestionFooterRow`),
+            // styled like the opener quick-reply chips, so the user's follow-up
+            // actions are always within thumb reach instead of buried at the
+            // bottom of a scrolled-away card. `suggestions.footer` is still the
+            // data source — just rendered by the parent.
         }
         .padding(.vertical, 14)
         .frame(maxWidth: .infinity, alignment: .leading)

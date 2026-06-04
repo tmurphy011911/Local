@@ -187,6 +187,17 @@ class HomeViewModel(
         _uiState.update { it.copy(streakDays = streak) }
         reviewPromptService.recordAppOpen()
 
+        // Kick the typewriter-prompt fetch off immediately, in parallel with the
+        // slower prefs/carousel load. On a cold start that sequence (Supabase
+        // round-trip → carousels → Bo chips) can take >6s, which left the For You
+        // typewriter timing out to the generic fallback and — because the choice
+        // is sticky per category — staying there until the user left and returned
+        // to the tab. Seed from the locally-cached manual coords when present,
+        // else the metro default. The resolved fetch at the end of
+        // loadUserPreferencesThenCarousels supersedes this if the grid differs.
+        val cachedLoc = userPreferencesRepository.getCachedManualLocation()
+        fetchYocalPromptsIfNeeded(cachedLoc.manualLat ?: 42.3601, cachedLoc.manualLng ?: -71.0589)
+
         loadUserPreferencesThenCarousels()
         loadSavedThisWeek()
     }

@@ -79,11 +79,28 @@ class PlansViewModel(
     val uiState: StateFlow<PlansUiState> = _uiState.asStateFlow()
 
     init {
+        // Keep the cached server snapshot consistent with each op the syncer
+        // confirms, BEFORE the op leaves the log. Otherwise a synced delete/edit
+        // flickers back: the tombstone op disappears from the pending log while
+        // _serverPlans still holds the stale row, so reconcile resurrects it
+        // until a Realtime/refetch catches up (Bugs #11, #27).
+        syncer.onSynced = ::applySyncedToServerSnapshot
         loadPlans()
         loadSavedItems()
         observeReconciliation()
         observeSyncerState()
         observeRealtime()
+    }
+
+    private fun applySyncedToServerSnapshot(mutation: PlanMutation) {
+        when (mutation) {
+            is PlanMutation.DeletePlan ->
+                _serverPlans.update { plans -> plans.filter { it.id != mutation.planId } }
+            else ->
+                _serverPlans.update { plans ->
+                    plans.map { if (it.id == mutation.planId) mutation.applyTo(it) else it }
+                }
+        }
     }
 
     /**

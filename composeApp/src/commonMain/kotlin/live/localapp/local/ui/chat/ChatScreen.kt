@@ -42,8 +42,8 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import live.localapp.local.ui.common.CircleShape
+import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -125,6 +125,7 @@ fun ChatScreen(
     val state by viewModel.uiState.collectAsState()
     val listState = rememberLazyListState()
     val scrollScope = rememberCoroutineScope()
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     var selectedEventId by remember { mutableStateOf<String?>(null) }
     var selectedEvent by remember { mutableStateOf<live.localapp.local.domain.model.Event?>(null) }
     var selectedVenueName by remember { mutableStateOf<String?>(null) }
@@ -415,6 +416,9 @@ fun ChatScreen(
                                 totalDays = cardDays.size,
                                 onEventClick = { id ->
                                     if (!isSuperseded) {
+                                        // Drop the Bo input focus so the keyboard collapses
+                                        // before the event/venue detail opens over the chat.
+                                        focusManager.clearFocus()
                                         viewModel.recordEventTap(id.removePrefix("venue:"))
                                         if (id.startsWith("venue:")) {
                                             if (onNativeVenueClick != null) onNativeVenueClick(id.removePrefix("venue:"))
@@ -447,6 +451,9 @@ fun ChatScreen(
                                 days = cardDays,
                                 onEventClick = { id ->
                                     if (!isSuperseded) {
+                                        // Drop the Bo input focus so the keyboard collapses
+                                        // before the event/venue detail opens over the chat.
+                                        focusManager.clearFocus()
                                         viewModel.recordEventTap(id.removePrefix("venue:"))
                                         if (id.startsWith("venue:")) {
                                             if (onNativeVenueClick != null) onNativeVenueClick(id.removePrefix("venue:"))

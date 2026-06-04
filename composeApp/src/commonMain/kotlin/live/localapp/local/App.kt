@@ -1,11 +1,22 @@
 package live.localapp.local
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import live.localapp.local.platform.hasNativeHeroTransition
+import live.localapp.local.platform.showNativeEventDetail
+import live.localapp.local.platform.showNativePlanDetail
+import live.localapp.local.platform.showNativeVenueDetail
+import live.localapp.local.platform.updateNativeVenueDetailEvents
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.auth.auth
 import kotlinx.coroutines.launch
@@ -16,20 +27,11 @@ import live.localapp.local.feature.auth.PhoneAuthViewModel
 import live.localapp.local.feature.auth.RouteDestination
 import live.localapp.local.feature.onboarding.OnboardingScreen
 import live.localapp.local.feature.onboarding.OnboardingViewModel
-import live.localapp.local.domain.model.Event
-import live.localapp.local.domain.model.Plan
-import live.localapp.local.domain.model.Venue
-import live.localapp.local.domain.repository.EventRepository
-import live.localapp.local.domain.repository.PlanRepository
-import live.localapp.local.domain.repository.VenueRepository
 import live.localapp.local.domain.service.SplashConfigService
 import live.localapp.local.feature.onboarding.SplashScreen
 import live.localapp.local.feature.onboarding.SplashVariant
-import androidx.compose.runtime.rememberCoroutineScope
-import live.localapp.local.platform.checkClipboardForDeepLink
-import live.localapp.local.platform.checkInstallReferrerForDeepLink
-import live.localapp.local.platform.clearClipboardDeepLink
-import live.localapp.local.platform.setDeepLinkCallback
+import live.localapp.local.feature.deeplink.DeepLinkContent
+import live.localapp.local.feature.deeplink.DeepLinkController
 import live.localapp.local.ui.navigation.AppNavigation
 import live.localapp.local.ui.detail.EventDetailScreen
 import live.localapp.local.ui.plans.PlanDetailScreen
@@ -38,13 +40,6 @@ import org.koin.mp.KoinPlatform
 
 private enum class AppState {
     SPLASH, DEEP_LINK, AUTH, ONBOARDING, HOME
-}
-
-/** What type of deep link was found */
-private sealed class DeepLinkContent {
-    data class SharedPlan(val plan: Plan) : DeepLinkContent()
-    data class SharedEvent(val event: Event) : DeepLinkContent()
-    data class SharedVenue(val venue: Venue) : DeepLinkContent()
 }
 
 @Composable
@@ -70,6 +65,16 @@ fun App() {
         val coldStartRouter = remember(supabaseClient, userPrefsRepo) {
             ColdStartRouter(supabaseClient, userPrefsRepo)
         }
+
+        // Single owner of deep-link resolution. start() is idempotent; it
+        // registers the one runtime Universal Link callback and runs the
+        // one-shot deferred (install referrer / clipboard) check.
+        val deepLinkController = remember { KoinPlatform.getKoin().get<DeepLinkController>() }
+        remember { deepLinkController.start(); true }
+        // The resolved shared link (plan/event/venue), or null. Logged-out users
+        // see it as a full-screen preview here; logged-in users get it as an
+        // overlay inside AppNavigation. Whoever presents it calls consume().
+        val deepLink by deepLinkController.pending.collectAsState()
 
         // Splash kill switch. Reads the cached flag synchronously for this
         // cold start (default true) and fires an async refresh from Supabase
@@ -121,79 +126,13 @@ fun App() {
         var authPhone by remember { mutableStateOf("") }
         var authUserId by remember { mutableStateOf("") }
 
-        // Deep link content (shown before auth for new users)
-        var deepLinkContent by remember { mutableStateOf<DeepLinkContent?>(null) }
-
-        // Scope that outlives the Splash LaunchedEffect — used by the deep-link
-        // callback, which may fire any time after cold-start.
-        val appScope = rememberCoroutineScope()
-
-        // Pre-auth deep-link callback. iOS onOpenURL / Android onNewIntent may fire
-        // AFTER Compose renders, so this catches Universal Links that arrive too
-        // late for the splash clipboard check below. The bridge buffers paths
-        // received before this callback is registered.
-        LaunchedEffect(Unit) {
-            setDeepLinkCallback { path ->
-                appScope.launch {
-                    try {
-                        val linkType = when {
-                            path.startsWith("/p/") -> "plan"
-                            path.startsWith("/e/") -> "event"
-                            path.startsWith("/v/") -> "venue"
-                            else -> "other"
-                        }
-                        when {
-                            path.startsWith("/p/") -> {
-                                val token = path.removePrefix("/p/")
-                                val plan = KoinPlatform.getKoin().get<PlanRepository>().getSharedPlan(token)
-                                if (plan != null) {
-                                    deepLinkContent = DeepLinkContent.SharedPlan(plan)
-                                    println("App: deep link plan via callback '${plan.title}'")
-                                    live.localapp.local.observability.Analytics.track(
-                                        live.localapp.local.observability.AnalyticsEvent.shareLinkOpened(linkType = "plan", planId = plan.id)
-                                    )
-                                    live.localapp.local.observability.Analytics.track(
-                                        live.localapp.local.observability.AnalyticsEvent.planInviteAccepted(
-                                            planId = plan.id,
-                                            wasSignedIn = appState != live.localapp.local.AppState.AUTH,
-                                        )
-                                    )
-                                }
-                            }
-                            path.startsWith("/e/") -> {
-                                val eventId = path.removePrefix("/e/")
-                                val event = KoinPlatform.getKoin().get<EventRepository>().getEvent(eventId)
-                                if (event != null) {
-                                    deepLinkContent = DeepLinkContent.SharedEvent(event)
-                                    println("App: deep link event via callback '${event.title}'")
-                                    live.localapp.local.observability.Analytics.track(
-                                        live.localapp.local.observability.AnalyticsEvent.shareLinkOpened(linkType = "event", eventId = event.id)
-                                    )
-                                }
-                            }
-                            path.startsWith("/v/") -> {
-                                val venueId = path.removePrefix("/v/")
-                                val venue = KoinPlatform.getKoin().get<VenueRepository>().getVenuesByIds(listOf(venueId)).firstOrNull()
-                                if (venue != null) {
-                                    deepLinkContent = DeepLinkContent.SharedVenue(venue)
-                                    println("App: deep link venue via callback '${venue.name}'")
-                                    live.localapp.local.observability.Analytics.track(
-                                        live.localapp.local.observability.AnalyticsEvent.shareLinkOpened(linkType = "venue")
-                                    )
-                                }
-                            }
-                        }
-                        // Fire-and-forget no-op reference so unused-var linters stay quiet.
-                        if (linkType.isEmpty()) {}
-                    } catch (_: Exception) {}
-                }
-            }
-        }
-
-        // If a deep link arrives while the user is on the phone-auth screen,
-        // pivot back to the DEEP_LINK state so the plan is shown first.
-        LaunchedEffect(deepLinkContent) {
-            if (deepLinkContent != null && appState == AppState.AUTH) {
+        // If a deep link resolves while the user is logged out (on splash or the
+        // phone-auth screen), pivot to the DEEP_LINK preview so the shared
+        // plan/event/venue is shown first. Logged-in users (appState == HOME)
+        // are handled by AppNavigation, which overlays the link on Home — so we
+        // deliberately only react on AUTH here.
+        LaunchedEffect(deepLink) {
+            if (deepLink != null && appState == AppState.AUTH) {
                 appState = AppState.DEEP_LINK
             }
         }
@@ -203,54 +142,28 @@ fun App() {
                 SplashScreen(
                     onComplete = {
                         if (appState == AppState.SPLASH) {
-                            appState = postSplashRoute
-                                ?: if (deepLinkContent != null) AppState.DEEP_LINK else AppState.AUTH
+                            // Base destination comes from auth state only. A
+                            // pending deep link overrides AUTH with the preview;
+                            // a logged-in HOME keeps HOME (AppNavigation overlays
+                            // the link there).
+                            val base = postSplashRoute ?: AppState.AUTH
+                            appState = if (deepLink != null && base == AppState.AUTH) {
+                                AppState.DEEP_LINK
+                            } else {
+                                base
+                            }
                         }
                     },
                     appReady = postSplashRoute != null,
                     variant = splashVariant,
                 )
 
-                // While splash plays, check for deep link + existing session
+                // While splash plays, resolve the auth-based destination. Deep
+                // links are owned by DeepLinkController (registered + deferred-
+                // checked at the top of App) and observed via `deepLink` — they
+                // are no longer resolved here, which removes the old snapshot
+                // race where a link arriving after this ran was missed.
                 LaunchedEffect(Unit) {
-                    // Deferred deep link: Play Install Referrer (Android, reliable)
-                    // first, then clipboard fallback (iOS App Store install path).
-                    val deepLink = checkInstallReferrerForDeepLink() ?: checkClipboardForDeepLink()
-                    if (deepLink != null) {
-                        try {
-                            when {
-                                deepLink.startsWith("/p/") -> {
-                                    val token = deepLink.removePrefix("/p/")
-                                    val plan = KoinPlatform.getKoin().get<PlanRepository>().getSharedPlan(token)
-                                    if (plan != null) {
-                                        deepLinkContent = DeepLinkContent.SharedPlan(plan)
-                                        clearClipboardDeepLink()
-                                        println("App: deep link plan '${plan.title}'")
-                                    }
-                                }
-                                deepLink.startsWith("/e/") -> {
-                                    val eventId = deepLink.removePrefix("/e/")
-                                    val event = KoinPlatform.getKoin().get<EventRepository>().getEvent(eventId)
-                                    if (event != null) {
-                                        deepLinkContent = DeepLinkContent.SharedEvent(event)
-                                        clearClipboardDeepLink()
-                                        println("App: deep link event '${event.title}'")
-                                    }
-                                }
-                                deepLink.startsWith("/v/") -> {
-                                    val venueId = deepLink.removePrefix("/v/")
-                                    val venues = KoinPlatform.getKoin().get<VenueRepository>().getVenuesByIds(listOf(venueId))
-                                    val venue = venues.firstOrNull()
-                                    if (venue != null) {
-                                        deepLinkContent = DeepLinkContent.SharedVenue(venue)
-                                        clearClipboardDeepLink()
-                                        println("App: deep link venue '${venue.name}'")
-                                    }
-                                }
-                            }
-                        } catch (_: Exception) {}
-                    }
-
                     // Resolve the post-splash destination in parallel with the
                     // splash animation. We never set appState here — that would
                     // cut the splash off mid-play. Instead we stash the resolved
@@ -265,12 +178,10 @@ fun App() {
                     // All session + profile logic lives in ColdStartRouter
                     // (feature/auth/ColdStartRouter.kt). The router waits for
                     // Supabase to finish hydrating, classifies the user, and
-                    // returns one of {Home, Onboarding(resume), Auth, DeepLink}.
+                    // returns one of {Home, Onboarding(resume), Auth}.
                     // See that file for the full state machine and security
                     // invariants (no-session-no-home, clear-on-RefreshFailure).
-                    postSplashRoute = when (
-                        val dest = coldStartRouter.resolve(deepLinkPending = deepLinkContent != null)
-                    ) {
+                    postSplashRoute = when (val dest = coldStartRouter.resolve()) {
                         is RouteDestination.Home -> {
                             authUserId = dest.authUserId
                             AppState.HOME
@@ -283,63 +194,157 @@ fun App() {
                             // user_profiles upsert lands on the right row.
                             AppState.ONBOARDING
                         }
-                        RouteDestination.DeepLink -> AppState.DEEP_LINK
                         RouteDestination.Auth -> AppState.AUTH
                     }
                 }
             }
 
             AppState.DEEP_LINK -> {
-                when (val content = deepLinkContent) {
+                // Leaving the preview: clear the pending link first so the
+                // LaunchedEffect(deepLink) rescue above doesn't immediately
+                // bounce us back into DEEP_LINK, then drop to sign-in.
+                val dismissToAuth = {
+                    deepLinkController.consume()
+                    appState = AppState.AUTH
+                }
+                when (val content = deepLink) {
                     is DeepLinkContent.SharedPlan -> {
-                        PlanDetailScreen(
-                            plan = content.plan,
-                            isShared = true,
-                            // A user viewing a shared invite link is by definition not the creator.
-                            isCreator = false,
-                            onBack = { appState = AppState.AUTH },
-                            onSaveToPlan = {
-                                val plansVm = KoinPlatform.getKoin().get<live.localapp.local.ui.plans.PlansViewModel>()
-                                plansVm.setPendingAcceptAfterAuth(content.plan)
-                                appState = AppState.AUTH
-                            },
-                        )
+                        if (hasNativeHeroTransition) {
+                            // iOS: present the native SwiftUI PlanDetailView in
+                            // read-only shared-invite mode over a blank surface.
+                            // Logged-out save stashes the plan for post-auth accept;
+                            // dismissing routes to sign-in.
+                            Box(modifier = Modifier.fillMaxSize().background(Color(0xFFFAFAFA)))
+                            LaunchedEffect(content.plan.id) {
+                                showNativePlanDetail(
+                                    plan = content.plan,
+                                    cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                                    isShared = true,
+                                    onShare = {},
+                                    onDismissed = { dismissToAuth() },
+                                    onSaveToPlan = {
+                                        val plansVm = KoinPlatform.getKoin().get<live.localapp.local.ui.plans.PlansViewModel>()
+                                        plansVm.setPendingAcceptAfterAuth(content.plan)
+                                        dismissToAuth()
+                                    },
+                                )
+                            }
+                        } else {
+                            PlanDetailScreen(
+                                plan = content.plan,
+                                isShared = true,
+                                // A user viewing a shared invite link is by definition not the creator.
+                                isCreator = false,
+                                onBack = dismissToAuth,
+                                onSaveToPlan = {
+                                    val plansVm = KoinPlatform.getKoin().get<live.localapp.local.ui.plans.PlansViewModel>()
+                                    plansVm.setPendingAcceptAfterAuth(content.plan)
+                                    dismissToAuth()
+                                },
+                            )
+                        }
                     }
                     is DeepLinkContent.SharedEvent -> {
-                        EventDetailScreen(
-                            event = content.event,
-                            onBack = { appState = AppState.AUTH },
-                            sharedMode = true,
-                            onSaveEvent = {
-                                // Store event ID to favorite after auth
-                                val settings = com.russhwolf.settings.Settings()
-                                settings.putString("pending_favorite_event", content.event.id)
-                                appState = AppState.AUTH
-                            },
-                        )
+                        if (hasNativeHeroTransition) {
+                            // iOS: present the native SwiftUI event detail over a
+                            // blank surface. The Compose EventDetailScreen crashes
+                            // on iOS (see AppNavigation's native shared-event path).
+                            // Logged-out heart taps stash a pending favorite that
+                            // the post-auth flow applies; dismissing routes to sign-in.
+                            Box(modifier = Modifier.fillMaxSize().background(Color(0xFFFAFAFA)))
+                            LaunchedEffect(content.event.id) {
+                                showNativeEventDetail(
+                                    event = content.event,
+                                    cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                                    cardImageUrl = content.event.imageUrl,
+                                    onDismissed = { dismissToAuth() },
+                                    onFavorited = { id ->
+                                        val settings = com.russhwolf.settings.Settings()
+                                        settings.putString("pending_favorite_event", id)
+                                    },
+                                    isFavorited = false,
+                                )
+                            }
+                        } else {
+                            EventDetailScreen(
+                                event = content.event,
+                                onBack = dismissToAuth,
+                                sharedMode = true,
+                                onSaveEvent = {
+                                    // Store event ID to favorite after auth
+                                    val settings = com.russhwolf.settings.Settings()
+                                    settings.putString("pending_favorite_event", content.event.id)
+                                    dismissToAuth()
+                                },
+                            )
+                        }
                     }
                     is DeepLinkContent.SharedVenue -> {
-                        // Simple venue preview with "Add to Favorites" CTA
-                        live.localapp.local.ui.places.VenueDetailPage(
-                            venueWithMeta = live.localapp.local.domain.repository.VenueWithMeta(
-                                venue = content.venue,
-                                primaryCategory = content.venue.category,
-                                tags = emptyList(),
-                                upcomingEventCount = 0,
-                                upcomingEvents = emptyList(),
-                                distanceMiles = null,
-                            ),
-                            events = emptyList(),
-                            isLoading = false,
-                            onBack = { appState = AppState.AUTH },
-                            isShared = true,
-                            onSaveVenue = {
-                                val settings = com.russhwolf.settings.Settings()
-                                settings.putString("pending_favorite_venue", content.venue.id)
-                                settings.putString("pending_favorite_venue_category", content.venue.category ?: "")
-                                appState = AppState.AUTH
-                            },
-                        )
+                        if (hasNativeHeroTransition) {
+                            // iOS: present the native SwiftUI venue detail. The
+                            // Compose VenueDetailPage crashes on iOS (mirror the
+                            // native shared-venue path in AppNavigation). Logged-out
+                            // heart taps stash a pending favorite; dismiss → sign-in.
+                            Box(modifier = Modifier.fillMaxSize().background(Color(0xFFFAFAFA)))
+                            LaunchedEffect(content.venue.id) {
+                                val meta = live.localapp.local.domain.repository.VenueWithMeta(
+                                    venue = content.venue,
+                                    primaryCategory = content.venue.category,
+                                    tags = emptyList(),
+                                    upcomingEventCount = 0,
+                                    upcomingEvents = emptyList(),
+                                    distanceMiles = null,
+                                )
+                                showNativeVenueDetail(
+                                    venueWithMeta = meta,
+                                    cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                                    onDismissed = { dismissToAuth() },
+                                    isFavorited = false,
+                                    onFavorited = { _ ->
+                                        val settings = com.russhwolf.settings.Settings()
+                                        settings.putString("pending_favorite_venue", content.venue.id)
+                                        settings.putString("pending_favorite_venue_category", content.venue.category ?: "")
+                                    },
+                                )
+                                // The shared payload carries no event list — hydrate
+                                // the native detail with the venue's upcoming events.
+                                val events = try {
+                                    KoinPlatform.getKoin()
+                                        .get<live.localapp.local.domain.repository.VenueRepository>()
+                                        .getUpcomingEventsForVenue(
+                                            content.venue.name,
+                                            content.venue.city,
+                                            content.venue.latitude,
+                                            content.venue.longitude,
+                                        )
+                                } catch (_: Exception) {
+                                    emptyList()
+                                }
+                                updateNativeVenueDetailEvents(content.venue.id, events)
+                            }
+                        } else {
+                            // Simple venue preview with "Add to Favorites" CTA
+                            live.localapp.local.ui.places.VenueDetailPage(
+                                venueWithMeta = live.localapp.local.domain.repository.VenueWithMeta(
+                                    venue = content.venue,
+                                    primaryCategory = content.venue.category,
+                                    tags = emptyList(),
+                                    upcomingEventCount = 0,
+                                    upcomingEvents = emptyList(),
+                                    distanceMiles = null,
+                                ),
+                                events = emptyList(),
+                                isLoading = false,
+                                onBack = dismissToAuth,
+                                isShared = true,
+                                onSaveVenue = {
+                                    val settings = com.russhwolf.settings.Settings()
+                                    settings.putString("pending_favorite_venue", content.venue.id)
+                                    settings.putString("pending_favorite_venue_category", content.venue.category ?: "")
+                                    dismissToAuth()
+                                },
+                            )
+                        }
                     }
                     null -> appState = AppState.AUTH
                 }

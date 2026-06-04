@@ -110,9 +110,10 @@ Deno.serve(async (req) => {
 
   const supabase = createClient(supabaseUrl, serviceKey);
 
-  // Pull user data in parallel — profile, taste, recent plan title.
-  // Each piece is optional; a brand-new user with no data still gets
-  // generic-but-time-aware chips.
+  // Pull user data in parallel — profile + taste. Each piece is optional; a
+  // brand-new user with no data still gets generic-but-time-aware chips.
+  // (We no longer query the user's upcoming plan — see the note below where
+  // user context is assembled: plan-edit openers don't work in the main chat.)
   const profileQ = supabase
     .from("user_profiles")
     .select("first_name, city, selected_categories, selected_neighborhoods, selected_venues")
@@ -125,18 +126,9 @@ Deno.serve(async (req) => {
     .eq("user_id", userId)
     .maybeSingle();
 
-  const upcomingPlanQ = supabase
-    .from("plans")
-    .select("name, date")
-    .eq("user_id", userId)
-    .eq("is_past", false)
-    .order("created_at", { ascending: false })
-    .limit(1);
-
-  const [profileRes, tasteRes, planRes] = await Promise.all([profileQ, tasteQ, upcomingPlanQ]);
+  const [profileRes, tasteRes] = await Promise.all([profileQ, tasteQ]);
   const profile = profileRes.data ?? null;
   const taste = tasteRes.data ?? null;
-  const upcomingPlan = (planRes.data ?? [])[0] ?? null;
 
   // Surface the top 3 taste scores so Claude can prefer them over
   // raw onboarding picks (which can be stale or aspirational).
@@ -172,9 +164,11 @@ Deno.serve(async (req) => {
   if (topCategories.length) userContextLines.push(`Engagement-top categories (strongest signal): ${topCategories.join(", ")}`);
   if (topCuisines.length) userContextLines.push(`Top cuisines: ${topCuisines.join(", ")}`);
   if (topNeighborhoods.length) userContextLines.push(`Top neighborhoods (engagement): ${topNeighborhoods.join(", ")}`);
-  if (upcomingPlan?.name) {
-    userContextLines.push(`Has upcoming plan: "${upcomingPlan.name}" (${upcomingPlan.date ?? "soon"})`);
-  }
+  // NOTE: we intentionally do NOT surface the user's upcoming saved plan here.
+  // The opener chips feed the MAIN Ask Bo chat, which builds NEW plans and has
+  // no mechanism to edit a previously-saved plan. A chip like "Add to my
+  // boston date night plan" therefore led nowhere when tapped. Saved-plan
+  // editing lives in the plan-detail screen's own Bo chat, not here.
 
   const systemPrompt = `You generate exactly ${CHIP_COUNT} short starter prompts for "Bo," a local-events AI assistant. The user sees these as tappable chips when they open the chat — tapping one sends that prompt to Bo verbatim.
 
@@ -193,9 +187,8 @@ CONTENT (in priority order):
    - Tuesday morning → "Things to do this week"
    - Late night any day → "Plans for tomorrow"
 2. Use strongest user signals when they exist (favorite venue → "What's on at X?", top engagement category → "Live music this week"). Engagement-top categories beat onboarding categories when both exist.
-3. If the user has an upcoming plan, make ONE chip about that plan, e.g. "Add to my Friday plan" or "Tweak my Saturday".
-4. Fill remaining slots with prompts tuned to local time/day: weekend prompts if it's Thu–Sat, midweek prompts otherwise.
-5. NEVER repeat the same intent twice. NEVER reference the user's first name in the chip text. NEVER mention "Bo" or "the assistant" in the chip.
+3. Fill remaining slots with prompts tuned to local time/day: weekend prompts if it's Thu–Sat, midweek prompts otherwise.
+4. NEVER repeat the same intent twice. NEVER reference the user's first name in the chip text. NEVER mention "Bo" or "the assistant" in the chip. NEVER make a chip about adding to / editing an existing saved plan — these openers feed the main chat, which only builds new plans.
 
 Return ONLY the ${CHIP_COUNT} chips, one per line. No preamble, no commentary, no trailing notes.`;
 

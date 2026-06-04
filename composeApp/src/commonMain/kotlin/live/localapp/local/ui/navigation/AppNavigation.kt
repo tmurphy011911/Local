@@ -44,8 +44,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import live.localapp.local.ui.common.CircleShape
+import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Place
 import androidx.compose.material.icons.rounded.Star
@@ -126,12 +126,8 @@ import live.localapp.local.platform.openChatSheet
 import live.localapp.local.platform.setupNativeTabBarCallbacks
 import live.localapp.local.platform.setTabBarUserInitial
 import live.localapp.local.platform.requestHeroCollapse
-import live.localapp.local.platform.checkClipboardForDeepLink
-import live.localapp.local.platform.checkInstallReferrerForDeepLink
 import live.localapp.local.platform.checkSubscriptionStatus
 import live.localapp.local.platform.purchaseSubscription
-import live.localapp.local.platform.clearClipboardDeepLink
-import live.localapp.local.platform.setDeepLinkCallback
 import live.localapp.local.platform.presentShareSheet
 import live.localapp.local.platform.showNativePlanDetail
 import live.localapp.local.platform.requestHeroExpand
@@ -255,72 +251,35 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         return existing.any { it.title == plan.title && it.city == plan.city }
     }
 
-    // Check for deferred deep link on launch (Play Install Referrer on Android,
-    // clipboard fallback on iOS).
-    LaunchedEffect(Unit) {
-        val deepLink = (checkInstallReferrerForDeepLink() ?: checkClipboardForDeepLink())
-            ?: return@LaunchedEffect
-        println("DeepLink: found deferred link: $deepLink")
-        clearClipboardDeepLink()
-        when {
-            deepLink.startsWith("/p/") -> {
-                val token = deepLink.removePrefix("/p/")
-                val plan = planRepo.getSharedPlan(token)
-                if (plan != null) {
-                    if (userAlreadyHasPlan(plan)) {
-                        selectedPlan = plan
-                    } else {
-                        sharedPlan = plan
-                    }
+    // Deep links are resolved once by DeepLinkController (the single owner of the
+    // runtime Universal Link callback and the deferred install-referrer/clipboard
+    // check). Here — the logged-in surface — we just observe the resolved link
+    // and present it as an overlay, then consume() so it isn't shown twice.
+    // App.kt observes the same flow for the logged-out preview; only one of the
+    // two is ever composed at a time, so there's no double-handling.
+    val deepLinkController = remember { koin.get<live.localapp.local.feature.deeplink.DeepLinkController>() }
+    val pendingDeepLink by deepLinkController.pending.collectAsState()
+    LaunchedEffect(pendingDeepLink) {
+        when (val content = pendingDeepLink) {
+            is live.localapp.local.feature.deeplink.DeepLinkContent.SharedPlan -> {
+                // If they already have this plan, open their own copy; otherwise
+                // show the invite-accept preview.
+                if (userAlreadyHasPlan(content.plan)) {
+                    selectedPlan = content.plan
+                } else {
+                    sharedPlan = content.plan
                 }
+                deepLinkController.consume()
             }
-            deepLink.startsWith("/e/") -> {
-                val eventId = deepLink.removePrefix("/e/")
-                val event = eventRepo.getEvent(eventId)
-                if (event != null) {
-                    sharedEvent = event
-                }
+            is live.localapp.local.feature.deeplink.DeepLinkContent.SharedEvent -> {
+                sharedEvent = content.event
+                deepLinkController.consume()
             }
-            deepLink.startsWith("/v/") -> {
-                val venueId = deepLink.removePrefix("/v/")
-                val venues = venueRepo.getVenuesByIds(listOf(venueId))
-                val venue = venues.firstOrNull()
-                if (venue != null) {
-                    sharedVenue = venue
-                }
+            is live.localapp.local.feature.deeplink.DeepLinkContent.SharedVenue -> {
+                sharedVenue = content.venue
+                deepLinkController.consume()
             }
-        }
-    }
-
-    // Listen for Universal Link deep links while app is running. Callback receives
-    // the full URL path with prefix (/p/{token}, /e/{id}, /v/{id}).
-    LaunchedEffect(Unit) {
-        setDeepLinkCallback { path ->
-            scope.launch {
-                when {
-                    path.startsWith("/p/") -> {
-                        val token = path.removePrefix("/p/")
-                        val plan = planRepo.getSharedPlan(token)
-                        if (plan != null) {
-                            if (userAlreadyHasPlan(plan)) {
-                                selectedPlan = plan
-                            } else {
-                                sharedPlan = plan
-                            }
-                        }
-                    }
-                    path.startsWith("/e/") -> {
-                        val eventId = path.removePrefix("/e/")
-                        val event = eventRepo.getEvent(eventId)
-                        if (event != null) sharedEvent = event
-                    }
-                    path.startsWith("/v/") -> {
-                        val venueId = path.removePrefix("/v/")
-                        val venue = venueRepo.getVenuesByIds(listOf(venueId)).firstOrNull()
-                        if (venue != null) sharedVenue = venue
-                    }
-                }
-            }
+            null -> { /* nothing pending */ }
         }
     }
 
@@ -553,6 +512,37 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             },
                             showUpdateBanner = showUpdateBanner,
                             onDismissUpdateBanner = onDismissUpdateBanner,
+                            onSeeAllVenue = { venueName, _ ->
+                                // Resolve the venue by name (fav-venue rails carry only the
+                                // name in their title) then open its detail page. iOS MUST
+                                // use the native detail — the Compose VenueDetailPage overlay
+                                // is never exercised on iOS and crashes there; every other
+                                // iOS venue entry point goes native (mirrors the plan-slot tap).
+                                scope.launch {
+                                    val v = try { venueRepo.searchByName(venueName) } catch (_: Throwable) { null }
+                                        ?: return@launch
+                                    val meta = live.localapp.local.domain.repository.VenueWithMeta(venue = v)
+                                    if (hasNativeHeroTransition) {
+                                        live.localapp.local.platform.showNativeVenueDetail(
+                                            venueWithMeta = meta,
+                                            cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                                            onDismissed = {},
+                                        )
+                                        val events = try {
+                                            venueRepo.getUpcomingEventsForVenue(v.name, v.city, v.latitude, v.longitude)
+                                        } catch (_: Exception) { emptyList() }
+                                        live.localapp.local.platform.updateNativeVenueDetailEvents(v.id, events)
+                                    } else {
+                                        // Android: root-level Compose overlay, renders over the
+                                        // current tab (selectVenue loads the venue's events).
+                                        placesVm.selectVenue(meta)
+                                    }
+                                }
+                            },
+                            onSeeAllEvents = { category, dateFilter ->
+                                placesVm.openEventsFiltered(category, dateFilter)
+                                selectedTab = Tab.PLACES
+                            },
                         )
                     }
                     Tab.CHAT -> {
@@ -561,15 +551,27 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         selectedTab = Tab.HOME
                     }
                     Tab.PLACES -> {
-                        // Sync location from home state (includes lat/lng for geo queries)
-                        if (homeState.userLat != null && homeState.userLng != null) {
-                            placesVm.setUserLocation(homeState.userLat!!, homeState.userLng!!)
+                        // Sync location from home state (includes lat/lng for geo queries).
+                        // Keyed LaunchedEffect so these side-effects fire once per real
+                        // change — running them inline in the composable body re-fired on
+                        // every recomposition, and each ensureLoaded()/setUserLocation()
+                        // cancelled the in-flight venue fetch (placesLoadJob?.cancel()),
+                        // leaving the grid silently blank while location settled.
+                        LaunchedEffect(
+                            homeState.userLat,
+                            homeState.userLng,
+                            homeState.locationName,
+                            homeState.streakDays,
+                        ) {
+                            if (homeState.userLat != null && homeState.userLng != null) {
+                                placesVm.setUserLocation(homeState.userLat!!, homeState.userLng!!)
+                            }
+                            if (homeState.locationName.isNotBlank()) {
+                                placesVm.setLocationName(homeState.locationName)
+                            }
+                            placesVm.setStreakDays(homeState.streakDays)
+                            placesVm.ensureLoaded()
                         }
-                        if (homeState.locationName.isNotBlank()) {
-                            placesVm.setLocationName(homeState.locationName)
-                        }
-                        placesVm.setStreakDays(homeState.streakDays)
-                        placesVm.ensureLoaded()
                         val initial = homeState.userName.firstOrNull()?.uppercase() ?: ""
                         PlacesScreen(
                             placesVm,
@@ -1017,6 +1019,17 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 chatOpenCount++
                                 openChatOrLogin()
                             },
+                            onBuildPlanFromSavedEvent = { templateMessage, eventId, eventTitle ->
+                                // Pin the saved event as the plan anchor so Bo
+                                // uses the literal event_id (no venue-name text
+                                // search that can miss, e.g. "Tap at The Dance
+                                // Connection, LLC"). The client also re-injects
+                                // this id deterministically if Bo drops it.
+                                pendingChatMessage = templateMessage
+                                chatVm.setPendingAnchorEvent(eventId, eventTitle)
+                                chatOpenCount++
+                                openChatOrLogin()
+                            },
                             onInviteClick = { plan -> sharedPlan = plan },
                             onEventClick = { eventId, bounds ->
                                 scope.launch {
@@ -1121,33 +1134,39 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 )
             }
 
-        // Venue detail — slide up / slide down transition
-        AnimatedVisibility(
-            visible = placesState.selectedVenue != null && placesState.selectedVenueEvents.isNotEmpty(),
-            enter = slideInVertically(animationSpec = tween(320)) { it } + fadeIn(animationSpec = tween(220)),
-            exit = slideOutVertically(animationSpec = tween(280)) { it } + fadeOut(animationSpec = tween(180)),
-        ) {
-            placesState.selectedVenue?.let { venue ->
-                Box(modifier = Modifier.fillMaxSize().background(AppColors.White)) {
-                    VenueDetailPage(
-                        venueWithMeta = venue,
-                        events = placesState.selectedVenueEvents,
-                        isLoading = placesState.isSheetLoading,
-                        onBack = { placesVm.dismissSheet() },
-                        isFavorited = venue.venue.id in placesState.favoriteVenueIds,
-                        onFavoriteToggle = { placesVm.toggleVenueFavorite(venue.venue.id, venue.primaryCategory) },
-                        onShare = {
-                            presentShareSheet(venue.venue.name, "https://localapp.live/v/${venue.venue.id}")
-                        },
-                    )
+        // Venue detail — slide up / slide down transition.
+        // iOS NEVER renders this Compose overlay: every iOS venue entry point
+        // presents the native SwiftUI VenueDetailView via showNativeVenueDetail
+        // (mirrors the chat-sheet guard below). Without this gate, any stray
+        // selectVenue() call on iOS would pop the Compose page over the native UI.
+        if (!hasNativeHeroTransition) {
+            AnimatedVisibility(
+                visible = placesState.selectedVenue != null && placesState.selectedVenueEvents.isNotEmpty(),
+                enter = slideInVertically(animationSpec = tween(320)) { it } + fadeIn(animationSpec = tween(220)),
+                exit = slideOutVertically(animationSpec = tween(280)) { it } + fadeOut(animationSpec = tween(180)),
+            ) {
+                placesState.selectedVenue?.let { venue ->
+                    Box(modifier = Modifier.fillMaxSize().background(AppColors.White)) {
+                        VenueDetailPage(
+                            venueWithMeta = venue,
+                            events = placesState.selectedVenueEvents,
+                            isLoading = placesState.isSheetLoading,
+                            onBack = { placesVm.dismissSheet() },
+                            isFavorited = venue.venue.id in placesState.favoriteVenueIds,
+                            onFavoriteToggle = { placesVm.toggleVenueFavorite(venue.venue.id, venue.primaryCategory) },
+                            onShare = {
+                                presentShareSheet(venue.venue.name, "https://localapp.live/v/${venue.venue.id}")
+                            },
+                        )
+                    }
                 }
             }
-        }
-        if (placesState.selectedVenue != null && placesState.selectedVenueEvents.isEmpty()) {
-            VenueDetailSheet(
-                venueWithMeta = placesState.selectedVenue!!,
-                onDismiss = { placesVm.dismissSheet() },
-            )
+            if (placesState.selectedVenue != null && placesState.selectedVenueEvents.isEmpty()) {
+                VenueDetailSheet(
+                    venueWithMeta = placesState.selectedVenue!!,
+                    onDismiss = { placesVm.dismissSheet() },
+                )
+            }
         }
 
         // Plan detail — spring slide up with scale (matches native event detail feel)
@@ -1422,58 +1441,127 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 + fadeOut(animationSpec = tween(150)),
         ) {
             sharedPlan?.let { plan ->
-                Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
-                    PlanDetailScreen(
-                        plan = plan,
-                        isShared = true,
-                        // A user viewing a shared invite link is by definition not the creator.
-                        isCreator = false,
-                        onBack = {
-                            // Didn't accept — add to pending invites so it shows in "Invited" section
-                            val plansVm: PlansViewModel = koin.get()
-                            plansVm.addPendingInvite(plan)
-                            sharedPlan = null
-                        },
-                        onShare = {},
-                        onSaveToPlan = {
-                            val plansVm: PlansViewModel = koin.get()
-                            if (isLoggedIn) {
-                                plansVm.acceptInvite(plan)
-                                sharedPlan = null
-                                selectedTab = Tab.PLANS
-                            } else {
-                                // Save plan to accept after auth, then trigger login
-                                plansVm.setPendingAcceptAfterAuth(plan)
-                                sharedPlan = null
-                                onLogout()
-                            }
-                        },
-                        onSlotTap = { slot ->
-                            // Same tap-to-detail behavior as the main path so
-                            // someone previewing a shared plan can inspect a
-                            // stop before deciding to accept.
-                            scope.launch {
-                                val eventId = slot.eventId
-                                if (!eventId.isNullOrBlank()) {
-                                    val ev = kotlinx.coroutines.withTimeoutOrNull(300) {
-                                        try { eventRepo.getEvent(eventId) } catch (_: Throwable) { null }
-                                    } ?: slot.toFallbackEvent()
-                                    detailFromPlans = false
-                                    detailEvent = ev
+                if (hasNativeHeroTransition) {
+                    // iOS: present the native SwiftUI PlanDetailView in read-only
+                    // shared-invite mode. The Compose PlanDetailScreen overlay
+                    // crashes on iOS (mirror the native shared event/venue paths).
+                    LaunchedEffect(plan.id) {
+                        sharedPlan = null // clear so the Compose overlay never renders
+                        showNativePlanDetail(
+                            plan = plan,
+                            cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                            isShared = true,
+                            onShare = {},
+                            onDismissed = {
+                                // Didn't accept — keep it under "Invited" so the
+                                // user can come back to it from the Plans tab.
+                                val plansVm: PlansViewModel = koin.get()
+                                plansVm.addPendingInvite(plan)
+                            },
+                            onSaveToPlan = {
+                                val plansVm: PlansViewModel = koin.get()
+                                if (isLoggedIn) {
+                                    plansVm.acceptInvite(plan)
+                                    selectedTab = Tab.PLANS
                                 } else {
-                                    val name = slot.venueName ?: slot.name
-                                    if (name.isNotBlank()) {
-                                        val v = kotlinx.coroutines.withTimeoutOrNull(300) {
-                                            try { venueRepo.searchByName(name) } catch (_: Throwable) { null }
-                                        } ?: slot.toFallbackVenue()
-                                        placesVm.selectVenue(
-                                            live.localapp.local.domain.repository.VenueWithMeta(venue = v)
-                                        )
+                                    plansVm.setPendingAcceptAfterAuth(plan)
+                                    onLogout()
+                                }
+                            },
+                            onSlotTap = { dayIdx, slotId, eventId, venueName ->
+                                // Inspect a stop before deciding to accept — open
+                                // the same native event/venue detail used elsewhere.
+                                val slot = plan.days.getOrNull(dayIdx)
+                                    ?.slots?.firstOrNull { it.id == slotId }
+                                scope.launch {
+                                    if (!eventId.isNullOrBlank()) {
+                                        val ev = kotlinx.coroutines.withTimeoutOrNull(300) {
+                                            try { eventRepo.getEvent(eventId) } catch (_: Throwable) { null }
+                                        } ?: slot?.toFallbackEvent()
+                                        if (ev != null) {
+                                            live.localapp.local.platform.showNativeEventDetail(
+                                                event = ev,
+                                                cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                                                cardImageUrl = ev.imageUrl,
+                                                onDismissed = {},
+                                                onFavorited = null,
+                                                showDirections = false,
+                                                isFavorited = false,
+                                            )
+                                        }
+                                    } else {
+                                        val name = venueName ?: slot?.name
+                                        if (!name.isNullOrBlank()) {
+                                            val v = kotlinx.coroutines.withTimeoutOrNull(300) {
+                                                try { venueRepo.searchByName(name) } catch (_: Throwable) { null }
+                                            } ?: slot?.toFallbackVenue()
+                                            if (v != null) {
+                                                live.localapp.local.platform.showNativeVenueDetail(
+                                                    venueWithMeta = live.localapp.local.domain.repository.VenueWithMeta(venue = v),
+                                                    cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                                                    onDismissed = {},
+                                                )
+                                            }
+                                        }
                                     }
                                 }
-                            }
-                        },
-                    )
+                            },
+                        )
+                    }
+                } else {
+                    Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
+                        PlanDetailScreen(
+                            plan = plan,
+                            isShared = true,
+                            // A user viewing a shared invite link is by definition not the creator.
+                            isCreator = false,
+                            onBack = {
+                                // Didn't accept — add to pending invites so it shows in "Invited" section
+                                val plansVm: PlansViewModel = koin.get()
+                                plansVm.addPendingInvite(plan)
+                                sharedPlan = null
+                            },
+                            onShare = {},
+                            onSaveToPlan = {
+                                val plansVm: PlansViewModel = koin.get()
+                                if (isLoggedIn) {
+                                    plansVm.acceptInvite(plan)
+                                    sharedPlan = null
+                                    selectedTab = Tab.PLANS
+                                } else {
+                                    // Save plan to accept after auth, then trigger login
+                                    plansVm.setPendingAcceptAfterAuth(plan)
+                                    sharedPlan = null
+                                    onLogout()
+                                }
+                            },
+                            onSlotTap = { slot ->
+                                // Same tap-to-detail behavior as the main path so
+                                // someone previewing a shared plan can inspect a
+                                // stop before deciding to accept.
+                                scope.launch {
+                                    val eventId = slot.eventId
+                                    if (!eventId.isNullOrBlank()) {
+                                        val ev = kotlinx.coroutines.withTimeoutOrNull(300) {
+                                            try { eventRepo.getEvent(eventId) } catch (_: Throwable) { null }
+                                        } ?: slot.toFallbackEvent()
+                                        detailFromPlans = false
+                                        detailEvent = ev
+                                    } else {
+                                        val name = slot.venueName ?: slot.name
+                                        if (name.isNotBlank()) {
+                                            val v = kotlinx.coroutines.withTimeoutOrNull(300) {
+                                                try { venueRepo.searchByName(name) } catch (_: Throwable) { null }
+                                            } ?: slot.toFallbackVenue()
+                                            placesVm.selectVenue(
+                                                live.localapp.local.domain.repository.VenueWithMeta(venue = v)
+                                            )
+                                        }
+                                    }
+                                }
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -1487,25 +1575,44 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 + fadeOut(animationSpec = tween(150)),
         ) {
             sharedEvent?.let { event ->
-                Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
-                    EventDetailScreen(
-                        event = event,
-                        onBack = { sharedEvent = null },
-                        sharedMode = true,
-                        onSaveEvent = {
-                            if (isLoggedIn) {
-                                val communityRepo = koin.get<live.localapp.local.domain.repository.CommunityInterestRepository>()
-                                communityRepo.recordFavorite(event.id, live.localapp.local.domain.repository.InteractionType.EVENT, event.subcategory ?: event.category)
-                                sharedEvent = null
-                                selectedTab = Tab.HOME
-                            } else {
-                                val settings = com.russhwolf.settings.Settings()
-                                settings.putString("pending_favorite_event", event.id)
-                                sharedEvent = null
-                                onLogout()
-                            }
-                        },
-                    )
+                if (hasNativeHeroTransition) {
+                    // iOS: present the native SwiftUI event detail. The Compose
+                    // EventDetailScreen overlay is never exercised on iOS and
+                    // crashes there — mirror the detailEvent native path below.
+                    LaunchedEffect(event) {
+                        sharedEvent = null // clear immediately so the Compose overlay never renders
+                        showNativeEventDetail(
+                            event = event,
+                            cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                            cardImageUrl = event.imageUrl,
+                            onDismissed = {},
+                            onFavorited = { id ->
+                                homeVm.toggleEventFavorite(id, event.subcategory ?: event.category, source = "shared_event")
+                            },
+                            isFavorited = event.id in homeState.favoriteEventIds,
+                        )
+                    }
+                } else {
+                    Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
+                        EventDetailScreen(
+                            event = event,
+                            onBack = { sharedEvent = null },
+                            sharedMode = true,
+                            onSaveEvent = {
+                                if (isLoggedIn) {
+                                    val communityRepo = koin.get<live.localapp.local.domain.repository.CommunityInterestRepository>()
+                                    communityRepo.recordFavorite(event.id, live.localapp.local.domain.repository.InteractionType.EVENT, event.subcategory ?: event.category)
+                                    sharedEvent = null
+                                    selectedTab = Tab.HOME
+                                } else {
+                                    val settings = com.russhwolf.settings.Settings()
+                                    settings.putString("pending_favorite_event", event.id)
+                                    sharedEvent = null
+                                    onLogout()
+                                }
+                            },
+                        )
+                    }
                 }
             }
         }
@@ -1519,35 +1626,70 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 + fadeOut(animationSpec = tween(150)),
         ) {
             sharedVenue?.let { venue ->
-                Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
-                    VenueDetailPage(
-                        venueWithMeta = live.localapp.local.domain.repository.VenueWithMeta(
+                if (hasNativeHeroTransition) {
+                    // iOS: present the native SwiftUI venue detail. The Compose
+                    // VenueDetailPage overlay is never exercised on iOS and
+                    // crashes there — mirror the native venue path used by Places.
+                    LaunchedEffect(venue) {
+                        sharedVenue = null // clear immediately so the Compose overlay never renders
+                        val meta = live.localapp.local.domain.repository.VenueWithMeta(
                             venue = venue,
                             primaryCategory = venue.category,
                             tags = emptyList(),
                             upcomingEventCount = 0,
                             upcomingEvents = emptyList(),
                             distanceMiles = null,
-                        ),
-                        events = emptyList(),
-                        isLoading = false,
-                        onBack = { sharedVenue = null },
-                        isShared = true,
-                        onSaveVenue = {
-                            if (isLoggedIn) {
+                        )
+                        live.localapp.local.platform.showNativeVenueDetail(
+                            venueWithMeta = meta,
+                            cardX = 0f, cardY = 0f, cardW = 0f, cardH = 0f,
+                            onDismissed = {},
+                            isFavorited = venue.id in placesState.favoriteVenueIds,
+                            onFavorited = { venueId ->
                                 val communityRepo = koin.get<live.localapp.local.domain.repository.CommunityInterestRepository>()
-                                communityRepo.recordFavorite(venue.id, live.localapp.local.domain.repository.InteractionType.PLACE, venue.category)
-                                sharedVenue = null
-                                selectedTab = Tab.PLACES
-                            } else {
-                                val settings = com.russhwolf.settings.Settings()
-                                settings.putString("pending_favorite_venue", venue.id)
-                                settings.putString("pending_favorite_venue_category", venue.category ?: "")
-                                sharedVenue = null
-                                onLogout()
-                            }
-                        },
-                    )
+                                communityRepo.recordFavorite(venueId, live.localapp.local.domain.repository.InteractionType.PLACE, venue.category)
+                            },
+                        )
+                        // Hydrate events for the native detail — the shared payload
+                        // carries no event list, so query the venue's upcoming events.
+                        val events = try {
+                            venueRepo.getUpcomingEventsForVenue(venue.name, venue.city, venue.latitude, venue.longitude)
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                        live.localapp.local.platform.updateNativeVenueDetailEvents(venue.id, events)
+                    }
+                } else {
+                    Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
+                        VenueDetailPage(
+                            venueWithMeta = live.localapp.local.domain.repository.VenueWithMeta(
+                                venue = venue,
+                                primaryCategory = venue.category,
+                                tags = emptyList(),
+                                upcomingEventCount = 0,
+                                upcomingEvents = emptyList(),
+                                distanceMiles = null,
+                            ),
+                            events = emptyList(),
+                            isLoading = false,
+                            onBack = { sharedVenue = null },
+                            isShared = true,
+                            onSaveVenue = {
+                                if (isLoggedIn) {
+                                    val communityRepo = koin.get<live.localapp.local.domain.repository.CommunityInterestRepository>()
+                                    communityRepo.recordFavorite(venue.id, live.localapp.local.domain.repository.InteractionType.PLACE, venue.category)
+                                    sharedVenue = null
+                                    selectedTab = Tab.PLACES
+                                } else {
+                                    val settings = com.russhwolf.settings.Settings()
+                                    settings.putString("pending_favorite_venue", venue.id)
+                                    settings.putString("pending_favorite_venue_category", venue.category ?: "")
+                                    sharedVenue = null
+                                    onLogout()
+                                }
+                            },
+                        )
+                    }
                 }
             }
         }

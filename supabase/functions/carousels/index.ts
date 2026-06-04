@@ -1664,7 +1664,7 @@ function buildCarousels(
         if (venueRailEvents.length === 0) continue;
         favVenueCarousels.push({
           slug: `fav-venue-${venue.toLowerCase().replace(/ /g, "-")}`,
-          title: `Coming Up at ${venue}`,
+          title: `At ${venue}`,
           subtitle: null,
           filter_type: "favorite_venue",
           events: venueRailEvents,

@@ -20,6 +20,14 @@
             android:name="com.google.android.geo.API_KEY"
             android:value="${MAPS_API_KEY}" />
 
+        <!-- Disable Sentry's auto-init ContentProvider. Without this it runs
+             before MainActivity with no manifest DSN and throws "DSN is
+             required", crashing the app at process start. We init Sentry
+             manually in Analytics.android.kt with BuildKeys.SENTRY_DSN_ANDROID. -->
+        <meta-data
+            android:name="io.sentry.auto-init"
+            android:value="false" />
+
         <activity
             android:exported="true"
             android:name=".MainActivity">

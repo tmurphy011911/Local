@@ -361,10 +361,13 @@ actual fun showNativePlanDetail(
     onSeeMoreSwapOptions: (Int, String, String) -> Unit,
     onSwapForUnavailable: (Int, String, String, String) -> Unit,
     onSlotTap: (Int, String, String?, String?) -> Unit,
+    isShared: Boolean,
+    onSaveToPlan: () -> Unit,
 ) {
     PlanDetailBridge.onSlotTap = onSlotTap
     PlanDetailBridge.onDismissed = onDismissed
     PlanDetailBridge.onShare = onShare
+    PlanDetailBridge.onSaveToPlan = onSaveToPlan
     PlanDetailBridge.onEditPlan = onEditPlan
     PlanDetailBridge.onEditDay = onEditDay
     PlanDetailBridge.onSetGroupSize = onSetGroupSize
@@ -410,6 +413,7 @@ actual fun showNativePlanDetail(
         put("confirmedCount", kotlinx.serialization.json.JsonPrimitive(plan.confirmedCount))
         put("attendeesCanEdit", kotlinx.serialization.json.JsonPrimitive(plan.attendeesCanEdit))
         put("currentUserId", kotlinx.serialization.json.JsonPrimitive(currentUserId))
+        put("isShared", kotlinx.serialization.json.JsonPrimitive(isShared))
         put("attendees", kotlinx.serialization.json.buildJsonArray {
             plan.attendees.forEach { a ->
                 add(kotlinx.serialization.json.buildJsonObject {

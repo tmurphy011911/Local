@@ -1,4 +1,15 @@
 import { captureError, track } from "./observability.js";
+import { SHARE_CARD_PNG_B64 } from "./share-card-data.js";
+
+// Decode the embedded share card once at module load (cold start), not per request.
+function base64ToBytes(b64) {
+  const bin = atob(b64);
+  const len = bin.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+var SHARE_CARD_PNG = base64ToBytes(SHARE_CARD_PNG_B64);
 
 var SUPABASE_FUNCTION_URL = "https://blifubxslaucshmlphdc.supabase.co/functions/v1/share-preview";
 var SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJsaWZ1YnhzbGF1Y3NobWxwaGRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3MjgyNjEsImV4cCI6MjA4ODMwNDI2MX0.xx-iy7kKhHviAjtjfXdxNHp4pmKU-in3efr2SkvWTf0";
@@ -43,6 +54,20 @@ export default {
         route = "aasa";
         const resp = new Response(AASA, {
           headers: { "Content-Type": "application/json", "Cache-Control": "public, max-age=86400" }
+        });
+        status = resp.status;
+        return resp;
+      }
+
+      if (path === "/share-card.png") {
+        route = "share_card";
+        const resp = new Response(SHARE_CARD_PNG, {
+          headers: {
+            "Content-Type": "image/png",
+            // Long cache: the card is static. Bump the og:image query string
+            // (?v=N) in share-preview if it ever needs to change.
+            "Cache-Control": "public, max-age=31536000, immutable",
+          },
         });
         status = resp.status;
         return resp;

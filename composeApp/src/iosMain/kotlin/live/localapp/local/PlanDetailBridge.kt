@@ -32,6 +32,8 @@ object PlanDetailBridge {
 
     // ── Header actions ─────────────────────────────────────────────────
     var onShare: (() -> Unit)? = null
+    /** Shared-invite mode only: tapped "Save to My Plans" / "Accept". */
+    var onSaveToPlan: (() -> Unit)? = null
     /** Tapped the Edit Plan item in the header overflow menu. */
     var onEditPlan: (() -> Unit)? = null
     /** Tapped Delete Plan and confirmed. */
