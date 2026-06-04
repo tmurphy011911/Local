@@ -98,10 +98,15 @@ enum class LocationMode { CURRENT_LOCATION, MANUAL }
 
 // Bounding boxes for supported states (approximate)
 private data class StateBounds(val code: String, val latMin: Double, val latMax: Double, val lngMin: Double, val lngMax: Double)
+// NOTE: must stay in sync with the `states` table (is_live=true rows). This
+// list is hardcoded (not read from the table) so it ships with the app binary —
+// adding a live state requires a release, not just a DB flip. NJ is intentionally
+// omitted until its is_live flip + discovery pipeline land.
 private val SUPPORTED_STATE_BOUNDS = listOf(
     StateBounds("MA", 41.2, 42.9, -73.5, -69.9),
     StateBounds("RI", 41.1, 42.1, -72.0, -71.1),
     StateBounds("PA", 39.7, 42.3, -80.6, -74.6),
+    StateBounds("NY", 40.4, 45.1, -79.8, -71.8),
 )
 
 fun isLocationInSupportedState(lat: Double?, lng: Double?): Boolean {
@@ -117,6 +122,7 @@ private val PLACEHOLDER_CITIES_BY_STATE = mapOf(
     "MA" to listOf("Brookline", "Cambridge", "Hyannis"),
     "RI" to listOf("Providence", "Newport", "Warwick"),
     "PA" to listOf("Philadelphia", "Pittsburgh", "Lancaster"),
+    "NY" to listOf("New York City", "Buffalo", "Albany"),
 )
 private val DEFAULT_PLACEHOLDER_CITIES = listOf("a city or neighborhood")
 
