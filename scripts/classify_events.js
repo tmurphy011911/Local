@@ -127,8 +127,20 @@ const AUTO_EXCLUDE_PATTERNS = [
   { label: "worship-service", re: /\b(early morning prayer|daily prayer|morning prayer|evening prayer|weekly prayer|prayer group|bible study|worship service|sunday service|mass service|midday mass|noon mass|daily mass|weekday mass|morning mass|evening mass|noon prayer|sunday mass|church service|eucharist)\b/i },
 ];
 
+// Title-only exclusion: events whose TITLE marks them sold out or cancelled are
+// pulled from carousels (no-public-interest is filtered out of carousels /
+// explore / yocal). Matched against the TITLE ALONE \u2014 not description or venue \u2014
+// so a blurb like "last year's show sold out fast" can't suppress a live,
+// on-sale event. We match past-tense "cancelled/canceled" (not the bare verb
+// "cancel") so titles like "Cancel Culture: A Comedy Show" don't get caught.
+const SOLD_OUT_OR_CANCELED_RE = /\b(sold[\s-]+out|cancell?ed)\b/i;
+
 function autoExcludeReason(event) {
-  const haystack = [event.title || "", event.description || "", event.venue_name || ""].join(" \u2014 ");
+  const title = event.title || "";
+  // Title-only rule runs first and is intentionally narrow (see regex above).
+  if (SOLD_OUT_OR_CANCELED_RE.test(title)) return "sold-out-or-canceled";
+
+  const haystack = [title, event.description || "", event.venue_name || ""].join(" \u2014 ");
   for (const pat of AUTO_EXCLUDE_PATTERNS) {
     if (pat.re.test(haystack)) return pat.label;
   }
@@ -192,7 +204,13 @@ async function applyReclassifications(events, skipIds = new Set()) {
     // no-public-interest — otherwise a "Study Abroad Info Session"
     // would flip from no-public-interest back to "other" because
     // the reclassifier's "info session" rule runs after auto-exclusion.
+    // `skipIds` covers rows tagged THIS run; the subcategory check below
+    // also covers rows tagged on a PRIOR run that don't re-match an
+    // auto-exclude pattern this time (their title alone matches a "->other"
+    // rule). Without it, the daily prefilter un-hides already-excluded
+    // events every run.
     if (skipIds.has(e.id)) continue;
+    if (e.subcategory === "no-public-interest") continue;
     const target = reclassifyReason(e);
     if (target) matches.push({ ...e, _newSubcategory: target });
   }
@@ -261,6 +279,18 @@ async function applyAutoExclusions(events) {
   const byReason = {};
   for (const m of matches) byReason[m._autoExcludeReason] = (byReason[m._autoExcludeReason] || 0) + 1;
   for (const [reason, n] of Object.entries(byReason)) console.log(`  ${reason}: ${n}`);
+
+  // Safety bound: a sudden spike almost always means an upstream title-format
+  // change or a too-greedy pattern, not a real flood of excludable events. Abort
+  // the write rather than silently suppress thousands of events from carousels.
+  // Inspect with DRY_RUN=1; raise AUTO_EXCLUDE_MAX if the spike is legitimate.
+  const maxExclusions = parseInt(process.env.AUTO_EXCLUDE_MAX || "2000", 10);
+  if (!DRY_RUN && matches.length > maxExclusions) {
+    throw new Error(
+      `Auto-exclusion abort: ${matches.length} matches exceeds AUTO_EXCLUDE_MAX=${maxExclusions}. ` +
+        `Re-run with DRY_RUN=1 to inspect the matches, or set AUTO_EXCLUDE_MAX higher if expected.`
+    );
+  }
 
   if (DRY_RUN) {
     console.log("DRY RUN — not writing auto-exclusions\n");

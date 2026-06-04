@@ -1,4 +1,4 @@
-name: Daily — Event Sync & Cross-source Dedupe
+name: Daily — Event Sync, Dedupe & Pattern Prefilter
 
 on:
   schedule:
@@ -60,3 +60,28 @@ jobs:
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node dedupe_pass.js
+
+  # Deterministic pattern prefilter (no Claude call). Tags future/active events
+  # whose title marks them sold out or cancelled — plus the existing recovery /
+  # youth-sports / civic-meeting patterns — as subcategory="no-public-interest"
+  # so they drop out of carousels, explore, and Yocal. Runs daily (classify only
+  # runs the full Claude pass weekly) so a show that sells out or gets cancelled
+  # mid-week disappears within a day instead of lingering until Sunday.
+  # PREFILTER_ONLY scopes to start_at >= now AND is_active=true (keyset-paginated
+  # on the start_at index), so it's IO-light. Aborts if matches exceed
+  # AUTO_EXCLUDE_MAX (guards against an upstream title-format change).
+  prefilter-exclusions:
+    runs-on: ubuntu-latest
+    needs: [dedupe-pass]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Pattern prefilter (sold-out / cancelled + auto-exclusions)
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          PREFILTER_ONLY: '1'
+        run: node classify_events.js
