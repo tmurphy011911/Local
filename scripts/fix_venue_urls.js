@@ -27,6 +27,14 @@ const METRO = process.env.METRO || "boston";
 const DRY_RUN = process.env.DRY_RUN === "1";
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || "3", 10);
 const RECHECK_ALL = process.env.RECHECK_ALL === "1";
+// Optional state scope (e.g. STATE=NJ). Limits the venue fetch to one state so a
+// new-state run can't touch — or deactivate — venues in already-live states.
+const STATE = (process.env.STATE || "").trim().toUpperCase() || null;
+// When set, never flip is_active=false. For freshly Google-discovered states the
+// default deactivate-on-no-events-page behavior nukes legit venues (bowling,
+// wineries, diners) that simply lack an events calendar. NO_DEACTIVATE keeps any
+// events_url we DO discover while leaving every venue active.
+const NO_DEACTIVATE = process.env.NO_DEACTIVATE === "1";
 
 const FETCH_HEADERS = {
   "User-Agent":
@@ -212,6 +220,9 @@ async function fetchVenuesNeedingFix() {
   if (!RECHECK_ALL) {
     baseUrl += "&is_active=eq.true";
   }
+  if (STATE) {
+    baseUrl += `&state=eq.${encodeURIComponent(STATE)}`;
+  }
   baseUrl += "&order=name.asc";
 
   const allVenues = [];
@@ -285,13 +296,19 @@ async function fixVenue(venue) {
   // Step 2: Fetch venue's main website homepage
   const homepage = await fetchPage(venue.website);
   if (!homepage.ok) {
-    // Website itself is down — mark inactive
+    // Website itself is down — mark inactive (unless NO_DEACTIVATE).
+    if (NO_DEACTIVATE) {
+      return { name: venue.name, status: "kept", reason: `website returned ${homepage.status || homepage.error} (kept active)` };
+    }
     await updateVenue(venue.id, { is_active: false });
     return { name: venue.name, status: "deactivated", reason: `website returned ${homepage.status || homepage.error}` };
   }
 
   const cleanedHtml = stripHtmlKeepLinks(homepage.html);
   if (cleanedHtml.length < 50) {
+    if (NO_DEACTIVATE) {
+      return { name: venue.name, status: "kept", reason: "empty page (kept active)" };
+    }
     await updateVenue(venue.id, { is_active: false });
     return { name: venue.name, status: "deactivated", reason: "website returned empty page" };
   }
@@ -306,6 +323,9 @@ async function fixVenue(venue) {
 
   if (!discoveredUrl) {
     // Claude couldn't find an events page
+    if (NO_DEACTIVATE) {
+      return { name: venue.name, status: "kept", reason: "no events page found (kept active)" };
+    }
     await updateVenue(venue.id, { is_active: false, events_url: null });
     return { name: venue.name, status: "deactivated", reason: "no events page found by Claude" };
   }
@@ -316,6 +336,9 @@ async function fixVenue(venue) {
     // Try once more with GET instead of HEAD
     const getCheck = await fetchPage(discoveredUrl, 10_000);
     if (!getCheck.ok) {
+      if (NO_DEACTIVATE) {
+        return { name: venue.name, status: "kept", reason: `discovered URL 404, kept active: ${discoveredUrl}` };
+      }
       await updateVenue(venue.id, { is_active: false, events_url: null });
       return { name: venue.name, status: "deactivated", reason: `discovered URL 404: ${discoveredUrl}` };
     }

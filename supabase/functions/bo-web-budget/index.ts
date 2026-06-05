@@ -226,7 +226,32 @@ async function resolveUserState(supabase: any, userId: string): Promise<{ code: 
       .lte("lat_min", lat)
       .gte("lng_max", lng)
       .lte("lng_min", lng);
-    if (states && states.length > 0) return states[0];
+    if (states && states.length > 0) {
+      // State bboxes are deliberately loose and OVERLAP (e.g. NJ's box sits inside
+      // NY's — all of north Jersey matches both). A bare states[0] is then a
+      // non-deterministic coin flip on physical row order.
+      //
+      // Tie-break = prefer is_live, THEN nearest bbox center. This is a
+      // fallback-of-a-fallback: Path 1 (city→metro) resolves most users, so a
+      // point only reaches here when we have nothing but coordinates. Pure
+      // nearest-center mis-resolves cross-river metros — an NYC coord sits inside
+      // NJ's loose box and is closer to NJ's center than to NY's much larger box,
+      // so it would wrongly resolve NYC→NJ (and Philadelphia→NJ). Preferring a
+      // live state first keeps a real NY/PA user out of the false "not live yet"
+      // gate; only when NO matched state is live do we fall back to nearest-center
+      // among the (all non-live) candidates so the honest gate still fires.
+      const nearestCenter = (cands: any[]) =>
+        cands.reduce((a: any, b: any) => {
+          const d = (s: any) => {
+            const cLat = (s.lat_min + s.lat_max) / 2;
+            const cLng = (s.lng_min + s.lng_max) / 2;
+            return (lat - cLat) ** 2 + (lng - cLng) ** 2;
+          };
+          return d(b) < d(a) ? b : a;
+        });
+      const liveMatches = states.filter((s: any) => s.is_live);
+      return nearestCenter(liveMatches.length > 0 ? liveMatches : states);
+    }
   }
 
   return null;
