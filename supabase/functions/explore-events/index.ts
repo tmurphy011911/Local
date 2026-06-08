@@ -347,6 +347,23 @@ async function fetchVenueMeta(supabase: any): Promise<Record<string, VenueMeta>>
   return result;
 }
 
+// City (lowercased) → stable Storage photo URL. Last-resort image for events
+// that don't resolve to a venue (municipal at-large rows: venue_name is null,
+// so no venue photo). Only Storage-hosted rows are loaded — legacy rotted
+// Google Places URLs (which also embed an API key) are filtered out so they
+// never reach a client. Mirrors carousels/index.ts fetchCityPhotoCache.
+async function fetchCityPhotos(supabase: any): Promise<Record<string, string>> {
+  const result: Record<string, string> = {};
+  const { data } = await supabase
+    .from("city_photos")
+    .select("city,photo_url")
+    .like("photo_url", "%/storage/v1/object/public/city-photos/%");
+  for (const row of data ?? []) {
+    if (row.city && row.photo_url) result[row.city.toLowerCase()] = row.photo_url;
+  }
+  return result;
+}
+
 async function fetchUserPrefs(supabase: any, userId: string): Promise<UserPrefs | null> {
   const { data } = await supabase
     .from("user_preferences")
@@ -545,8 +562,9 @@ Deno.serve(async (req) => {
       // community-scores fetch dropped — community signal removed from
       // scoreEvent under Option A (heavy personal affinity makes it
       // redundant). Saves one Postgres RPC per request.
-      const [venueMeta, prefs, affinityMap] = await Promise.all([
+      const [venueMeta, cityPhotos, prefs, affinityMap] = await Promise.all([
         fetchVenueMeta(supabase),
+        fetchCityPhotos(supabase),
         userId ? fetchUserPrefs(supabase, userId) : Promise.resolve(null),
         fetchCategoryAffinity(supabase, userId),
       ]);
@@ -558,7 +576,10 @@ Deno.serve(async (req) => {
         .map((e) => {
           const venueKey = normalizeVenueKey(e.venue_name);
           const meta = venueKey ? venueMeta[venueKey] : undefined;
-          const resolvedImage = e.image_url || meta?.photoUrl || null;
+          // Last-resort city photo for venueless municipal events.
+          const cityKey = (e.venue_city ?? "").trim().toLowerCase();
+          const cityPhoto = cityKey ? cityPhotos[cityKey] : undefined;
+          const resolvedImage = e.image_url || meta?.photoUrl || cityPhoto || null;
           const venueRank = meta?.rank ?? null;
           // Prefer event_lat/lng (real location) over venue HQ — same basis
           // as the home carousel so a given event's distance matches on both.

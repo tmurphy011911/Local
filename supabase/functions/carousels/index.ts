@@ -539,6 +539,7 @@ function isGovernmentNoise(event: ProcessedEvent): boolean {
 function cleanEvents(
   events: ProcessedEvent[],
   venueCache: Map<string, VenueInfo>,
+  cityPhotoCache?: Map<string, string>,
 ): ProcessedEvent[] {
   const reclassified = events.map(e => cleanVenue(cleanTitle(reclassifyEvent(e))));
   const filtered = reclassified
@@ -581,6 +582,19 @@ function cleanEvents(
     // before the venues.photo_url column was migrated to Supabase storage.
     if (result.image_url?.includes("places.googleapis.com") && result.venue_photo_url) {
       result = { ...result, image_url: result.venue_photo_url };
+    }
+    // Last-resort city-photo fallback for events that don't resolve to a
+    // venue (municipal at-large events: venue_name IS NULL → no venue photo).
+    // Without this they render as a blank category gradient. Keyed by
+    // venue_city. ONLY serve stable Supabase-Storage URLs: the city_photos
+    // table historically held rotted Google Places URLs that embed an API
+    // key — never surface those to clients.
+    if (!result.image_url && cityPhotoCache) {
+      const cityKey = (result.venue_city ?? "").trim().toLowerCase();
+      const cityPhoto = cityKey ? cityPhotoCache.get(cityKey) : undefined;
+      if (cityPhoto && cityPhoto.includes("/storage/v1/object/public/city-photos/")) {
+        result = { ...result, image_url: cityPhoto };
+      }
     }
     if (info?.description) {
       result = { ...result, venue_description: info.description };
@@ -1573,6 +1587,10 @@ function buildCarousels(
   // Venue-scoped events fetched directly (same rationale) so fav-venue rails
   // show a venue's full upcoming slate. Empty on non-For-You paths.
   venueEvents: ProcessedEvent[] = [],
+  // Subcategory-scoped events fetched directly (same rationale) so the topical
+  // favorite-category and affinity rails reflect their subcategory's full
+  // slate instead of the rank-stratified MV sample. Empty on non-For-You paths.
+  subcatEvents: ProcessedEvent[] = [],
 ): CarouselSection[] {
   const filter = resolveFilter(category);
   if (filter.type === "empty") return [];
@@ -1619,12 +1637,24 @@ function buildCarousels(
     const weekendEvents = filtered
       .filter(e => { const s = e.start_at ?? ""; return s >= weekendStart && s < weekendEnd; });
 
+    // Source pool for the topical favorite-category + affinity rails. Same
+    // rationale as favVenuePool / neighborhoodPool below: the rank-stratified
+    // MV starves niche subcategories, so union the subcategory-scoped direct
+    // fetch on top of allEvents (deduped by id). Empty subcatEvents (non-
+    // For-You paths) degrades to plain allEvents, unchanged. Applies to every
+    // rail category, so museums/for-kids/comedy/etc. all get their full slate.
+    const topicalPool = (() => {
+      if (subcatEvents.length === 0) return allEvents;
+      const seen = new Set(allEvents.map(e => e.id));
+      return [...allEvents, ...subcatEvents.filter(e => !seen.has(e.id))];
+    })();
+
     // Pool: Favorite categories
     const favCatCarousels: CarouselSection[] = [];
     if (prefs) {
       let favCatIdx = 0;
       for (const cat of prefs.selected_categories) {
-        const catEvents = allEvents
+        const catEvents = topicalPool
           .filter(isGeneralFeedEvent)
           .filter(e => (e.subcategory ?? "").toLowerCase() === cat.toLowerCase())
           .filter(e => !e.start_at || e.start_at <= monthCutoff)
@@ -1715,7 +1745,7 @@ function buildCarousels(
       if (affinityCount >= 6) break;
       if (skipCategories.has(cat.toLowerCase())) continue;
       if (favCatSlugs.has(`fav-cat-${cat.toLowerCase()}`)) continue;
-      const affinityEvents = allEvents
+      const affinityEvents = topicalPool
         .filter(isGeneralFeedEvent)
         .filter(e => (e.subcategory ?? e.category).toLowerCase() === cat.toLowerCase())
         .map(e => withDistance(e, userLat, userLng))
@@ -2370,6 +2400,61 @@ async function fetchVenueEvents(
   return [...byId.values()];
 }
 
+// Subcategory-scoped direct fetch — sibling of fetchCityEvents /
+// fetchVenueEvents, for the topical favorite-category and affinity rails
+// ("Museum Picks For You", "Kid-Approved Events", "Your Music Radar", …).
+// On the For-You feed those rails read from the shared rank-stratified MV
+// (mv_events_for_geo), which is a metro-wide SAMPLE: a niche subcategory's
+// events (museums, for-kids, comedy, …) get crowded out by higher-ranked
+// venues, so the rail renders 1-2 cards even when hundreds qualify in radius.
+// This pulls each rail subcategory's full near-term slate directly from
+// `events` so the pool is complete before the rail's own isGeneralFeedEvent +
+// exact-subcategory filters run. One query per subcategory (not a single
+// `.in()` with a global cap) so no single category starves the others — and
+// it covers EVERY category the user has a rail for, not just museums/for-kids.
+async function fetchSubcategoryEvents(
+  supabase: ReturnType<typeof createClient>,
+  lat: number,
+  lng: number,
+  radiusMiles: number,
+  subcategories: string[],
+): Promise<EventRow[]> {
+  if (subcategories.length === 0) return [];
+  const latDelta = radiusMiles / 69.0;
+  const lngDelta = radiusMiles / 50.0;
+  const minLat = lat - latDelta, maxLat = lat + latDelta;
+  const minLng = lng - lngDelta, maxLng = lng + lngDelta;
+  const startFrom = nowIso();
+  const startTo = daysFromNowIso(90);
+  const PER_SUBCAT = 80;
+
+  const pages = await Promise.all(subcategories.map(async (subcat) => {
+    // ilike with no wildcards = case-insensitive exact match, mirroring the
+    // rails' own `(e.subcategory).toLowerCase() === cat` comparison.
+    const { data, error } = await supabase
+      .from("events")
+      .select("*")
+      .eq("is_active", true)
+      .ilike("subcategory", subcat)
+      .gte("start_at", startFrom)
+      .lte("start_at", startTo)
+      .gte("venue_lat", minLat)
+      .lte("venue_lat", maxLat)
+      .gte("venue_lng", minLng)
+      .lte("venue_lng", maxLng)
+      .order("start_at", { ascending: true })
+      .limit(PER_SUBCAT);
+    if (error) {
+      console.error(`[carousels] fetchSubcategoryEvents(${subcat}) failed:`, error);
+      return [];
+    }
+    return (data ?? []) as EventRow[];
+  }));
+  const byId = new Map<string, EventRow>();
+  for (const row of pages.flat()) byId.set(row.id, row);
+  return [...byId.values()];
+}
+
 // fetchRawSportsEvents removed — rawSportsEvents is now derived inline
 // in the slow-path handler block by filtering the MV-backed fetchAllEvents
 // result. Same row set, no second 7×1000 paginated scan.
@@ -2394,6 +2479,26 @@ async function fetchVenueCacheLite(
       photo_url: v.photo_url,
       description: v.description,
     });
+  }
+  return cache;
+}
+
+// City → stable Storage photo URL, the last-resort image fallback for events
+// that don't resolve to a venue (municipal at-large rows). Only Storage-hosted
+// rows are loaded; legacy rotted Google Places URLs (which also embed an API
+// key) are filtered out so they can never reach a client. Loaded once per
+// slow-path build and cached alongside the venue cache.
+async function fetchCityPhotoCache(
+  supabase: ReturnType<typeof createClient>,
+): Promise<Map<string, string>> {
+  const cache = new Map<string, string>();
+  const { data, error } = await supabase
+    .from("city_photos")
+    .select("city, photo_url")
+    .like("photo_url", "%/storage/v1/object/public/city-photos/%");
+  if (error || !data) return cache;
+  for (const row of data as Array<{ city: string | null; photo_url: string | null }>) {
+    if (row.city && row.photo_url) cache.set(row.city.toLowerCase(), row.photo_url);
   }
   return cache;
 }
@@ -2557,6 +2662,7 @@ interface CachedData {
   allEvents: ProcessedEvent[];
   rawSportsEvents: ProcessedEvent[];
   venueCache: Map<string, VenueInfo>;
+  cityPhotoCache: Map<string, string>;
   carouselsConfig: any[];
   timestamp: number;
 }
@@ -2692,6 +2798,7 @@ Deno.serve(async (req) => {
     let allEvents: ProcessedEvent[];
     let rawSportsEvents: ProcessedEvent[];
     let venueCache: Map<string, VenueInfo>;
+    let cityPhotoCache: Map<string, string>;
     let carouselsConfig: any[];
 
     const cachedGeoKey = (dataCache as any)?.geoKey as string | undefined;
@@ -2699,6 +2806,7 @@ Deno.serve(async (req) => {
       allEvents = dataCache!.allEvents;
       rawSportsEvents = dataCache!.rawSportsEvents;
       venueCache = dataCache!.venueCache;
+      cityPhotoCache = dataCache!.cityPhotoCache;
       carouselsConfig = dataCache!.carouselsConfig;
     } else {
       // Slow path (Deno isolate cold or in-memory cache expired). All
@@ -2720,13 +2828,14 @@ Deno.serve(async (req) => {
         _filterForFetch.type === "category" && _filterForFetch.value !== "sports"
           ? _filterForFetch.value
           : null;
-      const [rawEvents, venues, config] = await Promise.all([
+      const [rawEvents, venues, cityPhotos, config] = await Promise.all([
         fetchAllEvents(supabase, lat, lng, radiusMiles, subcategoryFocus),
         fetchVenueCacheLite(supabase),
+        fetchCityPhotoCache(supabase),
         fetchCarouselsConfig(supabase, lat, lng),
       ]);
       const deduped = deduplicateCrossSource(rawEvents);
-      allEvents = cleanEvents(deduped, venues);
+      allEvents = cleanEvents(deduped, venues, cityPhotos);
       // Sports rail derived from fetchAllEvents result. Same row set the
       // old fetchRawSportsEvents() would have produced (MV's 90-day
       // window is broader than the old query's no-upper-bound, with the
@@ -2739,8 +2848,9 @@ Deno.serve(async (req) => {
           || sc === "minor-league";
       });
       venueCache = venues;
+      cityPhotoCache = cityPhotos;
       carouselsConfig = config;
-      dataCache = { allEvents, rawSportsEvents, venueCache, carouselsConfig, timestamp: Date.now(), geoKey: cacheGeoKey } as any;
+      dataCache = { allEvents, rawSportsEvents, venueCache, cityPhotoCache, carouselsConfig, timestamp: Date.now(), geoKey: cacheGeoKey } as any;
     }
 
     // IDOR fix (phase 1): if the caller presented a user access token, verify
@@ -2773,6 +2883,7 @@ Deno.serve(async (req) => {
     // sources its own selected neighborhood city.
     let cityEvents: ProcessedEvent[] = [];
     let venueEvents: ProcessedEvent[] = [];
+    let subcatEvents: ProcessedEvent[] = [];
     if (resolveFilter(category).type === "none") {
       const targetCities = [nearestCity];
       for (const n of userPreferences?.selected_neighborhoods ?? []) {
@@ -2780,21 +2891,34 @@ Deno.serve(async (req) => {
           targetCities.push(n);
         }
       }
+      // Subcategories every topical rail will need: onboarding favorites ∪ the
+      // affinity categories that clear the rail threshold (score ≥ 0.4, same
+      // gate buildCarousels uses). Fetching this union directly means the
+      // favorite-category and affinity rails reflect their full in-radius slate
+      // for EVERY category, not just whatever survived the MV sample.
+      const railSubcats = new Set<string>();
+      for (const c of userPreferences?.selected_categories ?? []) railSubcats.add(c.toLowerCase());
+      for (const [c, score] of affinityMap) {
+        if (score >= 0.4) railSubcats.add(c.toLowerCase());
+      }
       // Parallel: city-scoped pool (neighborhood rails) + venue-scoped pool
-      // (fav-venue rails). Both bypass the rank-stratified MV's metro-wide
-      // sampling so the named city/venue's full slate is available per-request.
-      const [cityRows, venueRows] = await Promise.all([
+      // (fav-venue rails) + subcategory-scoped pool (topical fav-cat/affinity
+      // rails). All three bypass the rank-stratified MV's metro-wide sampling so
+      // the named city/venue/subcategory's full slate is available per-request.
+      const [cityRows, venueRows, subcatRows] = await Promise.all([
         fetchCityEvents(supabase, lat, lng, radiusMiles, targetCities),
         fetchVenueEvents(supabase, lat, lng, radiusMiles, userPreferences?.selected_venues ?? []),
+        fetchSubcategoryEvents(supabase, lat, lng, radiusMiles, [...railSubcats]),
       ]);
-      cityEvents = cleanEvents(deduplicateCrossSource(cityRows), venueCache);
-      venueEvents = cleanEvents(deduplicateCrossSource(venueRows), venueCache);
+      cityEvents = cleanEvents(deduplicateCrossSource(cityRows), venueCache, cityPhotoCache);
+      venueEvents = cleanEvents(deduplicateCrossSource(venueRows), venueCache, cityPhotoCache);
+      subcatEvents = cleanEvents(deduplicateCrossSource(subcatRows), venueCache, cityPhotoCache);
     }
 
     const carouselSections = buildCarousels(
       allEvents, rawSportsEvents, carouselsConfig, category,
       lat, lng, userPreferences, nearestCity,
-      weights, venueCache, communityScores, affinityMap, cityEvents, venueEvents,
+      weights, venueCache, communityScores, affinityMap, cityEvents, venueEvents, subcatEvents,
     );
 
     const categories = buildCategories(allEvents, userPreferences);
