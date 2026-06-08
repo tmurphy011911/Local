@@ -40,9 +40,13 @@ const WRITE_BATCH = parseInt(process.env.WRITE_BATCH || "500", 10);
 // Tables to mirror, in FK-safe order (parents before children).
 // `filter` is a PostgREST query string appended to the read; "" copies all rows.
 // `{now}` is replaced with the current ISO timestamp at runtime.
+// `transform` (optional) rewrites each row before upsert — used to strip
+// self-referential FKs that would dangle under a scoped (active/future) copy.
 const TABLES = [
   { name: "venues",         filter: "is_active=eq.true" },
-  { name: "events",         filter: "is_active=eq.true&start_at=gte.{now}" },
+  // events.duplicate_of -> events(id) is a self-FK; the target row is often an
+  // older/inactive canonical that's outside this scoped copy, so null it.
+  { name: "events",         filter: "is_active=eq.true&start_at=gte.{now}", transform: (r) => ({ ...r, duplicate_of: null }) },
   { name: "states",         filter: "" },
   { name: "metros",         filter: "" },
   { name: "curated_events", filter: "" },
@@ -93,7 +97,7 @@ async function upsertBatch(table, rows) {
   }
 }
 
-async function copyTable({ name, filter }, now) {
+async function copyTable({ name, filter, transform }, now) {
   const resolvedFilter = filter.replace("{now}", encodeURIComponent(now));
   let offset = 0;
   let copied = 0;
@@ -107,6 +111,7 @@ async function copyTable({ name, filter }, now) {
       return;
     }
     if (!page.length) break;
+    if (transform) page = page.map(transform);
 
     for (let i = 0; i < page.length; i += WRITE_BATCH) {
       const batch = page.slice(i, i + WRITE_BATCH);
