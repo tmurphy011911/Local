@@ -12,7 +12,7 @@
  * Falls back to environment variables if the DB fetch fails.
  */
 
-const SUPABASE_URL = "https://blifubxslaucshmlphdc.supabase.co";
+const SUPABASE_URL = process.env.SUPABASE_URL || "https://blifubxslaucshmlphdc.supabase.co";
 
 async function getSecrets(keyNames) {
   const serviceKey = (process.env.SUPABASE_SERVICE_KEY || "").replace(/\s/g, "");

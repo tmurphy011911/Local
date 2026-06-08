@@ -1,0 +1,43 @@
+name: Sync Prod → Dev DB
+
+# Copies active/future data from prod to the dev Supabase project so dev builds
+# (1.x.0) can be tested against realistic data WITHOUT re-running the paid ingest
+# pipeline (Claude/Google/Scrapfly/Ticketmaster) a second time.
+#
+# Scheduled at 11am UTC — after the daily pipeline (8am UTC: ticketmaster →
+# eventbrite → dedupe → prefilter) has finished. Sunday's weekly crawl can run
+# long; its results land in dev on the next day's sync, which is fine for an
+# active/future-only mirror.
+#
+# No-op unless DEV_SUPABASE_URL / DEV_SUPABASE_SERVICE_KEY secrets are set, so
+# this is safe to merge before the dev project exists.
+
+on:
+  schedule:
+    - cron: '0 11 * * *'  # 11am UTC daily
+  workflow_dispatch: {}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Sync prod -> dev
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}      # prod (source)
+          DEV_SUPABASE_URL: ${{ secrets.DEV_SUPABASE_URL }}             # dev  (target)
+          DEV_SUPABASE_SERVICE_KEY: ${{ secrets.DEV_SUPABASE_SERVICE_KEY }}
+        run: |
+          if [ -z "$DEV_SUPABASE_URL" ] || [ -z "$DEV_SUPABASE_SERVICE_KEY" ]; then
+            echo "DEV_* secrets not set — dev project not provisioned yet. Skipping."
+            exit 0
+          fi
+          node sync_prod_to_dev.js
