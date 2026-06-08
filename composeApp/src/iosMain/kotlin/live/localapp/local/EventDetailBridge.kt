@@ -51,6 +51,9 @@ object EventDetailBridge {
     /** Compose sets this. Swift calls it when the user favorites an event. */
     var onFavorited: ((String) -> Unit)? = null
 
+    /** Compose sets this. Swift calls it when the user shares an event. */
+    var onShare: ((String) -> Unit)? = null
+
     /** Whether to show directions/ride CTAs (true when opened from Plans). */
     var showDirections: Boolean = false
 }

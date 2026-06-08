@@ -706,6 +706,32 @@ struct ComposeView: UIViewControllerRepresentable {
                 }
             }
         }
+        bridge.logIn = { appUserId, onResult in
+            Task {
+                do {
+                    let (customerInfo, _) = try await Purchases.shared.logIn(appUserId)
+                    let isPro = customerInfo.entitlements["Local Pro"]?.isActive == true
+                    let expiry = customerInfo.entitlements["Local Pro"]?.expirationDate?.ISO8601Format()
+                    print("RevenueCat: logIn complete user=\(appUserId), pro=\(isPro)")
+                    DispatchQueue.main.async { onResult(KotlinBoolean(value: isPro), expiry) }
+                } catch {
+                    print("RevenueCat: logIn error: \(error.localizedDescription)")
+                    DispatchQueue.main.async { onResult(KotlinBoolean(value: false), nil) }
+                }
+            }
+        }
+
+        bridge.logOut = {
+            Task {
+                do {
+                    _ = try await Purchases.shared.logOut()
+                    print("RevenueCat: logOut complete")
+                } catch {
+                    print("RevenueCat: logOut error: \(error.localizedDescription)")
+                }
+            }
+        }
+
         bridge.fetchPricing = { onResult in
             Task {
                 do {

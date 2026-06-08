@@ -15,9 +15,9 @@ struct PaywallView: View {
     /// a pending plan save or drop it.
     let onDismiss: (_ didPurchase: Bool) -> Void
     @State private var isAnnual = false
-    @State private var monthlyPrice = "$6.99"
-    @State private var annualPrice = "$49.99"
-    @State private var introPrice: String? = "$0.99"
+    @State private var monthlyPrice = "$0.99"
+    @State private var annualPrice = "$8.99"
+    @State private var introPrice: String? = nil
     @State private var isPurchasing = false
 
     // RevenueCat packages
@@ -28,13 +28,13 @@ struct PaywallView: View {
         introPrice ?? monthlyPrice
     }
     private var displaySubtext: String {
-        if let intro = introPrice { return "then \(monthlyPrice)/mo" }
-        return "/month"
+        if introPrice != nil { return "then \(monthlyPrice)/month" }
+        return "\(monthlyPrice)/month"
     }
     private var annualPerMonth: String {
-        let raw = Double(annualPrice.replacingOccurrences(of: "[^0-9.]", with: "", options: .regularExpression)) ?? 49.99
+        let raw = Double(annualPrice.replacingOccurrences(of: "[^0-9.]", with: "", options: .regularExpression)) ?? 8.99
         let pm = raw / 12
-        return String(format: "$%.2f/mo", pm)
+        return String(format: "$%.2f/month", pm)
     }
 
     var body: some View {
@@ -42,8 +42,9 @@ struct PaywallView: View {
             paywallBg.ignoresSafeArea()
 
             VStack(spacing: 0) {
+                // Pinned at the top inside the safe area so it's always tappable.
                 closeButton
-                Spacer().frame(height: 16)
+                Spacer().frame(height: 8)
                 wordmark
                 Spacer().frame(height: 20)
                 headline
@@ -58,7 +59,7 @@ struct PaywallView: View {
                 Spacer().frame(height: 16)
             }
             .padding(.horizontal, 24)
-            .padding(.top, 16)
+            .padding(.top, 8)
             .padding(.bottom, 24)
         }
         .task { await loadPricing() }
@@ -105,24 +106,27 @@ struct PaywallView: View {
 
     private struct MatrixItem {
         let feature: String
-        let free: String
-        let pro: String
+        let inFree: Bool
+        let inPro: Bool
     }
 
+    // Free = browse only; Pro unlocks everything else.
     private let matrixRows = [
-        MatrixItem(feature: "Saved Events", free: "5", pro: "Unlimited"),
-        MatrixItem(feature: "Saved Places", free: "5", pro: "Unlimited"),
-        MatrixItem(feature: "Plans Created", free: "1", pro: "Unlimited"),
+        MatrixItem(feature: "Browse Events and Places", inFree: true, inPro: true),
+        MatrixItem(feature: "See Event and Place Info", inFree: false, inPro: true),
+        MatrixItem(feature: "Save Events and Places", inFree: false, inPro: true),
+        MatrixItem(feature: "Ask Bo", inFree: false, inPro: true),
+        MatrixItem(feature: "Create Plans", inFree: false, inPro: true),
     ]
 
     private var comparisonMatrix: some View {
         VStack(spacing: 0) {
-            matrixRow(feature: "", free: "Free", pro: "Pro", isHeader: true)
+            matrixHeaderRow
             ForEach(matrixRows, id: \.feature) { row in
                 Rectangle()
                     .fill(Color.white.opacity(0.06))
                     .frame(height: 1)
-                matrixRow(feature: row.feature, free: row.free, pro: row.pro)
+                matrixRow(feature: row.feature, inFree: row.inFree, inPro: row.inPro)
             }
         }
         .padding(.horizontal, 18)
@@ -130,22 +134,48 @@ struct PaywallView: View {
         .clipShape(RoundedRectangle(cornerRadius: 16))
     }
 
-    private func matrixRow(feature: String, free: String, pro: String, isHeader: Bool = false) -> some View {
+    private var matrixHeaderRow: some View {
         HStack(spacing: 0) {
-            Text(feature)
-                .font(Font.custom("Nunito", size: 14).weight(.heavy))
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Text(free)
-                .font(Font.custom("Nunito", size: isHeader ? 11 : 13).weight(isHeader ? .bold : .semibold))
-                .foregroundColor(.white.opacity(isHeader ? 0.5 : 0.45))
-                .frame(width: 72)
-            Text(pro)
-                .font(Font.custom("Nunito", size: isHeader ? 11 : 13).weight(isHeader ? .black : .heavy))
+            Spacer().frame(maxWidth: .infinity)
+            Text("Free")
+                .font(Font.custom("Nunito", size: 11).weight(.bold))
+                .foregroundColor(.white.opacity(0.5))
+                .frame(width: 52)
+            Text("Pro")
+                .font(Font.custom("Nunito", size: 11).weight(.black))
                 .foregroundColor(coral)
-                .frame(width: 88)
+                .frame(width: 60)
         }
         .padding(.vertical, 13)
+    }
+
+    private func matrixRow(feature: String, inFree: Bool, inPro: Bool) -> some View {
+        HStack(spacing: 0) {
+            Text(feature)
+                .font(Font.custom("Nunito", size: 13).weight(.heavy))
+                .foregroundColor(.white)
+                .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            matrixCell(included: inFree, isPro: false)
+                .frame(width: 52)
+            matrixCell(included: inPro, isPro: true)
+                .frame(width: 60)
+        }
+        .padding(.vertical, 13)
+    }
+
+    @ViewBuilder
+    private func matrixCell(included: Bool, isPro: Bool) -> some View {
+        if included {
+            Image(systemName: "checkmark")
+                .font(.system(size: 14, weight: .bold))
+                .foregroundColor(isPro ? coral : Color.white.opacity(0.5))
+        } else {
+            Rectangle()
+                .fill(Color.white.opacity(0.25))
+                .frame(width: 12, height: 2)
+        }
     }
 
     // MARK: - Pricing Cards

@@ -87,9 +87,13 @@ import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.model.Plan
 import live.localapp.local.domain.model.PlanDay
 import live.localapp.local.domain.model.Venue
+import live.localapp.local.domain.repository.VenueWithMeta
 import live.localapp.local.ui.common.AppHeader
 import live.localapp.local.ui.common.localCardSurface
 import live.localapp.local.ui.common.pressable
+import live.localapp.local.ui.home.EventCard
+import live.localapp.local.ui.home.toCardData
+import live.localapp.local.ui.places.VenueCard
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 import live.localapp.local.ui.theme.AppShapes
@@ -284,50 +288,55 @@ fun PlansScreen(
             // Saved Events — ALWAYS shown. Card taps open Bo with a prefilled
             // "build a plan around X" prompt instead of the event detail.
             item {
-                Text(
-                    "Add Your Saved Events to a Plan",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Heading,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp,
-                        color = AppColors.Ink,
-                    ),
-                )
-                Spacer(Modifier.height(10.dp))
-                if (state.savedEvents.isEmpty()) {
+                // Wrap in a Column: a LazyColumn `item` stacks (overlaps) its
+                // direct children rather than arranging them vertically, so
+                // without this the heading is drawn on top of the cards.
+                Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        "No saved events yet — tap the heart on any event to save it here.",
+                        "Add Your Saved Events to a Plan",
                         style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 13.sp,
-                            color = AppColors.Ink3,
+                            fontFamily = AppFonts.Heading,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp,
+                            color = AppColors.Ink,
                         ),
                     )
-                } else {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        state.savedEvents.forEach { event ->
-                            SavedEventCard(
-                                event = event,
-                                onClick = { _ ->
-                                    val venuePart = event.venueName?.let { " at $it" } ?: ""
-                                    val message = "Help me build a plan around ${event.title}$venuePart on ${event.dateDisplay}"
-                                    // Prefer the anchor-aware path so Bo gets the
-                                    // exact event_id (no venue-name guessing). Fall
-                                    // back to the plain template path if the host
-                                    // didn't wire the anchor callback.
-                                    if (onBuildPlanFromSavedEvent != null) {
-                                        onBuildPlanFromSavedEvent.invoke(message, event.id, event.title)
-                                    } else {
-                                        onBuildPlanFromTemplate?.invoke(message)
-                                    }
-                                },
-                            )
+                    Spacer(Modifier.height(10.dp))
+                    if (state.savedEvents.isEmpty()) {
+                        Text(
+                            "No saved events yet — tap the heart on any event to save it here.",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp,
+                                color = AppColors.Ink3,
+                            ),
+                        )
+                    } else {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            state.savedEvents.forEach { event ->
+                                SavedEventCard(
+                                    event = event,
+                                    onClick = { _ ->
+                                        val venuePart = event.venueName?.let { " at $it" } ?: ""
+                                        val message = "Help me build a plan around ${event.title}$venuePart on ${event.dateDisplay}"
+                                        // Prefer the anchor-aware path so Bo gets the
+                                        // exact event_id (no venue-name guessing). Fall
+                                        // back to the plain template path if the host
+                                        // didn't wire the anchor callback.
+                                        if (onBuildPlanFromSavedEvent != null) {
+                                            onBuildPlanFromSavedEvent.invoke(message, event.id, event.title)
+                                        } else {
+                                            onBuildPlanFromTemplate?.invoke(message)
+                                        }
+                                    },
+                                )
+                            }
                         }
                     }
                 }
@@ -336,26 +345,30 @@ fun PlansScreen(
             // Saved Venues — ALWAYS shown. Card taps open Bo with a prefilled
             // "Show me Upcoming Events at X" prompt.
             item {
-                Text(
-                    "Ask Bo for Upcoming Events at...",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Heading,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 18.sp,
-                        color = AppColors.Ink,
-                    ),
-                )
-                Spacer(Modifier.height(10.dp))
-                if (state.savedVenues.isEmpty()) {
+                // Wrap in a Column for the same reason as Saved Events —
+                // otherwise the heading overlaps the empty-state copy.
+                Column(modifier = Modifier.fillMaxWidth()) {
                     Text(
-                        "No saved places yet — tap the heart on any place to save it here.",
+                        "Ask Bo for Upcoming Events at...",
                         style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.SemiBold,
-                            fontSize = 13.sp,
-                            color = AppColors.Ink3,
+                            fontFamily = AppFonts.Heading,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 18.sp,
+                            color = AppColors.Ink,
                         ),
                     )
+                    Spacer(Modifier.height(10.dp))
+                    if (state.savedVenues.isEmpty()) {
+                        Text(
+                            "No saved places yet — tap the heart on any place to save it here.",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.SemiBold,
+                                fontSize = 13.sp,
+                                color = AppColors.Ink3,
+                            ),
+                        )
+                    }
                 }
             }
             items(state.savedVenues) { venue ->
@@ -364,6 +377,7 @@ fun PlansScreen(
                     onPlanForVenue = {
                         onBuildPlanFromTemplate?.invoke("Show me Upcoming Events at ${venue.name}")
                     },
+                    onUnsave = { viewModel.unsaveVenue(venue.id) },
                 )
             }
 
@@ -379,55 +393,16 @@ fun PlansScreen(
 
 @Composable
 private fun SavedEventCard(event: Event, onClick: (androidx.compose.ui.geometry.Rect) -> Unit) {
-    var cardBounds by remember { mutableStateOf(androidx.compose.ui.geometry.Rect.Zero) }
-    Column(
-        modifier = Modifier
-            .width(140.dp)
-            .height(154.dp)
-            .onGloballyPositioned { cardBounds = it.boundsInRoot() }
-            .localCardSurface(cornerRadius = 14.dp)
-            .pressable(onClick = { onClick(cardBounds) }),
-    ) {
-        // Image with Yocal button overlay
-        Box(
-            modifier = Modifier.fillMaxWidth().height(80.dp),
-        ) {
-            val imageUrl = event.imageUrl
-            if (!imageUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = ImageRequest.Builder(LocalPlatformContext.current).data(imageUrl).build(),
-                    contentDescription = event.title,
-                    modifier = Modifier.fillMaxSize(),
-                    contentScale = ContentScale.Crop,
-                )
-            } else {
-                val colorKey = event.subcategory ?: event.category
-                val (bgStart, bgEnd) = categoryGradient(colorKey)
-                Box(
-                    modifier = Modifier.fillMaxSize().background(Brush.linearGradient(listOf(bgStart, bgEnd))),
-                )
-            }
-
-            // (Yocal sparkle badge removed — the entire card now opens Bo
-            // with a prefilled "build a plan around X" prompt on tap.)
-        }
-
-        // Body
-        Column(modifier = Modifier.padding(horizontal = 8.dp, vertical = 7.dp)) {
-            Text(
-                event.title,
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = AppColors.Ink),
-                maxLines = 2,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                event.dateDisplay,
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, color = AppColors.Ink3),
-                maxLines = 1,
-            )
-        }
-    }
+    // Reuse the Home feed's EventCard so saved events look identical to
+    // "Picked for You" — same shape, typography, tag pill, image/gradient
+    // fallback and meta rows. The tap still opens Bo with a prefilled
+    // "build a plan around X" prompt (passed in via onClick); the hero Rect
+    // EventCard emits is ignored here.
+    EventCard(
+        data = event.toCardData(showTag = true),
+        modifier = Modifier.width(156.dp),
+        onClick = onClick,
+    )
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -435,67 +410,19 @@ private fun SavedEventCard(event: Event, onClick: (androidx.compose.ui.geometry.
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
-private fun SavedVenueRow(venue: Venue, onPlanForVenue: () -> Unit = {}) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(80.dp)
-            .localCardSurface(cornerRadius = 14.dp)
-            .pressable(onClick = onPlanForVenue),
-    ) {
-        // Thumbnail
-        Box(
-            modifier = Modifier
-                .width(80.dp)
-                .fillMaxHeight()
-                .background(AppColors.Mist),
-            contentAlignment = Alignment.Center,
-        ) {
-            val photoUrl = venue.photoUrl ?: venue.imageUrl
-            if (!photoUrl.isNullOrBlank()) {
-                AsyncImage(
-                    model = photoUrl,
-                    contentDescription = venue.name,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize(),
-                )
-            } else {
-                Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(28.dp), tint = AppColors.Ink3.copy(alpha = 0.5f))
-            }
-        }
-
-        // Body
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .fillMaxHeight()
-                .padding(horizontal = 12.dp, vertical = 10.dp),
-            verticalArrangement = Arrangement.Center,
-        ) {
-            Text(
-                venue.name,
-                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = AppColors.Ink, lineHeight = 18.sp),
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Spacer(Modifier.height(3.dp))
-            val meta = buildString {
-                venue.category?.let { append(it.replaceFirstChar { c -> c.uppercaseChar() }) }
-                append(" \u00B7 ${venue.city}")
-            }
-            Text(meta, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3))
-            if (venue.googleRating != null) {
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    "\u2605\u2605\u2605\u2605\u2606 ${venue.googleRating}",
-                    style = TextStyle(fontSize = 11.sp, color = AppColors.Sun),
-                )
-            }
-        }
-
-        // (Yocal sparkle removed — the whole row is the action surface;
-        // tapping it opens Bo with "Show me Upcoming Events at {venue}".)
-    }
+private fun SavedVenueRow(venue: Venue, onPlanForVenue: () -> Unit = {}, onUnsave: () -> Unit = {}) {
+    // Reuse the Explore tab's VenueCard so saved places look identical to the
+    // Places list: same 92dp row, gradient-fallback thumbnail, heading-font
+    // name, "city / distance" meta, rating/event-count line and the corner
+    // heart. These rows are always saved, so isFavorited = true; tapping the
+    // heart un-saves. Tapping the row opens Bo (the hero Rect VenueCard emits
+    // is ignored; we fire the prefilled "Upcoming Events at X" prompt instead).
+    VenueCard(
+        vm = VenueWithMeta(venue = venue, googleRating = venue.googleRating),
+        isFavorited = true,
+        onClick = { onPlanForVenue() },
+        onFavoriteToggle = onUnsave,
+    )
 }
 
 // PlansHeader removed — now uses shared AppHeader
@@ -1451,11 +1378,7 @@ private fun TimelineView(
                                             .background(AppColors.CoralLt, RoundedCornerShape(6.dp))
                                             .border(1.dp, AppColors.Coral.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
                                             .clickable {
-                                                val today = kotlin.time.Clock.System.now().toString().take(10)
-                                                val url = if (slot.reservationUrl.contains("opentable")) {
-                                                    "${slot.reservationUrl}?dateTime=${today}T19:00&covers=2&partySize=2"
-                                                } else slot.reservationUrl
-                                                uriHandler.openUri(url)
+                                                uriHandler.openUri(slot.venueWebsite?.takeIf { it.isNotBlank() } ?: slot.reservationUrl)
                                             }
                                             .padding(horizontal = 8.dp, vertical = 3.dp),
                                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Coral),

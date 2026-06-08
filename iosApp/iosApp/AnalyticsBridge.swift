@@ -173,6 +173,7 @@ enum AnalyticsBridge {
             SentrySDK.flush(timeout: 2.0)
             #endif
         }
+
     }
 
     /// Drop nulls and convert Kotlin Map<String, Any?> values to Swift-friendly types.

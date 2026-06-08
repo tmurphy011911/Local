@@ -256,12 +256,6 @@ struct PlanDetailSlot: Decodable, Equatable {
         return s.range(of: pattern, options: .regularExpression) != nil
     }
 
-    /// V1 OpenTable URL — search-based, no affiliate.
-    var openTableUrl: URL? {
-        if let r = reservationUrl, !r.isEmpty, let u = URL(string: r) { return u }
-        let term = name.replacingOccurrences(of: " ", with: "+")
-        return URL(string: "https://www.opentable.com/s?term=\(term)")
-    }
 }
 
 /// Swap alternative pushed from Kotlin's `PlanSwapService` via the bridge.

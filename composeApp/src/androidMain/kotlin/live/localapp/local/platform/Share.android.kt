@@ -8,6 +8,8 @@ import com.revenuecat.purchases.PurchasesError
 import com.revenuecat.purchases.interfaces.ReceiveCustomerInfoCallback
 import com.revenuecat.purchases.interfaces.ReceiveOfferingsCallback
 import com.revenuecat.purchases.getOfferingsWith
+import com.revenuecat.purchases.logInWith
+import com.revenuecat.purchases.logOutWith
 import com.revenuecat.purchases.purchaseWith
 import com.revenuecat.purchases.restorePurchasesWith
 
@@ -181,6 +183,26 @@ actual fun checkSubscriptionStatus(onResult: (Boolean, String?) -> Unit) {
     })
 }
 
+actual fun identifyRevenueCatUser(appUserId: String, onResult: (Boolean, String?) -> Unit) {
+    Purchases.sharedInstance.logInWith(
+        appUserId,
+        onError = { error -> println("RevenueCat: logIn error: $error"); onResult(false, null) },
+        onSuccess = { customerInfo, _ ->
+            val isPro = customerInfo.entitlements.active.containsKey("Local Pro")
+            val expiry = customerInfo.entitlements.active["Local Pro"]?.expirationDate?.toString()
+            println("RevenueCat: logIn complete user=$appUserId pro=$isPro expiry=$expiry")
+            onResult(isPro, expiry)
+        },
+    )
+}
+
+actual fun logOutRevenueCatUser() {
+    Purchases.sharedInstance.logOutWith(
+        onError = { error -> println("RevenueCat: logOut error: $error") },
+        onSuccess = { println("RevenueCat: logOut complete") },
+    )
+}
+
 actual fun fetchSubscriptionPricing(onResult: (String?, String?, String?) -> Unit) {
     Purchases.sharedInstance.getOfferingsWith(
         onError = { _ -> onResult(null, null, null) },
@@ -218,6 +240,25 @@ actual fun openAppSettings() {
         data = android.net.Uri.fromParts("package", activity.packageName, null)
     }
     activity.startActivity(intent)
+}
+
+actual fun composeSupportEmail(recipient: String) {
+    val activity = live.localapp.local.ActivityProvider.activity ?: return
+    // ACTION_SENDTO with a mailto: URI targets only email apps (not the full share sheet).
+    val intent = android.content.Intent(android.content.Intent.ACTION_SENDTO).apply {
+        data = android.net.Uri.parse("mailto:$recipient")
+    }
+    try {
+        activity.startActivity(intent)
+    } catch (e: android.content.ActivityNotFoundException) {
+        // No email app installed — nothing to open.
+    }
+}
+
+actual fun areNotificationsEnabled(onResult: (Boolean) -> Unit) {
+    val activity = live.localapp.local.ActivityProvider.activity
+    if (activity == null) { onResult(false); return }
+    onResult(androidx.core.app.NotificationManagerCompat.from(activity).areNotificationsEnabled())
 }
 
 actual fun requestNotificationPermission(onResult: (Boolean) -> Unit) {

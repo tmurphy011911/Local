@@ -128,6 +128,13 @@ fun EventDetailScreen(
     onSaveEvent: (() -> Unit)? = null,
     /** Tapped the venue card → open that venue's detail page. Null = non-tappable. */
     onVenueClick: (() -> Unit)? = null,
+    /**
+     * iOS parity: the Directions / Get-a-Ride secondary CTA row is only shown
+     * when the event is opened from a Plan (EventDetailView.swift gates it on
+     * `event.showDirections`). Everywhere else (feed, places, chat, share) the
+     * row is hidden — Share now lives in the hero header instead.
+     */
+    showDirections: Boolean = false,
 ) {
     val uriHandler = LocalUriHandler.current
     val clipboardManager = LocalClipboardManager.current
@@ -182,6 +189,23 @@ fun EventDetailScreen(
     val ctaUrl = event.ticketUrl ?: event.sourceUrl
     val hasLocation = event.venueLat != null && event.venueLng != null
 
+    // Shared Share action — invoked from the hero header (iOS parity) and,
+    // previously, the secondary CTA row. Presents the system share sheet and
+    // records analytics.
+    val shareEvent = {
+        live.localapp.local.platform.presentShareSheet(
+            event.title,
+            "https://localapp.live/e/${event.id}",
+        )
+        onShareTracked?.invoke(event.id)
+        live.localapp.local.observability.Analytics.track(
+            live.localapp.local.observability.AnalyticsEvent.eventShareTapped(
+                eventId = event.id,
+                shareChannel = "system_sheet",
+            )
+        )
+    }
+
     // Enter animation — approximates the iOS card-to-fullscreen morph
     // (EventDetailTransitionController.swift). Scale 0.92 -> 1, alpha 0 -> 1,
     // corner radius 18 -> 0, all driven by a spring. No exit animation —
@@ -226,6 +250,7 @@ fun EventDetailScreen(
                 event = event,
                 isFavorited = isFavorited,
                 onBack = onBack,
+                onShare = shareEvent,
                 onFavoriteToggle = {
                     val wasFavorited = isFavorited
                     isFavorited = !isFavorited
@@ -379,6 +404,7 @@ fun EventDetailScreen(
             event = event,
             ctaUrl = ctaUrl,
             hasLocation = hasLocation,
+            showDirections = showDirections,
             mapsExpanded = mapsExpanded,
             rideExpanded = rideExpanded,
             shareCopied = shareCopied,
@@ -409,19 +435,6 @@ fun EventDetailScreen(
                 val url = "https://lyft.com/ride?id=lyft" +
                     "&destination[lat]=${event.venueLat}&destination[lng]=${event.venueLng}"
                 uriHandler.openUri(url)
-            },
-            onShare = {
-                live.localapp.local.platform.presentShareSheet(
-                    event.title,
-                    "https://localapp.live/e/${event.id}",
-                )
-                onShareTracked?.invoke(event.id)
-                live.localapp.local.observability.Analytics.track(
-                    live.localapp.local.observability.AnalyticsEvent.eventShareTapped(
-                        eventId = event.id,
-                        shareChannel = "system_sheet",
-                    )
-                )
             },
         )
 
@@ -581,6 +594,7 @@ private fun CtaBar(
     event: Event,
     ctaUrl: String?,
     hasLocation: Boolean,
+    showDirections: Boolean,
     mapsExpanded: Boolean,
     rideExpanded: Boolean,
     shareCopied: Boolean,
@@ -591,7 +605,6 @@ private fun CtaBar(
     onOpenGoogleMaps: () -> Unit,
     onOpenUber: () -> Unit,
     onOpenLyft: () -> Unit,
-    onShare: () -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -602,12 +615,14 @@ private fun CtaBar(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        // Secondary row
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            if (hasLocation) {
+        // Secondary row — Directions + Get a Ride. iOS parity: only shown when
+        // the event was opened from a Plan (showDirections). Share is NOT here
+        // anymore — it lives in the hero header.
+        if (showDirections && hasLocation) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
                 SecondaryCtaButton(
                     icon = Icons.Outlined.Place,
                     label = if (mapsExpanded) "Close" else "Directions",
@@ -615,15 +630,6 @@ private fun CtaBar(
                     modifier = Modifier.weight(1f),
                     onClick = onToggleMaps,
                 )
-            }
-            SecondaryCtaButton(
-                icon = Icons.Outlined.IosShare,
-                label = "Share",
-                isActive = false,
-                modifier = Modifier.weight(1f),
-                onClick = onShare,
-            )
-            if (hasLocation) {
                 SecondaryCtaButton(
                     icon = Icons.Outlined.DirectionsCar,
                     label = if (rideExpanded) "Close" else "Get a Ride",
@@ -779,6 +785,7 @@ private fun HeroImage(
     event: Event,
     isFavorited: Boolean,
     onBack: () -> Unit,
+    onShare: () -> Unit,
     onFavoriteToggle: () -> Unit,
 ) {
     Box(
@@ -829,17 +836,29 @@ private fun HeroImage(
             Icon(Icons.AutoMirrored.Outlined.ArrowBack, "Back", Modifier.size(18.dp), tint = AppColors.Ink)
         }
 
-        // Favorite button
-        HeroIconButton(
+        // Share + Favorite — top right, horizontal (iOS parity:
+        // EventDetailView.swift renders Share to the LEFT of the heart).
+        Row(
             modifier = Modifier.align(Alignment.TopEnd).padding(end = 16.dp, top = 12.dp),
-            onClick = onFavoriteToggle,
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Icon(
-                if (isFavorited) Icons.Outlined.Favorite else Icons.Outlined.FavoriteBorder,
-                "Favorite",
-                Modifier.size(18.dp),
-                tint = if (isFavorited) AppColors.Coral else AppColors.Ink3,
-            )
+            HeroIconButton(
+                modifier = Modifier,
+                onClick = onShare,
+            ) {
+                Icon(Icons.Outlined.IosShare, "Share", Modifier.size(18.dp), tint = AppColors.Ink)
+            }
+            HeroIconButton(
+                modifier = Modifier,
+                onClick = onFavoriteToggle,
+            ) {
+                Icon(
+                    if (isFavorited) Icons.Outlined.Favorite else Icons.Outlined.FavoriteBorder,
+                    "Favorite",
+                    Modifier.size(18.dp),
+                    tint = if (isFavorited) AppColors.Coral else AppColors.Ink3,
+                )
+            }
         }
     }
 }

@@ -29,11 +29,28 @@ expect fun restorePurchases(onResult: (Boolean) -> Unit)
 /** Check current subscription status. Callback receives (isPro, expiryDate?). */
 expect fun checkSubscriptionStatus(onResult: (Boolean, String?) -> Unit)
 
+/**
+ * Bind RevenueCat's identity to the Supabase auth uid so the "Local Pro"
+ * entitlement follows the *user* across devices/reinstalls instead of the
+ * anonymous per-device id. Callback receives the now-identified user's
+ * (isPro, expiryDate?) so the gate can refresh without a second round-trip.
+ */
+expect fun identifyRevenueCatUser(appUserId: String, onResult: (Boolean, String?) -> Unit)
+
+/** Reset RevenueCat back to an anonymous id (call on sign-out). */
+expect fun logOutRevenueCatUser()
+
 /** Request OS-level push notification permission. Callback receives whether granted. */
 expect fun requestNotificationPermission(onResult: (Boolean) -> Unit)
 
+/** Query whether OS-level notifications are currently enabled for this app. */
+expect fun areNotificationsEnabled(onResult: (Boolean) -> Unit)
+
 /** Open the OS settings page for this app (e.g. to enable location permission). */
 expect fun openAppSettings()
+
+/** Open the user's email app with the given recipient pre-filled in the To field. */
+expect fun composeSupportEmail(recipient: String)
 
 /** Open the app's App Store / Play Store page for updating. */
 expect fun openAppStoreListing()

@@ -100,8 +100,26 @@ class PlanChatViewModel(
     /** Running Claude conversation history (only @yocal exchanges). */
     private val yocalHistory: MutableList<ClaudeMessage> = mutableListOf()
 
+    /** Set by [beginAddEventFlow] when the chat is opened via "+ Add event".
+     *  Holds the canned disambiguation question until messages have loaded so
+     *  the async [loadMessages] doesn't clobber it. */
+    private var pendingAddEventQuestion: String? = null
+
     /** Cache of events returned from search_events, keyed by event id. */
     private val searchResultCache: MutableMap<String, Event> get() = boTools.searchResultCache
+
+    companion object {
+        /** Control-char-delimited sentinel so a normal typed message can never
+         *  collide with the "+ Add event" entry point. */
+        private const val ADD_EVENT_TOKEN = "add_event"
+
+        /** Builds the prefill string AppNavigation/iOS pass when "+ Add event" is tapped. */
+        fun addEventPrefill(dayLabel: String): String = ADD_EVENT_TOKEN + dayLabel
+
+        /** Returns the day label if [prefill] is an add-event sentinel, else null. */
+        fun parseAddEventDay(prefill: String?): String? =
+            if (prefill?.startsWith(ADD_EVENT_TOKEN) == true) prefill.removePrefix(ADD_EVENT_TOKEN) else null
+    }
 
     init {
         loadMessages()
@@ -133,7 +151,37 @@ class PlanChatViewModel(
                 )
             }
             _uiState.update { it.copy(messages = mapped, isLoading = false) }
+            flushPendingAddEventQuestion()
         }
+    }
+
+    /** Opens the "+ Add event" flow: posts a canned disambiguation question
+     *  deterministically (not via the LLM) and seeds [yocalHistory] so Bo has
+     *  the day + intent context when the user replies. */
+    fun beginAddEventFlow(dayLabel: String) {
+        val question = "Sure — what are you adding to $dayLabel? A restaurant for food " +
+            "or drinks, a place to go, an actual event, or something you've planned on your own?"
+        // Seed Claude history (must start with a user turn) so the reply has context.
+        yocalHistory.add(ClaudeMessage.text("user", "I want to add something to $dayLabel. What are my options?"))
+        yocalHistory.add(ClaudeMessage.text("assistant", question))
+        pendingAddEventQuestion = question
+        if (!_uiState.value.isLoading) flushPendingAddEventQuestion()
+    }
+
+    private fun flushPendingAddEventQuestion() {
+        val q = pendingAddEventQuestion ?: return
+        pendingAddEventQuestion = null
+        val msg = PlanChatMessageUi(
+            id = "local_${kotlin.random.Random.nextLong().toString(36)}",
+            userId = "bo",
+            senderName = "Bo",
+            text = q,
+            isYocal = true,
+            isCurrentUser = false,
+            createdAt = "",
+            isLocal = true,
+        )
+        _uiState.update { it.copy(messages = it.messages + msg) }
     }
 
     fun sendMessage(text: String) {
@@ -566,6 +614,22 @@ class PlanChatViewModel(
     private suspend fun saveWebFinding(input: JsonObject): String =
         boTools.saveWebFinding(input)
 
+    /**
+     * Geographic center of the plan's existing stops that carry coordinates.
+     * Used to scope event search to the PLAN's location rather than the user's
+     * current location or a brittle city-name string match. Null when no stop
+     * has coords yet (e.g. a brand-new empty plan/day).
+     */
+    private fun planAnchorCoords(): Pair<Double, Double>? {
+        val coords = plan.days.flatMap { it.slots }.mapNotNull { s ->
+            val la = s.venueLat
+            val ln = s.venueLng
+            if (la != null && ln != null) la to ln else null
+        }
+        if (coords.isEmpty()) return null
+        return (coords.sumOf { it.first } / coords.size) to (coords.sumOf { it.second } / coords.size)
+    }
+
     private suspend fun searchEvents(input: JsonObject): String {
         val location = input["location"]?.jsonPrimitive?.contentOrNull
         val category = input["category"]?.jsonPrimitive?.contentOrNull
@@ -574,31 +638,51 @@ class PlanChatViewModel(
         val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 30
         val startDate = input["start_date"]?.jsonPrimitive?.contentOrNull
         val endDate = input["end_date"]?.jsonPrimitive?.contentOrNull
-        // strict_location defaults to TRUE when a location is set. Bo must
-        // explicitly pass false to widen.
-        val strictLocation = input["strict_location"]?.jsonPrimitive?.booleanOrNull
-            ?: !location.isNullOrBlank()
 
-        val rawEvents = eventRepo.searchEvents(
-            location = location ?: plan.city,
-            category = category,
-            dateRange = dateRange,
-            keyword = keyword,
-            limit = limit,
-            startDate = startDate,
-            endDate = endDate,
-            radiusMiles = 25.0,
-        )
-
-        val events = if (strictLocation && !location.isNullOrBlank()) {
-            val target = location.trim().lowercase()
-            rawEvents.filter { e ->
-                val ec = e.venueCity?.trim()?.lowercase() ?: return@filter false
-                ec == target || ec.contains(target) || target.contains(ec)
-            }.also { kept ->
-                println("PlanChatVM.searchEvents: strict_location=true location='$location' kept ${kept.size}/${rawEvents.size} after city filter")
-            }
-        } else rawEvents
+        // LOCATION SCOPING: this is a plan-editing chat, so results must be
+        // near the PLAN. When the plan already has stops with coordinates we
+        // scope by a geo radius around their centroid — the proper "events
+        // near this plan" query. Only fall back to the legacy city-name match
+        // when the plan has no coords yet.
+        val anchor = planAnchorCoords()
+        val events = if (anchor != null) {
+            eventRepo.searchEventsBroad(
+                userLat = anchor.first,
+                userLng = anchor.second,
+                radiusMiles = 25.0,
+                dateRange = dateRange,
+                startDate = startDate,
+                endDate = endDate,
+                // searchEventsBroad has no category param; fold it into the
+                // keyword so a category-only search still narrows results.
+                keyword = keyword ?: category,
+                limit = limit,
+            )
+        } else {
+            // strict_location defaults to TRUE when a location is set. Bo must
+            // explicitly pass false to widen.
+            val strictLocation = input["strict_location"]?.jsonPrimitive?.booleanOrNull
+                ?: !location.isNullOrBlank()
+            val cityScoped = location ?: plan.city
+            val rawEvents = eventRepo.searchEvents(
+                location = cityScoped,
+                category = category,
+                dateRange = dateRange,
+                keyword = keyword,
+                limit = limit,
+                startDate = startDate,
+                endDate = endDate,
+                radiusMiles = 25.0,
+            )
+            if (strictLocation && cityScoped.isNotBlank()) {
+                val target = cityScoped.trim().lowercase()
+                rawEvents.filter { e ->
+                    val ec = e.venueCity.trim().lowercase()
+                    if (ec.isBlank()) return@filter false
+                    ec == target || ec.contains(target) || target.contains(ec)
+                }
+            } else rawEvents
+        }
 
         events.forEach { searchResultCache[it.id] = it }
 
@@ -719,7 +803,12 @@ class PlanChatViewModel(
             // The CURRENT PLAN block below repeats the per-day pin args
             // inline; the rules below hold Bo to using them.
             appendLine("ABSOLUTE RULES (highest priority — these override everything else below):")
-            appendLine("1. WHEN ADDING/SWAPPING EVENTS ON A SPECIFIC DAY OF THIS PLAN: your VERY FIRST tool call MUST be search_events with BOTH start_date AND end_date set to that day's ISO date. The CURRENT PLAN block below shows the exact args next to each day label — copy them literally. Never search 'broadly' first, never pass date_range='this_week', never omit either field.")
+            appendLine("1. ADDING SOMETHING TO A SPECIFIC DAY — DISAMBIGUATE FIRST:")
+            appendLine("   1a. If the user wants to ADD to a day but has NOT said WHAT KIND of thing (no specific event/venue name and no clear search term — e.g. \"add something to Friday\"), your ENTIRE turn is exactly ONE question and NO tool call: \"Want to add a restaurant for food or drinks, a place to go, an actual event, or something you've planned on your own?\" Then stop and wait.")
+            appendLine("   1b. Once you know the kind (or the user already named it):")
+            appendLine("       • an actual event → your VERY FIRST tool call MUST be search_events with BOTH start_date AND end_date set to that day's ISO date. The CURRENT PLAN block below shows the exact args next to each day label — copy them literally. Never search 'broadly' first, never pass date_range='this_week', never omit either field.")
+            appendLine("       • a restaurant (food/drinks) or a place to go → call search_venues. No date needed; do NOT call search_events for these.")
+            appendLine("       • something they've planned on their own → do NOT search at all. Ask for the name and a time if you don't have them, then call update_plan adding it as a custom slot (a slot with neither event_id nor venue_name — just time + note).")
             appendLine("2. NEVER FABRICATE ERRORS. Phrases like 'the database is experiencing timeout issues', 'the system is down', 'there's an indexing problem', 'I'm having trouble connecting' are LIES — the system is fine. If a search came back wrong, it's because YOU forgot a parameter (almost always start_date). Fix the parameter and search again silently. NEVER tell the user the system is broken.")
             appendLine("3. NO PREAMBLE NARRATION. Never type 'I'll search…', 'Let me try a broader search…', 'I notice the results are showing today instead of May 14', or anything else that reports on what tools did or didn't do. The UI shows a searching indicator already — extra text becomes a chat bubble of noise. Just call the tool. When you respond AFTER the final tool, deliver the answer directly.")
             appendLine()
@@ -732,16 +821,17 @@ class PlanChatViewModel(
 PLAN-EDIT GUIDELINES (specific to this surface):
 - You are responding to a group chat message where someone tagged @Bo (or the legacy @yocal).
 - Your job: suggest a concrete change to the plan above.
-- DATE PINNING (HARD RULE — single biggest failure mode here): When the user asks to add or swap an event on a specific day of THIS plan, your VERY FIRST tool call MUST be search_events with BOTH start_date AND end_date set to that day's calendar date in YYYY-MM-DD form. Read the date from the CURRENT PLAN day labels above (every day is shown with its ISO date in parens). Example: user says "add an event to Thursday, May 14, 2026 before dinner" → search_events(start_date="2026-05-14", end_date="2026-05-14", limit=30). DO NOT pass date_range="this_week", DO NOT omit start_date, DO NOT search "broadly" first. The search returns whatever is on May 14; if it's empty, say so honestly in ONE sentence — don't widen the date.
+- DISAMBIGUATE BEFORE SEARCHING (HARD RULE): If the user wants to add to a day but hasn't said what KIND of thing (restaurant for food/drinks, a place to go, an actual event, or something they've planned on their own), ask that one question first and call NO tool that turn (see ABSOLUTE RULE 1). Only after you know the kind do the date-pinning / tool-routing rules below apply.
+- DATE PINNING (HARD RULE — single biggest failure mode here): When the user asks to add or swap an EVENT on a specific day of THIS plan, your VERY FIRST tool call MUST be search_events with BOTH start_date AND end_date set to that day's calendar date in YYYY-MM-DD form. Read the date from the CURRENT PLAN day labels above (every day is shown with its ISO date in parens). Example: user says "add an event to Thursday, May 14, 2026 before dinner" → search_events(start_date="2026-05-14", end_date="2026-05-14", limit=30). DO NOT pass date_range="this_week", DO NOT omit start_date, DO NOT search "broadly" first. The search returns whatever is on May 14; if it's empty, say so honestly in ONE sentence — don't widen the date.
 - LOCATION CONTEXT (HARD RULE): The plan exists in ${plan.city}; that's the default search location. BEFORE searching, look at the OTHER slots on the target day (shown in the CURRENT PLAN block above). If those slots have venue names you recognize as being in a specific neighborhood/town, pass that as `location` to search_events so the new event lands geographically near the rest of the day. Example: target day has "12:30 PM Cafe Escadrille" (Burlington, MA) and "6:30 PM Tempo" (Waltham, MA) — pass location="Waltham" so the new stop is within walking/short-drive distance of the other two. If the target day is empty (no other slots) and the plan's city is broad, default to the plan's city. NEVER suggest a stop that's >30 minutes away from the day's other slots without telling the user honestly: "The closest match I found is in {city} which is ~45 min from your other stops — want me to keep it or look closer?"
 - NO PREAMBLE, NO STATUS NARRATION, NO FABRICATED ERRORS (HARD RULE): Never type "I'll search…", "Let me try a broader search…", "I notice the results are showing today instead of May 14", "The database is experiencing timeout issues", or any sentence that reports on what the tool did or didn't do. The UI shows a searching indicator — anything you write before the next tool call is invisible noise that gets shown as a chat bubble. If a search returns wrong results, FIX YOUR PARAMETERS (probably you forgot start_date) and search again silently — never narrate the retry. NEVER fabricate technical errors ("timeout", "database issues", "system problems"); if the search comes back empty for a reason you can't explain, just say "Nothing's surfacing for May 14 — want me to try a different day?" without referencing the system.
 - Use search_events / search_venues / get_event_details tools to find alternatives.
 - When ready, call `update_plan` with the full updated slot list for the target day.
-- For slots: use event_id when the user wants a real ticketed event, venue_name for restaurants/bars.
+- For slots: use event_id when the user wants a real ticketed event, venue_name for restaurants/bars/places, and neither (just time + note) for a custom thing the user planned on their own.
 - Do NOT call present_plan — only update_plan is valid in this context (the plan already exists).
 - Keep your text response brief (1-2 sentences). The confirmation UI will handle the details.
 - Do NOT try to delete the plan or change fundamental things (title, dates) — only day slots.
-- If the request is genuinely ambiguous (the user didn't name a day or activity), ask ONE clarifying question — but only after you've ruled out searching first.
+- If the request is genuinely ambiguous in some OTHER way (e.g. the user didn't name a day), ask ONE clarifying question. (The what-kind-of-thing question is already handled by ABSOLUTE RULE 1 and takes precedence.)
 """.trimIndent())
         }
     }

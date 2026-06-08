@@ -46,6 +46,8 @@ class EventDetailTransitionController {
             self?.dismiss()
         }, onFavorite: { eventId in
             EventDetailBridge.shared.onFavorited?(eventId)
+        }, onShare: { eventId in
+            EventDetailBridge.shared.onShare?(eventId)
         })
         let hosting = UIHostingController(rootView: AnyView(
             detailView

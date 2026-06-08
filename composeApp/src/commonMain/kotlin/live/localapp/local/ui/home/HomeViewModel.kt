@@ -22,6 +22,8 @@ import live.localapp.local.domain.repository.UserPreferences
 import live.localapp.local.domain.repository.UserPreferencesRepository
 import live.localapp.local.domain.repository.VenueRepository
 import live.localapp.local.domain.service.BadgeService
+import live.localapp.local.data.remote.WeatherForecast
+import live.localapp.local.data.remote.WeatherService
 import io.ktor.client.HttpClient
 import io.ktor.client.request.header
 import io.ktor.client.request.post
@@ -70,6 +72,10 @@ data class HomeUiState(
     // per location from the yocal-prompts edge function. Empty until loaded;
     // the card falls back to FALLBACK_YOCAL_PROMPTS in the meantime.
     val yocalPrompts: List<String> = emptyList(),
+    // Today's forecast for the active location, shown right-aligned next to the
+    // greeting. Null until the open-meteo fetch resolves; the header just omits
+    // the weather chip in the meantime.
+    val weather: WeatherForecast? = null,
 ) {
     /** Carousels visible for the currently-selected category. Derived so all
      *  existing reads of `state.carousels` keep working unchanged after the
@@ -152,6 +158,10 @@ class HomeViewModel(
     private val yocalPromptsRepository: live.localapp.local.domain.repository.YocalPromptsRepository,
 ) : ViewModel() {
 
+    /** Set by the host (AppNavigation) to route a logged-out save to the
+     *  sign-in flow. Invoked instead of persisting when there's no user id. */
+    var onAuthRequired: ((itemId: String, type: InteractionType, category: String?) -> Unit)? = null
+
     private var lastYocalPromptsGrid: String? = null
     private var yocalPromptsFetchJob: kotlinx.coroutines.Job? = null
 
@@ -185,6 +195,32 @@ class HomeViewModel(
     val uiState: StateFlow<HomeUiState> = _uiState.asStateFlow()
     private var carouselJob: kotlinx.coroutines.Job? = null
 
+    private val weatherService = WeatherService()
+    private var lastWeatherGrid: String? = null
+    private var weatherFetchJob: kotlinx.coroutines.Job? = null
+
+    /** Fetch today's forecast for the active location and stash it in state for
+     *  the greeting header. Keyed by rounded grid (0.1°) so small GPS ticks
+     *  don't refetch; WeatherService also caches per grid+date. Fails silent —
+     *  the header simply omits the weather chip. */
+    private fun fetchWeatherIfNeeded(lat: Double?, lng: Double?) {
+        if (lat == null || lng == null) return
+        val grid = "${kotlin.math.round(lat * 10) / 10},${kotlin.math.round(lng * 10) / 10}"
+        if (grid == lastWeatherGrid && _uiState.value.weather != null) return
+        weatherFetchJob?.cancel()
+        weatherFetchJob = viewModelScope.launch {
+            @Suppress("DEPRECATION")
+            val today = Instant.fromEpochMilliseconds(
+                kotlin.time.Clock.System.now().toEpochMilliseconds()
+            ).toLocalDateTime(TimeZone.currentSystemDefault()).date.toString()
+            val forecast = try { weatherService.getDayForecast(lat, lng, today) } catch (_: Throwable) { null }
+            if (forecast != null) {
+                lastWeatherGrid = grid
+                _uiState.update { it.copy(weather = forecast) }
+            }
+        }
+    }
+
     val reviewPromptService = live.localapp.local.domain.service.ReviewPromptService()
 
     init {
@@ -204,6 +240,7 @@ class HomeViewModel(
         // loadUserPreferencesThenCarousels supersedes this if the grid differs.
         val cachedLoc = userPreferencesRepository.getCachedManualLocation()
         fetchYocalPromptsIfNeeded(cachedLoc.manualLat ?: 42.3601, cachedLoc.manualLng ?: -71.0589)
+        fetchWeatherIfNeeded(cachedLoc.manualLat ?: 42.3601, cachedLoc.manualLng ?: -71.0589)
 
         loadUserPreferencesThenCarousels()
         loadSavedThisWeek()
@@ -315,7 +352,10 @@ class HomeViewModel(
                     val effectiveName = if (mode == LocationMode.MANUAL && !prefs.manualLocationName.isNullOrBlank()) prefs.manualLocationName else cityDisplay
                     _uiState.update {
                         it.copy(
-                            userName = prefs.firstName ?: "",
+                            // Greet only with a handle the user actually chose.
+                            // Auto-assigned handles (e.g. "local4821") leave this
+                            // blank, so the greeting stays hidden until they edit.
+                            userName = if (prefs.usernameIsCustom) prefs.username ?: "" else "",
                             userLat = effectiveLat ?: it.userLat,
                             userLng = effectiveLng ?: it.userLng,
                             locationName = if (it.locationName.isBlank()) effectiveName else it.locationName,
@@ -337,6 +377,7 @@ class HomeViewModel(
             // Prime typewriter prompts for the current location.
             val s = _uiState.value
             fetchYocalPromptsIfNeeded(s.userLat ?: 42.3601, s.userLng ?: -71.0589)
+            fetchWeatherIfNeeded(s.userLat ?: 42.3601, s.userLng ?: -71.0589)
         }
     }
 
@@ -351,6 +392,7 @@ class HomeViewModel(
             _uiState.update { it.copy(userLat = lat, userLng = lng, locationName = locName, isUnsupportedState = !isLocationInSupportedState(lat, lng)) }
             reloadCarouselsForLocationChange()
             fetchYocalPromptsIfNeeded(lat, lng)
+            fetchWeatherIfNeeded(lat, lng)
             // Fire-and-forget reverse geocode to populate the GPS-specific city name
             // shown in Location Settings. Coarse-rounded key avoids re-fetching on
             // every tiny GPS tick.
@@ -470,9 +512,11 @@ class HomeViewModel(
         }
         reloadCarouselsForLocationChange()
         // Wipe stale prompts and refetch for the new metro.
-        _uiState.update { it.copy(yocalPrompts = emptyList()) }
+        _uiState.update { it.copy(yocalPrompts = emptyList(), weather = null) }
         lastYocalPromptsGrid = null
+        lastWeatherGrid = null
         fetchYocalPromptsIfNeeded(lat, lng)
+        fetchWeatherIfNeeded(lat, lng)
         saveLocationPrefs()
     }
 
@@ -520,6 +564,10 @@ class HomeViewModel(
     }
 
     fun toggleEventFavorite(eventId: String, category: String? = null, source: String = "home_card") {
+        if (userPreferencesRepository.getLocalUserId() == null) {
+            onAuthRequired?.invoke(eventId, InteractionType.EVENT, category)
+            return
+        }
         val isFav = eventId in _uiState.value.favoriteEventIds
         if (isFav) {
             communityInterestRepository.removeFavorite(eventId, InteractionType.EVENT)

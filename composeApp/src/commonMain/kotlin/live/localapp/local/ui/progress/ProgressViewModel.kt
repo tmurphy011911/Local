@@ -22,6 +22,7 @@ import live.localapp.local.domain.model.pointsForMilestone
 import live.localapp.local.domain.model.statusTierForPoints
 import live.localapp.local.domain.repository.BadgeRepository
 import live.localapp.local.domain.repository.UserPreferencesRepository
+import live.localapp.local.domain.repository.UsernameUpdateResult
 import live.localapp.local.domain.service.BadgeCelebration
 import live.localapp.local.domain.service.BadgeService
 
@@ -67,7 +68,7 @@ data class ProgressUiState(
     val globalCompletedMilestones: Int = 0,
     val globalTotalMilestones: Int = 0,
     // Segment control
-    val selectedSegment: Int = 0, // 0 = Progress, 1 = Earn
+    val selectedSegment: Int = 0, // 0 = Earn (default), 1 = Progress
     // Celebrations
     //  - `celebration` is the one currently rendered by the global overlay.
     //  - `pendingCelebrations` is a FIFO queue of additional celebrations that
@@ -77,6 +78,8 @@ data class ProgressUiState(
     //    to Insider!") play through without earlier toasts being clobbered.
     val celebration: CelebrationEvent? = null,
     val pendingCelebrations: List<CelebrationEvent> = emptyList(),
+    // Subscription / trial (server-owned, mirrored from user_profiles.trial_ends_at)
+    val trialEndsAt: String? = null,
     // Loading
     val isLoaded: Boolean = false,
 )
@@ -178,7 +181,7 @@ class ProgressViewModel(
 
     fun selectSegment(index: Int) {
         // Save last-seen before switching so animations replay correctly
-        if (_uiState.value.selectedSegment == 1) { // leaving Earn tab
+        if (_uiState.value.selectedSegment == 0) { // leaving Earn tab
             saveLastSeen()
         }
         _uiState.update { it.copy(selectedSegment = index) }
@@ -193,14 +196,23 @@ class ProgressViewModel(
         loadBadgeData()
     }
 
-    fun saveUserName(name: String) {
+    /**
+     * Set the user's chosen handle. Uniqueness is enforced by the DB; [onError]
+     * fires with a user-facing message when the handle is taken or the write
+     * fails, so the dialog can stay open and show it.
+     */
+    fun saveUsername(name: String, onSuccess: () -> Unit, onError: (String) -> Unit) {
         viewModelScope.launch {
-            val userId = userPrefsRepo.getLocalUserId() ?: return@launch
-            try {
-                val prefs = userPrefsRepo.loadPreferences(userId) ?: return@launch
-                userPrefsRepo.savePreferences(prefs.copy(firstName = name))
-                _uiState.update { it.copy(userName = name, userInitial = name.firstOrNull()?.uppercase() ?: "") }
-            } catch (_: Exception) {}
+            val userId = userPrefsRepo.getLocalUserId()
+            if (userId == null) { onError("You're not signed in"); return@launch }
+            when (userPrefsRepo.updateUsername(userId, name)) {
+                UsernameUpdateResult.Success -> {
+                    _uiState.update { it.copy(userName = name, userInitial = name.firstOrNull()?.uppercase() ?: "") }
+                    onSuccess()
+                }
+                UsernameUpdateResult.Taken -> onError("That username's taken — try another")
+                UsernameUpdateResult.Error -> onError("Couldn't save — try again")
+            }
         }
     }
 
@@ -226,9 +238,9 @@ class ProgressViewModel(
                 val prefs = userPrefsRepo.getLocalUserId()?.let { id ->
                     userPrefsRepo.loadPreferences(id)
                 }
-                val name = prefs?.firstName ?: ""
+                val name = prefs?.username ?: ""
                 val initial = name.firstOrNull()?.uppercase() ?: ""
-                _uiState.update { it.copy(userName = name, userInitial = initial) }
+                _uiState.update { it.copy(userName = name, userInitial = initial, trialEndsAt = prefs?.trialEndsAt) }
             } catch (e: Throwable) {
                 println("ProgressVM.loadProfile error: ${e.message}")
             }
@@ -314,6 +326,7 @@ class ProgressViewModel(
                         val actionKey = when (action) {
                             BadgeAction.EVENT_SAVED -> "event_saved"
                             BadgeAction.EVENT_SHARED -> "event_shared"
+                            BadgeAction.PLACE_SAVED -> "place_saved"
                             BadgeAction.PLAN_CREATED -> "plan_created"
                             BadgeAction.INVITE_ACCEPTED -> "invite_accepted"
                             BadgeAction.GROUP_5_CONFIRMED -> "group_5_confirmed"

@@ -11,6 +11,7 @@ enum class BadgeAction(
 ) {
     EVENT_SAVED("Events Saved", 25),
     EVENT_SHARED("Events Shared", 75),
+    PLACE_SAVED("Places Saved", 25),
     PLAN_CREATED("Plans Created", 250),
     // PLAN_SHARED was removed — sharing is trivially repeatable (system share sheet,
     // copy-link to self) so awarding milestone points for it is farmable.

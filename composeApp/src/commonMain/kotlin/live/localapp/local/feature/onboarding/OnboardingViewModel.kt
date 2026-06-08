@@ -65,6 +65,7 @@ data class OnboardingState(
     val firstName: String = "",
     val lastName: String = "",
     val phoneNumber: String = "",
+    val email: String = "",
     val phoneState: PhoneState = PhoneState.ENTRY,
     val notifTickets: Boolean = true,
     val notifNearby: Boolean = true,
@@ -337,6 +338,7 @@ class OnboardingViewModel(
                     firstName = s.firstName.trim().ifEmpty { null },
                     lastName = s.lastName.trim().ifEmpty { null },
                     phone = s.phoneNumber.filter { it.isDigit() }.ifEmpty { null },
+                    email = s.email.trim().ifEmpty { null },
                     city = s.userCity.lowercase().ifBlank { "boston" },
                     userLat = s.userLat,
                     userLng = s.userLng,
@@ -414,6 +416,10 @@ class OnboardingViewModel(
 
     fun updatePhoneNumber(value: String) {
         _state.update { it.copy(phoneNumber = value) }
+    }
+
+    fun updateEmail(value: String) {
+        _state.update { it.copy(email = value) }
     }
 
     fun submitPhone() {

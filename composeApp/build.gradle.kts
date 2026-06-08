@@ -116,7 +116,7 @@ android {
         applicationId = "live.localapp.local"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 3
+        versionCode = 4
         versionName = "1.0.2"
         // Used by AndroidManifest's <meta-data android:value="${MAPS_API_KEY}" />
         // and read at runtime by the Directions API client.
@@ -156,6 +156,14 @@ val generateBuildKeys = tasks.register("generateBuildKeys") {
     val dsnIos = sentryDsnIos
     val phKey = postHogKey
     val phHost = postHogHost
+    // Declare the key values as inputs so editing local.properties invalidates
+    // this task. Without these, Gradle treats the task as up-to-date whenever
+    // the output dir exists, and a changed DSN/key silently won't take effect
+    // until a clean. (This masked a wrong SENTRY_DSN_IOS during setup.)
+    inputs.property("dsnAndroid", dsnAndroid)
+    inputs.property("dsnIos", dsnIos)
+    inputs.property("phKey", phKey)
+    inputs.property("phHost", phHost)
     doLast {
         val pkgDir = outDir.get().asFile.resolve("live/localapp/local/observability")
         pkgDir.mkdirs()

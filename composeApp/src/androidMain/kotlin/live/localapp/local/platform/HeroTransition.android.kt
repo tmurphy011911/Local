@@ -51,6 +51,7 @@ actual fun showNativeEventDetail(
     onFavorited: ((String) -> Unit)?,
     showDirections: Boolean,
     isFavorited: Boolean,
+    onShare: ((String) -> Unit)?,
 ) {
     // No-op on Android — Compose handles the detail screen
 }
@@ -70,6 +71,7 @@ actual fun showNativePlanDetail(
     onDeletePlan: () -> Unit,
     onAddDay: () -> Unit,
     onAddEvent: (Int) -> Unit,
+    onAddSlotManual: (Int, String, String, String, String?, Double?, Double?) -> Unit,
     onSetSlotReserved: (Int, String, Boolean) -> Unit,
     onSaveReservationDetails: (Int, String, Int, String) -> Unit,
     onReservationUnavailable: (Int, String) -> Unit,

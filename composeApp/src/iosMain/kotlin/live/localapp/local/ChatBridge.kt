@@ -614,7 +614,7 @@ private fun BoStructuredResponse.Suggestions.Action.intent(): String = when (thi
     BoStructuredResponse.Suggestions.Action.MORE_RESULTS ->
         "Show me more results, Bo!"
     BoStructuredResponse.Suggestions.Action.BUILD_FROM_WEB ->
-        "Build a plan from the web findings you just surfaced. For each promising event, call save_web_finding(kind='event') to stage it, then call present_plan with the returned bo_web_events ids as the slot event_ids (with is_bo_web: true). Don't ask another question first — just build the plan."
+        live.localapp.local.ui.chat.BUILD_FROM_WEB_INTENT
 }
 
 private fun ItinerarySlot.toSnapshot() = SlotSnapshot(

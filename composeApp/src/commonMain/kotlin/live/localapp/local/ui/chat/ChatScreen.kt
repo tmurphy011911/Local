@@ -13,6 +13,7 @@ import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -49,14 +50,16 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.Send
-import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.ChevronLeft
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.IosShare
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Slider
+import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -64,6 +67,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -79,6 +83,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.style.TextAlign
@@ -105,6 +110,11 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.layout.ContentScale
 import coil3.compose.AsyncImage
+import local.composeapp.generated.resources.Res
+import local.composeapp.generated.resources.bo_tiny
+import org.jetbrains.compose.resources.painterResource
+import live.localapp.local.platform.MapHeroStop
+import live.localapp.local.platform.PlanMapHero
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 import live.localapp.local.ui.theme.AppShapes
@@ -130,6 +140,20 @@ fun ChatScreen(
     var selectedEvent by remember { mutableStateOf<live.localapp.local.domain.model.Event?>(null) }
     var selectedVenueName by remember { mutableStateOf<String?>(null) }
     var selectedVenue by remember { mutableStateOf<live.localapp.local.domain.model.Venue?>(null) }
+
+    // Inline "Find more" state for SuggestionTray carousels. Keyed by
+    // "$messageId|$groupKey". A group is loading from the moment the user taps
+    // Find more until the ViewModel fires onSuggestionLoadMoreFinished; it's
+    // marked exhausted when that callback reports 0 new events.
+    val loadingGroups = remember { mutableStateMapOf<String, Boolean>() }
+    val exhaustedGroups = remember { mutableStateMapOf<String, Boolean>() }
+    LaunchedEffect(Unit) {
+        viewModel.onSuggestionLoadMoreFinished = { msgId, groupKey, added ->
+            val key = "$msgId|$groupKey"
+            loadingGroups[key] = false
+            if (added == 0) exhaustedGroups[key] = true
+        }
+    }
 
     // ChatGPT-style scroll anchor: every time the user sends, snap the new
     // bubble to the top of the viewport so older history scrolls out of view.
@@ -224,6 +248,35 @@ fun ChatScreen(
     val lastPlanCardId = state.messages.lastOrNull(isPlanCard)?.id
     LaunchedEffect(lastPlanCardId) {
         if (lastPlanCardId != null) anchorTo("plan-card", isPlanCard)
+    }
+
+    // Auto-follow a growing/revealing message: as Bo's reply types out (or a
+    // tall block streams in), its bottom edge bleeds past the viewport. While
+    // the last item is the one visible at the bottom, nudge the scroll so the
+    // newest text stays on screen. The `lastIndex == totalItemsCount - 1`
+    // guard means we ONLY follow when the user is already pinned to the
+    // bottom — the instant they scroll up to read history the last item
+    // leaves the bottom of the viewport and following stops on its own, so we
+    // never yank them back down. Following resumes when they return to the
+    // bottom. scrollBy is non-animated, so it can't fight the anchor effects
+    // (those run while the reply is still empty/short, when overflow <= 0).
+    LaunchedEffect(listState) {
+        snapshotFlow {
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull()
+            if (last == null) {
+                null
+            } else {
+                val overflow = (last.offset + last.size) - info.viewportEndOffset
+                Triple(last.index, info.totalItemsCount, overflow)
+            }
+        }.collect { snapshot ->
+            if (snapshot == null) return@collect
+            val (lastIndex, totalItems, overflow) = snapshot
+            if (lastIndex == totalItems - 1 && overflow > 0 && !listState.isScrollInProgress) {
+                listState.scrollBy(overflow.toFloat())
+            }
+        }
     }
 
     // Navigate to Plans when plan is approved
@@ -321,21 +374,27 @@ fun ChatScreen(
             onBack = onBack,
             onReset = { viewModel.resetChat() },
             location = state.currentLocationName,
+            radiusMiles = state.searchRadiusMiles,
             onEditLocation = { locationEditorOpen = true },
         )
         if (locationEditorOpen) {
             LocationEditorSheet(
                 current = state.currentLocationName,
+                currentLat = state.currentLat,
+                currentLng = state.currentLng,
+                currentRadiusMiles = state.searchRadiusMiles,
                 onDismiss = { locationEditorOpen = false },
-                onConfirm = { name ->
-                    viewModel.setChatSearchLocationByName(name)
+                onConfirm = { name, radius ->
+                    viewModel.setChatSearchScope(name, radius)
                     locationEditorOpen = false
                 },
             )
         }
 
         // ── Upgrade Banner (for users who declined paywall) ──
-        if (showUpgradeBanner) {
+        // Temporarily disabled — hidden for now.
+        @Suppress("ConstantConditionIf")
+        if (false && showUpgradeBanner) {
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -479,7 +538,9 @@ fun ChatScreen(
                     }
                     is MessageContent.Structured -> {
                         val ref = message.content as MessageContent.Structured
+                        val structMsgId = message.id
                         StructuredResponseRenderer(
+                            messageId = structMsgId,
                             response = ref.response,
                             hydratedEvents = ref.hydratedEvents,
                             tray = state.draftTray,
@@ -492,6 +553,15 @@ fun ChatScreen(
                                 viewModel.sendDraftTrayChip(footerActionToIntent(action))
                             },
                             onScopeChip = { intent -> viewModel.sendDraftTrayChip(intent) },
+                            isGroupLoading = { groupKey -> loadingGroups["$structMsgId|$groupKey"] == true },
+                            isGroupExhausted = { groupKey -> exhaustedGroups["$structMsgId|$groupKey"] == true },
+                            onFindMore = { dayKey, categoryKey ->
+                                val groupKey = dayKey ?: categoryKey ?: ""
+                                if (groupKey.isNotEmpty()) {
+                                    loadingGroups["$structMsgId|$groupKey"] = true
+                                    viewModel.loadMoreSuggestionsForGroup(structMsgId, dayKey, categoryKey)
+                                }
+                            },
                         )
                     }
                 }
@@ -499,7 +569,7 @@ fun ChatScreen(
 
             // Streaming text / searching / typing indicator
             if (state.isSearching) {
-                item { SearchingIndicator(narration = state.searchingNarration, localIdioms = state.localIdioms) }
+                item { SearchingIndicator(opener = state.searchingOpener, narration = state.searchingNarration, localIdioms = state.localIdioms) }
             } else if (state.streamingText.isNotEmpty()) {
                 item { MessageRow(role = MessageRole.AI, text = state.streamingText) }
             } else if (state.isTyping) {
@@ -557,10 +627,6 @@ fun ChatScreen(
                 viewModel.dismissPlanSuccess(navigateToPlans = false)
                 onNavigateToPlans?.invoke()
             },
-            onHome = {
-                viewModel.dismissPlanSuccess(navigateToPlans = false)
-                onNavigateHome?.invoke()
-            },
             onInviteFriends = {
                 // TODO: share sheet
             },
@@ -576,6 +642,7 @@ private fun ChatHeader(
     onBack: (() -> Unit)? = null,
     onReset: (() -> Unit)? = null,
     location: String = "",
+    radiusMiles: Double = 20.0,
     onEditLocation: (() -> Unit)? = null,
 ) {
     Column(modifier = Modifier.fillMaxWidth().background(AppColors.Snow)) {
@@ -626,48 +693,52 @@ private fun ChatHeader(
             }
         }
 
-        // Location chip — the canonical "where Bo is searching" value. Tap to
-        // edit. Bo's tool calls default to this whenever it doesn't pass an
-        // explicit location override. Empty state shows a "Set location"
-        // affordance so the chip is always discoverable.
+        // Search-scope banner (Bug #19) — full-width sky-blue banner matching
+        // the home tab's location pill + iOS ChatView. Single line:
+        // "Searching {City} · Within {N} miles" with a mappin and a trailing
+        // down-chevron. Replaces the old pink coral "Change" chip. The city is
+        // stripped of its state/country suffix ("Ipswich, MA, US" → "Ipswich").
         if (onEditLocation != null) {
+            val city = location.substringBefore(",").trim()
             Row(
                 modifier = Modifier
-                    .padding(start = 18.dp, end = 18.dp, bottom = 10.dp)
-                    .clip(RoundedCornerShape(50))
-                    .background(AppColors.CoralLt)
+                    .fillMaxWidth()
+                    .background(AppColors.SkyLt)
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
                         onClick = onEditLocation,
                     )
-                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                    .padding(horizontal = 18.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
                     Icons.Outlined.Place, "Location",
-                    tint = AppColors.Coral,
-                    modifier = Modifier.size(14.dp),
+                    tint = AppColors.Sky,
+                    modifier = Modifier.size(15.dp),
                 )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    text = if (location.isBlank()) "Set location" else "Searching $location",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        color = AppColors.Coral,
-                    ),
-                )
-                Spacer(Modifier.width(6.dp))
-                Text(
-                    "Change",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 11.sp,
-                        color = AppColors.Coral.copy(alpha = 0.8f),
-                    ),
+                Spacer(Modifier.width(8.dp))
+                if (city.isBlank()) {
+                    Text(
+                        "Set search location",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = AppColors.Sky),
+                    )
+                } else {
+                    Text(
+                        text = buildAnnotatedString {
+                            withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append("Searching $city ") }
+                            withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) { append("· Within ${radiusMiles.toInt()} miles") }
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = TextStyle(fontFamily = AppFonts.Body, fontSize = 13.sp, color = AppColors.Sky),
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                Icon(
+                    Icons.Outlined.KeyboardArrowDown, contentDescription = null,
+                    tint = AppColors.Sky,
+                    modifier = Modifier.size(18.dp),
                 )
             }
         }
@@ -676,19 +747,24 @@ private fun ChatHeader(
 }
 
 /**
- * Bottom-sheet editor for the chat's search location. Tiny — a single text
- * field + Set/Cancel. The user types a city or neighborhood; on Set, the
- * viewmodel geocodes and updates the chip. Bo's next search uses the new
- * value as the default scope.
+ * Bottom-sheet editor for the chat's search scope — matches iOS
+ * SearchScopeEditorSheet (ChatView.swift). A city/neighborhood text field, a
+ * live map preview of the current scope center, and a radius slider (2–50 mi).
+ * On "Set scope" the viewmodel geocodes the name and pins all of Bo's searches
+ * to that scope + radius until the user changes it.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LocationEditorSheet(
     current: String,
+    currentLat: Double?,
+    currentLng: Double?,
+    currentRadiusMiles: Double,
     onDismiss: () -> Unit,
-    onConfirm: (String) -> Unit,
+    onConfirm: (String, Double) -> Unit,
 ) {
     var text by remember(current) { mutableStateOf(current) }
+    var radius by remember(currentRadiusMiles) { mutableStateOf(currentRadiusMiles.toFloat().coerceIn(1f, 50f)) }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -703,11 +779,11 @@ private fun LocationEditorSheet(
         ) {
             Text(
                 "Where should Bo search?",
-                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 20.sp, color = AppColors.Ink),
+                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 22.sp, color = AppColors.Ink),
             )
             Spacer(Modifier.height(6.dp))
             Text(
-                "City or neighborhood. Bo will pin all searches to this scope until you change it.",
+                "Bo pins every search to this scope until you change it.",
                 style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Normal, fontSize = 13.sp, color = AppColors.Ink3),
             )
             Spacer(Modifier.height(20.dp))
@@ -725,36 +801,65 @@ private fun LocationEditorSheet(
                 ),
                 textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = AppColors.Ink),
             )
-            Spacer(Modifier.height(24.dp))
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+
+            // Live map preview of the current scope center.
+            if (currentLat != null && currentLng != null) {
+                Spacer(Modifier.height(16.dp))
                 Box(
-                    modifier = Modifier.weight(1f)
-                        .clip(RoundedCornerShape(50))
-                        .background(AppColors.Pebble.copy(alpha = 0.25f))
-                        .clickable { onDismiss() }
-                        .padding(vertical = 14.dp),
-                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(200.dp)
+                        .clip(RoundedCornerShape(16.dp)),
                 ) {
-                    Text(
-                        "Cancel",
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Ink),
+                    PlanMapHero(
+                        stops = listOf(MapHeroStop(currentLat, currentLng, current)),
+                        modifier = Modifier.fillMaxSize(),
                     )
                 }
-                val canSet = text.trim().isNotBlank()
-                Box(
-                    modifier = Modifier.weight(1f)
-                        .clip(RoundedCornerShape(50))
-                        .background(AppColors.Coral)
-                        .graphicsLayer { alpha = if (canSet) 1f else 0.3f }
-                        .then(if (canSet) Modifier.clickable { onConfirm(text.trim()) } else Modifier)
-                        .padding(vertical = 14.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        "Set location",
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = Color.White),
-                    )
-                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    "Radius",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink),
+                )
+                Spacer(Modifier.weight(1f))
+                Text(
+                    "${radius.toInt()} mi",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Coral),
+                )
+            }
+            Slider(
+                value = radius,
+                onValueChange = { radius = it },
+                valueRange = 1f..50f,
+                steps = 48,
+                colors = SliderDefaults.colors(
+                    thumbColor = AppColors.Coral,
+                    activeTrackColor = AppColors.Coral,
+                    inactiveTrackColor = AppColors.Pebble.copy(alpha = 0.4f),
+                ),
+            )
+
+            Spacer(Modifier.height(16.dp))
+            val canSet = text.trim().isNotBlank()
+            Box(
+                modifier = Modifier.fillMaxWidth()
+                    .height(50.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(AppColors.Coral)
+                    .graphicsLayer { alpha = if (canSet) 1f else 0.3f }
+                    .then(if (canSet) Modifier.clickable { onConfirm(text.trim(), radius.toDouble()) } else Modifier),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "Set scope",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = Color.White),
+                )
             }
         }
     }
@@ -815,50 +920,46 @@ private fun MessageRow(role: MessageRole, text: String, messageId: String? = nul
                 )
             }
         } else {
-            // AI messages: Bo avatar (placeholder — coral circle + sparkle icon)
-            // + "Bo" label, then text. A real Bo asset will replace the
-            // placeholder later.
+            // AI messages (iOS parity — ChatView.swift aiMessageBubble):
+            // a leading-aligned Column whose FIRST row is the "Bo" label with
+            // the avatar inline to its RIGHT, then the body text below at full
+            // width. The avatar is paired with the name, NOT stacked in a
+            // separate left gutter beside the body text.
             Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                modifier = Modifier.padding(top = 2.dp),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(16.dp)
-                        .background(AppColors.Coral, CircleShape),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(
-                        Icons.Outlined.AutoAwesome,
-                        contentDescription = null,
-                        modifier = Modifier.size(12.dp),
-                        tint = AppColors.White,
-                    )
-                }
-                Text(
-                    "Bo",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 11.sp,
-                        color = AppColors.Coral,
-                    ),
-                )
-            }
-            Spacer(Modifier.width(8.dp))
-            Box(
+                horizontalAlignment = Alignment.Start,
+                verticalArrangement = Arrangement.spacedBy(3.dp),
                 modifier = Modifier
                     .weight(1f, fill = false)
                     .padding(vertical = 4.dp),
             ) {
-                if (messageId != null && !text.contains("**")) {
-                    // Plain conversational AI reply with a stable id — use
-                    // typewriter reveal (matches iOS ChatView.swift). Skip
-                    // typewriter when the text has markdown bold so the rich
-                    // renderer still handles styling.
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        "Bo",
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            color = AppColors.Coral,
+                        ),
+                    )
+                    Image(
+                        painter = painterResource(Res.drawable.bo_tiny),
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+                if (messageId != null) {
+                    // Persisted AI reply with a stable id — use the
+                    // markdown-aware typewriter reveal (matches iOS
+                    // ChatView.swift). Bold/bullets render live during the
+                    // reveal; boldAnnotatedString strips emoji + normalizes
+                    // markdown internally, so pass the raw text.
                     TypewritingAiText(
                         messageId = messageId,
-                        fullText = stripEmojiForTypewriter(text),
+                        fullText = text,
                         color = AppColors.Ink,
                         style = TextStyle(
                             fontFamily = AppFonts.Body,
@@ -876,9 +977,6 @@ private fun MessageRow(role: MessageRole, text: String, messageId: String? = nul
         if (!isUser) Spacer(Modifier.width(48.dp))
     }
 }
-
-/** Helper that exposes the file-private stripEmoji for the typewriter path. */
-private fun stripEmojiForTypewriter(text: String): String = stripEmoji(text)
 
 // ── Typing Indicator ──
 
@@ -1076,6 +1174,7 @@ private val searchingPhrases = listOf(
 
 @Composable
 private fun SearchingIndicator(
+    opener: String? = null,
     narration: List<String> = emptyList(),
     localIdioms: List<String> = emptyList(),
 ) {
@@ -1118,54 +1217,101 @@ private fun SearchingIndicator(
     }
     val visibleNarration = narration.take(visibleCount)
 
-    Row(
-        modifier = Modifier.padding(horizontal = 4.dp),
-        horizontalArrangement = Arrangement.Start,
+    // iOS parity (ChatView.swift SearchingIndicatorView): NO bordered bubble.
+    // Two stacked rows, each sharing a leftmost Bo-avatar column:
+    //  • the narration block (Bo avatar + checked steps) — only once steps exist
+    //  • the live idiom line (Bo avatar + gerund) — always present while searching
+    Column(
+        modifier = Modifier.padding(horizontal = 4.dp, vertical = 2.dp),
+        verticalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        val bubbleShape = RoundedCornerShape(18.dp, 18.dp, 18.dp, 4.dp)
-        Column(
-            Modifier
-                .background(AppColors.White, bubbleShape)
-                .border(1.dp, AppColors.Pebble.copy(alpha = 0.6f), bubbleShape)
-                .border(2.dp, Color(0xFFE2DCF0), bubbleShape)
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-        ) {
-            // Completed narration steps stack up and persist, each with a
-            // check. Derived from Bo's tool args (e.g. "Searching within 20
-            // miles of Waltham"). Animate the latest line in.
-            visibleNarration.forEachIndexed { i, step ->
-                val rowAlpha = remember(step) { Animatable(0f) }
-                LaunchedEffect(step) { rowAlpha.animateTo(1f, animationSpec = tween(300)) }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    modifier = Modifier.graphicsLayer { this.alpha = rowAlpha.value },
-                ) {
-                    Text(
-                        "✓",
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp, color = AppColors.Ink3.copy(alpha = 0.5f),
-                        ),
-                    )
-                    Text(
-                        step,
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold,
-                            fontSize = 13.sp, color = AppColors.Ink3.copy(alpha = 0.7f),
-                        ),
-                    )
+        // One-time browse opener — a human beat that echoes the request + scope
+        // ("Let me find Live music this week for you. Searching within 20 miles
+        // of Waltham.") above the ✓ steps. Reads as Bo speaking, so it carries
+        // the Bo avatar like the rows below it.
+        if (!opener.isNullOrBlank()) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Image(
+                    painter = painterResource(Res.drawable.bo_tiny),
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp).padding(top = 1.dp),
+                )
+                Text(
+                    opener,
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.Medium,
+                        fontSize = 15.sp,
+                        lineHeight = 21.sp,
+                        color = AppColors.Ink,
+                    ),
+                )
+            }
+        }
+        // Completed narration steps stack up and persist, each with a check.
+        // Derived from Bo's tool args (e.g. "Searching within 20 miles of
+        // Waltham"). Only render the row (with its avatar) once steps exist.
+        if (visibleNarration.isNotEmpty()) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Image(
+                    painter = painterResource(Res.drawable.bo_tiny),
+                    contentDescription = null,
+                    modifier = Modifier.size(20.dp).padding(top = 1.dp),
+                )
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    visibleNarration.forEach { step ->
+                        val rowAlpha = remember(step) { Animatable(0f) }
+                        LaunchedEffect(step) { rowAlpha.animateTo(1f, animationSpec = tween(300)) }
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            modifier = Modifier.graphicsLayer { this.alpha = rowAlpha.value },
+                        ) {
+                            Text(
+                                "✓",
+                                style = TextStyle(
+                                    fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp, color = AppColors.Ink3.copy(alpha = 0.5f),
+                                ),
+                            )
+                            Text(
+                                step,
+                                style = TextStyle(
+                                    fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold,
+                                    fontSize = 13.sp, color = AppColors.Ink3.copy(alpha = 0.7f),
+                                ),
+                            )
+                        }
+                    }
                 }
             }
-            // Live "thinking" line — always present while searching.
+        }
+        // Live "thinking" line — always present while searching. Its Bo avatar
+        // shares the leftmost column with the narration avatar above, so once
+        // steps appear it sits directly beneath that avatar. The avatar stays
+        // put; only the gerund text fades and re-appears as phrases rotate.
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Image(
+                painter = painterResource(Res.drawable.bo_tiny),
+                contentDescription = null,
+                modifier = Modifier.size(20.dp),
+            )
             Text(
                 currentGerund,
                 modifier = Modifier.graphicsLayer { this.alpha = gerundAlpha.value },
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.SemiBold,
-                    fontSize = 13.sp,
+                    fontSize = 14.sp,
                     color = AppColors.Ink3,
                 ),
             )
@@ -1682,8 +1828,7 @@ private fun SlotCard(
                     Text(
                         "Reserve",
                         modifier = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
-                            val deepUrl = buildReservationDeepLink(slot.reservationUrl, slot.time)
-                            uriHandler.openUri(deepUrl)
+                            uriHandler.openUri(slot.venueWebsite?.takeIf { it.isNotBlank() } ?: slot.reservationUrl)
                         },
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = if (hasImage) AppColors.White else AppColors.Coral),
                     )
@@ -2250,53 +2395,7 @@ private fun AuthRequiredOverlay(
  *  When the closing `**` arrives, the regular pairing logic takes over. */
 @Composable
 private fun RichChatText(text: String, textColor: Color) {
-    val annotated = remember(text) {
-        // Pre-normalize: strip markdown headers and unify bullet prefixes
-        // (`- foo`, `* foo`, `• foo` → `• foo`). The bullet character +
-        // a leading space is preserved as text and rendered inline.
-        // Also strip surrogate-pair emoji that iOS Compose can't render —
-        // Bo is told via prompt not to use them but Claude slips
-        // occasionally, and a broken glyph reads worse than a silent strip.
-        val cleaned = stripEmoji(text)
-            .replace(Regex("^#+\\s+", RegexOption.MULTILINE), "")
-            .replace(Regex("^\\s*[-*•]\\s+", RegexOption.MULTILINE), "• ")
-
-        buildAnnotatedString {
-            var remaining = cleaned
-            while (remaining.isNotEmpty()) {
-                val boldStart = remaining.indexOf("**")
-                if (boldStart < 0) {
-                    withStyle(SpanStyle(fontWeight = FontWeight.Medium, fontSize = 15.sp, color = textColor)) {
-                        append(remaining)
-                    }
-                    break
-                }
-                if (boldStart > 0) {
-                    withStyle(SpanStyle(fontWeight = FontWeight.Medium, fontSize = 15.sp, color = textColor)) {
-                        append(remaining.substring(0, boldStart))
-                    }
-                }
-                remaining = remaining.substring(boldStart + 2)
-                val boldEnd = remaining.indexOf("**")
-                if (boldEnd < 0) {
-                    // Streaming case: opening `**` with no closing delimiter
-                    // yet. Render the rest as bold so the user sees the
-                    // intended formatting live. When Bo finishes typing
-                    // the closing `**`, the regular pairing branch below
-                    // takes over and the bold scope tightens to the actual
-                    // span.
-                    withStyle(SpanStyle(fontWeight = FontWeight.Black, fontSize = 15.sp, color = textColor)) {
-                        append(remaining)
-                    }
-                    break
-                }
-                withStyle(SpanStyle(fontWeight = FontWeight.Black, fontSize = 15.sp, color = textColor)) {
-                    append(remaining.substring(0, boldEnd))
-                }
-                remaining = remaining.substring(boldEnd + 2)
-            }
-        }
-    }
+    val annotated = remember(text, textColor) { boldAnnotatedString(text, textColor) }
 
     Text(
         text = annotated,
@@ -2305,6 +2404,58 @@ private fun RichChatText(text: String, textColor: Color) {
             lineHeight = 21.sp,
         ),
     )
+}
+
+/**
+ * Parses Bo's chat text (`**bold**`, markdown headers, mixed bullets) into a
+ * styled [AnnotatedString]. Shared by [RichChatText] and the markdown-aware
+ * typewriter reveal so that bold formatting shows LIVE during the reveal
+ * (revealing a prefix via [AnnotatedString.subSequence] preserves styling)
+ * instead of leaking literal `**` until the message completes.
+ *
+ * Streaming-friendly: an open `**` with no closing delimiter yet renders the
+ * rest as bold immediately; when the closing `**` arrives, the pairing logic
+ * tightens the bold span to the actual range.
+ */
+internal fun boldAnnotatedString(text: String, textColor: Color): AnnotatedString {
+    // Pre-normalize: strip markdown headers and unify bullet prefixes
+    // (`- foo`, `* foo`, `• foo` → `• foo`). Also strip surrogate-pair emoji
+    // that iOS Compose can't render — Bo is told via prompt not to use them
+    // but Claude slips occasionally, and a broken glyph reads worse than a
+    // silent strip.
+    val cleaned = stripEmoji(text)
+        .replace(Regex("^#+\\s+", RegexOption.MULTILINE), "")
+        .replace(Regex("^\\s*[-*•]\\s+", RegexOption.MULTILINE), "• ")
+
+    return buildAnnotatedString {
+        var remaining = cleaned
+        while (remaining.isNotEmpty()) {
+            val boldStart = remaining.indexOf("**")
+            if (boldStart < 0) {
+                withStyle(SpanStyle(fontWeight = FontWeight.Medium, fontSize = 15.sp, color = textColor)) {
+                    append(remaining)
+                }
+                break
+            }
+            if (boldStart > 0) {
+                withStyle(SpanStyle(fontWeight = FontWeight.Medium, fontSize = 15.sp, color = textColor)) {
+                    append(remaining.substring(0, boldStart))
+                }
+            }
+            remaining = remaining.substring(boldStart + 2)
+            val boldEnd = remaining.indexOf("**")
+            if (boldEnd < 0) {
+                withStyle(SpanStyle(fontWeight = FontWeight.Black, fontSize = 15.sp, color = textColor)) {
+                    append(remaining)
+                }
+                break
+            }
+            withStyle(SpanStyle(fontWeight = FontWeight.Black, fontSize = 15.sp, color = textColor)) {
+                append(remaining.substring(0, boldEnd))
+            }
+            remaining = remaining.substring(boldEnd + 2)
+        }
+    }
 }
 
 private fun cleanMarkdown(text: String): String {
@@ -2355,33 +2506,6 @@ private fun stripEmoji(text: String): String {
 }
 
 /** Extract a numeric price from strings like "$25", "From $15", "$$" */
-/** Build a deep link to Resy or OpenTable with date/time/seats prefilled. */
-private fun buildReservationDeepLink(baseUrl: String, slotTime: String, seats: Int = 2): String {
-    val today = kotlin.time.Clock.System.now().toString().take(10) // YYYY-MM-DD
-
-    return when {
-        baseUrl.contains("resy.com") -> {
-            "$baseUrl?date=$today&seats=$seats"
-        }
-        baseUrl.contains("opentable.com") -> {
-            // Parse slot time like "7 PM" or "7:30 PM" into HH:mm format
-            val timeParam = try {
-                val parts = slotTime.uppercase().replace(".", "").trim().split(" ")
-                val timePart = parts[0]
-                val isPm = parts.getOrNull(1)?.contains("PM") == true
-                val hm = timePart.split(":")
-                var hour = hm[0].toInt()
-                val min = hm.getOrNull(1)?.toInt() ?: 0
-                if (isPm && hour < 12) hour += 12
-                if (!isPm && hour == 12) hour = 0
-                "${hour.toString().padStart(2, '0')}:${min.toString().padStart(2, '0')}"
-            } catch (_: Exception) { "19:00" }
-            "$baseUrl?dateTime=${today}T${timeParam}&covers=$seats&partySize=$seats"
-        }
-        else -> baseUrl
-    }
-}
-
 private fun extractPriceValue(price: String): Double? {
     if (price.isBlank()) return null
     if (price.trim().all { it == '$' || it == ' ' }) {
@@ -2401,27 +2525,19 @@ private fun PlanSuccessOverlay(
     planTitle: String,
     days: List<ItineraryDay>,
     onViewPlans: () -> Unit,
-    onHome: () -> Unit,
     onInviteFriends: () -> Unit,
 ) {
+    // Matches iOS PlanCelebrationOverlay.dateSubtitle: full day label(s) joined
+    // with an en dash, plus the total stop count.
     val subtitle = remember(days) {
         if (days.isEmpty()) ""
-        else if (days.size == 1) {
-            // Single day: extract date part from label like "Saturday, March 28"
-            val label = days.first().label
-            val datePart = label.substringAfter(", ", label)
-            datePart
-        } else {
-            // Multi-day: "March 28 to 30" or "March 28 to April 1"
-            val first = days.first().label.substringAfter(", ", days.first().label)
-            val last = days.last().label.substringAfter(", ", days.last().label)
-            val firstMonth = first.substringBefore(" ")
-            val lastMonth = last.substringBefore(" ")
-            if (firstMonth == lastMonth) {
-                val lastDay = last.substringAfter(" ")
-                "$first to $lastDay"
+        else {
+            val totalStops = days.sumOf { it.slots.size }
+            if (days.size == 1) {
+                val stopWord = if (totalStops == 1) "stop" else "stops"
+                "${days.first().label} · $totalStops $stopWord"
             } else {
-                "$first to $last"
+                "${days.first().label} – ${days.last().label} · $totalStops stops"
             }
         }
     }
@@ -2446,8 +2562,6 @@ private fun PlanSuccessOverlay(
     val shareAlpha = remember { Animatable(0f) }
     val plansOffsetY = remember { Animatable(60f) }
     val plansAlpha = remember { Animatable(0f) }
-    val homeOffsetY = remember { Animatable(60f) }
-    val homeAlpha = remember { Animatable(0f) }
 
     val haptic = LocalHapticFeedback.current
 
@@ -2501,11 +2615,6 @@ private fun PlanSuccessOverlay(
             delay(1750)
             launch { plansOffsetY.animateTo(0f, tween(400, easing = EaseOutCubic)) }
             plansAlpha.animateTo(1f, tween(400))
-        }
-        launch {
-            delay(1900)
-            launch { homeOffsetY.animateTo(0f, tween(400, easing = EaseOutCubic)) }
-            homeAlpha.animateTo(1f, tween(400))
         }
     }
 
@@ -2699,7 +2808,8 @@ private fun PlanSuccessOverlay(
                     }
                 }
 
-                // View Plans
+                // View Plan — secondary text link beneath Share (iOS parity:
+                // no Home CTA; View Plan is a demoted text button).
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -2707,43 +2817,17 @@ private fun PlanSuccessOverlay(
                             translationY = plansOffsetY.value
                             alpha = plansAlpha.value
                         }
-                        .background(Color.White.copy(alpha = 0.2f), RoundedCornerShape(14.dp))
-                        .border(1.5.dp, Color.White.copy(alpha = 0.4f), RoundedCornerShape(14.dp))
                         .clip(RoundedCornerShape(14.dp))
                         .clickable { onViewPlans() }
-                        .padding(vertical = 13.dp),
+                        .padding(vertical = 4.dp),
                     contentAlignment = Alignment.Center,
                 ) {
                     Text(
-                        "View Plans",
+                        "View Plan",
                         style = TextStyle(
-                            fontSize = 14.sp,
+                            fontSize = 15.sp,
                             fontWeight = FontWeight.ExtraBold,
-                            color = Color.White,
-                            fontFamily = AppFonts.Heading,
-                        ),
-                    )
-                }
-
-                // Home
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .graphicsLayer {
-                            translationY = homeOffsetY.value
-                            alpha = homeAlpha.value
-                        }
-                        .clip(RoundedCornerShape(14.dp))
-                        .clickable { onHome() }
-                        .padding(vertical = 10.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        "Home",
-                        style = TextStyle(
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White.copy(alpha = 0.7f),
+                            color = Color.White.copy(alpha = 0.9f),
                             fontFamily = AppFonts.Heading,
                         ),
                     )
@@ -2761,6 +2845,7 @@ private fun PlanSuccessOverlay(
  */
 @Composable
 private fun StructuredResponseRenderer(
+    messageId: String,
     response: live.localapp.local.domain.model.BoStructuredResponse,
     hydratedEvents: Map<String, live.localapp.local.domain.model.Event>,
     tray: List<live.localapp.local.domain.model.DraftTrayEvent>,
@@ -2768,17 +2853,24 @@ private fun StructuredResponseRenderer(
     onOpenEvent: (live.localapp.local.domain.model.Event) -> Unit,
     onFooterAction: (live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action) -> Unit,
     onScopeChip: (String) -> Unit,
+    isGroupLoading: (String) -> Boolean = { false },
+    isGroupExhausted: (String) -> Boolean = { false },
+    onFindMore: (dayKey: String?, categoryKey: String?) -> Unit = { _, _ -> },
 ) {
     val trayIds = remember(tray) { tray.map { it.eventId }.toSet() }
     when (response) {
         is live.localapp.local.domain.model.BoStructuredResponse.Suggestions ->
             SuggestionTray(
+                messageId = messageId,
                 suggestions = response,
                 eventsById = hydratedEvents,
                 onAddToTray = onAddToTray,
                 onOpenEvent = onOpenEvent,
                 onFooterAction = onFooterAction,
                 isInTray = { id -> id in trayIds },
+                isGroupLoading = isGroupLoading,
+                isGroupExhausted = isGroupExhausted,
+                onFindMore = onFindMore,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 12.dp, vertical = 6.dp),
@@ -2829,7 +2921,7 @@ private fun footerActionToIntent(action: live.localapp.local.domain.model.BoStru
     live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action.MORE_RESULTS ->
         "Show me more results, Bo!"
     live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action.BUILD_FROM_WEB ->
-        "Build a plan from the web findings you just surfaced. For each promising event, call save_web_finding(kind='event') to stage it, then call present_plan with the returned bo_web_events ids as the slot event_ids (with is_bo_web: true). Don't ask another question first — just build the plan."
+        BUILD_FROM_WEB_INTENT
 }
 
 @Composable

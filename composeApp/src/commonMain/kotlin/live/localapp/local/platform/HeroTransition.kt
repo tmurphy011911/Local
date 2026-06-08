@@ -59,6 +59,7 @@ expect fun showNativeEventDetail(
     onFavorited: ((String) -> Unit)? = null,
     showDirections: Boolean = false,
     isFavorited: Boolean = false,
+    onShare: ((String) -> Unit)? = null,
 )
 
 /**
@@ -112,6 +113,7 @@ expect fun showNativePlanDetail(
     onDeletePlan: () -> Unit = {},
     onAddDay: () -> Unit = {},
     onAddEvent: (Int) -> Unit = {},
+    onAddSlotManual: (Int, String, String, String, String?, Double?, Double?) -> Unit = { _, _, _, _, _, _, _ -> },
     onSetSlotReserved: (Int, String, Boolean) -> Unit = { _, _, _ -> },
     onSaveReservationDetails: (Int, String, Int, String) -> Unit = { _, _, _, _ -> },
     onReservationUnavailable: (Int, String) -> Unit = { _, _ -> },

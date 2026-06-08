@@ -38,6 +38,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.AutoAwesome
+import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.MoreHoriz
 import androidx.compose.material.icons.outlined.Check
@@ -128,6 +130,10 @@ fun PlanDetailScreen(
     onEditName: (String) -> Unit = {},
     onRemoveSlot: (dayIndex: Int, slotId: String) -> Unit = { _, _ -> },
     onAddSlot: (dayIndex: Int, slot: PlanSlot) -> Unit = { _, _ -> },
+    // "+ Add event" opens the per-plan Bo chat pre-filled (iOS parity), rather
+    // than the local venue-search sheet. Hoisted so the parent can present the
+    // plan chat with the right day-scoped prompt.
+    onAddEventViaBo: (dayIndex: Int) -> Unit = { _ -> },
     onAddDay: () -> Unit = {},
     onRemoveDay: (dayIndex: Int) -> Unit = {},
     onDeletePlan: () -> Unit = {},
@@ -161,8 +167,13 @@ fun PlanDetailScreen(
     var showGroupSizeSheet by remember { mutableStateOf(false) }
     var emptyDayIndexToConfirm by remember { mutableStateOf<Int?>(null) }
     var confirmDeletePlan by remember { mutableStateOf(false) }
-    var addEventDayIndex by remember { mutableStateOf<Int?>(null) }
     var selectedDayIndex by remember { mutableStateOf(0) }
+    // "+ Add event" flow. Tapping the button opens a two-option chooser
+    // (Add manually / Ask Bo), mirroring the home-page Create Plan menu.
+    // "Add manually" then opens the local form sheet; "Ask Bo" defers to the
+    // existing per-plan chat via onAddEventViaBo. Both hold the day index.
+    var addChooserDay by remember { mutableStateOf<Int?>(null) }
+    var manualFormDay by remember { mutableStateOf<Int?>(null) }
     // Active stop-action sheet (Reservation / Tickets / Unavailable chooser).
     // Drives all chip-tap flows; null = no sheet visible.
     var activeStopSheet by remember(plan.id) { mutableStateOf<StopSheetTarget?>(null) }
@@ -221,6 +232,10 @@ fun PlanDetailScreen(
                 onEditName = { showEditNameDialog = true },
                 onEditPlan = onEditPlan,
                 onDeletePlan = { confirmDeletePlan = true },
+                // Bug #7: Add Day surfaced in the overflow menu (iOS parity),
+                // gated the same way as the inline/strip "+ Add day" affordances.
+                canAddDay = isCreator && !past && !isShared && plan.days.size < 7,
+                onAddDay = onAddDay,
                 // The Android AttendeeCard is already visible inline above the
                 // fold, so "View Attendees" doesn't open a sheet — the card is
                 // the canonical view. Reserved for a future ModalBottomSheet
@@ -269,19 +284,11 @@ fun PlanDetailScreen(
                 }
 
                 if (isMultiDay) {
-                    // iOS parity: peek-paging day summary carousel above the
-                    // day strip. Each card is full-screen-width with 28dp
-                    // horizontal content padding so the neighboring days peek
-                    // from the edges. Snap-fling settles to the centered item
-                    // and writes back to `selectedDayIndex` so the day strip
-                    // and slot list follow.
-                    DaySummaryPeekPager(
-                        plan = plan,
-                        selectedDayIndex = selectedDayIndex.coerceAtMost(plan.days.lastIndex),
-                        onDaySelected = { selectedDayIndex = it },
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    // Multi-day: day strip with + Add chip.
+                    // Bug #3: the standalone day-summary peek pager that used to
+                    // sit here duplicated the floating title card already shown
+                    // in the hero (iOS folds both into one carousel-in-hero).
+                    // Removed — the day strip below is the single day selector,
+                    // matching the iOS dayHeader.
                     DayTabStrip(
                         days = plan.days,
                         activeIndex = selectedDayIndex.coerceAtMost(plan.days.lastIndex),
@@ -341,7 +348,7 @@ fun PlanDetailScreen(
                         if (activeDay.slots.isEmpty()) {
                             DayEmptyState(
                                 readOnly = readOnly || past,
-                                onAddEvent = { addEventDayIndex = effectiveDayIndex },
+                                onAddEvent = { addChooserDay = effectiveDayIndex },
                             )
                         } else {
                             activeDay.slots.forEachIndexed { i, slot ->
@@ -413,7 +420,7 @@ fun PlanDetailScreen(
                             }
                             if (canAddSlot) {
                                 Spacer(Modifier.height(10.dp))
-                                AddEventButton(onClick = { addEventDayIndex = effectiveDayIndex })
+                                AddEventButton(onClick = { addChooserDay = effectiveDayIndex })
                             } else if (maxStopsReached && !readOnly && !past) {
                                 Spacer(Modifier.height(10.dp))
                                 Text(
@@ -427,26 +434,9 @@ fun PlanDetailScreen(
                     }
                 }
 
-                // Delete plan (creator only, bottom of scroll)
-                if (isCreator && !past && !isShared) {
-                    Spacer(Modifier.height(30.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 16.dp)
-                            .clickable { confirmDeletePlan = true }
-                            .padding(vertical = 12.dp),
-                        horizontalArrangement = Arrangement.Center,
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(Icons.Outlined.Delete, contentDescription = null, modifier = Modifier.size(13.dp), tint = V5Ink4)
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            "Delete plan",
-                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Medium, fontSize = 13.sp, color = V5Ink4),
-                        )
-                    }
-                }
+                // Bug #9: the bottom-of-scroll "Delete plan" footer button was
+                // removed — Delete Plan now lives only in the hero overflow
+                // menu (iOS parity), so the scroll ends on the last stop card.
             }
         }
 
@@ -673,6 +663,38 @@ fun PlanDetailScreen(
             null -> Unit
         }
 
+        // "+ Add event" → two-option chooser (Add manually / Ask Bo).
+        addChooserDay?.let { idx ->
+            AddEventChooserSheet(
+                dayLabel = plan.days.getOrNull(idx)?.label ?: "this day",
+                onManual = {
+                    addChooserDay = null
+                    manualFormDay = idx
+                },
+                onAskBo = {
+                    addChooserDay = null
+                    onAddEventViaBo(idx)
+                },
+                onDismiss = { addChooserDay = null },
+            )
+        }
+
+        // "Add manually" form: name (free text) + Google location (+ custom
+        // fallback) + time picker. Date is implicit (the day). Writes through
+        // the existing onAddSlot sync chokepoint.
+        manualFormDay?.let { idx ->
+            ManualEventFormSheet(
+                dayLabel = plan.days.getOrNull(idx)?.label ?: "this day",
+                userLat = userLat,
+                userLng = userLng,
+                onDismiss = { manualFormDay = null },
+                onAddSlot = { slot ->
+                    onAddSlot(idx, slot)
+                    manualFormDay = null
+                },
+            )
+        }
+
         emptyDayIndexToConfirm?.let { idx ->
             ConfirmModal(
                 icon = Icons.Outlined.Delete,
@@ -700,20 +722,6 @@ fun PlanDetailScreen(
                 onCancel = { confirmDeletePlan = false },
             )
         }
-
-        addEventDayIndex?.let { idx ->
-            val dayLabel = plan.days.getOrNull(idx)?.label ?: "this day"
-            AddEventSheet(
-                dayLabel = dayLabel,
-                userLat = userLat,
-                userLng = userLng,
-                onDismiss = { addEventDayIndex = null },
-                onAddSlot = { slot ->
-                    onAddSlot(idx, slot)
-                    addEventDayIndex = null
-                },
-            )
-        }
     }
 }
 
@@ -733,6 +741,8 @@ private fun PlanHero(
     onDeletePlan: () -> Unit = {},
     onViewAttendees: () -> Unit = {},
     onEditAttendees: () -> Unit = {},
+    canAddDay: Boolean = false,
+    onAddDay: () -> Unit = {},
 ) {
     val planInitial = plan.title.firstOrNull()?.uppercaseChar()?.toString() ?: "L"
 
@@ -743,7 +753,14 @@ private fun PlanHero(
         ?.mapNotNull { slot ->
             val lat = slot.venueLat
             val lng = slot.venueLng
-            if (lat != null && lng != null) MapHeroStop(lat, lng, slot.name) else null
+            // Guard against corrupt/placeholder coordinates. A single bad stop
+            // (a (0,0) stub from un-enriched venues, or an out-of-range value)
+            // otherwise drags the whole map's bounding box across the country —
+            // the "South Dakota + 3190 mi drive" render on a Portland, ME plan.
+            // Reject null-island and anything outside valid lat/lng ranges.
+            if (lat != null && lng != null && isPlausibleCoord(lat, lng)) {
+                MapHeroStop(lat, lng, slot.name)
+            } else null
         }
         ?: emptyList()
 
@@ -863,6 +880,13 @@ private fun PlanHero(
                             leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null, tint = V5Ink2, modifier = Modifier.size(18.dp)) },
                             onClick = { menuOpen = false; onEditName() },
                         )
+                        if (canAddDay) {
+                            androidx.compose.material3.DropdownMenuItem(
+                                text = { Text("Add Day", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Ink)) },
+                                leadingIcon = { Icon(Icons.Outlined.CalendarMonth, contentDescription = null, tint = V5Ink2, modifier = Modifier.size(18.dp)) },
+                                onClick = { menuOpen = false; onAddDay() },
+                            )
+                        }
                         androidx.compose.material3.DropdownMenuItem(
                             text = { Text("Delete Plan", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Coral)) },
                             leadingIcon = { Icon(Icons.Outlined.Delete, contentDescription = null, tint = V5Coral, modifier = Modifier.size(18.dp)) },
@@ -1005,6 +1029,20 @@ private fun shortDayLabel(raw: String): String {
         val short = parts[0].trim().take(3)
         "$short, ${parts[1].trim()}"
     } else raw
+}
+
+/**
+ * True when a lat/lng pair is a real-world location and not a placeholder.
+ * Rejects (0,0) "null island" (the default for un-enriched venue stubs) and
+ * any value outside the valid coordinate ranges. Without this a single bad
+ * stop corrupts the map's bounding box and the route-distance total.
+ */
+private fun isPlausibleCoord(lat: Double, lng: Double): Boolean {
+    if (lat == 0.0 && lng == 0.0) return false
+    if (lat.isNaN() || lng.isNaN()) return false
+    if (lat < -90.0 || lat > 90.0) return false
+    if (lng < -180.0 || lng > 180.0) return false
+    return true
 }
 
 private fun headerMetricsLabel(dayStops: Int, totals: MapHeroTotals?): String {
@@ -1336,146 +1374,6 @@ private fun PastPlanBanner(dateRange: String) {
     }
 }
 
-// ─── Day summary peek-pager ──────────────────────────────────────────
-//
-// iOS parity (PlanDetailView.swift:614-664) — a horizontal pager of
-// day-summary cards. Each card is full-screen-width with 28dp content
-// margins so the previous/next day peek at the edges. Snap-fling settles
-// to the centered card; the centered index is written back to
-// `selectedDayIndex` so the active day stays in sync with the rest of
-// the screen.
-@Composable
-private fun DaySummaryPeekPager(
-    plan: Plan,
-    selectedDayIndex: Int,
-    onDaySelected: (Int) -> Unit,
-) {
-    val days = plan.days
-    if (days.isEmpty()) return
-
-    val listState = rememberLazyListState(initialFirstVisibleItemIndex = selectedDayIndex)
-    val flingBehavior = rememberSnapFlingBehavior(lazyListState = listState)
-
-    // When `selectedDayIndex` is changed externally (e.g. from the day
-    // strip below), drive the pager to match.
-    LaunchedEffect(selectedDayIndex) {
-        if (listState.firstVisibleItemIndex != selectedDayIndex) {
-            listState.animateScrollToItem(selectedDayIndex)
-        }
-    }
-
-    // When the user settles the pager onto a new card, publish that as
-    // the selected day. Using `derivedStateOf` keyed on
-    // `firstVisibleItemIndex` together with `isScrollInProgress` only
-    // commits the change once the fling has come to rest.
-    val settledIndex by remember(listState) {
-        derivedStateOf {
-            if (listState.isScrollInProgress) null else listState.firstVisibleItemIndex
-        }
-    }
-    LaunchedEffect(listState) {
-        snapshotFlow { settledIndex }
-            .collect { idx ->
-                if (idx != null && idx != selectedDayIndex && idx in days.indices) {
-                    onDaySelected(idx)
-                }
-            }
-    }
-
-    LazyRow(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 6.dp),
-        state = listState,
-        flingBehavior = flingBehavior,
-        // 28dp content padding leaves 28dp of the neighbouring card
-        // visible on each side — the "peek" feel from iOS.
-        contentPadding = PaddingValues(horizontal = 28.dp),
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        itemsIndexed(days) { idx, day ->
-            DaySummaryPagerCard(
-                plan = plan,
-                day = day,
-                dayIndex = idx,
-                isActive = idx == selectedDayIndex,
-            )
-        }
-    }
-}
-
-@Composable
-private fun DaySummaryPagerCard(
-    plan: Plan,
-    day: PlanDay,
-    dayIndex: Int,
-    isActive: Boolean,
-) {
-    val titleHeader = headerTitleLabel(plan)
-    val dateLabel = headerDateLabel(plan, day)
-    // Sibling cards don't have access to `routeTotals` (that's the active
-    // day's MapHero output), so they show stops-only metrics. The active
-    // card's full metrics live in the existing FloatingTitleCard above.
-    val metrics = headerMetricsLabel(day.slots.size, totals = null)
-    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-        // 56dp = 28dp peek on each side. Card fills the visible width minus
-        // those gutters so exactly one card centers in the viewport.
-        val cardWidth = maxWidth - 56.dp
-        Column(
-            modifier = Modifier
-                .width(cardWidth)
-                .clip(RoundedCornerShape(14.dp))
-                .background(Color.White)
-                .border(
-                    width = if (isActive) 1.dp else 0.5.dp,
-                    color = if (isActive) V5CoralDk else V5Line,
-                    shape = RoundedCornerShape(14.dp),
-                )
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-        ) {
-            if (titleHeader.isNotBlank()) {
-                Text(
-                    titleHeader.uppercase(),
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 10.sp,
-                        color = V5Coral,
-                        letterSpacing = 0.8.sp,
-                    ),
-                )
-            }
-            if (dateLabel.isNotBlank()) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    dateLabel,
-                    style = TextStyle(
-                        fontFamily = AppFonts.Heading,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 22.sp,
-                        color = V5Ink,
-                        lineHeight = 26.sp,
-                    ),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-            if (metrics.isNotBlank()) {
-                Spacer(Modifier.height(4.dp))
-                Text(
-                    metrics,
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.SemiBold,
-                        fontSize = 11.sp,
-                        color = V5Ink3,
-                    ),
-                )
-            }
-        }
-    }
-}
-
 // ─── Day tabs ────────────────────────────────────────────────────────
 
 @Composable
@@ -1704,13 +1602,18 @@ private fun DayEmptyState(readOnly: Boolean, onAddEvent: () -> Unit) {
 
 @Composable
 private fun AddEventButton(onClick: () -> Unit) {
+    // Bug #9: coral "pink pill" — soft coral fill + coral border + coral
+    // label, matching iOS PlanDetailView's Add Event CTA (pdCoralSoft fill,
+    // pdCoral 1.5 stroke). Was a white bezel card with a neutral border.
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .heightIn(min = 48.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(V5CoralSoft.copy(alpha = 0.4f))
+            .border(1.5.dp, V5Coral.copy(alpha = 0.8f), RoundedCornerShape(14.dp))
             .pressable(onClick = onClick)
-            .localCardSurface(cornerRadius = 16.dp, borderWidth = 1.dp, borderColor = V5Line)
-            .padding(vertical = 12.dp),
+            .padding(vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
     ) {
@@ -1718,7 +1621,7 @@ private fun AddEventButton(onClick: () -> Unit) {
         Spacer(Modifier.width(6.dp))
         Text(
             "Add event",
-            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = V5Coral),
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = V5Coral),
         )
     }
 }
@@ -1804,9 +1707,11 @@ private fun V5SlotCard(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            // iOS parity: 14pt corner radius + 2pt coralDk overlay stroke.
-            // (Was 16.dp + 1.dp V5Line; pulled in 2026-05-19 to match iOS.)
-            .localCardSurface(cornerRadius = 14.dp, borderWidth = 2.dp, borderColor = V5CoralDk)
+            // Bug #8: neutral hairline border, not the coralDk red stroke.
+            // Current iOS (PlanDetailView.swift:1628) uses pdLine 1.5pt at 16pt
+            // radius — the 2pt coralDk border was making every stop card look
+            // alarmingly red/selected.
+            .localCardSurface(cornerRadius = 16.dp, borderWidth = 1.5.dp, borderColor = V5Line)
             // Slot body is tappable. Use clickable (not pointerInput) — the
             // lambda is invoked fresh each tap so there's no stale-capture
             // risk like the For-Kids→Sports misroute (2026-05-20).
@@ -1921,7 +1826,9 @@ private fun V5SlotCard(
             Text(
                 slot.name,
                 style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = V5Ink, letterSpacing = (-0.2).sp, lineHeight = 18.sp),
-                maxLines = 2,
+                // Bug #6: single-line title with tail truncation, matching iOS
+                // (PlanDetailView.swift:1527 lineLimit(1)). Was maxLines = 2.
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
             val kind = slotKind(slot)
@@ -2300,9 +2207,25 @@ private fun SlotCtas(
     onOpenReservation: () -> Unit,
     onOpenTickets: () -> Unit,
 ) {
+    val uriHandler = LocalUriHandler.current
     val hasLocation = slot.venueLat != null && slot.venueLng != null
     val isRestaurant = isRestaurantSlot(slot)
     val isTicketed = slot.eventId != null && !slot.ticketUrl.isNullOrBlank()
+
+    // Whether the state machine above renders a primary (reservation/ticket)
+    // chip. When it doesn't, fall back to an "Info" chip (iOS parity) that
+    // opens the venue website / source URL.
+    val hasRestaurantChip = isRestaurant &&
+        (slot.reservationState == live.localapp.local.domain.model.ReservationState.MADE ||
+            slot.reservationState == live.localapp.local.domain.model.ReservationState.UNAVAILABLE ||
+            !readOnly)
+    val hasTicketChip = isTicketed &&
+        (slot.ticketState == live.localapp.local.domain.model.TicketState.BOUGHT ||
+            slot.ticketState == live.localapp.local.domain.model.TicketState.UNAVAILABLE ||
+            !readOnly)
+    val hasPrimaryChip = hasRestaurantChip || hasTicketChip
+    val infoUrl = slot.venueWebsite?.takeIf { it.isNotBlank() }
+        ?: slot.sourceUrl?.takeIf { it.isNotBlank() }
 
     // iOS parity: primary state-aware chip + Directions chip on the same row.
     // - Restaurant: "Reservation" / "Booked · N" / "No reservations" (or "View
@@ -2334,6 +2257,10 @@ private fun SlotCtas(
             isTicketed && !readOnly -> {
                 ActionChip(label = "Tickets", icon = Icons.Outlined.AutoAwesome, onClick = onOpenTickets)
             }
+        }
+        // Info chip — only when no primary chip occupied the slot (iOS parity).
+        if (!hasPrimaryChip && infoUrl != null) {
+            ActionChip(label = "Info", icon = Icons.Outlined.Public, onClick = { uriHandler.openUri(infoUrl) })
         }
         if (hasLocation) {
             ActionChip(label = "Directions", icon = Icons.Outlined.Place, onClick = onDirections)
@@ -2479,8 +2406,8 @@ private fun ReservationSheet(
     onDismiss: () -> Unit,
 ) {
     val uriHandler = LocalUriHandler.current
-    val reservationUrl = slot.reservationUrl?.takeIf { it.isNotBlank() }
-        ?: "https://www.opentable.com/s?term=${slot.name.replace(" ", "+")}"
+    val reservationUrl = slot.venueWebsite?.takeIf { it.isNotBlank() }
+        ?: slot.reservationUrl?.takeIf { it.isNotBlank() }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -2492,13 +2419,12 @@ private fun ReservationSheet(
     ) {
         StopActionSheetBody(
             title = "Reservation at ${slot.name}",
-            subtitle = "Make it official, mark it unavailable, or save what you've already booked.",
+            subtitle = "Book your table, or save a reservation you've already made.",
             primary = StopAction("Make reservation", Icons.Outlined.Place) {
-                uriHandler.openUri(reservationUrl)
+                reservationUrl?.let { uriHandler.openUri(it) }
                 onDismiss()
             },
             secondaries = listOf(
-                StopAction("No reservations available", Icons.Outlined.Close, onMarkUnavailable),
                 StopAction("I have a reservation", Icons.Outlined.Check, onAlreadyBooked),
             ),
         )
@@ -2527,13 +2453,12 @@ private fun TicketsSheet(
     ) {
         StopActionSheetBody(
             title = "Tickets for ${slot.name}",
-            subtitle = "Get them now, mark sold out, or save the ones you've already bought.",
+            subtitle = "Grab your tickets, or save the ones you've already bought.",
             primary = StopAction("Get tickets", Icons.Outlined.AutoAwesome) {
                 if (ticketUrl != null) uriHandler.openUri(ticketUrl)
                 onDismiss()
             },
             secondaries = listOf(
-                StopAction("No tickets available", Icons.Outlined.Close, onMarkUnavailable),
                 StopAction("Tickets already bought", Icons.Outlined.Check, onAlreadyBought),
             ),
         )

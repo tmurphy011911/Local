@@ -4,7 +4,12 @@ data class UserPreferences(
     val id: String,
     val firstName: String? = null,
     val lastName: String? = null,
+    /** Auto-assigned handle (e.g. "local4821"), editable on the account page. */
+    val username: String? = null,
+    /** True once the user has picked their own handle. Gates the home greeting. */
+    val usernameIsCustom: Boolean = false,
     val phone: String? = null,
+    val email: String? = null,
     val city: String = "boston",
     val userLat: Double? = null,
     val userLng: Double? = null,
@@ -21,6 +26,8 @@ data class UserPreferences(
     val manualLocationName: String? = null,
     val manualLat: Double? = null,
     val manualLng: Double? = null,
+    /** Local Pro trial end (ISO-8601, server-owned). Null if unknown. */
+    val trialEndsAt: String? = null,
 )
 
 data class CachedManualLocation(
@@ -47,6 +54,9 @@ enum class ProfileStatus {
     /** Row exists and `onboarding_complete = true`. */
     Complete,
 }
+
+/** Outcome of a username edit. [Taken] = the DB unique index rejected it. */
+enum class UsernameUpdateResult { Success, Taken, Error }
 
 interface UserPreferencesRepository {
     /** Load cached user ID + onboarding flag from local storage. Null if never onboarded. */
@@ -81,6 +91,14 @@ interface UserPreferencesRepository {
 
     /** Save preferences with a specific ID (used when creating profile for authenticated user). */
     suspend fun savePreferencesWithId(id: String, prefs: UserPreferences): String
+
+    /**
+     * Set the user's chosen handle. Targeted update (only the username column) so
+     * it can't clobber the rest of the profile, and so the DB unique-index
+     * violation surfaces as [UsernameUpdateResult.Taken]. The DB trigger flips
+     * `username_is_custom` to true; the client doesn't manage that flag.
+     */
+    suspend fun updateUsername(userId: String, username: String): UsernameUpdateResult
 
     /** Clear local cache (logout). */
     fun clearLocal()

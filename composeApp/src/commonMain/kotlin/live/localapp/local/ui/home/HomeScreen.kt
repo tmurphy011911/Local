@@ -48,6 +48,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Explore
 import androidx.compose.material.icons.outlined.Bolt
+import androidx.compose.material.icons.outlined.AcUnit
+import androidx.compose.material.icons.outlined.Cloud
+import androidx.compose.material.icons.outlined.Grain
+import androidx.compose.material.icons.outlined.WbSunny
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.filled.Favorite
@@ -158,9 +162,27 @@ private fun String.toTitleCase(): String {
     }.joinToString(" ")
 }
 
+/**
+ * Whole days remaining until [trialEndsAt] (ISO-8601), rounded up so any partial
+ * final day still reads as "1 day left". Returns null if the date is missing,
+ * unparseable, or already in the past (trial over → no countdown).
+ */
+private fun trialDaysRemaining(trialEndsAt: String?): Int? {
+    if (trialEndsAt.isNullOrBlank()) return null
+    val endMs = try {
+        kotlinx.datetime.Instant.parse(trialEndsAt).toEpochMilliseconds()
+    } catch (_: Exception) {
+        return null
+    }
+    val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
+    if (endMs <= nowMs) return null
+    val secondsLeft = (endMs - nowMs) / 1000.0
+    return kotlin.math.ceil(secondsLeft / 86_400.0).toInt()
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onConciergeSend: (String) -> Unit = { onConciergeClick() }, onProfileClick: () -> Unit = {}, onLocationClick: () -> Unit = {}, onFavorite: ((Event) -> Unit)? = null, showUpdateBanner: Boolean = false, onDismissUpdateBanner: () -> Unit = {}, onSeeAllVenue: (venueName: String, venueCity: String?) -> Unit = { _, _ -> }, onSeeAllEvents: (category: String?, dateFilter: live.localapp.local.ui.places.EventDateFilter?) -> Unit = { _, _ -> }) {
+fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onConciergeSend: (String) -> Unit = { onConciergeClick() }, onProfileClick: () -> Unit = {}, onLocationClick: () -> Unit = {}, onFavorite: ((Event) -> Unit)? = null, showUpdateBanner: Boolean = false, onDismissUpdateBanner: () -> Unit = {}, onUpgrade: () -> Unit = {}, onSeeAllVenue: (venueName: String, venueCity: String?) -> Unit = { _, _ -> }, onSeeAllEvents: (category: String?, dateFilter: live.localapp.local.ui.places.EventDateFilter?) -> Unit = { _, _ -> }) {
     val state by viewModel.uiState.collectAsState()
     var previouslyLoading by remember { mutableStateOf(true) }
     val haptic = LocalHapticFeedback.current
@@ -222,6 +244,40 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                 onUpdate = { live.localapp.local.platform.openAppStoreListing() },
                 onDismiss = onDismissUpdateBanner,
             )
+        }
+
+        // Local Pro trial countdown. Shows with < 14 days left, only
+        // for non-paid users still in trial. Dismissible at 7–14 days (honors
+        // the persisted flag); under 7 days it's non-dismissible and always
+        // shows. Tapping it opens the paywall.
+        run {
+            val trialGate = remember { live.localapp.local.ui.chat.PremiumGate() }
+            val trialDaysLeft = remember(state.userPreferences?.trialEndsAt) {
+                trialDaysRemaining(state.userPreferences?.trialEndsAt)
+            }
+            var trialBannerDismissed by remember { mutableStateOf(trialGate.trialBannerDismissed) }
+            if (!trialGate.isPremium && trialDaysLeft != null && trialDaysLeft in 1..14) {
+                val dismissible = trialDaysLeft >= 7
+                val showBanner = if (dismissible) !trialBannerDismissed else true
+                androidx.compose.animation.AnimatedVisibility(
+                    visible = showBanner,
+                    exit = androidx.compose.animation.fadeOut(
+                        animationSpec = androidx.compose.animation.core.tween(220),
+                    ) + androidx.compose.animation.shrinkVertically(
+                        animationSpec = androidx.compose.animation.core.tween(220),
+                    ),
+                ) {
+                    live.localapp.local.ui.common.TrialCountdownBanner(
+                        daysLeft = trialDaysLeft,
+                        dismissible = dismissible,
+                        onUpgrade = onUpgrade,
+                        onDismiss = {
+                            trialGate.trialBannerDismissed = true
+                            trialBannerDismissed = true
+                        },
+                    )
+                }
+            }
         }
 
         // Concierge typewriter prompt — chosen here, above the LazyColumn, on
@@ -1507,15 +1563,45 @@ private fun GreetingSection(state: HomeUiState) {
     val name = state.userName
 
     if (name.isNotEmpty()) {
-        Column(
-            modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp),
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 18.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 "$timeGreeting, $name",
                 style = AppType.GreetingSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
             )
+            state.weather?.let { w ->
+                Spacer(Modifier.width(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        weatherIcon(w.weatherCode),
+                        contentDescription = w.description,
+                        modifier = Modifier.size(16.dp),
+                        tint = AppColors.Pebble,
+                    )
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        "${w.tempHigh}°",
+                        style = AppType.GreetingSmall,
+                        color = AppColors.Pebble,
+                        maxLines = 1,
+                    )
+                }
+            }
         }
     }
+}
+
+private fun weatherIcon(code: Int) = when (code) {
+    0, 1 -> Icons.Outlined.WbSunny
+    in 71..77, in 85..86 -> Icons.Outlined.AcUnit
+    in 51..67, in 80..82 -> Icons.Outlined.Grain
+    in 95..99 -> Icons.Outlined.Bolt
+    else -> Icons.Outlined.Cloud
 }
 
 // ── AI Concierge Card ──

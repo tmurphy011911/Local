@@ -58,7 +58,8 @@ val appModule = module {
     single<TasteRepository> { TasteRepositoryImpl(get()) }
     single<ExploreRepository> { HttpExploreRepository() }
     single { BadgeService(get(), get()) }
-    single { ClaudeApiService() }
+    single { ClaudeApiService(get()) }
+    single { live.localapp.local.domain.service.SplashGreetingService(get(), get(), get(), get()) }
     single { live.localapp.local.domain.service.PlanSwapService(get(), get()) }
     single<MutationLog> { MutationLogImpl(Settings()) }
     single { BoTools(get(), get()) }
@@ -78,7 +79,7 @@ val appModule = module {
     single<live.localapp.local.domain.repository.BoChipsRepository> { live.localapp.local.data.repository.HttpBoChipsRepository() }
     single { HomeViewModel(get(), get(), get(), get(), get(), get(), get()) }
     single { ChatViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get()) }
-    single { PlacesViewModel(get(), get(), get(), get(), get()) }
+    single { PlacesViewModel(get(), get(), get(), get(), get(), get()) }
     single { PlansViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
     single { ProgressViewModel(get(), get(), get(), get()) }
     single { TasteProfileViewModel(get(), get()) }

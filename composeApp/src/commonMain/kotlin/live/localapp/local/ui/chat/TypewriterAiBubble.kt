@@ -9,6 +9,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
@@ -37,9 +38,11 @@ object TypewriterCompletionStore {
  * character count once per [charDelayMs] until the full string is shown,
  * then marks the message complete.
  *
- * Note: this intentionally renders raw text (no markdown). The caller is
- * responsible for choosing typewriter vs. rich rendering — typewriter is
- * used for short conversational replies; rich text is used elsewhere.
+ * Markdown-aware: [fullText] is parsed once into a styled [AnnotatedString]
+ * (via [boldAnnotatedString]) and the reveal slices a prefix with
+ * [AnnotatedString.subSequence], which preserves span styling. This means
+ * bold (`**…**`), headers, and bullets render LIVE throughout the reveal
+ * instead of leaking literal `**` until the message completes.
  */
 @Composable
 fun TypewritingAiText(
@@ -51,26 +54,32 @@ fun TypewritingAiText(
     charDelayMs: Long = 28,
     modifier: Modifier = Modifier,
 ) {
+    // Parse once into the styled string. Note: boldAnnotatedString also
+    // normalizes headers/bullets and strips emoji, so its length may differ
+    // from fullText.length — reveal against the annotated length.
+    val annotated = remember(fullText, color) { boldAnnotatedString(fullText, color) }
+    val totalChars = annotated.length
+
     val alreadyDone = TypewriterCompletionStore.isCompleted(messageId)
     var visibleChars by remember(messageId) {
-        mutableStateOf(if (alreadyDone) fullText.length else 0)
+        mutableStateOf(if (alreadyDone) totalChars else 0)
     }
 
-    LaunchedEffect(messageId, fullText) {
+    LaunchedEffect(messageId, totalChars) {
         if (TypewriterCompletionStore.isCompleted(messageId)) {
-            visibleChars = fullText.length
+            visibleChars = totalChars
             return@LaunchedEffect
         }
         visibleChars = 0
-        while (visibleChars < fullText.length) {
+        while (visibleChars < totalChars) {
             delay(charDelayMs)
-            visibleChars = (visibleChars + 1).coerceAtMost(fullText.length)
+            visibleChars = (visibleChars + 1).coerceAtMost(totalChars)
         }
         TypewriterCompletionStore.markCompleted(messageId)
     }
 
     Text(
-        text = fullText.take(visibleChars),
+        text = annotated.subSequence(0, visibleChars.coerceIn(0, totalChars)),
         style = style.copy(fontSize = fontSize, color = color),
         modifier = modifier,
     )

@@ -11,13 +11,20 @@ import live.localapp.local.domain.repository.CachedManualLocation
 import live.localapp.local.domain.repository.ProfileStatus
 import live.localapp.local.domain.repository.UserPreferences
 import live.localapp.local.domain.repository.UserPreferencesRepository
+import live.localapp.local.domain.repository.UsernameUpdateResult
 
 @Serializable
 private data class UserProfileDto(
     val id: String? = null,
     @SerialName("first_name") val firstName: String? = null,
     @SerialName("last_name") val lastName: String? = null,
+    // Auto-assigned on insert + protected on update by DB triggers. General
+    // saves send the loaded value (or null) back; the guard trigger ignores a
+    // null and preserves the flag, so these writes can't damage the handle.
+    val username: String? = null,
+    @SerialName("username_is_custom") val usernameIsCustom: Boolean = false,
     val phone: String? = null,
+    val email: String? = null,
     val city: String = "boston",
     @SerialName("user_lat") val userLat: Double? = null,
     @SerialName("user_lng") val userLng: Double? = null,
@@ -32,10 +39,18 @@ private data class UserProfileDto(
     @SerialName("manual_location_name") val manualLocationName: String? = null,
     @SerialName("manual_lat") val manualLat: Double? = null,
     @SerialName("manual_lng") val manualLng: Double? = null,
+    // Server-owned (guard trigger protects it on write); we only read it.
+    @SerialName("trial_ends_at") val trialEndsAt: String? = null,
 )
 
 @Serializable
 private data class UpsertResult(val id: String)
+
+// Targeted username write. Only the handle is sent — the DB guard trigger sets
+// username_is_custom, and a too-narrow payload avoids touching the rest of the
+// profile.
+@Serializable
+private data class UsernameUpdateDto(val username: String)
 
 class UserPreferencesRepositoryImpl(
     private val supabaseClient: SupabaseClient,
@@ -60,6 +75,7 @@ class UserPreferencesRepositoryImpl(
             firstName = prefs.firstName,
             lastName = prefs.lastName,
             phone = prefs.phone,
+            email = prefs.email,
             city = prefs.city,
             userLat = prefs.userLat,
             userLng = prefs.userLng,
@@ -118,7 +134,10 @@ class UserPreferencesRepositoryImpl(
                 id = dto.id ?: userId,
                 firstName = dto.firstName,
                 lastName = dto.lastName,
+                username = dto.username,
+                usernameIsCustom = dto.usernameIsCustom,
                 phone = dto.phone,
+                email = dto.email,
                 city = dto.city,
                 userLat = dto.userLat,
                 userLng = dto.userLng,
@@ -133,6 +152,7 @@ class UserPreferencesRepositoryImpl(
                 manualLocationName = dto.manualLocationName,
                 manualLat = dto.manualLat,
                 manualLng = dto.manualLng,
+                trialEndsAt = dto.trialEndsAt,
             ).also { prefs ->
                 prefs.firstName?.takeIf { it.isNotBlank() }?.let { settings.putString(KEY_FIRST_NAME, it) }
                     ?: settings.remove(KEY_FIRST_NAME)
@@ -238,6 +258,7 @@ class UserPreferencesRepositoryImpl(
             firstName = prefs.firstName,
             lastName = prefs.lastName,
             phone = prefs.phone,
+            email = prefs.email,
             city = prefs.city,
             userLat = prefs.userLat,
             userLng = prefs.userLng,
@@ -280,6 +301,27 @@ class UserPreferencesRepositoryImpl(
         if (prefs.city.isNotBlank()) settings.putString(KEY_USER_CITY, prefs.city)
 
         return id
+    }
+
+    override suspend fun updateUsername(userId: String, username: String): UsernameUpdateResult {
+        return try {
+            supabaseClient.from("user_profiles")
+                .update(UsernameUpdateDto(username = username)) {
+                    filter { eq("id", userId) }
+                }
+            UsernameUpdateResult.Success
+        } catch (e: Exception) {
+            val msg = (e.message ?: "").lowercase()
+            // Postgres 23505 / unique-index rejection = the handle is taken.
+            if (msg.contains("23505") ||
+                msg.contains("duplicate key") ||
+                msg.contains("user_profiles_username")
+            ) {
+                UsernameUpdateResult.Taken
+            } else {
+                UsernameUpdateResult.Error
+            }
+        }
     }
 
     override fun clearLocal() {

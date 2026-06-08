@@ -368,19 +368,20 @@ struct VenueDetailView: View {
 
                     Spacer()
 
-                    // Favorite (heart) — matches EventDetailView
+                    // Share — LEFT of favorite, matching EventDetailView header.
+                    // Uses venue ID for URL consistency with events.
+                    heroIconButton(systemName: "square.and.arrow.up") {
+                        let shareUrl = "https://localapp.live/v/\(venue.id)"
+                        ShareBridge.shared.presentShareSheet?(venue.name, shareUrl)
+                    }
+
+                    // Favorite (heart) — RIGHTmost, matches EventDetailView
                     heroIconButton(
                         systemName: isFavorited ? "heart.fill" : "heart",
                         tint: isFavorited ? AppColor.coral : AppColor.ink
                     ) {
                         isFavorited.toggle()
                         onFavorite?(venue.id)
-                    }
-
-                    // Share — uses venue ID for URL consistency with events
-                    heroIconButton(systemName: "square.and.arrow.up") {
-                        let shareUrl = "https://localapp.live/v/\(venue.id)"
-                        ShareBridge.shared.presentShareSheet?(venue.name, shareUrl)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -950,32 +951,6 @@ struct VenueDetailView: View {
 
     private var ctaBar: some View {
         VStack(spacing: 10) {
-            // Reserve button — prominent, full-width
-            if let resUrl = venue.reservationUrl, !resUrl.isEmpty {
-                Button(action: {
-                    let today = ISO8601DateFormatter().string(from: Date()).prefix(10)
-                    var deepLink = resUrl
-                    if resUrl.contains("resy.com") {
-                        deepLink = "\(resUrl)?date=\(today)&seats=2"
-                    } else if resUrl.contains("opentable.com") {
-                        deepLink = "\(resUrl)?dateTime=\(today)T19:00&covers=2&partySize=2"
-                    }
-                    if let url = URL(string: deepLink) {
-                        UIApplication.shared.open(url)
-                    }
-                }) {
-                    Text("Reserve a Table")
-                        .font(.system(size: 16, weight: .heavy))
-                        .foregroundColor(.white)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(AppColor.coral)
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
-                        .shadow(color: AppColor.coralDk.opacity(0.4), radius: 0, x: 0, y: 4)
-                }
-                .buttonStyle(.plain)
-            }
-
             // Website button — coral CTA
             if let website = venue.website, !website.isEmpty {
                 Button(action: {

@@ -54,6 +54,15 @@ class PremiumGate {
         get() = settings.getBoolean(KEY_HAS_SEEN_PAYWALL, false)
         set(value) = settings.putBoolean(KEY_HAS_SEEN_PAYWALL, value)
 
+    /**
+     * Whether the user dismissed the home trial-countdown banner. Only honored
+     * while >= 20 days remain; under 20 days the banner is non-dismissible and
+     * ignores this flag.
+     */
+    var trialBannerDismissed: Boolean
+        get() = settings.getBoolean(KEY_TRIAL_BANNER_DISMISSED, false)
+        set(value) = settings.putBoolean(KEY_TRIAL_BANNER_DISMISSED, value)
+
     /** Whether the user has seen the paywall and is still not premium */
     val hasDeclinedPaywall: Boolean
         get() = hasSeenPaywall && !isPremium
@@ -112,6 +121,7 @@ class PremiumGate {
         settings.remove(KEY_REWARD_EXPIRY)
         settings.remove(KEY_LAST_REWARDED_TIER)
         settings.remove(KEY_HAS_SEEN_PAYWALL)
+        settings.remove(KEY_TRIAL_BANNER_DISMISSED)
     }
 
     companion object {
@@ -124,5 +134,6 @@ class PremiumGate {
         private const val KEY_REWARD_EXPIRY = "yocal_reward_expiry"
         private const val KEY_LAST_REWARDED_TIER = "yocal_last_rewarded_tier"
         private const val KEY_HAS_SEEN_PAYWALL = "yocal_has_seen_paywall"
+        private const val KEY_TRIAL_BANNER_DISMISSED = "local_trial_banner_dismissed"
     }
 }

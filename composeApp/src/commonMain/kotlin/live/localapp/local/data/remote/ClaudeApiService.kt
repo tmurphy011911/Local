@@ -1,5 +1,6 @@
 package live.localapp.local.data.remote
 
+import io.github.jan.supabase.auth.auth
 import io.ktor.client.HttpClient
 import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.contentnegotiation.ContentNegotiation
@@ -31,6 +32,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlin.time.Duration.Companion.seconds
 import live.localapp.local.Config
 import live.localapp.local.ui.chat.ItineraryDay
 import live.localapp.local.ui.chat.ItinerarySlot
@@ -70,6 +72,11 @@ data class ClaudeContentBlock(
     val id: String? = null,         // tool_use block ID
     val name: String? = null,       // tool name
     val input: JsonObject? = null,  // tool input
+    // Server-side tool result blocks (web_search_tool_result / web_fetch_tool_result):
+    // the id of the server_tool_use they answer + the result payload. Captured so a
+    // pause_turn continuation can echo the block back verbatim (Anthropic requires it).
+    @SerialName("tool_use_id") val toolUseId: String? = null,
+    val content: JsonElement? = null,
 )
 
 // ── Streaming event types ──
@@ -738,6 +745,7 @@ fun toolsWithWeb(
     base: JsonArray = claudeTools,
     allowWebSearch: Boolean,
     allowWebFetch: Boolean,
+    includeWebFinding: Boolean = false,
     webSearchMaxUses: Int = 3,
     webFetchMaxUses: Int = 5,
 ): JsonArray = buildJsonArray {
@@ -756,9 +764,13 @@ fun toolsWithWeb(
             put("max_uses", webFetchMaxUses)
         }
     }
-    // save_web_finding is a regular client-side tool — only include it when
-    // web access is allowed (otherwise Bo has no way to find anything to save).
-    if (allowWebSearch || allowWebFetch) {
+    // save_web_finding is a regular client-side tool. Normally it rides along
+    // with web access (no point staging findings Bo can't discover). But the
+    // build-from-web turn STAGES findings surfaced on a PRIOR turn — no search
+    // runs this turn, so the web-search gate is closed and the tool would be
+    // missing exactly when Bo is told to call it. includeWebFinding forces it
+    // in for that case.
+    if (allowWebSearch || allowWebFetch || includeWebFinding) {
         add(saveBoWebFindingTool)
     }
 }
@@ -787,7 +799,12 @@ private inline fun kotlinx.serialization.json.JsonObjectBuilder.putJsonArray(
 
 // ── Service ──
 
-class ClaudeApiService {
+/** Thrown when the Bo proxy rejects a call for lack of Local Pro entitlement (HTTP 402). */
+class BoEntitlementRequiredException : RuntimeException("Local Pro required")
+
+class ClaudeApiService(
+    private val supabaseClient: io.github.jan.supabase.SupabaseClient,
+) {
 
     companion object {
         /** Fast model for conversational turns (clarifying questions, greetings) */
@@ -817,7 +834,41 @@ class ClaudeApiService {
         const val SYSTEM_PROMPT_CACHE_BREAK = "BO_SYS_CACHE_BREAK"
     }
 
-    private val apiUrl = "https://api.anthropic.com/v1/messages"
+    // Bo never talks to Anthropic directly — the key lives server-side in the
+    // claude-proxy edge function, which also enforces Local Pro entitlement.
+    private val apiUrl = "${Config.SUPABASE_URL}/functions/v1/claude-proxy"
+
+    /**
+     * The current user's Supabase JWT — sent as X-User-Token so the proxy can
+     * verify identity + entitlement. This is Bo's ONLY auth path, so a stale
+     * token here is a hard 401 ("session timed out") with no graceful
+     * degradation — unlike carousels, which fall back to anon-key public data.
+     *
+     * supabase-kt's background auto-refresh only runs while the app is
+     * foregrounded; iOS suspends it in the background, so on resume
+     * `currentSessionOrNull()` can hand back an EXPIRED access token before the
+     * refresher catches up. We mirror supabase's own `checkAccessToken()`: if
+     * the cached token is at/near expiry, force a refresh before sending. suspend
+     * because `refreshCurrentSession()` is a network call — resolve it into a
+     * val before building the request (Ktor's builder block isn't suspend).
+     */
+    private suspend fun freshUserToken(): String? {
+        val session = supabaseClient.auth.currentSessionOrNull() ?: return null
+        // Refresh slightly early so a token that expires mid-flight doesn't
+        // race the proxy's getUser() check at the boundary.
+        val skew = 60.seconds
+        if (session.expiresAt <= kotlin.time.Clock.System.now() + skew) {
+            try {
+                supabaseClient.auth.refreshCurrentSession()
+            } catch (e: Exception) {
+                // Refresh failed (offline, or refresh token revoked). Fall
+                // through and send whatever we have; the proxy will 401 if it's
+                // genuinely dead, which surfaces the "session timed out" prompt.
+                println("ClaudeApiService: token refresh failed: ${e.message}")
+            }
+        }
+        return supabaseClient.auth.currentSessionOrNull()?.accessToken
+    }
 
     val json = Json {
         ignoreUnknownKeys = true
@@ -920,9 +971,10 @@ class ClaudeApiService {
             }
         }
 
+        val token = freshUserToken()
         val httpResponse = client.post(apiUrl) {
-            header("x-api-key", Config.CLAUDE_API_KEY)
-            header("anthropic-version", "2023-06-01")
+            header("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
+            token?.let { header("X-User-Token", it) }
             contentType(ContentType.Application.Json)
             setBody(body)
         }
@@ -930,6 +982,7 @@ class ClaudeApiService {
         val rawBody = httpResponse.bodyAsText()
         println("Claude proxy status=${httpResponse.status.value} body=${rawBody.take(500)}")
 
+        if (httpResponse.status.value == 402) throw BoEntitlementRequiredException()
         if (httpResponse.status.value !in 200..299) {
             throw RuntimeException("Proxy error ${httpResponse.status.value}: $rawBody")
         }
@@ -966,14 +1019,16 @@ class ClaudeApiService {
             }
         }
 
+        val token = freshUserToken()
         val statement = client.preparePost(apiUrl) {
-            header("x-api-key", Config.CLAUDE_API_KEY)
-            header("anthropic-version", "2023-06-01")
+            header("Authorization", "Bearer ${Config.SUPABASE_ANON_KEY}")
+            token?.let { header("X-User-Token", it) }
             contentType(ContentType.Application.Json)
             setBody(body)
         }
 
         statement.execute { httpResponse ->
+            if (httpResponse.status.value == 402) throw BoEntitlementRequiredException()
             if (httpResponse.status.value !in 200..299) {
                 val errorBody = httpResponse.bodyAsText()
                 throw RuntimeException("Claude streaming error ${httpResponse.status.value}: $errorBody")
@@ -1056,7 +1111,16 @@ class ClaudeApiService {
                                 }
                                 "web_search_tool_result", "web_fetch_tool_result" -> {
                                     while (contentBlocks.size <= index) contentBlocks.add(ClaudeContentBlock())
-                                    contentBlocks[index] = ClaudeContentBlock(type = blockType)
+                                    // Capture the result payload + the id of the server_tool_use it
+                                    // answers. Server-tool results arrive complete in content_block_start
+                                    // (they're not streamed via deltas), so the full content is here.
+                                    // We keep these so buildAssistantContentBlocks(preserveServerTools=true)
+                                    // can echo the paused turn back verbatim on a pause_turn continuation.
+                                    contentBlocks[index] = ClaudeContentBlock(
+                                        type = blockType,
+                                        toolUseId = block["tool_use_id"]?.jsonPrimitive?.content,
+                                        content = block["content"],
+                                    )
                                 }
                             }
                         }
@@ -1181,19 +1245,41 @@ class ClaudeApiService {
      * For non-search responses (only one text block), last == first.
      */
     fun extractText(response: ClaudeResponse): String? {
-        val raw = response.content
+        val blocks = response.content
             .filter { it.type == "text" }
             .mapNotNull { it.text?.takeIf { t -> t.isNotBlank() } }
-            .lastOrNull() ?: return null
-        // Anthropic splits a single sentence into multiple text blocks
-        // when a server_tool_use lands mid-sentence — the post-tool block
-        // often starts with an orphan comma/period ("., which is after
-        // your dates."). Strip leading punctuation + whitespace and
-        // capitalize the first remaining letter so the persisted bubble
-        // reads cleanly. If the model behaved (full sentence in last
-        // block), this is a no-op.
-        val trimmed = raw.trimStart()
-        val cleaned = trimmed.replace(Regex("^[,.;:\\s]+"), "")
+        if (blocks.isEmpty()) return null
+
+        // Stitch the text blocks back into one bubble. Anthropic emits
+        // multiple text blocks around a server_tool_use (web_search/web_fetch),
+        // and there are TWO distinct shapes we must handle without losing
+        // content:
+        //
+        //  (a) ONE sentence split mid-stream by the tool — the tail block
+        //      starts with orphan punctuation (", which is after your dates.").
+        //      These must be GLUED with no separator.
+        //  (b) TWO substantive blocks — e.g. a web-search answer writes the
+        //      list of venues, runs the search, then writes a closing line
+        //      ("All of these have strong followings…"). Taking only the last
+        //      block (the old `.lastOrNull()`) DROPPED the list, leaving a
+        //      dangling "All of these…" referring to nothing. These must be
+        //      joined as separate paragraphs.
+        //
+        // Heuristic: a block that begins with leading punctuation is a
+        // mid-sentence continuation (case a) → glue; anything else is a new
+        // paragraph (case b) → blank-line join.
+        val sb = StringBuilder(blocks.first().trimStart())
+        for (i in 1 until blocks.size) {
+            val next = blocks[i].trimStart()
+            if (next.firstOrNull() in setOf(',', '.', ';', ':')) {
+                sb.append(next) // continuation of the prior sentence
+            } else {
+                sb.append("\n\n").append(next) // distinct paragraph
+            }
+        }
+        // Strip any leading orphan punctuation/whitespace and capitalize the
+        // first remaining letter so the persisted bubble reads cleanly.
+        val cleaned = sb.toString().trimStart().replace(Regex("^[,.;:\\s]+"), "")
         return cleaned.replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }
     }
 
@@ -1205,8 +1291,18 @@ class ClaudeApiService {
      * blocks, and reconstructing those is wasteful when Bo's synthesized
      * text already carries the answer. If a follow-up turn needs the data,
      * Bo will re-search; results are usually identical and cached.
+     *
+     * EXCEPTION: when [preserveServerTools] is true (a pause_turn continuation),
+     * the server_tool_use + *_tool_result blocks MUST be echoed back verbatim —
+     * Anthropic resumes the paused turn from this exact assistant content, and
+     * rejects the request if the tool_use/tool_result pairing is incomplete.
+     * This shape is used only for the transient continuation call, never
+     * persisted to conversationHistory.
      */
-    fun buildAssistantContentBlocks(response: ClaudeResponse): JsonArray {
+    fun buildAssistantContentBlocks(
+        response: ClaudeResponse,
+        preserveServerTools: Boolean = false,
+    ): JsonArray {
         return buildJsonArray {
             for (block in response.content) {
                 when (block.type) {
@@ -1220,8 +1316,19 @@ class ClaudeApiService {
                         put("name", block.name ?: "")
                         put("input", block.input ?: JsonObject(emptyMap()))
                     }
-                    // server_tool_use, web_search_tool_result, web_fetch_tool_result
-                    // → omitted from history. See note above.
+                    "server_tool_use" -> if (preserveServerTools) addJsonObject {
+                        put("type", "server_tool_use")
+                        put("id", block.id ?: "")
+                        put("name", block.name ?: "")
+                        put("input", block.input ?: JsonObject(emptyMap()))
+                    }
+                    "web_search_tool_result", "web_fetch_tool_result" ->
+                        if (preserveServerTools) addJsonObject {
+                            put("type", block.type)
+                            put("tool_use_id", block.toolUseId ?: "")
+                            block.content?.let { put("content", it) }
+                        }
+                    // Otherwise server_tool_use / *_tool_result → omitted. See note above.
                 }
             }
         }

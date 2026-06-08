@@ -76,7 +76,7 @@ private fun buildSteps(cityForCopy: String): List<HomeTutorialStep> = listOf(
     HomeTutorialStep(
         headline = "Show up,",
         styledWord = "level up",
-        subtext = "Every event, plan, and place racks up points. Climb the ranks for real rewards \u2014 Ticketmaster gift cards on us.",
+        subtext = "Every event, plan, and place racks up FOMO. Climb the ranks for real rewards \u2014 Ticketmaster gift cards on us.",
     ),
 )
 

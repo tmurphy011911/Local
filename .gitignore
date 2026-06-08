@@ -42,3 +42,6 @@ node
 # Local script logs / data dumps (not source)
 .splitter-logs/
 scripts/.manifests/
+
+# Sentry dSYM upload secrets (token must never be committed)
+iosApp/scripts/sentry.env

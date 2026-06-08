@@ -71,6 +71,11 @@ struct PlanDetailView: View {
     /// this" calls the override edge function and locally flips the badge.
     @State private var boWebOverrideTarget: PlanDetailSlot? = nil
     @State private var boWebLocallyVerified: Set<String> = []
+    // "+ Add event" flow: tapping the button opens a two-option chooser
+    // (Add manually / Ask Bo). addEventDay drives the chooser; manualAddDay
+    // drives the native manual-entry form. Both hold the target day index.
+    @State private var addEventDay: Int? = nil
+    @State private var manualAddDay: Int? = nil
 
     init(
         initialPlan: PlanDetailPlan,
@@ -209,6 +214,51 @@ struct PlanDetailView: View {
         }
         .sheet(item: $activeStopSheet) { target in
             stopSheetView(for: target)
+        }
+        // "+ Add event" → two-option chooser, mirroring the home Create Plan menu.
+        .confirmationDialog(
+            addEventDay.flatMap { plan.days[safe: $0]?.label }.map { "Add to \($0)" } ?? "Add an event",
+            isPresented: Binding(
+                get: { addEventDay != nil },
+                set: { if !$0 { addEventDay = nil } }
+            ),
+            titleVisibility: .visible
+        ) {
+            Button("Add manually") {
+                if let d = addEventDay { manualAddDay = d }
+                addEventDay = nil
+            }
+            Button("Ask Bo") {
+                if let d = addEventDay {
+                    PlanDetailBridge.shared.onAddEvent?(KotlinInt(int: Int32(d)))
+                }
+                addEventDay = nil
+            }
+            Button("Cancel", role: .cancel) { addEventDay = nil }
+        }
+        // "Add manually" → native form (event name + location autocomplete + time).
+        .sheet(isPresented: Binding(
+            get: { manualAddDay != nil },
+            set: { if !$0 { manualAddDay = nil } }
+        )) {
+            if let dayIdx = manualAddDay {
+                ManualAddEventSheet(
+                    dayLabel: plan.days[safe: dayIdx]?.label ?? "this day",
+                    onCancel: { manualAddDay = nil },
+                    onSave: { name, time, locName, address, lat, lng in
+                        PlanDetailBridge.shared.onAddSlotManual?(
+                            KotlinInt(int: Int32(dayIdx)),
+                            name,
+                            time,
+                            locName,
+                            address,
+                            lat.map { KotlinDouble(double: $0) },
+                            lng.map { KotlinDouble(double: $0) }
+                        )
+                        manualAddDay = nil
+                    }
+                )
+            }
         }
         .alert("Bo couldn't verify this", isPresented: Binding(
             get: { boWebOverrideTarget != nil },
@@ -1335,7 +1385,7 @@ struct PlanDetailView: View {
                     if isCreator && !plan.isPast {
                         if day.slots.count < kMaxStopsPerDay {
                             Button {
-                                PlanDetailBridge.shared.onAddEvent?(KotlinInt(int: Int32(dayIdx)))
+                                addEventDay = dayIdx
                             } label: {
                                 HStack(spacing: 6) {
                                     Image(systemName: "plus").font(.system(size: 13, weight: .bold))
@@ -1396,7 +1446,7 @@ struct PlanDetailView: View {
                 .multilineTextAlignment(.center)
             if isCreator && !plan.isPast {
                 Button {
-                    PlanDetailBridge.shared.onAddEvent?(KotlinInt(int: Int32(dayIdx)))
+                    addEventDay = dayIdx
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: "plus").font(.system(size: 13, weight: .bold))
@@ -1577,10 +1627,6 @@ private struct StopCard: View {
                     Spacer(minLength: 0)
                     if !readOnly {
                         Menu {
-                            Button { onReplace() } label: {
-                                Label("Replace this stop", systemImage: "sparkles")
-                            }
-                            Divider()
                             Button(role: .destructive) { showRemoveConfirm = true } label: {
                                 Label("Remove from plan", systemImage: "trash")
                             }
@@ -2262,27 +2308,45 @@ private struct ReservationSheet: View {
     let onChooseDetails: () -> Void
     let onDismiss: () -> Void
 
+    /// Best URL to open when the user taps "Make reservation".
+    /// Prefers any stored reservation/website/source URL on the slot; if the
+    /// slot has none (e.g. a custom-added "european coffee house"), fall back
+    /// to a Google search for the venue so the button is never a dead link.
+    private var reservationTargetURL: URL? {
+        if let stored = [slot.reservationUrl, slot.venueWebsite, slot.sourceUrl]
+            .compactMap({ $0 })
+            .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }),
+           let url = URL(string: stored) {
+            return url
+        }
+        let parts = [slot.venueName ?? slot.name, slot.venueCity ?? slot.venueAddress]
+            .compactMap { $0 }
+            .filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+        let query = parts.joined(separator: " ")
+        guard !query.isEmpty,
+              let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+              let url = URL(string: "https://www.google.com/search?q=\(encoded)") else {
+            return nil
+        }
+        return url
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Reservation at \(slot.name)")
-                .font(.system(size: 20, weight: .black))
+                .font(PDF.display(20, .black))
                 .foregroundColor(pdInk)
-            Text("Make it official, mark it unavailable, or save what you've already booked.")
-                .font(.system(size: 13))
+            Text("Book your table, or save a reservation you've already made.")
+                .font(PDF.body(13))
                 .foregroundColor(pdInk3)
             Spacer().frame(height: 8)
 
             // Primary CTA
             primaryButton("Make reservation", systemIcon: "fork.knife") {
-                let url = slot.openTableUrl
-                    ?? slot.venueWebsite.flatMap { URL(string: $0) }
-                if let url { onMakeReservation(url) } else { onDismiss() }
+                if let url = reservationTargetURL { onMakeReservation(url) } else { onDismiss() }
             }
 
             // Secondary CTAs
-            secondaryButton("No reservations available", systemIcon: "exclamationmark.triangle") {
-                onMarkUnavailable()
-            }
             secondaryButton("Reservation made", systemIcon: "checkmark.circle") {
                 onChooseDetails()
             }
@@ -2290,7 +2354,7 @@ private struct ReservationSheet: View {
             Spacer().frame(height: 4)
         }
         .padding(20)
-        .presentationDetents([.fraction(0.46)])
+        .presentationDetents([.fraction(0.36)])
         .presentationDragIndicator(.visible)
     }
 
@@ -2298,7 +2362,7 @@ private struct ReservationSheet: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: systemIcon).font(.system(size: 14, weight: .bold))
-                Text(label).font(.system(size: 15, weight: .black))
+                Text(label).font(PDF.body(15, .black))
             }
             .foregroundColor(.white)
             .frame(maxWidth: .infinity)
@@ -2313,7 +2377,7 @@ private struct ReservationSheet: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: systemIcon).font(.system(size: 13, weight: .bold))
-                Text(label).font(.system(size: 14, weight: .bold))
+                Text(label).font(PDF.body(14, .bold))
                 Spacer()
                 Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold)).foregroundColor(pdInk4)
             }
@@ -2464,10 +2528,10 @@ private struct TicketsSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Tickets for \(slot.name)")
-                .font(.system(size: 20, weight: .black))
+                .font(PDF.display(20, .black))
                 .foregroundColor(pdInk)
-            Text("Get them now, mark sold out, or save the ones you've already bought.")
-                .font(.system(size: 13))
+            Text("Grab your tickets, or save the ones you've already bought.")
+                .font(PDF.body(13))
                 .foregroundColor(pdInk3)
             Spacer().frame(height: 8)
 
@@ -2475,16 +2539,13 @@ private struct TicketsSheet: View {
                 if let urlStr = slot.ticketUrl, let url = URL(string: urlStr) { onGetTickets(url) }
                 else { onDismiss() }
             }
-            secondaryButton("No tickets available", systemIcon: "exclamationmark.triangle") {
-                onMarkUnavailable()
-            }
             secondaryButton("Tickets already bought", systemIcon: "checkmark.circle") {
                 onChooseDetails()
             }
             Spacer().frame(height: 4)
         }
         .padding(20)
-        .presentationDetents([.fraction(0.46)])
+        .presentationDetents([.fraction(0.36)])
         .presentationDragIndicator(.visible)
     }
 
@@ -2492,7 +2553,7 @@ private struct TicketsSheet: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: systemIcon).font(.system(size: 14, weight: .bold))
-                Text(label).font(.system(size: 15, weight: .black))
+                Text(label).font(PDF.body(15, .black))
             }
             .foregroundColor(.white)
             .frame(maxWidth: .infinity)
@@ -2506,7 +2567,7 @@ private struct TicketsSheet: View {
         Button(action: action) {
             HStack(spacing: 8) {
                 Image(systemName: systemIcon).font(.system(size: 13, weight: .bold))
-                Text(label).font(.system(size: 14, weight: .bold))
+                Text(label).font(PDF.body(14, .bold))
                 Spacer()
                 Image(systemName: "chevron.right").font(.system(size: 11, weight: .bold)).foregroundColor(pdInk4)
             }
@@ -3117,4 +3178,274 @@ private struct NumberedPin: View {
                 .foregroundColor(pdCoral)
         }
     }
+}
+
+// MARK: - Manual "Add event" form
+//
+// Reached from the "+ Add event" → "Add manually" chooser. Event name is free
+// text; Location uses MapKit autocomplete (same engine as PlacesAutocompleteBridge)
+// with a "use exactly what I typed" fallback; the date is implicit (the day the
+// form was launched from) so the user only picks a start time. On Save it hands
+// primitives back to Kotlin via PlanDetailBridge.onAddSlotManual.
+private struct ManualAddEventSheet: View {
+    let dayLabel: String
+    let onCancel: () -> Void
+    let onSave: (_ name: String, _ time: String, _ locName: String, _ address: String?, _ lat: Double?, _ lng: Double?) -> Void
+
+    @StateObject private var completer = ManualLocationCompleter()
+    @State private var name: String = ""
+    @State private var locationQuery: String = ""
+    @State private var committedName: String? = nil
+    @State private var committedAddress: String? = nil
+    @State private var committedLat: Double? = nil
+    @State private var committedLng: Double? = nil
+    @State private var startTime: Date = pdDefaultStart()
+    @State private var timePicked: Bool = false
+    @State private var showTimeWheel: Bool = false
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty && committedName != nil && timePicked
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Header
+            HStack {
+                Button("Cancel") { onCancel() }
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(pdInk3)
+                Spacer()
+                Text("Add to \(dayLabel)")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(pdInk)
+                Spacer()
+                // Balance the Cancel button so the title stays centered.
+                Button("Cancel") {}.opacity(0).disabled(true)
+            }
+            .padding(.horizontal, 20)
+            .padding(.top, 18)
+            .padding(.bottom, 8)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    // Event name — free text
+                    fieldLabel("Event name")
+                    TextField("Dinner, show, meetup…", text: $name)
+                        .font(.system(size: 15, weight: .semibold))
+                        .padding(.horizontal, 14).frame(height: 46)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(.white))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(pdLine, lineWidth: 1.5))
+
+                    // Location — MapKit autocomplete + custom fallback
+                    fieldLabel("Location")
+                    if let picked = committedName {
+                        HStack(spacing: 8) {
+                            Image(systemName: "mappin.circle.fill").foregroundColor(pdCoral)
+                            Text(picked).font(.system(size: 15, weight: .bold)).foregroundColor(pdInk).lineLimit(1)
+                            Spacer()
+                            Button("Change") { clearLocation() }
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(pdCoral)
+                        }
+                        .padding(.horizontal, 14).frame(height: 46)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(pdCoral.opacity(0.12)))
+                    } else {
+                        HStack(spacing: 8) {
+                            Image(systemName: "mappin.and.ellipse").foregroundColor(pdInk3)
+                            TextField("Search a place or type an address", text: $locationQuery)
+                                .font(.system(size: 15, weight: .semibold))
+                                .onChange(of: locationQuery) { q in completer.update(q) }
+                        }
+                        .padding(.horizontal, 14).frame(height: 46)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(.white))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(pdLine, lineWidth: 1.5))
+
+                        if locationQuery.trimmingCharacters(in: .whitespaces).count >= 2 {
+                            VStack(alignment: .leading, spacing: 2) {
+                                ForEach(completer.suggestions, id: \.self) { s in
+                                    suggestionRow(primary: s.title, secondary: s.subtitle, accent: false) {
+                                        completer.resolve(s) { nm, addr, lat, lng in
+                                            committedName = nm
+                                            committedAddress = addr
+                                            committedLat = lat
+                                            committedLng = lng
+                                            locationQuery = nm
+                                            completer.suggestions = []
+                                        }
+                                    }
+                                }
+                                let typed = locationQuery.trimmingCharacters(in: .whitespaces)
+                                suggestionRow(primary: "Use \"\(typed)\"", secondary: "Add it exactly as typed", accent: true) {
+                                    committedName = typed
+                                    committedAddress = nil
+                                    committedLat = nil
+                                    committedLng = nil
+                                    completer.suggestions = []
+                                }
+                            }
+                        }
+                    }
+
+                    // Start time — date implicit, user must pick the time
+                    fieldLabel("Start time")
+                    Button {
+                        withAnimation { showTimeWheel.toggle() }
+                        timePicked = true
+                    } label: {
+                        HStack(spacing: 10) {
+                            Image(systemName: "clock").foregroundColor(pdInk3).font(.system(size: 16))
+                            Text(timePicked ? pdTimeString(startTime) : "Pick a start time")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundColor(timePicked ? pdInk : pdInk4)
+                            Spacer()
+                            Image(systemName: showTimeWheel ? "chevron.up" : "chevron.down")
+                                .foregroundColor(pdInk4).font(.system(size: 13, weight: .bold))
+                        }
+                        .padding(.horizontal, 14).frame(height: 46)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(.white))
+                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(pdLine, lineWidth: 1.5))
+                    }
+                    .buttonStyle(.plain)
+
+                    if showTimeWheel {
+                        DatePicker("", selection: $startTime, displayedComponents: .hourAndMinute)
+                            .datePickerStyle(.wheel)
+                            .labelsHidden()
+                            .frame(maxWidth: .infinity)
+                    }
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 12)
+                .padding(.bottom, 24)
+            }
+
+            // Save
+            Button {
+                guard let loc = committedName else { return }
+                onSave(
+                    name.trimmingCharacters(in: .whitespaces),
+                    pdTimeString(startTime),
+                    loc,
+                    committedAddress,
+                    committedLat,
+                    committedLng
+                )
+            } label: {
+                Text("Add event")
+                    .font(.system(size: 16, weight: .heavy))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 15)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(canSave ? pdCoral : pdCoral.opacity(0.4)))
+            }
+            .buttonStyle(.plain)
+            .disabled(!canSave)
+            .padding(.horizontal, 20)
+            .padding(.bottom, 16)
+        }
+        .background(pdPaper.ignoresSafeArea())
+        .presentationDetents([.large])
+    }
+
+    @ViewBuilder
+    private func fieldLabel(_ text: String) -> some View {
+        Text(text).font(.system(size: 12, weight: .semibold)).foregroundColor(pdInk3)
+    }
+
+    @ViewBuilder
+    private func suggestionRow(primary: String, secondary: String, accent: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(primary)
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(accent ? pdCoral : pdInk)
+                    .lineLimit(1)
+                if !secondary.isEmpty {
+                    Text(secondary)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(pdInk3)
+                        .lineLimit(1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12).padding(.vertical, 10)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func clearLocation() {
+        committedName = nil
+        committedAddress = nil
+        committedLat = nil
+        committedLng = nil
+        locationQuery = ""
+        completer.suggestions = []
+    }
+}
+
+/// MapKit-backed autocomplete for the manual add form. Mirrors the engine used
+/// by PlacesAutocompleteBridge (MKLocalSearchCompleter + MKLocalSearch). No API
+/// key required.
+private final class ManualLocationCompleter: NSObject, ObservableObject, MKLocalSearchCompleterDelegate {
+    @Published var suggestions: [MKLocalSearchCompletion] = []
+    private let completer = MKLocalSearchCompleter()
+
+    override init() {
+        super.init()
+        completer.resultTypes = [.address, .pointOfInterest]
+        completer.delegate = self
+    }
+
+    func update(_ query: String) {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        if q.count < 2 {
+            suggestions = []
+            return
+        }
+        completer.queryFragment = q
+    }
+
+    func resolve(_ completion: MKLocalSearchCompletion, done: @escaping (String, String?, Double?, Double?) -> Void) {
+        let request = MKLocalSearch.Request(completion: completion)
+        MKLocalSearch(request: request).start { response, _ in
+            guard let item = response?.mapItems.first else {
+                let sub = completion.subtitle.isEmpty ? nil : completion.subtitle
+                done(completion.title, sub, nil, nil)
+                return
+            }
+            let coord = item.placemark.coordinate
+            let addr = pdFormattedAddress(item.placemark) ?? (completion.subtitle.isEmpty ? nil : completion.subtitle)
+            done(item.name ?? completion.title, addr, coord.latitude, coord.longitude)
+        }
+    }
+
+    func completerDidUpdateResults(_ completer: MKLocalSearchCompleter) {
+        suggestions = Array(completer.results.prefix(3))
+    }
+
+    func completer(_ completer: MKLocalSearchCompleter, didFailWithError error: Error) {
+        suggestions = []
+    }
+}
+
+private func pdDefaultStart() -> Date {
+    Calendar.current.date(bySettingHour: 19, minute: 0, second: 0, of: Date()) ?? Date()
+}
+
+private func pdTimeString(_ date: Date) -> String {
+    let cal = Calendar.current
+    let h = cal.component(.hour, from: date)
+    let m = cal.component(.minute, from: date)
+    let h12 = h % 12 == 0 ? 12 : h % 12
+    let ampm = h < 12 ? "AM" : "PM"
+    return m == 0 ? "\(h12) \(ampm)" : "\(h12):\(String(format: "%02d", m)) \(ampm)"
+}
+
+private func pdFormattedAddress(_ placemark: MKPlacemark) -> String? {
+    let lines = [
+        placemark.thoroughfare,
+        [placemark.locality, placemark.administrativeArea].compactMap { $0 }.joined(separator: ", "),
+        placemark.postalCode,
+    ].compactMap { $0 }.filter { !$0.isEmpty }
+    return lines.isEmpty ? nil : lines.joined(separator: ", ")
 }

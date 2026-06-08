@@ -127,6 +127,7 @@ import live.localapp.local.platform.setupNativeTabBarCallbacks
 import live.localapp.local.platform.setTabBarUserInitial
 import live.localapp.local.platform.requestHeroCollapse
 import live.localapp.local.platform.checkSubscriptionStatus
+import live.localapp.local.platform.identifyRevenueCatUser
 import live.localapp.local.platform.purchaseSubscription
 import live.localapp.local.platform.presentShareSheet
 import live.localapp.local.platform.showNativePlanDetail
@@ -163,7 +164,12 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     var pendingChatMessage by remember { mutableStateOf<String?>(null) }
     var chatOpenCount by remember { mutableStateOf(0) }
     var showTasteProfile by remember { mutableStateOf(false) }
+    var showNotificationSettings by remember { mutableStateOf(false) }
     var pendingShowPaywall by remember { mutableStateOf(false) }
+    // Standalone paywall (Android account-page "Upgrade"). Kept separate from
+    // the chat sheet so dismissing it returns to the account page instead of
+    // dropping the user into a Bo chat.
+    var showAccountPaywall by remember { mutableStateOf(false) }
     var selectedPlan by remember { mutableStateOf<Plan?>(null) }
     var sharedPlan by remember { mutableStateOf<Plan?>(null) }
     var sharedEvent by remember { mutableStateOf<live.localapp.local.domain.model.Event?>(null) }
@@ -240,6 +246,29 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     }
     val placesState by placesVm.uiState.collectAsState()
 
+    // Route logged-out saves (home/places cards + event/venue detail, on both
+    // platforms — iOS native detail favorites also flow through these VM toggles)
+    // to the sign-in flow. Stash the pending favorite so it's applied after auth
+    // (replayed in the isLoggedIn LaunchedEffect below), mirroring the shared
+    // deep-link overlays' gate.
+    LaunchedEffect(Unit) {
+        val requestAuthForFavorite: (String, live.localapp.local.domain.repository.InteractionType, String?) -> Unit =
+            { itemId, type, category ->
+                val settings = com.russhwolf.settings.Settings()
+                when (type) {
+                    live.localapp.local.domain.repository.InteractionType.EVENT ->
+                        settings.putString("pending_favorite_event", itemId)
+                    live.localapp.local.domain.repository.InteractionType.PLACE -> {
+                        settings.putString("pending_favorite_venue", itemId)
+                        settings.putString("pending_favorite_venue_category", category ?: "")
+                    }
+                }
+                onLogout()
+            }
+        homeVm.onAuthRequired = requestAuthForFavorite
+        placesVm.onAuthRequired = requestAuthForFavorite
+    }
+
     // Observe chat success state to defer celebrations
     val chatVm: ChatViewModel = viewModel { koin.get<ChatViewModel>() }
     val chatState by chatVm.uiState.collectAsState()
@@ -294,12 +323,21 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         // below if the actual entitlement is still active.
         gate.hasPaidSubscription = false
         gate.paidSubscriptionExpiry = ""
-        checkSubscriptionStatus { isPro, expiryDate ->
+        val applyStatus = { isPro: Boolean, expiryDate: String? ->
             gate.hasPaidSubscription = isPro
             if (expiryDate != null) {
                 gate.paidSubscriptionExpiry = expiryDate.take(10) // ISO date
             }
             println("RevenueCat sync: userId=$currentUserId isPro=$isPro expiry=$expiryDate")
+        }
+        if (!currentUserId.isNullOrEmpty()) {
+            // Bind RevenueCat's identity to the Supabase auth uid first, so the
+            // entitlement follows the user across devices/reinstalls rather than
+            // the anonymous per-device id. logIn returns the identified user's
+            // status, so no separate check is needed.
+            identifyRevenueCatUser(currentUserId) { isPro, expiry -> applyStatus(isPro, expiry) }
+        } else {
+            checkSubscriptionStatus { isPro, expiryDate -> applyStatus(isPro, expiryDate) }
         }
     }
 
@@ -493,6 +531,9 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                         },
                                         showDirections = false,
                                         isFavorited = event.id in homeState.favoriteEventIds,
+                                        onShare = { eventId ->
+                                            homeVm.recordEventShare(eventId, event.subcategory ?: event.category)
+                                        },
                                     )
                                 } else {
                                     detailFromPlans = false
@@ -512,6 +553,16 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             },
                             showUpdateBanner = showUpdateBanner,
                             onDismissUpdateBanner = onDismissUpdateBanner,
+                            onUpgrade = {
+                                // Same path as the account-page "Upgrade": iOS shows the
+                                // native SwiftUI paywall; Android shows the Compose paywall
+                                // dialog (dismiss returns to Home, not a Bo chat).
+                                if (hasNativeTabBar) {
+                                    live.localapp.local.platform.presentNativePaywall { _ -> }
+                                } else {
+                                    showAccountPaywall = true
+                                }
+                            },
                             onSeeAllVenue = { venueName, _ ->
                                 // Resolve the venue by name (fav-venue rails carry only the
                                 // name in their title) then open its detail page. iOS MUST
@@ -628,6 +679,9 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                         },
                                         showDirections = false,
                                         isFavorited = isFav,
+                                        onShare = { eventId ->
+                                            homeVm.recordEventShare(eventId, event.subcategory ?: event.category)
+                                        },
                                     )
                                 } else {
                                     detailFromPlans = false
@@ -642,6 +696,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             progressVm,
                             onLogout = onLogout,
                             onTasteProfile = { showTasteProfile = true },
+                            onNotifications = { showNotificationSettings = true },
                             onSignIn = { onLogout() },
                             onNameChanged = { name -> homeVm.setUserName(name) },
                             onLocationClick = { showLocationSheet = true },
@@ -653,9 +708,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 if (hasNativeTabBar) {
                                     live.localapp.local.platform.presentNativePaywall { _ -> }
                                 } else {
-                                    pendingShowPaywall = true
-                                    showChat = true
-                                    chatOpenCount++
+                                    showAccountPaywall = true
                                 }
                             },
                             isLoggedIn = isLoggedIn,
@@ -749,33 +802,39 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                             )
                                         },
                                         onAddEvent = { dayIdx ->
-                                            // Per spec: + Add event opens the per-plan Bo chat with
-                                            // a prompt that names the day. Bo has plan context + edit tools.
-                                            // Append the year so Bo doesn't ask "which Thursday?" — the
-                                            // system prompt has the same anchor but doubling up here
-                                            // means the user-visible message also reads unambiguously.
+                                            // "+ Add event" opens the per-plan Bo chat. Bo posts a
+                                            // deterministic 4-way disambiguation question (restaurant /
+                                            // place / event / custom) via beginAddEventFlow before
+                                            // searching — see PlanChatViewModel.
                                             val dayLabel = plan.days.getOrNull(dayIdx)?.label ?: "this day"
-                                            val today = kotlin.time.Clock.System.now()
-                                                .toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault()).date
-                                            // Inline year inference — same logic as
-                                            // PlanChatViewModel.expandLabelWithYearAndIso. If the
-                                            // parsed month is already past today, assume next year.
-                                            val withYear = run {
-                                                val months = listOf("January","February","March","April","May","June",
-                                                    "July","August","September","October","November","December")
-                                                val afterComma = dayLabel.substringAfter(',', dayLabel).trim()
-                                                val parts = afterComma.split(' ').filter { it.isNotBlank() }
-                                                val monthIdx = if (parts.isNotEmpty()) months.indexOfFirst { it.equals(parts[0], ignoreCase = true) } else -1
-                                                if (monthIdx >= 0 && parts.size >= 2) {
-                                                    val year = if (monthIdx + 1 < today.monthNumber) today.year + 1 else today.year
-                                                    "$dayLabel, $year"
-                                                } else dayLabel
-                                            }
                                             live.localapp.local.platform.openPlanChatSheet(
                                                 plan = plan,
-                                                prePopulatedMessage = "Add an event to $withYear",
+                                                prePopulatedMessage = live.localapp.local.ui.plans.PlanChatViewModel.addEventPrefill(dayLabel),
                                                 onDismiss = {},
                                             )
+                                        },
+                                        onAddSlotManual = { dayIdx, name, time, locName, addr, lat, lng ->
+                                            // "Add manually" from the native chooser: build a custom
+                                            // slot (no eventId) and write through the same addSlotToDay
+                                            // sync chokepoint, then push refreshed state to SwiftUI.
+                                            val slot = live.localapp.local.domain.model.PlanSlot(
+                                                id = "slot_${kotlin.random.Random.nextLong().toString(36)}",
+                                                time = time,
+                                                emoji = "",
+                                                name = name,
+                                                detail = locName,
+                                                price = "",
+                                                isFree = false,
+                                                isCustom = true,
+                                                venueName = locName,
+                                                venueAddress = addr,
+                                                venueLat = lat,
+                                                venueLng = lng,
+                                            )
+                                            plansVm.addSlotToDay(plan.id, dayIdx, slot)
+                                            val refreshed = (plansVm.uiState.value.upcomingPlans + plansVm.uiState.value.pastPlans)
+                                                .find { it.id == plan.id } ?: plan
+                                            live.localapp.local.platform.pushNativePlanState(refreshed)
                                         },
                                         onSetSlotReserved = { dayIdx, slotId, reserved ->
                                             plansVm.setSlotReserved(plan.id, dayIdx, slotId, reserved)
@@ -1046,6 +1105,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                             onFavorited = { id -> homeVm.toggleEventFavorite(id, event.subcategory ?: event.category, source = "event_detail") },
                                             showDirections = true,
                                             isFavorited = event.id in homeState.favoriteEventIds,
+                                            onShare = { id -> homeVm.recordEventShare(id, event.subcategory ?: event.category) },
                                         )
                                     } else {
                                         detailFromPlans = true
@@ -1134,41 +1194,6 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 )
             }
 
-        // Venue detail — slide up / slide down transition.
-        // iOS NEVER renders this Compose overlay: every iOS venue entry point
-        // presents the native SwiftUI VenueDetailView via showNativeVenueDetail
-        // (mirrors the chat-sheet guard below). Without this gate, any stray
-        // selectVenue() call on iOS would pop the Compose page over the native UI.
-        if (!hasNativeHeroTransition) {
-            AnimatedVisibility(
-                visible = placesState.selectedVenue != null && placesState.selectedVenueEvents.isNotEmpty(),
-                enter = slideInVertically(animationSpec = tween(320)) { it } + fadeIn(animationSpec = tween(220)),
-                exit = slideOutVertically(animationSpec = tween(280)) { it } + fadeOut(animationSpec = tween(180)),
-            ) {
-                placesState.selectedVenue?.let { venue ->
-                    Box(modifier = Modifier.fillMaxSize().background(AppColors.White)) {
-                        VenueDetailPage(
-                            venueWithMeta = venue,
-                            events = placesState.selectedVenueEvents,
-                            isLoading = placesState.isSheetLoading,
-                            onBack = { placesVm.dismissSheet() },
-                            isFavorited = venue.venue.id in placesState.favoriteVenueIds,
-                            onFavoriteToggle = { placesVm.toggleVenueFavorite(venue.venue.id, venue.primaryCategory) },
-                            onShare = {
-                                presentShareSheet(venue.venue.name, "https://localapp.live/v/${venue.venue.id}")
-                            },
-                        )
-                    }
-                }
-            }
-            if (placesState.selectedVenue != null && placesState.selectedVenueEvents.isEmpty()) {
-                VenueDetailSheet(
-                    venueWithMeta = placesState.selectedVenue!!,
-                    onDismiss = { placesVm.dismissSheet() },
-                )
-            }
-        }
-
         // Plan detail — spring slide up with scale (matches native event detail feel)
         AnimatedVisibility(
             visible = selectedPlan != null,
@@ -1240,6 +1265,16 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 if (i == dayIdx) d.copy(slots = d.slots + slot) else d
                             }
                             selectedPlan = plan.copy(days = updatedDays)
+                        },
+                        onAddEventViaBo = { dayIdx ->
+                            // iOS parity: "+ Add event" opens the per-plan Bo chat
+                            // pre-filled with a type-agnostic add request. Bo asks what
+                            // KIND of thing to add (restaurant / place / event / custom)
+                            // before searching — see the disambiguation rule in
+                            // PlanChatViewModel.buildPlanSystemPrompt.
+                            val dayLabel = plan.days.getOrNull(dayIdx)?.label ?: "this day"
+                            planChatPrefill = live.localapp.local.ui.plans.PlanChatViewModel.addEventPrefill(dayLabel)
+                            showPlanChat = true
                         },
                         onAddDay = {
                             // Open Bo with a prompt so the new day gets real context (date,
@@ -1406,6 +1441,12 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                     org.koin.core.parameter.parametersOf(plan)
                                 }
                             }
+                            // "+ Add event" posts a deterministic canned question via the VM
+                            // instead of pre-filling the input box with the sentinel.
+                            val addDay = live.localapp.local.ui.plans.PlanChatViewModel.parseAddEventDay(planChatPrefill)
+                            LaunchedEffect(plan.id, planChatPrefill) {
+                                if (addDay != null) planChatVm.beginAddEventFlow(addDay)
+                            }
                             androidx.compose.material3.ModalBottomSheet(
                                 onDismissRequest = {
                                     showPlanChat = false
@@ -1422,7 +1463,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                             showPlanChat = false
                                             planChatPrefill = null
                                         },
-                                        prePopulatedMessage = planChatPrefill,
+                                        prePopulatedMessage = if (addDay != null) null else planChatPrefill,
                                     )
                                 }
                             }
@@ -1590,6 +1631,9 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 homeVm.toggleEventFavorite(id, event.subcategory ?: event.category, source = "shared_event")
                             },
                             isFavorited = event.id in homeState.favoriteEventIds,
+                            onShare = { id ->
+                                homeVm.recordEventShare(id, event.subcategory ?: event.category)
+                            },
                         )
                     }
                 } else {
@@ -1646,8 +1690,15 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             onDismissed = {},
                             isFavorited = venue.id in placesState.favoriteVenueIds,
                             onFavorited = { venueId ->
-                                val communityRepo = koin.get<live.localapp.local.domain.repository.CommunityInterestRepository>()
-                                communityRepo.recordFavorite(venueId, live.localapp.local.domain.repository.InteractionType.PLACE, venue.category)
+                                if (isLoggedIn) {
+                                    val communityRepo = koin.get<live.localapp.local.domain.repository.CommunityInterestRepository>()
+                                    communityRepo.recordFavorite(venueId, live.localapp.local.domain.repository.InteractionType.PLACE, venue.category)
+                                } else {
+                                    val settings = com.russhwolf.settings.Settings()
+                                    settings.putString("pending_favorite_venue", venueId)
+                                    settings.putString("pending_favorite_venue_category", venue.category ?: "")
+                                    onLogout()
+                                }
                             },
                         )
                         // Hydrate events for the native detail — the shared payload
@@ -1703,6 +1754,13 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             )
         }
 
+        // Notification settings overlay
+        if (showNotificationSettings) {
+            live.localapp.local.ui.progress.NotificationSettingsScreen(
+                onBack = { showNotificationSettings = false },
+            )
+        }
+
         // Event detail overlay
         if (detailEvent != null) {
             // On iOS, redirect to native SwiftUI detail
@@ -1718,6 +1776,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         onFavorited = { id -> homeVm.toggleEventFavorite(id, event.subcategory ?: event.category, source = "event_detail") },
                         showDirections = detailFromPlans,
                         isFavorited = event.id in homeState.favoriteEventIds,
+                        onShare = { id -> homeVm.recordEventShare(id, event.subcategory ?: event.category) },
                     )
                 }
             } else {
@@ -1738,6 +1797,10 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         homeVm.toggleEventFavorite(eventId, cat, source = "event_detail")
                     },
                     initialFavorited = detailEvent?.id in homeState.favoriteEventIds,
+                    // Mirror the iOS-native path (showNativeEventDetail above):
+                    // the Directions / Get-a-Ride row only shows when opened
+                    // from a Plan context.
+                    showDirections = detailFromPlans,
                     onVenueClick = detailEvent?.venueName?.let { vName ->
                         {
                             val ev = detailEvent
@@ -1748,6 +1811,47 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                     },
                 )
             }
+            }
+        }
+
+        // Venue detail — slide up / slide down transition.
+        // Composed LAST so it renders ON TOP of every other overlay (notably the
+        // event-detail overlay above). Tapping an event's venue card opens this
+        // page; previously it was composed before the event-detail overlay and
+        // therefore slid up BEHIND it, leaving the venue invisible (bug #5).
+        // Backing out (dismissSheet) reveals the event detail still underneath,
+        // matching the iOS native push-on-top stack.
+        // iOS NEVER renders this Compose overlay: every iOS venue entry point
+        // presents the native SwiftUI VenueDetailView via showNativeVenueDetail
+        // (mirrors the chat-sheet guard below). Without this gate, any stray
+        // selectVenue() call on iOS would pop the Compose page over the native UI.
+        if (!hasNativeHeroTransition) {
+            AnimatedVisibility(
+                visible = placesState.selectedVenue != null && placesState.selectedVenueEvents.isNotEmpty(),
+                enter = slideInVertically(animationSpec = tween(320)) { it } + fadeIn(animationSpec = tween(220)),
+                exit = slideOutVertically(animationSpec = tween(280)) { it } + fadeOut(animationSpec = tween(180)),
+            ) {
+                placesState.selectedVenue?.let { venue ->
+                    Box(modifier = Modifier.fillMaxSize().background(AppColors.White)) {
+                        VenueDetailPage(
+                            venueWithMeta = venue,
+                            events = placesState.selectedVenueEvents,
+                            isLoading = placesState.isSheetLoading,
+                            onBack = { placesVm.dismissSheet() },
+                            isFavorited = venue.venue.id in placesState.favoriteVenueIds,
+                            onFavoriteToggle = { placesVm.toggleVenueFavorite(venue.venue.id, venue.primaryCategory) },
+                            onShare = {
+                                presentShareSheet(venue.venue.name, "https://localapp.live/v/${venue.venue.id}")
+                            },
+                        )
+                    }
+                }
+            }
+            if (placesState.selectedVenue != null && placesState.selectedVenueEvents.isEmpty()) {
+                VenueDetailSheet(
+                    venueWithMeta = placesState.selectedVenue!!,
+                    onDismiss = { placesVm.dismissSheet() },
+                )
             }
         }
         } // end if (!showHomeTutorial)
@@ -1942,6 +2046,11 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             monthlyPrice = rcMonthly,
                             annualPrice = rcAnnual,
                             introPrice = rcIntro,
+                            // Bug #25: Play returns an intro/free price only when
+                            // the user is eligible, so a non-null rcIntro IS the
+                            // eligibility signal. Without this the "First month"
+                            // badge + "Try for $X" CTA never rendered on Android.
+                            monthlyIntroEligible = rcIntro != null,
                             onSubscribe = { isAnnual ->
                                 println("Paywall: Subscribe tapped, isAnnual=$isAnnual")
                                 purchaseSubscription(isAnnual) { success ->
@@ -1998,6 +2107,65 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             },
                         )
                     }
+                }
+            }
+        }
+
+        // Standalone account paywall (Android). Rendered at the top level — not
+        // inside the chat sheet — so dismissing it returns to the account page
+        // rather than leaving the user in a Bo chat.
+        if (showAccountPaywall) {
+            val accountGate = remember { live.localapp.local.ui.chat.PremiumGate() }
+            var rcMonthly by remember { mutableStateOf<String?>(null) }
+            var rcAnnual by remember { mutableStateOf<String?>(null) }
+            var rcIntro by remember { mutableStateOf<String?>(null) }
+            LaunchedEffect(Unit) {
+                accountGate.hasSeenPaywall = true
+                live.localapp.local.platform.fetchSubscriptionPricing { m, a, i ->
+                    rcMonthly = m; rcAnnual = a; rcIntro = i
+                }
+            }
+            Dialog(
+                onDismissRequest = { showAccountPaywall = false },
+                properties = DialogProperties(
+                    usePlatformDefaultWidth = false,
+                    dismissOnBackPress = true,
+                    dismissOnClickOutside = false,
+                ),
+            ) {
+                Box(modifier = Modifier.fillMaxSize().background(Color(0xFF1A1523))) {
+                    live.localapp.local.ui.chat.PremiumPaywall(
+                        monthlyPrice = rcMonthly,
+                        annualPrice = rcAnnual,
+                        introPrice = rcIntro,
+                        // Bug #25: non-null intro price = user is eligible.
+                        monthlyIntroEligible = rcIntro != null,
+                        onSubscribe = { isAnnual ->
+                            purchaseSubscription(isAnnual) { success ->
+                                if (success) {
+                                    accountGate.hasPaidSubscription = true
+                                    showAccountPaywall = false
+                                }
+                            }
+                        },
+                        onRestore = {
+                            live.localapp.local.platform.restorePurchases { restored ->
+                                if (restored) {
+                                    accountGate.hasPaidSubscription = true
+                                    showAccountPaywall = false
+                                } else {
+                                    live.localapp.local.platform.checkSubscriptionStatus { isPro, expiry ->
+                                        if (isPro) {
+                                            accountGate.hasPaidSubscription = true
+                                            if (expiry != null) accountGate.paidSubscriptionExpiry = expiry.take(10)
+                                            showAccountPaywall = false
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        onDismiss = { showAccountPaywall = false },
+                    )
                 }
             }
         }
@@ -2382,7 +2550,7 @@ private fun GlobalMilestoneToast(event: CelebrationEvent.MilestoneEarned, onDism
                         style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = AppColors.White),
                     )
                     Text(
-                        "+${formatNumber(event.points)} PTS",
+                        "+${formatNumber(event.points)} FOMO",
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, color = AppColors.Sun, letterSpacing = 0.5.sp),
                     )
                 }
@@ -2449,7 +2617,7 @@ private fun GlobalLevelUpOverlay(event: CelebrationEvent.StatusLevelUp, onDismis
             )
             Spacer(Modifier.height(16.dp))
             Text(
-                "${formatNumber(event.totalPoints)} total points",
+                "${formatNumber(event.totalPoints)} total FOMO",
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.SemiBold,
@@ -2480,7 +2648,7 @@ private fun GlobalLevelUpOverlay(event: CelebrationEvent.StatusLevelUp, onDismis
                     .background(AppColors.Coral)
                     .clickable {
                         presentShareSheet(
-                            "I just reached ${event.newTier.label} on Local with ${formatNumber(event.totalPoints)} points!",
+                            "I just reached ${event.newTier.label} on Local with ${formatNumber(event.totalPoints)} FOMO!",
                             "https://apps.apple.com/app/id6761425705",
                         )
                     }

@@ -68,6 +68,17 @@ import kotlinx.serialization.json.putJsonArray
 
 // ── Message models ──
 
+/**
+ * Canonical instruction sent when the user taps the "Build from web" footer
+ * action on an empty-DB suggestion tray. Shared between the chip (which sends
+ * it) and [ChatViewModel.handleMessage] (which detects it to open the
+ * save_web_finding tool gate for this turn — see toolsForRound). Keep the two
+ * in lockstep via this constant; string-matching a literal would silently
+ * break the gate if either copy drifted.
+ */
+const val BUILD_FROM_WEB_INTENT =
+    "Build a plan from the web findings you just surfaced. For each promising event, call save_web_finding(kind='event') to stage it, then call present_plan with the returned bo_web_events ids as the slot event_ids (with is_bo_web: true). Don't ask another question first — just build the plan."
+
 enum class MessageRole { AI, USER }
 
 sealed interface MessageContent {
@@ -173,6 +184,13 @@ data class ChatUiState(
     // every ~3rd rotation to forge an emotional, place-specific connection.
     // Empty = the indicator shows only the generic rotating gerunds.
     val localIdioms: List<String> = emptyList(),
+    // One-time prose acknowledgment shown ABOVE the searching steps at the
+    // start of a browse turn (e.g. "Let me find Live music this week for you.
+    // Searching within 20 miles of Waltham."). Echoes the user's request +
+    // scope so the wait opens with a human beat before the ✓ steps animate.
+    // Set only for genuine browse intents (gated on inferBrowseSearchInput);
+    // null on plan/approve/chat turns so it never flashes awkward text.
+    val searchingOpener: String? = null,
     // Weather forecasts keyed by day index
     val weather: Map<Int, live.localapp.local.data.remote.WeatherForecast> = emptyMap(),
     // Itinerary state
@@ -516,7 +534,7 @@ class ChatViewModel(
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return
         val coords = geocodeCity(trimmed)
-        val clampedRadius = radiusMiles.coerceIn(2.0, 100.0)
+        val clampedRadius = radiusMiles.coerceIn(1.0, 100.0)
         val finalLat = coords?.first ?: _uiState.value.currentLat
         val finalLng = coords?.second ?: _uiState.value.currentLng
         _uiState.update {
@@ -543,7 +561,7 @@ class ChatViewModel(
     fun setChatSearchScopeWithCoords(name: String, lat: Double, lng: Double, radiusMiles: Double) {
         val trimmed = name.trim()
         if (trimmed.isEmpty()) return
-        val clampedRadius = radiusMiles.coerceIn(2.0, 100.0)
+        val clampedRadius = radiusMiles.coerceIn(1.0, 100.0)
         val finalLat: Double
         val finalLng: Double
         if (lat.isFinite() && lng.isFinite()) {
@@ -1187,12 +1205,34 @@ class ChatViewModel(
                 ec == strictLocLower || ec.contains(strictLocLower) || strictLocLower.contains(ec)
             }
 
+            // Keyword / venue-name match — when the original search was
+            // keyword-scoped (e.g. a named venue like "New Art Center"),
+            // searchEventsBroad re-runs the SAME stratified RPC, whose breadth
+            // lane (top-ranked per category) returns unrelated high-rank events
+            // — Red Sox @ Fenway — that happen to fall on the target day. The
+            // keyword only feeds the RPC's keyword lane; the breadth/niche lanes
+            // ignore it, and none of the post-filters above catch the leak, so a
+            // day-grouped "Find more" on a venue brief appends Red Sox games
+            // under the "New Art Center — Upcoming" header. Require the carried
+            // keyword to appear in the title or venue name. Only the day-grouped
+            // path (categoryKey == null) uses this — category-grouped load-more
+            // already constrains via matchesTargetCategory above.
+            val keywordLower = if (categoryKey == null)
+                suggestions.originalKeyword?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+            else null
+            val matchesKeyword: (live.localapp.local.domain.model.Event) -> Boolean = filter@{ ev ->
+                if (keywordLower == null) return@filter true
+                (ev.venueName?.lowercase()?.contains(keywordLower) == true) ||
+                    ev.title.lowercase().contains(keywordLower)
+            }
+
             val newEvents = moreRaw
                 .asSequence()
                 .filter { it.id !in existingIds }
                 .filter(onTargetDay)
                 .filter(matchesTargetCategory)
                 .filter(matchesStrictLocation)
+                .filter(matchesKeyword)
                 .take(30)
                 .toList()
             if (newEvents.isEmpty()) {
@@ -1799,7 +1839,7 @@ class ChatViewModel(
             // tool_use chunk flipped isSearching=true. If Bo replies with
             // pure text (no tools), the idiom briefly transitions to the
             // bubble — fine, it never deceives.
-            _uiState.update { it.copy(isSearching = true, isTyping = false, searchingNarration = emptyList()) }
+            _uiState.update { it.copy(isSearching = true, isTyping = false, searchingNarration = emptyList(), searchingOpener = null) }
             // historyText may differ from `text` when a clean user-visible
             // bubble is paired with a verbose technical instruction for Bo
             // (e.g. the Build-plan-from-tray flow).
@@ -1818,16 +1858,34 @@ class ChatViewModel(
             // Done ONCE here (not per-retry attempt) so a retry reuses the
             // already-primed history instead of double-searching.
             val browseInput = if (historyText == text) inferBrowseSearchInput(text) else null
+            // Open the wait with a human beat: a one-line acknowledgment that
+            // echoes the request + scope, shown above the ✓ steps. Browse-only
+            // (browseInput != null) so it never renders for plan/approve/chat
+            // turns where "Let me find <text> for you" would read wrong.
+            if (browseInput != null) {
+                val opener = buildSearchingOpener(
+                    text,
+                    _uiState.value.currentLocationName,
+                    _uiState.value.searchRadiusMiles.toInt(),
+                )
+                _uiState.update { it.copy(searchingOpener = opener) }
+            }
             val primeStartMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
             val forcePresentSuggestions = browseInput != null && primeBrowseSearch(browseInput)
             println("⏱️ bo-latency: prime phase ${kotlin.time.Clock.System.now().toEpochMilliseconds() - primeStartMs}ms (browseInput=$browseInput forcePresent=$forcePresentSuggestions)")
+
+            // Build-from-web turn: the "Build from web" chip stages findings
+            // surfaced on a PRIOR turn, so no search runs now and the web-search
+            // gate stays closed. Without this flag save_web_finding would be
+            // absent from the tools array exactly when Bo is told to call it.
+            val buildFromWeb = historyText == BUILD_FROM_WEB_INTENT
 
             var attempts = 0
             val maxAttempts = 2
             while (attempts < maxAttempts) {
                 try {
                     val systemPrompt = buildSystemPrompt()
-                    val parsed = sendWithToolLoop(systemPrompt, forcePresentSuggestions)
+                    val parsed = sendWithToolLoop(systemPrompt, forcePresentSuggestions, buildFromWeb)
                     val shape = when (parsed.type) {
                         ParsedResponseType.SUGGESTIONS -> {
                             val sj = parsed.structuredJson?.jsonObject
@@ -1913,52 +1971,85 @@ class ChatViewModel(
         // nothing actionable, never lies about the data.
         sanitizeToolUsePairing()
 
-        var response: ClaudeResponse? = null
         val streamBuffer = StringBuilder()
         var lastEmitTime = 0L
         val emitIntervalMs = 40L // Smooth ~25fps updates
 
-        claudeApi.sendRawStreaming(
-            systemPrompt = systemPrompt,
-            messages = conversationHistory,
-            tools = tools,
-            model = model,
-            toolChoice = toolChoice,
-        ).collect { event ->
-            when (event) {
-                is StreamEvent.TextDelta -> {
-                    if (!isToolRound) {
-                        streamBuffer.append(event.text)
-                        val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
-                        if (now - lastEmitTime >= emitIntervalMs) {
-                            lastEmitTime = now
-                            val current = streamBuffer.toString()
-                            _uiState.update { it.copy(
-                                streamingText = current,
-                                isTyping = false,
-                            ) }
+        // pause_turn continuation: Anthropic interrupts long server-tool turns
+        // (web_search / web_fetch) with stop_reason="pause_turn" BEFORE Bo has
+        // written the final answer. The turn isn't done — we must echo the
+        // partial assistant content (server_tool_use + tool_result blocks intact)
+        // back and re-call to let Bo finish. Without this, iOS users watch Bo
+        // "start typing and never finish" — the half-built turn just stops.
+        // We work on a LOCAL copy so conversationHistory keeps its normal
+        // server-tool-stripped shape; the caller appends the final turn itself.
+        val msgs = conversationHistory.toMutableList()
+        val maxPauseContinues = 3
+        var pauseContinues = 0
+        var response: ClaudeResponse? = null
+
+        while (true) {
+            var roundResponse: ClaudeResponse? = null
+            claudeApi.sendRawStreaming(
+                systemPrompt = systemPrompt,
+                messages = msgs,
+                tools = tools,
+                model = model,
+                toolChoice = toolChoice,
+            ).collect { event ->
+                when (event) {
+                    is StreamEvent.TextDelta -> {
+                        if (!isToolRound) {
+                            streamBuffer.append(event.text)
+                            val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+                            if (now - lastEmitTime >= emitIntervalMs) {
+                                lastEmitTime = now
+                                val current = streamBuffer.toString()
+                                _uiState.update { it.copy(
+                                    streamingText = current,
+                                    isTyping = false,
+                                ) }
+                            }
                         }
                     }
-                }
-                is StreamEvent.ToolUseStart -> {
-                    // Pre-tool-use text is preamble narration ("Let me check…",
-                    // "I'm not finding May 15, let me try broader…") — the
-                    // NO-PREAMBLE prompt rule forbids it but Claude emits it
-                    // anyway, especially between rounds of a multi-search
-                    // turn. Discard it so the user sees only the searching
-                    // idiom + the final answer instead of a wall of self-narration.
-                    streamBuffer.clear()
-                    _uiState.update { it.copy(isSearching = true, streamingText = "") }
-                }
-                is StreamEvent.InputDelta -> { /* Accumulated internally by the Flow */ }
-                is StreamEvent.Done -> {
-                    // Flush any remaining buffered text
-                    if (!isToolRound && streamBuffer.isNotEmpty()) {
-                        _uiState.update { it.copy(streamingText = streamBuffer.toString()) }
+                    is StreamEvent.ToolUseStart -> {
+                        // Pre-tool-use text is preamble narration ("Let me check…",
+                        // "I'm not finding May 15, let me try broader…") — the
+                        // NO-PREAMBLE prompt rule forbids it but Claude emits it
+                        // anyway, especially between rounds of a multi-search
+                        // turn. Discard it so the user sees only the searching
+                        // idiom + the final answer instead of a wall of self-narration.
+                        streamBuffer.clear()
+                        _uiState.update { it.copy(isSearching = true, streamingText = "") }
                     }
-                    response = event.response
+                    is StreamEvent.InputDelta -> { /* Accumulated internally by the Flow */ }
+                    is StreamEvent.Done -> {
+                        // Flush any remaining buffered text
+                        if (!isToolRound && streamBuffer.isNotEmpty()) {
+                            _uiState.update { it.copy(streamingText = streamBuffer.toString()) }
+                        }
+                        roundResponse = event.response
+                    }
                 }
             }
+
+            val r = roundResponse ?: throw RuntimeException("Stream ended without a complete response")
+
+            if (r.stopReason == "pause_turn" && pauseContinues < maxPauseContinues) {
+                // Resume the paused turn: append the partial assistant content
+                // VERBATIM (server_tool_use + *_tool_result preserved) and loop.
+                pauseContinues++
+                msgs.add(
+                    ClaudeMessage.blocks(
+                        "assistant",
+                        claudeApi.buildAssistantContentBlocks(r, preserveServerTools = true),
+                    ),
+                )
+                continue
+            }
+
+            response = r
+            break
         }
 
         return response ?: throw RuntimeException("Stream ended without a complete response")
@@ -2161,6 +2252,23 @@ class ChatViewModel(
      * ordered, de-duped list capped at 4 lines; empty when no narratable tool
      * was called (the indicator then falls back to the playful gerunds).
      */
+    /**
+     * Build the one-line browse opener shown above the searching steps. Echoes
+     * the user's verbatim request plus the search scope (radius + chip
+     * location). Verbatim text keeps it honest and zero-cost (no Claude round)
+     * — the browse fast-path runs the search before Bo's single call, so the
+     * opener MUST be client-derived. Falls back to a scope-only line when the
+     * query or location is missing.
+     */
+    private fun buildSearchingOpener(query: String, location: String, radiusMiles: Int): String {
+        val q = query.trim().trimEnd('.', '!', '?', ' ')
+        val scope = if (location.isNotBlank())
+            "Searching within $radiusMiles miles of $location."
+        else
+            "Searching nearby."
+        return if (q.isBlank()) scope else "Let me find $q for you. $scope"
+    }
+
     private fun narrateToolCalls(calls: List<live.localapp.local.data.remote.ToolCall>): List<String> {
         val steps = mutableListOf<String>()
         for (call in calls) {
@@ -2237,6 +2345,24 @@ class ChatViewModel(
             "where ", "why ", "who ", "should ",
         )
         if (factualStarts.any { lower.startsWith(it) }) return null
+
+        // Venue/place-discovery intent ("hottest restaurants", "best bars",
+        // "good cafes", "where to eat") is NOT an event browse. The fast-path
+        // only ever runs search_events, so priming food EVENTS for a restaurant
+        // query yields a tray of non-matches AND force-terminates
+        // present_suggestions on round 0 — before Bo can call search_venues or
+        // escalate to web_search. That was the "empty card for 'Hottest
+        // restaurants in Watertown'" bug. Bounce these to the normal LLM flow,
+        // which calls search_venues, hits the empty-DB gate, then web search.
+        // Substring match is intentionally loose: a false positive only costs
+        // the old two-call path (the safe default), never correctness.
+        val venueDiscoverySignals = listOf(
+            "restaurant", "dining", "where to eat", "places to eat", "good eats",
+            "bar", "pub", "cafe", "café", "coffee", "bakery", "diner",
+            "brewery", "breweries", "brewpub", "winery", "wineries", "distillery",
+            "speakeasy", "cocktail", "rooftop",
+        )
+        if (venueDiscoverySignals.any { lower.contains(it) }) return null
 
         // Category keyword → canonical category (the set search_events +
         // present_suggestions understand).
@@ -2328,6 +2454,7 @@ class ChatViewModel(
     private suspend fun sendWithToolLoop(
         systemPrompt: String,
         forcePresentSuggestions: Boolean = false,
+        buildFromWeb: Boolean = false,
     ): ParsedChatResponse {
         val maxToolRounds = 5
         var toolRounds = 0
@@ -2361,6 +2488,17 @@ class ChatViewModel(
         // Bo reached for the 5-15s server-side web_search to "enrich" results
         // the DB already had.
         var searchEventsRan = false
+        // Venue-side mirror of the two trackers above. A discovery query like
+        // "best restaurants in Watertown" drives search_VENUES, not
+        // search_events — so without these, an empty venue search could never
+        // unlock web_search (the gate keyed on search_events only, leaving a
+        // venue-shaped blind spot where Bo just emitted "no matches" chips).
+        // searchVenues returns plain text: empty = "No venues found...", and
+        // each hit is a line starting with "[<id>]". The infra-timeout marker
+        // is JSON ({"error":...}) so it never starts with "[" — a timed-out
+        // round correctly counts as "no venues", not a false hit.
+        var searchVenuesRan = false
+        var turnHadAnyVenues = false
         // Circuit breaker. Counts CONSECUTIVE tool rounds in which every data
         // tool came back with the infra-timeout marker (network unreachable).
         // Without this, a total Supabase outage made Bo grind all 5 rounds ×
@@ -2385,11 +2523,17 @@ class ChatViewModel(
         // enters the list, so the tools array — and its cache breakpoint —
         // stays identical across rounds and the tool cache stays warm.
         fun toolsForRound(): JsonArray {
-            val dbCameUpEmpty = searchEventsRan && !turnHadAnyEvents
+            // Unlock web_search once ANY DB discovery search (events OR venues)
+            // has run this turn and come back empty. Broadened from events-only
+            // so restaurant/venue queries ("hottest restaurants in Watertown")
+            // can reach the empty-DB web fallback instead of dead-ending on chips.
+            val dbCameUpEmpty =
+                (searchEventsRan || searchVenuesRan) && !turnHadAnyEvents && !turnHadAnyVenues
             return toolsWithWeb(
                 base = claudeTools,
                 allowWebSearch = budget?.allowWebSearch == true && dbCameUpEmpty,
                 allowWebFetch = budget?.allowWebFetch == true,
+                includeWebFinding = buildFromWeb,
             )
         }
         val augmentedSystemPrompt = augmentSystemPromptWithBudget(systemPrompt, budget)
@@ -2601,6 +2745,10 @@ class ChatViewModel(
                         searchEventsRan = true
                         if (r.contains("\"events\":[{")) turnHadAnyEvents = true
                     }
+                    if (toolCalls[i].name == "search_venues") {
+                        searchVenuesRan = true
+                        if (r.trimStart().startsWith("[")) turnHadAnyVenues = true
+                    }
                 }
                 val toolResultBlocks = kotlinx.serialization.json.buildJsonArray {
                     toolCalls.forEachIndexed { i, call ->
@@ -2619,15 +2767,30 @@ class ChatViewModel(
                 // calendar), the prior wording let Bo hallucinate references
                 // to earlier turns' trays. Push it into the EMPTY DB
                 // FALLBACK flow instead.
-                val forcingMessage = if (turnHadAnyEvents) {
+                val forcingMessage = if (buildFromWeb) {
+                    // Build-from-web never runs search_events, so turnHadAnyEvents
+                    // is false here — but the empty-DB fallback is wrong for this
+                    // path. Push Bo to stage any remaining findings and emit the
+                    // plan, not a groups=[] suggestion tray.
+                    "Build the plan now. For each web finding, call save_web_finding(kind='event') if you haven't already, then call present_plan with the returned bo_web_events ids as the slot event_ids and is_bo_web: true. Do NOT call present_suggestions — the user already asked you to build the plan."
+                } else if (turnHadAnyEvents) {
                     "You have enough information now. Please present a plan using the present_plan tool, or just respond naturally."
                 } else {
                     "Every search_events call this turn returned 0 events. Do NOT reference earlier turns' suggestion trays or plans — the user may have changed location, dates, or intent since. Follow the EMPTY DB FALLBACK flow from the system prompt: if web_search is AVAILABLE, run ONE web_search query for the user's location + date + intent, then call present_suggestions with groups=[], a one-line headline acknowledging the empty DB plus a recap of any web findings, and footer.actions = [\"build_from_web\", \"search_wider\", \"different_day\"] when web has usable findings, or [\"search_wider\", \"different_day\"] otherwise. Do NOT respond with plain CHAT prose like \"Want me to try a different date range?\" — chips are tappable, prose forces the user to type."
                 }
                 conversationHistory.add(ClaudeMessage.text("user", forcingMessage))
 
-                // Final response — stream with text visible
-                val finalResponse = sendStreaming(augmentedSystemPrompt, toolsForRound(), isToolRound = false, model = currentModel)
+                // Final response — stream with text visible. One-shot truncation
+                // retry: this branch runs once (we're past the round loop), so a
+                // dropped socket here would otherwise commit Bo's partial thought
+                // as the finished reply — the same "trailed off mid-sentence" bug
+                // the in-loop guard at the top of this function prevents. Re-send
+                // identically once; nothing was appended to history yet.
+                var finalResponse = sendStreaming(augmentedSystemPrompt, toolsForRound(), isToolRound = false, model = currentModel)
+                if (finalResponse.stopReason == live.localapp.local.data.remote.ClaudeApiService.STOP_REASON_INTERRUPTED) {
+                    println("ChatVM: final-response stream truncated — retrying once")
+                    finalResponse = sendStreaming(augmentedSystemPrompt, toolsForRound(), isToolRound = false, model = currentModel)
+                }
                 tallyWebCalls(finalResponse, webCallTally)
                 val finalText = claudeApi.extractText(finalResponse) ?: ""
                 val finalTerminal = claudeApi.extractToolCalls(finalResponse).firstOrNull { it.name in terminalTools }
@@ -2682,6 +2845,10 @@ class ChatViewModel(
                 if (toolCalls[i].name == "search_events") {
                     searchEventsRan = true
                     if (r.contains("\"events\":[{")) turnHadAnyEvents = true
+                }
+                if (toolCalls[i].name == "search_venues") {
+                    searchVenuesRan = true
+                    if (r.trimStart().startsWith("[")) turnHadAnyVenues = true
                 }
             }
 
@@ -3105,7 +3272,27 @@ class ChatViewModel(
         // load-more path, so nothing the user can reach is lost — Bo just stops
         // reading rows it was always going to discard.
         val totalFound = events.size
-        val displayEvents = events.take(80)
+        // Named-venue determinism: search_events is a 3-lane stratified pool
+        // (breadth + niche + keyword). When the user passes a keyword that
+        // names a specific venue (e.g. "New Art Center"), the breadth lane can
+        // flood the head of the pool with unrelated high-rank events (Red Sox
+        // @ Fenway, etc.), burying the named venue's few low-rank events past
+        // the 80-row display cap below — so Bo reads the cap, doesn't see them,
+        // and (non-deterministically) either gives up or has to self-correct
+        // with strict_location. Float keyword/venue-name matches to the front
+        // FIRST so the named venue's events always lead what Bo reads.
+        // sortedByDescending on a Boolean is stable: it only hoists matches to
+        // the head and preserves the RPC's relevance order within each group.
+        val keywordLower = effectiveKeyword?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+        val ordered = if (keywordLower == null) {
+            events
+        } else {
+            events.sortedByDescending { e ->
+                (e.venueName?.lowercase()?.contains(keywordLower) == true) ||
+                    e.title.lowercase().contains(keywordLower)
+            }
+        }
+        val displayEvents = ordered.take(80)
 
         // ── JSON tool result (Phase 1 refactor) ────────────────────────
         // Bo reads JSON natively — no parsing of "=== Saturday ===" headers
@@ -3293,11 +3480,12 @@ class ChatViewModel(
                     appendLine("  3. You've already run search_events or search_venues at least twice with")
                     appendLine("     broadened terms. web_search is the LAST resort, never the first response.")
                     appendLine("")
-                    appendLine("OR — EMPTY-DB EXCEPTION — rules 1-3 above DO NOT apply when search_events has")
-                    appendLine("returned 0 results across at least one broadening attempt AND the user is")
-                    appendLine("browsing for events (not asking a factual question). In that case web_search")
-                    appendLine("is REQUIRED (not last resort) — see the EMPTY DB FALLBACK section below for")
-                    appendLine("the exact flow.")
+                    appendLine("OR — EMPTY-DB EXCEPTION — rules 1-3 above DO NOT apply when search_events OR")
+                    appendLine("search_venues has returned 0 results across at least one broadening attempt")
+                    appendLine("AND the user is browsing for local things to do — events OR venues, e.g.")
+                    appendLine("'best restaurants in Watertown', 'cool bars nearby' (not asking a factual")
+                    appendLine("question). In that case web_search is REQUIRED (not last resort) — see the")
+                    appendLine("EMPTY DB FALLBACK section below for the exact flow.")
                     appendLine("")
                     appendLine("DO NOT use web_search for:")
                     appendLine("  • Explaining what something is (history, geography, biography, definitions).")
@@ -3324,13 +3512,13 @@ class ChatViewModel(
                     appendLine("    silently answer a different question than the one asked.")
                     appendLine("  • Never say 'I couldn't find anything' after one search.")
                     appendLine("")
-                    appendLine("EMPTY DB FALLBACK — the exact flow when search_events keeps returning 0:")
-                    appendLine("  1. After ONE broadening attempt, if search_events still returns 0 events,")
-                    appendLine("     STOP retrying. More retries waste tool rounds and produce 'no results'")
-                    appendLine("     prose the user has to type to escape from.")
-                    appendLine("  2. Run ONE web_search query summarizing location + date + activity intent")
-                    appendLine("     (e.g. 'things to do in Ipswich MA May 23-24 weekend'). This is the ONLY")
-                    appendLine("     exception to 'web_search is the last resort'.")
+                    appendLine("EMPTY DB FALLBACK — the exact flow when search_events OR search_venues keeps returning 0:")
+                    appendLine("  1. After ONE broadening attempt, if search_events / search_venues still")
+                    appendLine("     returns 0, STOP retrying. More retries waste tool rounds and produce 'no")
+                    appendLine("     results' prose the user has to type to escape from.")
+                    appendLine("  2. Run ONE web_search query summarizing location + date + activity/venue intent")
+                    appendLine("     (e.g. 'things to do in Ipswich MA May 23-24 weekend', or 'best restaurants")
+                    appendLine("     in Watertown MA'). This is the ONLY exception to 'web_search is the last resort'.")
                     appendLine("  3. Then call present_suggestions with:")
                     appendLine("       - headline: one line acknowledging the empty DB AND recapping what")
                     appendLine("         web_search surfaced. E.g. 'Quiet in our DB for Ipswich May 23-24, but")
@@ -3969,7 +4157,7 @@ class ChatViewModel(
             addAiMessage(wrapperProse)
         }
 
-        val structured = parseStructuredResponse(parsed.type, json) ?: run {
+        var structured = parseStructuredResponse(parsed.type, json) ?: run {
             // Malformed payload — at minimum we already showed wrapper prose
             // above (if acceptable). End the turn.
             finishTurn(emptyList())
@@ -3985,7 +4173,7 @@ class ChatViewModel(
         // a header ("Upcoming at Fenway Park") with NO event cards beneath it.
         // We only hit the DB for ids the cache is missing.
         val eventIds = collectEventIdsFor(structured)
-        val hydrated = if (eventIds.isNotEmpty()) {
+        var hydrated = if (eventIds.isNotEmpty()) {
             val fromCache = searchResultCache.filter { it.id in eventIds }.associateBy { it.id }
             val missing = eventIds.filter { it !in fromCache }
             val fromDb = if (missing.isNotEmpty()) {
@@ -3993,6 +4181,35 @@ class ChatViewModel(
             } else emptyMap()
             fromCache + fromDb
         } else emptyMap()
+
+        // Venue-brief salvage. Bo sometimes builds a present_venue_brief whose
+        // upcomingEventIds resolve to NOTHING — most often because it copied a
+        // venue UUID (from a same-turn search_venues call, where rows print as
+        // "[uuid] Name | City | type") into the event-id slot, or invented an
+        // id. The card then renders its header with zero event rows — the
+        // "Upcoming at New Art Center in Newton" ghost the user hit. If THIS
+        // turn's search actually surfaced events for that venue, rebuild the
+        // brief from searchResultCache by venue-name match so the card is never
+        // empty when we genuinely have the data to fill it.
+        val vb = structured as? live.localapp.local.domain.model.BoStructuredResponse.VenueBrief
+        if (vb != null && hydrated.isEmpty()) {
+            val target = vb.venueName.trim().lowercase()
+            if (target.isNotEmpty()) {
+                val matches = searchResultCache
+                    .filter { e ->
+                        val vn = e.venueName?.trim()?.lowercase() ?: return@filter false
+                        vn == target || vn.contains(target) || target.contains(vn)
+                    }
+                    .distinctBy { it.id }
+                    .sortedBy { it.startAt ?: "" }
+                    .take(8)
+                if (matches.isNotEmpty()) {
+                    structured = vb.copy(upcomingEventIds = matches.map { it.id })
+                    hydrated = matches.associateBy { it.id }
+                    println("ChatVM: VenueBrief salvage — rebuilt ${matches.size} events for '${vb.venueName}' from cache")
+                }
+            }
+        }
 
         addMessage(
             ChatMessage(
@@ -4158,15 +4375,18 @@ class ChatViewModel(
     fun buildFromDraftTray() {
         val tray = _uiState.value.draftTray
         if (tray.isEmpty()) return
-        val intent = "Build a plan from these specific event_ids: " +
-            tray.joinToString(", ") { it.eventId } +
-            ". Use exactly these events, derive each slot's date and time from the event row's start_at, and add transit + meal stops in any gaps over 2 hours."
+        val eventIds = tray.map { it.eventId }
         // Dismiss the tray immediately so the button doesn't linger while Bo
         // builds — users were tapping it twice thinking the first tap missed.
-        // The event_ids are already encoded in the message above; the UI's
-        // job is done.
         clearDraftTray()
-        sendMessage(intent)
+        // Route through the SAME client-side confirmation flow iOS uses
+        // (buildPlanFromSelections): a clean "Build me a plan with my N picks"
+        // bubble plus the "anything else? restaurants?" clarifying step.
+        // Previously this sent the raw "Build a plan from these specific
+        // event_ids: …" intent via sendMessage, which (a) leaked the internal
+        // prompt into the chat as a user bubble (#22) and (b) skipped the
+        // clarifying step, going straight to creation (#23).
+        buildPlanFromSelections(eventIds)
     }
 
     private fun finishTurn(chips: List<String>) {
@@ -5018,15 +5238,27 @@ $currentPlanContext
             }
             return
         }
+        // User-facing copy NEVER names internal infra (ANTHROPIC_API_KEY,
+        // Supabase, edge function, proxy). Those are developer concerns and
+        // leaking them is confusing + unprofessional + a minor stack-disclosure.
+        // The real cause is preserved in the println below for our logs/Sentry.
         val msg = when {
-            errorMsg.contains("ANTHROPIC_API_KEY not configured") ->
-                "The API key isn't set up in Supabase secrets yet. Add ANTHROPIC_API_KEY to your project secrets."
-            errorMsg.contains("401") || errorMsg.contains("403") || errorMsg.contains("authentication") ->
-                "I'm having trouble connecting — check that ANTHROPIC_API_KEY is set in Supabase secrets."
+            // Expired/invalid Supabase session — the proxy denies with a
+            // "user token" message (401). This is the USER's session, NOT an
+            // API-key issue, so it must be checked BEFORE the generic 401 arm
+            // (the RuntimeException text contains both "401" and the body).
+            errorMsg.contains("user token", true) ->
+                "Your session timed out. Tap Try again — if it keeps happening, restart the app."
+            // Genuine server-side misconfig (key not set) or upstream auth
+            // failure. Users can't fix this; keep it generic.
+            errorMsg.contains("ANTHROPIC_API_KEY not configured") ||
+                errorMsg.contains("401") || errorMsg.contains("403") ||
+                errorMsg.contains("authentication") ->
+                "Bo's temporarily unavailable — we're on it. Please try again soon."
             errorMsg.contains("429") || errorMsg.contains("rate") ->
-                "I'm getting rate-limited right now. Give it a few seconds and try again."
+                "Bo's a little busy right now. Give it a few seconds and try again."
             errorMsg.contains("502") || errorMsg.contains("Failed to proxy") ->
-                "Couldn't reach Claude through the proxy. Check your Supabase edge function."
+                "I'm having trouble reaching Bo right now. Give it a moment and try again."
             else ->
                 "Hmm, something went wrong. Let me try again in a moment."
         }

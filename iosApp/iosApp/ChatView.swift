@@ -2295,7 +2295,7 @@ private struct SearchScopeEditorSheet: View {
             }
             .padding(.top, 16)
 
-            Slider(value: $radiusMiles, in: 2...50, step: 1)
+            Slider(value: $radiusMiles, in: 1...50, step: 1)
                 .tint(C.coral)
                 .padding(.top, 6)
 

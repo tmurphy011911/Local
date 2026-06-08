@@ -3,6 +3,7 @@ package live.localapp.local.feature.onboarding
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationVector1D
 import androidx.compose.animation.core.CubicBezierEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
@@ -11,12 +12,14 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -44,14 +47,23 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import live.localapp.local.domain.service.SplashGreetingService
+import org.koin.mp.KoinPlatform
 import local.composeapp.generated.resources.Res
 import local.composeapp.generated.resources.bo_tiny
 import org.jetbrains.compose.resources.painterResource
@@ -59,9 +71,11 @@ import live.localapp.local.platform.isReducedMotionEnabled
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 
-/** Playback mode for the splash. Animated = full editorial timeline.
- *  Static = kill-switch fallback. See docs/splash-spec-v1.1.md §7. */
-enum class SplashVariant { Animated, Static }
+/** Playback mode for the splash. Animated = full editorial timeline (shown on
+ *  the first-ever launch). Returning = Bo fades in, blinks, shrinks, then
+ *  typewriters a personalized line to his right (every later fresh open). Static =
+ *  kill-switch fallback. See docs/splash-spec-v1.1.md §7. */
+enum class SplashVariant { Animated, Returning, Static }
 
 /**
  * Reel items: leading + trailing bookend "event" (Coral) with unique
@@ -168,6 +182,7 @@ fun SplashScreen(
     onComplete: () -> Unit,
     appReady: Boolean = true,
     variant: SplashVariant = SplashVariant.Animated,
+    specialLine: String? = null,
 ) {
     // Wrap the callback so a tap on a cached lambda resolves to the latest
     // state of onComplete — see feedback_compose_pointerinput_stale_capture.md.
@@ -200,6 +215,11 @@ fun SplashScreen(
             SplashVariant.Animated -> AnimatedSplash(
                 onComplete = { onCompleteLatest() },
                 appReadyProvider = { appReadyLatest },
+            )
+            SplashVariant.Returning -> ReturningSplash(
+                onComplete = { onCompleteLatest() },
+                appReadyProvider = { appReadyLatest },
+                specialLine = specialLine,
             )
             SplashVariant.Static -> StaticSplash(
                 onComplete = { onCompleteLatest() },
@@ -340,6 +360,289 @@ private fun StaticSplash(
         if (appReadyProvider()) {
             delay(180L)  // a hair so the cream + wordmark register, not a flash
             onComplete()
+        }
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────── */
+/*  Returning variant — Bo fades in, blinks twice, shrinks, then            */
+/*  typewriters a personalized line to his right. Shown on every fresh      */
+/*  open after the first-ever launch.                                       */
+/*                                                                          */
+/*  Routing safety: this NEVER gates onComplete on the greeting fetch. The  */
+/*  greeting is awaited only to pick what text to type; dismissal fires     */
+/*  after the line finishes AND appReady is true — identical gating to the  */
+/*  Static variant. A tap (outer Box) still dismisses once appReady.        */
+/* ─────────────────────────────────────────────────────────────────────── */
+
+private const val RET_BO_BIG_DP = 200
+// Bo's resting size — small. Bo enters big + dead-centered (a graphicsLayer
+// scale), blinks, then shrinks in place. When the greeting resolves, the
+// Bo+text pair is centered as a GROUP: Bo glides a short horizontal distance
+// left (to the group's left edge) while the line fades/types in to his right,
+// vertically centered on the text block. Centering the group — rather than
+// pinning Bo to screen center — gives the line the full content width, so it
+// fits on one row for typical greetings and only rarely wraps.
+private const val RET_BO_REST_DP = 26
+private const val RET_BO_GAP_DP = 12
+private const val RET_APPEAR_MS = 320
+private const val RET_SHRINK_MS = 520
+// Horizontal screen padding for the whole splash content.
+private const val RET_H_PAD_DP = 18
+// The horizontal "settle" — the Bo+text pair drifting left together from a
+// Bo-centered start to the group-centered rest, in lockstep with the
+// typewriter so it reads as a gentle drift, not a dart.
+private const val RET_SETTLE_MS = 620
+// The greeting ALWAYS renders on a single line (it just looks better). We start
+// at the base size and auto-shrink toward the min until the whole line fits the
+// width beside Bo — short lines stay big, long ones scale down. With the 64-char
+// sanitize cap, the longest line lands well above the floor, so it never wraps.
+private const val RET_FONT_BASE_SP = 15
+// Floor for the auto-fit shrink. The greeting is hard-capped at ~42 chars
+// upstream (SplashGreetingService.MAX_CHARS) so it fits at base font in almost
+// every case; this floor only nudges down the rare wide-glyph line and never
+// lets it become unreadable.
+private const val RET_FONT_MIN_SP = 13
+private const val RET_LINE_HEIGHT_FACTOR = 1.3f
+// Budget for context-gathering + the Claude call. Sized to overlap the appear +
+// blink + shrink (~1.6s) so the line is usually ready when the typewriter
+// starts. On timeout the service returns a generic fallback. Bumped 2200→3200
+// (2026-06-08) to cut the fallback rate — at 2200 over half of location turns
+// timed out to static copy, so the personalized/nearby-town lines rarely showed.
+// Worst case this adds ~1.6s of waiting at the shrunk state before typing; the
+// common (fast-Claude) case is unchanged. Does NOT affect dismissal, which
+// stays gated on appReady — routing safety holds.
+private const val RET_GREETING_TIMEOUT_MS = 3200L
+private const val RET_CHAR_DELAY_MS = 38L
+// Cursor blink half-period (on for this long, then off for this long). The
+// cursor blinks continuously the whole time the line is on screen.
+private const val RET_CURSOR_BLINK_MS = 450L
+// Once the line has finished AND the route has resolved, let the cursor blink
+// this many full times before dismissing.
+private const val RET_BLINKS_BEFORE_DISMISS = 3
+
+private val RET_SHRINK_EASING = CubicBezierEasing(0.2f, 0.85f, 0.3f, 1.05f)
+
+@Composable
+private fun ReturningSplash(
+    onComplete: () -> Unit,
+    appReadyProvider: () -> Boolean,
+    specialLine: String? = null,
+) {
+    val haptic = LocalHapticFeedback.current
+    val reduceMotion = remember { isReducedMotionEnabled() }
+    val greetingService = remember { KoinPlatform.getKoin().get<SplashGreetingService>() }
+
+    // Bo enters big + dead-centered (graphicsLayer scale), then shrinks in place.
+    // boSettle drives the short horizontal glide from screen center (0f) to the
+    // group's left edge (1f) once the greeting resolves and the text appears.
+    val boScale = remember {
+        Animatable(if (reduceMotion) 1f else RET_BO_BIG_DP.toFloat() / RET_BO_REST_DP.toFloat())
+    }
+    val boAlpha = remember { Animatable(0f) }
+    val eyeOpen = remember { Animatable(1f) }
+    val textAlpha = remember { Animatable(if (reduceMotion) 1f else 0f) }
+    val boSettle = remember { Animatable(if (reduceMotion) 1f else 0f) }
+
+    var line by remember { mutableStateOf("") }
+    var revealedChars by remember { mutableStateOf(0) }
+    var textComplete by remember { mutableStateOf(false) }
+
+    // Cursor blinks continuously for the whole life of the splash — never a
+    // static block. cursorOn toggles on a fixed half-period.
+    var cursorOn by remember { mutableStateOf(true) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            cursorOn = true
+            delay(RET_CURSOR_BLINK_MS)
+            cursorOn = false
+            delay(RET_CURSOR_BLINK_MS)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        // Kick off the greeting immediately so it resolves during the entrance.
+        // Bounded internally by RET_GREETING_TIMEOUT_MS — await never hangs. A
+        // recency/streak special line (welcome-back, milestone) overrides it.
+        val greetingDeferred = async {
+            specialLine ?: greetingService.greeting(RET_GREETING_TIMEOUT_MS)
+        }
+
+        // Appear: a quick fade-in (no flip), then blink twice.
+        boAlpha.animateTo(1f, tween(if (reduceMotion) 240 else RET_APPEAR_MS, easing = LinearEasing))
+        if (!reduceMotion) {
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            delay(160)
+            repeat(2) {
+                // A tiny tick synced to each blink's eye-close.
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                eyeOpen.animateTo(0.05f, tween(90, easing = LinearEasing))
+                eyeOpen.animateTo(1f, tween(120, easing = LinearEasing))
+                delay(130)
+            }
+        } else {
+            delay(160)
+        }
+
+        // Shrink — Bo scales back to 1 in place at screen center.
+        boScale.animateTo(1f, tween(if (reduceMotion) 200 else RET_SHRINK_MS, easing = RET_SHRINK_EASING))
+
+        // Resolve the line (already bounded) BEFORE the settle so its measured
+        // width is known — that width fixes the group geometry, so the glide
+        // lands exactly and typing never reflows anything.
+        line = greetingDeferred.await()
+
+        // Drift the whole Bo+text group left (boSettle) and fade the text in,
+        // both running CONCURRENTLY with the typewriter below — so Bo visibly
+        // glides left in lockstep with the line appearing, never a dart.
+        if (reduceMotion) {
+            boSettle.snapTo(1f)
+            textAlpha.snapTo(1f)
+        } else {
+            launch { boSettle.animateTo(1f, tween(RET_SETTLE_MS, easing = FastOutSlowInEasing)) }
+            launch { textAlpha.animateTo(1f, tween(280, easing = LinearEasing)) }
+        }
+
+        // Typewriter the line out (concurrent with the drift above).
+        val charDelay = if (reduceMotion) RET_CHAR_DELAY_MS / 2 else RET_CHAR_DELAY_MS
+        while (revealedChars < line.length) {
+            delay(charDelay)
+            revealedChars++
+            if (!reduceMotion && !line[revealedChars - 1].isWhitespace()) {
+                haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            }
+        }
+        textComplete = true
+    }
+
+    // Dismiss only once the line has finished AND the cold-start route has
+    // resolved — same appReady gate the Static variant uses, so logged-in /
+    // logged-out next-page logic is never raced.
+    val ready = appReadyProvider()
+    LaunchedEffect(textComplete, ready) {
+        if (textComplete && ready) {
+            // Let the cursor blink a few full times before leaving.
+            delay(RET_CURSOR_BLINK_MS * 2 * RET_BLINKS_BEFORE_DISMISS)
+            onComplete()
+        }
+    }
+
+    val density = LocalDensity.current
+    val textMeasurer = rememberTextMeasurer()
+    val baseGreetingStyle = TextStyle(
+        fontFamily = AppFonts.Body,
+        fontWeight = FontWeight.SemiBold,
+        fontSize = RET_FONT_BASE_SP.sp,
+        lineHeight = (RET_FONT_BASE_SP * RET_LINE_HEIGHT_FACTOR).sp,
+        letterSpacing = 0.1.sp,
+        color = AppColors.Ink3,
+    )
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(horizontal = RET_H_PAD_DP.dp),
+    ) {
+        // Bo + the greeting are centered on screen as a single GROUP. We measure
+        // the resolved line to know the group's exact size up front; the group's
+        // left edge then anchors Bo, and Bo glides there from screen center via
+        // boSettle. Because the geometry is fixed by the FULL line, the per-glyph
+        // typewriter never reflows anything.
+        val boRestPx = with(density) { RET_BO_REST_DP.dp.toPx() }
+        val gapPx = with(density) { RET_BO_GAP_DP.dp.toPx() }
+        val containerPx = with(density) { maxWidth.toPx() }
+        val maxTextWidthPx = (containerPx - boRestPx - gapPx).coerceAtLeast(0f)
+
+        // Auto-fit to ONE line: measure the line's natural single-line width at
+        // the base font, then scale the font down (to the floor) just enough to
+        // fit beside Bo. Short lines stay at base size; long lines shrink.
+        val measured = if (line.isNotEmpty()) {
+            val natural = textMeasurer.measure(
+                text = AnnotatedString("$line▏"),
+                style = baseGreetingStyle,
+                softWrap = false,
+                maxLines = 1,
+            )
+            natural.size.width.toFloat()
+        } else {
+            null
+        }
+        val naturalWidthPx = measured ?: 0f
+        val minScale = RET_FONT_MIN_SP.toFloat() / RET_FONT_BASE_SP.toFloat()
+        val fontScale = if (naturalWidthPx > 0f) {
+            (maxTextWidthPx / naturalWidthPx).coerceIn(minScale, 1f)
+        } else {
+            1f
+        }
+        val fittedFontSp = RET_FONT_BASE_SP * fontScale
+        val greetingStyle = baseGreetingStyle.copy(
+            fontSize = fittedFontSp.sp,
+            lineHeight = (fittedFontSp * RET_LINE_HEIGHT_FACTOR).sp,
+        )
+        // The fitted line's width never exceeds the available space → one line.
+        val textWidthPx = (naturalWidthPx * fontScale).coerceAtMost(maxTextWidthPx)
+        val groupWidthPx = boRestPx + gapPx + textWidthPx
+        val groupLeftPx = ((containerPx - groupWidthPx) / 2f).coerceAtLeast(0f)
+
+        // Bo's grouped center vs. screen center → the glide distance (negative).
+        val boShiftPx = (groupLeftPx + boRestPx / 2f) - containerPx / 2f
+        val textLeftDp = with(density) { (groupLeftPx + boRestPx + gapPx).toDp() }
+        val textWidthDp = with(density) { textWidthPx.toDp() }
+
+        val typed = line.take(revealedChars)
+        if (measured != null) {
+            Text(
+                modifier = Modifier
+                    .align(Alignment.CenterStart)
+                    .offset(x = textLeftDp)
+                    .width(textWidthDp)
+                    // Base offset is the grouped (settle=1) position; while
+                    // settling, ride the SAME leftward shift as Bo so the pair
+                    // moves as one unit (at settle=0 the text sits just right of
+                    // a screen-centered Bo). No reflow — pure layer translation.
+                    .graphicsLayer { translationX = boShiftPx * (boSettle.value - 1f) },
+                text = buildAnnotatedString {
+                    withStyle(SpanStyle(color = AppColors.Ink3.copy(alpha = textAlpha.value))) {
+                        append(typed)
+                    }
+                    // Cursor is always in the string (width never jitters) but
+                    // only painted coral on the "on" half of the blink.
+                    withStyle(
+                        SpanStyle(
+                            color = if (cursorOn) {
+                                AppColors.Coral.copy(alpha = textAlpha.value)
+                            } else {
+                                Color.Transparent
+                            },
+                        ),
+                    ) { append("▏") }
+                },
+                textAlign = TextAlign.Start,
+                style = greetingStyle,
+                maxLines = 1,
+                softWrap = false,
+            )
+        }
+
+        // Bo: enters big + screen-centered (scale + fade), then glides left by
+        // boShiftPx * boSettle to land at the group's left edge.
+        Box(
+            modifier = Modifier
+                .align(Alignment.Center)
+                .size(RET_BO_REST_DP.dp)
+                .graphicsLayer {
+                    scaleX = boScale.value
+                    scaleY = boScale.value
+                    alpha = boAlpha.value
+                    translationX = boShiftPx * boSettle.value
+                },
+        ) {
+            BoCharacter(
+                modifier = Modifier.fillMaxSize(),
+                expression = BoExpression.Default,
+                eyeOpen = eyeOpen.value,
+                showShadow = false,
+            )
         }
     }
 }

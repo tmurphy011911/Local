@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		5E0B24E02FD3409300162445 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 5E0B24DF2FD3409300162445 /* Sentry */; };
 		5E1C2C142F88028A0057E9F9 /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = 5E1C2C132F88028A0057E9F9 /* RevenueCat */; };
 		5E1C2C182F9187330057E9F9 /* Products.storekit in Resources */ = {isa = PBXBuildFile; fileRef = 5E1C2C172F9187330057E9F9 /* Products.storekit */; };
 		5E84B18C2FBEAA0F00B1A75B /* PostHog in Frameworks */ = {isa = PBXBuildFile; productRef = 5E84B18B2FBEAA0F00B1A75B /* PostHog */; };
@@ -50,6 +51,7 @@
 			files = (
 				5E1C2C142F88028A0057E9F9 /* RevenueCat in Frameworks */,
 				5E84B18C2FBEAA0F00B1A75B /* PostHog in Frameworks */,
+				5E0B24E02FD3409300162445 /* Sentry in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -93,6 +95,7 @@
 				7D3FF592DA2C819D05DA3F84 /* Sources */,
 				3C8F932DC1825CA67088987A /* Frameworks */,
 				1A8F5D3E0FB5DC1CF0B76B49 /* Resources */,
+				D5111A0E5C7F4B2A9E3D6F01 /* Upload dSYMs to Sentry */,
 			);
 			buildRules = (
 			);
@@ -105,6 +108,7 @@
 			packageProductDependencies = (
 				5E1C2C132F88028A0057E9F9 /* RevenueCat */,
 				5E84B18B2FBEAA0F00B1A75B /* PostHog */,
+				5E0B24DF2FD3409300162445 /* Sentry */,
 			);
 			productName = iosApp;
 			productReference = EEB79C38E91BB2244F08BFBD /* Local.app */;
@@ -180,6 +184,25 @@
 			shellPath = /bin/sh;
 			shellScript = "if [ \"YES\" = \"$OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED\" ]; then\n  echo \"Skipping Gradle build task invocation due to OVERRIDE_KOTLIN_BUILD_IDE_SUPPORTED environment variable set to \\\"YES\\\"\"\n  exit 0\nfi\ncd \"$SRCROOT/..\"\n./gradlew :composeApp:embedAndSignAppleFrameworkForXcode\n";
 		};
+		D5111A0E5C7F4B2A9E3D6F01 /* Upload dSYMs to Sentry */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Upload dSYMs to Sentry";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Optional local secrets (gitignored); CI provides these via env.\nif [ -f \"$SRCROOT/scripts/sentry.env\" ]; then\n  . \"$SRCROOT/scripts/sentry.env\"\nfi\n\"$SRCROOT/scripts/upload_dsyms.sh\"\n";
+		};
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
@@ -229,7 +252,7 @@
 				CLANG_WARN_UNREACHABLE_CODE = YES;
 				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
 				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				ENABLE_STRICT_OBJC_MSGSEND = YES;
 				ENABLE_TESTABILITY = YES;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
@@ -427,6 +450,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		5E0B24DF2FD3409300162445 /* Sentry */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5E84B1892FBEA9F200B1A75B /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
+			productName = Sentry;
+		};
 		5E1C2C132F88028A0057E9F9 /* RevenueCat */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 5E1C2C112F87F5A20057E9F9 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */;

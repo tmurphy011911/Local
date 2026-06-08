@@ -13,7 +13,9 @@ import kotlinx.datetime.LocalDate
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
+import live.localapp.local.domain.model.BadgeAction
 import live.localapp.local.domain.model.Event
+import live.localapp.local.domain.service.BadgeService
 import live.localapp.local.domain.repository.CommunityInterestRepository
 import live.localapp.local.domain.repository.EventPage
 import live.localapp.local.domain.repository.EventRepository
@@ -120,7 +122,12 @@ class PlacesViewModel(
     private val communityInterestRepository: CommunityInterestRepository,
     private val exploreRepository: ExploreRepository,
     private val eventRepository: EventRepository,
+    private val badgeService: BadgeService,
 ) : ViewModel() {
+
+    /** Set by the host (AppNavigation) to route a logged-out save to the
+     *  sign-in flow. Invoked instead of persisting when there's no user id. */
+    var onAuthRequired: ((itemId: String, type: InteractionType, category: String?) -> Unit)? = null
 
     private val _uiState = MutableStateFlow(PlacesUiState())
     val uiState: StateFlow<PlacesUiState> = _uiState.asStateFlow()
@@ -606,6 +613,10 @@ class PlacesViewModel(
     // ══════ Favorites ══════
 
     fun toggleVenueFavorite(venueId: String, category: String? = null) {
+        if (userPreferencesRepository.getLocalUserId() == null) {
+            onAuthRequired?.invoke(venueId, InteractionType.PLACE, category)
+            return
+        }
         val current = _uiState.value.favoriteVenueIds
         if (venueId in current) {
             communityInterestRepository.removeFavorite(venueId, InteractionType.PLACE)
@@ -633,10 +644,33 @@ class PlacesViewModel(
                     },
                 )
             }
+            // Badge: track place saved (mirrors EVENT_SAVED in HomeViewModel)
+            badgeService.recordAction(BadgeAction.PLACE_SAVED, deriveUserState())
         }
     }
 
+    private fun deriveUserState(): String {
+        val city = _uiState.value.userPreferences?.city ?: "boston"
+        return cityToState(city)
+    }
+
+    private fun cityToState(city: String): String = when (city.lowercase().trim()) {
+        "boston", "cambridge", "somerville", "newton", "waltham",
+        "brookline", "worcester", "springfield", "lowell" -> "MA"
+        "portland", "south portland", "scarborough" -> "ME"
+        "new york", "brooklyn", "manhattan", "queens" -> "NY"
+        "providence", "warwick", "cranston" -> "RI"
+        "burlington", "montpelier" -> "VT"
+        "portsmouth", "concord", "nashua", "manchester" -> "NH"
+        "hartford", "new haven", "stamford" -> "CT"
+        else -> "MA"
+    }
+
     fun toggleEventFavorite(eventId: String, category: String? = null, source: String = "places_card") {
+        if (userPreferencesRepository.getLocalUserId() == null) {
+            onAuthRequired?.invoke(eventId, InteractionType.EVENT, category)
+            return
+        }
         val current = _uiState.value.favoriteEventIds
         if (eventId in current) {
             communityInterestRepository.removeFavorite(eventId, InteractionType.EVENT)

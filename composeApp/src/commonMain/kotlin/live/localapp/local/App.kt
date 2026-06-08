@@ -81,11 +81,26 @@ fun App() {
         // that lands on the *next* launch. When the flag is false, the splash
         // collapses to a static wordmark frame.
         val splashConfig = remember { SplashConfigService(supabaseClient) }
+        // Record this open once, up front: returns whether it's the first-ever
+        // launch (drives the variant) and an optional recency/streak line that
+        // overrides the Claude greeting (welcome-back or milestone). recordOpen
+        // flips the first-launch flag as a side effect, so it must run here in
+        // remember — before the variant is read — so the first launch still
+        // sees isFirstEver == true.
+        val openState = remember { splashConfig.recordOpen(userPrefsRepo.getLocalFirstName()) }
+        // Variant split: kill-switch off → Static for everyone. Otherwise the
+        // first-ever cold start plays the full editorial intro; every later
+        // fresh open plays the returning-user Bo splash.
         val splashVariant = remember {
-            if (splashConfig.isAnimationEnabled()) SplashVariant.Animated
-            else SplashVariant.Static
+            when {
+                !splashConfig.isAnimationEnabled() -> SplashVariant.Static
+                openState.isFirstEver -> SplashVariant.Animated
+                else -> SplashVariant.Returning
+            }
         }
-        LaunchedEffect(Unit) { splashConfig.refreshFromRemoteAsync() }
+        LaunchedEffect(Unit) {
+            splashConfig.refreshFromRemoteAsync()
+        }
 
         // Resolve the PlanSyncer once at startup so its drain loop is alive
         // for the full session and any persisted ops from a prior run drain
@@ -124,6 +139,7 @@ fun App() {
         var authFirstName by remember { mutableStateOf("") }
         var authLastName by remember { mutableStateOf("") }
         var authPhone by remember { mutableStateOf("") }
+        var authEmail by remember { mutableStateOf("") }
         var authUserId by remember { mutableStateOf("") }
 
         // If a deep link resolves while the user is logged out (on splash or the
@@ -156,6 +172,7 @@ fun App() {
                     },
                     appReady = postSplashRoute != null,
                     variant = splashVariant,
+                    specialLine = openState.specialLine,
                 )
 
                 // While splash plays, resolve the auth-based destination. Deep
@@ -356,12 +373,13 @@ fun App() {
                 }
                 PhoneAuthScreen(
                     viewModel = viewModel,
-                    onAuthComplete = { isNewUser, firstName, lastName, phone, userId ->
+                    onAuthComplete = { isNewUser, firstName, lastName, phone, email, userId ->
                         authUserId = userId
                         if (isNewUser) {
                             authFirstName = firstName
                             authLastName = lastName
                             authPhone = phone
+                            authEmail = email
                             appState = AppState.ONBOARDING
                         } else {
                             appState = AppState.HOME
@@ -371,7 +389,7 @@ fun App() {
                     // let an unauthenticated user reach HOME with authUserId=""
                     // and silently RLS-fail every query. We only expose it under
                     // the test-bypass flag so the bypass is impossible in prod.
-                    onSkip = if (live.localapp.local.Config.TEST_AUTH_BYPASS) {
+                    onSkip = if (live.localapp.local.Config.testAuthBypassActive) {
                         { appState = AppState.HOME }
                     } else null,
                 )
@@ -383,6 +401,7 @@ fun App() {
                         if (authFirstName.isNotEmpty()) vm.updateFirstName(authFirstName)
                         if (authLastName.isNotEmpty()) vm.updateLastName(authLastName)
                         if (authPhone.isNotEmpty()) vm.updatePhoneNumber(authPhone)
+                        if (authEmail.isNotEmpty()) vm.updateEmail(authEmail)
                         if (authUserId.isNotEmpty()) vm.setAuthUserId(authUserId)
                     }
                 }
@@ -429,6 +448,9 @@ fun App() {
                             userPrefsRepo.clearLocal()
                             // Clear premium gate so new user starts fresh
                             try { live.localapp.local.ui.chat.PremiumGate().clear() } catch (_: Exception) {}
+                            // Reset RevenueCat to an anonymous id so the next
+                            // user doesn't inherit this account's entitlement.
+                            try { live.localapp.local.platform.logOutRevenueCatUser() } catch (_: Exception) {}
                             // Clear all in-memory caches so next user starts fresh
                             try { KoinPlatform.getKoin().get<live.localapp.local.domain.repository.CommunityInterestRepository>().clearCaches() } catch (_: Exception) {}
                             appState = AppState.AUTH

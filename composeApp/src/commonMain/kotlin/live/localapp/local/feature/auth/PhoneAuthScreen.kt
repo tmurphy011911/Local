@@ -112,7 +112,7 @@ private fun formatPhoneDisplay(raw: String): String = "+1 ${formatPhone(raw)}"
 @Composable
 fun PhoneAuthScreen(
     viewModel: PhoneAuthViewModel,
-    onAuthComplete: (isNewUser: Boolean, firstName: String, lastName: String, phone: String, authUserId: String) -> Unit,
+    onAuthComplete: (isNewUser: Boolean, firstName: String, lastName: String, phone: String, email: String, authUserId: String) -> Unit,
     onSkip: (() -> Unit)? = null,
 ) {
     val state by viewModel.state.collectAsState()
@@ -127,9 +127,9 @@ fun PhoneAuthScreen(
     if (state.authComplete) {
         val userId = state.authUserId ?: ""
         if (state.isExistingUser) {
-            onAuthComplete(false, "", "", state.phone, userId)
+            onAuthComplete(false, "", "", state.phone, "", userId)
         } else {
-            onAuthComplete(true, state.firstName, state.lastName, state.phone, userId)
+            onAuthComplete(true, state.firstName, state.lastName, state.phone, state.email, userId)
         }
         return
     }
@@ -153,9 +153,11 @@ fun PhoneAuthScreen(
             when (step) {
                 AuthStep.PHONE -> PhoneInputContent(
                     phone = state.phone,
+                    email = state.email,
                     isLoading = state.isLoading,
                     error = state.error,
                     onPhoneChange = viewModel::updatePhone,
+                    onEmailChange = viewModel::updateEmail,
                     onContinue = viewModel::sendOtp,
                     onSkip = onSkip,
                 )
@@ -185,9 +187,11 @@ fun PhoneAuthScreen(
 @Composable
 private fun PhoneInputContent(
     phone: String,
+    email: String,
     isLoading: Boolean,
     error: String?,
     onPhoneChange: (String) -> Unit,
+    onEmailChange: (String) -> Unit,
     onContinue: () -> Unit,
     onSkip: (() -> Unit)? = null,
 ) {
@@ -240,7 +244,7 @@ private fun PhoneInputContent(
             Spacer(Modifier.height(10.dp))
 
             Text(
-                "Enter your phone number to get started.",
+                "Enter your email and phone number to get started.",
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.SemiBold,
@@ -251,6 +255,53 @@ private fun PhoneInputContent(
             )
 
             Spacer(Modifier.height(28.dp))
+
+            // Email input
+            BasicTextField(
+                value = email,
+                onValueChange = onEmailChange,
+                textStyle = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 16.sp,
+                    color = AppColors.Ink,
+                ),
+                cursorBrush = SolidColor(AppColors.Coral),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Email,
+                    capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None,
+                    autoCorrect = false,
+                ),
+                singleLine = true,
+                enabled = !isLoading,
+                decorationBox = { innerTextField ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(56.dp)
+                            .background(AppColors.White, RoundedCornerShape(16.dp))
+                            .border(2.5.dp, if (error != null) AppColors.Coral else AppColors.Pebble, RoundedCornerShape(16.dp))
+                            .padding(horizontal = 14.dp),
+                        contentAlignment = Alignment.CenterStart,
+                    ) {
+                        if (email.isEmpty()) {
+                            Text(
+                                "you@email.com",
+                                style = TextStyle(
+                                    fontFamily = AppFonts.Body,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 16.sp,
+                                    color = AppColors.Pebble,
+                                ),
+                            )
+                        }
+                        innerTextField()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth(),
+            )
+
+            Spacer(Modifier.height(12.dp))
 
             // Phone input
             Row(
@@ -356,7 +407,7 @@ private fun PhoneInputContent(
                 )
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    "We\u2019ll send a verification code. No password needed. We\u2019ll never share your number.",
+                    "We\u2019ll send a verification code. No password needed. We\u2019ll never share your number or email.",
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.Bold,
@@ -375,7 +426,7 @@ private fun PhoneInputContent(
         ) {
             AuthButton(
                 text = if (isLoading) "Sending..." else "Continue \u2192",
-                enabled = phone.length == 10 && !isLoading,
+                enabled = phone.length == 10 && isValidEmail(email) && !isLoading,
                 isLoading = isLoading,
                 onClick = onContinue,
             )

@@ -54,6 +54,7 @@ import androidx.compose.material.icons.rounded.CalendarMonth
 import androidx.compose.material.icons.rounded.Celebration
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Groups
+import androidx.compose.material.icons.rounded.Place
 import androidx.compose.material.icons.rounded.Send
 import androidx.compose.material.icons.rounded.Share
 import androidx.compose.material.icons.rounded.Star
@@ -91,6 +92,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import live.localapp.local.domain.model.ActionProgress
 import live.localapp.local.domain.model.BadgeAction
+import live.localapp.local.platform.hapticSelection
 import live.localapp.local.domain.model.StateProgress
 import live.localapp.local.domain.model.StatusTier
 import live.localapp.local.domain.model.nextStatusTier
@@ -105,6 +107,7 @@ fun ProgressScreen(
     viewModel: ProgressViewModel,
     onLogout: () -> Unit = {},
     onTasteProfile: () -> Unit = {},
+    onNotifications: () -> Unit = {},
     onSignIn: () -> Unit = {},
     onNameChanged: (String) -> Unit = {},
     onLocationClick: () -> Unit = {},
@@ -123,7 +126,7 @@ fun ProgressScreen(
     if (showNameDialog) {
         androidx.compose.material3.AlertDialog(
             onDismissRequest = { showNameDialog = false; nameError = null },
-            title = { Text("What's your name?", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp)) },
+            title = { Text("Choose a username", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp)) },
             text = {
                 Column {
                     androidx.compose.foundation.text.BasicTextField(
@@ -137,7 +140,7 @@ fun ProgressScreen(
                                     .background(AppColors.Mist, RoundedCornerShape(10.dp))
                                     .padding(horizontal = 14.dp, vertical = 12.dp),
                             ) {
-                                if (nameInput.isEmpty()) Text("First name", style = TextStyle(fontFamily = AppFonts.Body, fontSize = 16.sp, color = AppColors.Ink3))
+                                if (nameInput.isEmpty()) Text("Username", style = TextStyle(fontFamily = AppFonts.Body, fontSize = 16.sp, color = AppColors.Ink3))
                                 inner()
                             }
                         },
@@ -154,14 +157,21 @@ fun ProgressScreen(
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = {
                     val trimmed = nameInput.trim()
+                    // Same client-side gate used for names today (length + profanity).
+                    // DB uniqueness is checked on save and surfaces via onError.
                     val error = ProfanityFilter.validate(trimmed)
                     if (error != null) {
                         nameError = error
                     } else {
-                        viewModel.saveUserName(trimmed)
-                        onNameChanged(trimmed)
                         nameError = null
-                        showNameDialog = false
+                        viewModel.saveUsername(
+                            trimmed,
+                            onSuccess = {
+                                onNameChanged(trimmed)
+                                showNameDialog = false
+                            },
+                            onError = { nameError = it },
+                        )
                     }
                 }) { Text("Save", color = AppColors.Coral, fontWeight = FontWeight.Bold) }
             },
@@ -293,30 +303,33 @@ fun ProgressScreen(
 
                 Spacer(Modifier.height(16.dp))
 
-                // ── Stats Card ──
-                StatsCard(state)
+                // Paid users keep the subscription card in its original (lower)
+                // spot; trial/free users get it promoted above the stats so the
+                // upgrade CTA is the first thing they see.
+                val isPaidPro = remember { live.localapp.local.ui.chat.PremiumGate().isPremium }
 
-                Spacer(Modifier.height(20.dp))
+                // ── Subscription Status (promoted for non-paid users) ──
+                if (!isPaidPro) {
+                    SubscriptionSection(trialEndsAt = state.trialEndsAt, onUpgrade = onUpgrade)
+                    Spacer(Modifier.height(20.dp))
+                }
 
                 // ── Segment Control: Progress | Tracking ──
                 ProgressTrackingCard(state, viewModel)
 
                 Spacer(Modifier.height(24.dp))
 
-                Spacer(Modifier.height(20.dp))
-
-                // ── Subscription Status ──
-                SubscriptionSection(onUpgrade = onUpgrade)
-
-                Spacer(Modifier.height(16.dp))
-
-                // ── Notification Preferences ──
-                NotificationPreferencesSection()
-
-                Spacer(Modifier.height(16.dp))
+                // ── Subscription Status (original placement for paid users) ──
+                if (isPaidPro) {
+                    SubscriptionSection(trialEndsAt = state.trialEndsAt, onUpgrade = onUpgrade)
+                    Spacer(Modifier.height(16.dp))
+                }
 
                 // ── Support & Info ──
-                SupportSection(onRateApp = { live.localapp.local.platform.requestAppReview() })
+                SupportSection(
+                    onRateApp = { live.localapp.local.platform.requestAppReview() },
+                    onNotifications = onNotifications,
+                )
 
                 Spacer(Modifier.height(16.dp))
 
@@ -468,7 +481,7 @@ private fun HeroCard(
                             Spacer(Modifier.width(6.dp))
                             Icon(
                                 Icons.Outlined.Edit,
-                                contentDescription = "Edit name",
+                                contentDescription = "Edit username",
                                 modifier = Modifier.size(14.dp),
                                 tint = AppColors.White.copy(alpha = 0.5f),
                             )
@@ -479,7 +492,7 @@ private fun HeroCard(
                             modifier = Modifier.clickable { onEditName() },
                         ) {
                             Text(
-                                "Enter Name",
+                                "Set username",
                                 style = TextStyle(
                                     fontFamily = AppFonts.Heading,
                                     fontWeight = FontWeight.Bold,
@@ -491,7 +504,7 @@ private fun HeroCard(
                             Spacer(Modifier.width(6.dp))
                             Icon(
                                 Icons.Outlined.Edit,
-                                contentDescription = "Edit name",
+                                contentDescription = "Edit username",
                                 modifier = Modifier.size(16.dp),
                                 tint = AppColors.White.copy(alpha = 0.7f),
                             )
@@ -545,39 +558,44 @@ private fun HeroCard(
 
             // Progress section
             if (nextTier != null) {
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(18.dp))
 
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.Bottom,
-                ) {
+                val animatedPoints by animateIntAsState(
+                    targetValue = animateToPoints,
+                    animationSpec = tween(800, easing = FastOutSlowInEasing),
+                )
+
+                // Fire a light selection haptic on each tick while the count ratchets up.
+                LaunchedEffect(animatedPoints) {
+                    if (animatedPoints != animateToPoints) hapticSelection()
+                }
+
+                // Big, prominent current points count
+                Row(verticalAlignment = Alignment.Bottom) {
                     Text(
-                        "TO ${nextTier.label.uppercase()}",
+                        formatNumber(animatedPoints),
+                        style = TextStyle(
+                            fontFamily = AppFonts.Heading,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 42.sp,
+                            color = AppColors.White,
+                            letterSpacing = (-1.5).sp,
+                        ),
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Text(
+                        "/ ${formatNumber(nextTier.threshold)} FOMO",
+                        modifier = Modifier.padding(bottom = 8.dp),
                         style = TextStyle(
                             fontFamily = AppFonts.Body,
                             fontWeight = FontWeight.Bold,
-                            fontSize = 12.sp,
-                            color = AppColors.White.copy(alpha = 0.7f),
-                            letterSpacing = 0.5.sp,
-                        ),
-                    )
-                    val animatedPoints by animateIntAsState(
-                        targetValue = animateToPoints,
-                        animationSpec = tween(800, easing = FastOutSlowInEasing),
-                    )
-                    Text(
-                        "${formatNumber(animatedPoints)} / ${formatNumber(nextTier.threshold)} pts",
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.ExtraBold,
-                            fontSize = 13.sp,
-                            color = AppColors.White,
+                            fontSize = 14.sp,
+                            color = AppColors.White.copy(alpha = 0.75f),
                         ),
                     )
                 }
 
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(10.dp))
 
                 val animatedProgress by animateFloatAsState(
                     targetValue = animateToProgress,
@@ -586,94 +604,83 @@ private fun HeroCard(
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(10.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(AppColors.White.copy(alpha = 0.25f)),
+                        .height(18.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(AppColors.White.copy(alpha = 0.22f)),
                 ) {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth(animatedProgress.coerceAtLeast(0.02f))
-                            .height(10.dp)
-                            .clip(RoundedCornerShape(10.dp))
-                            .background(AppColors.White),
-                    )
+                            .fillMaxWidth(animatedProgress.coerceAtLeast(0.05f))
+                            .height(18.dp)
+                            .clip(RoundedCornerShape(18.dp))
+                            .background(
+                                Brush.horizontalGradient(
+                                    listOf(
+                                        AppColors.White.copy(alpha = 0.8f),
+                                        AppColors.White,
+                                    )
+                                )
+                            ),
+                        contentAlignment = Alignment.CenterEnd,
+                    ) {
+                        // Glossy knob riding the leading edge for a playful feel
+                        Box(
+                            modifier = Modifier
+                                .padding(end = 4.dp)
+                                .size(10.dp)
+                                .clip(CircleShape)
+                                .background(AppColors.White)
+                                .border(2.dp, AppColors.Coral.copy(alpha = 0.4f), CircleShape),
+                        )
+                    }
                 }
 
-                Spacer(Modifier.height(6.dp))
+                Spacer(Modifier.height(10.dp))
                 val animatedPtsToNext by animateIntAsState(
                     targetValue = if (nextTier != null) nextTier.threshold - animateToPoints else 0,
                     animationSpec = tween(800, easing = FastOutSlowInEasing),
                 )
-                Text(
-                    "${formatNumber(animatedPtsToNext)} pts to ${nextTier.label}",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 11.sp,
-                        color = AppColors.White.copy(alpha = 0.7f),
-                    ),
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "${formatNumber(animatedPtsToNext)} FOMO to",
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 11.sp,
+                            color = AppColors.White.copy(alpha = 0.7f),
+                        ),
+                    )
+                    Spacer(Modifier.width(7.dp))
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(30.dp))
+                            .background(AppColors.White.copy(alpha = 0.2f))
+                            .border(1.dp, AppColors.White.copy(alpha = 0.3f), RoundedCornerShape(30.dp))
+                            .padding(horizontal = 10.dp, vertical = 4.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Box(
+                                modifier = Modifier
+                                    .size(6.dp)
+                                    .clip(CircleShape)
+                                    .background(AppColors.White),
+                            )
+                            Spacer(Modifier.width(5.dp))
+                            Text(
+                                nextTier.label.uppercase(),
+                                style = TextStyle(
+                                    fontFamily = AppFonts.Body,
+                                    fontWeight = FontWeight.ExtraBold,
+                                    fontSize = 10.sp,
+                                    color = AppColors.White,
+                                    letterSpacing = 0.5.sp,
+                                ),
+                            )
+                        }
+                    }
+                }
             }
         }
-    }
-}
-
-// ════════════════════════
-// ── Stats Card ──
-// ════════════════════════
-
-@Composable
-private fun StatsCard(state: ProgressUiState) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp)
-            .shadow(4.dp, RoundedCornerShape(20.dp))
-            .clip(RoundedCornerShape(20.dp))
-            .background(AppColors.White)
-            .padding(vertical = 20.dp, horizontal = 16.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        StatItem(formatNumber(state.favoritesSaved), "EVENTS\nSAVED", Modifier.weight(1f))
-        Box(
-            modifier = Modifier
-                .width(1.dp)
-                .height(40.dp)
-                .background(AppColors.Mist),
-        )
-        StatItem(formatNumber(state.plansCreated), "PLANS\nCREATED", Modifier.weight(1f))
-    }
-}
-
-@Composable
-private fun StatItem(value: String, label: String, modifier: Modifier = Modifier) {
-    Column(
-        modifier = modifier,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text(
-            value,
-            style = TextStyle(
-                fontFamily = AppFonts.Heading,
-                fontWeight = FontWeight.Bold,
-                fontSize = 26.sp,
-                color = AppColors.Ink,
-                letterSpacing = (-0.5).sp,
-            ),
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            label,
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = FontWeight.Bold,
-                fontSize = 11.sp,
-                color = AppColors.Ink3,
-                letterSpacing = 0.5.sp,
-                textAlign = TextAlign.Center,
-                lineHeight = 14.sp,
-            ),
-        )
     }
 }
 
@@ -684,7 +691,7 @@ private fun StatItem(value: String, label: String, modifier: Modifier = Modifier
 
 @Composable
 private fun ProgressTrackingCard(state: ProgressUiState, viewModel: ProgressViewModel) {
-    val segments = listOf("Progress", "Earn")
+    val segments = listOf("Earn FOMO", "Progress")
     val selectedIndex = state.selectedSegment
 
     Column(
@@ -731,8 +738,8 @@ private fun ProgressTrackingCard(state: ProgressUiState, viewModel: ProgressView
 
         // Content
         when (selectedIndex) {
-            0 -> JourneyCard(state.currentTier, state.totalPoints)
-            1 -> GlobalTrackingCard(state, viewModel)
+            0 -> GlobalTrackingCard(state, viewModel)
+            1 -> JourneyCard(state.currentTier, state.totalPoints)
         }
     }
 }
@@ -818,7 +825,7 @@ private fun PerActionRewardRow(progress: ActionProgress) {
                 style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Ink),
             )
             Text(
-                "${progress.action.basePoints.formatPoints()} pts each time",
+                "${progress.action.basePoints.formatPoints()} FOMO each time",
                 style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
             )
         }
@@ -831,7 +838,7 @@ private fun PerActionRewardRow(progress: ActionProgress) {
             )
             if (earned > 0) {
                 Text(
-                    "${earned.formatPoints()} pts",
+                    "${earned.formatPoints()} FOMO",
                     style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, color = AppColors.Sage),
                 )
             }
@@ -889,7 +896,7 @@ private fun OneTimeChallengeRow(progress: ActionProgress) {
             )
             if (!isComplete) {
                 Text(
-                    "Earn ${formatNumber(progress.action.basePoints)} pts",
+                    "Earn ${formatNumber(progress.action.basePoints)} FOMO",
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.SemiBold,
@@ -1048,7 +1055,7 @@ private fun JourneyCard(currentTier: StatusTier, totalPoints: Int) {
                         )
                         Spacer(Modifier.width(8.dp))
                         Text(
-                            if (tier == StatusTier.NEW_IN_TOWN) "START" else "${formatNumber(tier.threshold)} pts",
+                            if (tier == StatusTier.NEW_IN_TOWN) "START" else "${formatNumber(tier.threshold)} FOMO",
                             style = TextStyle(
                                 fontFamily = AppFonts.Body,
                                 fontWeight = FontWeight.Bold,
@@ -1178,7 +1185,7 @@ private fun CollapsedStateCard(
             )
             Spacer(Modifier.height(2.dp))
             Text(
-                "${stateProgress.totalPoints} pts",
+                "${stateProgress.totalPoints} FOMO",
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.Bold,
@@ -1231,7 +1238,7 @@ private fun ExpandedStateCard(
                 ),
             )
             Text(
-                "${stateProgress.totalPoints} pts",
+                "${stateProgress.totalPoints} FOMO",
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.Bold,
@@ -1267,6 +1274,7 @@ private fun MilestoneRow(progress: ActionProgress, lastSeenCount: Int = progress
     val icon = when (progress.action) {
         BadgeAction.EVENT_SAVED -> Icons.Rounded.BookmarkBorder
         BadgeAction.EVENT_SHARED -> Icons.Rounded.Share
+        BadgeAction.PLACE_SAVED -> Icons.Rounded.Place
         BadgeAction.PLAN_CREATED -> Icons.Rounded.CalendarMonth
         BadgeAction.INVITE_ACCEPTED -> Icons.Rounded.Check
         BadgeAction.GROUP_5_CONFIRMED -> Icons.Rounded.Groups
@@ -1380,7 +1388,7 @@ private fun MilestoneRow(progress: ActionProgress, lastSeenCount: Int = progress
                     exit = fadeOut(tween(200)) + shrinkVertically(),
                 ) {
                     Text(
-                        "  +${formatNumber(pointsEarned)} pts",
+                        "  +${formatNumber(pointsEarned)} FOMO",
                         style = TextStyle(
                             fontFamily = AppFonts.Body,
                             fontWeight = FontWeight.ExtraBold,
@@ -1414,7 +1422,7 @@ private fun MilestoneRow(progress: ActionProgress, lastSeenCount: Int = progress
                 val ptsAtDisplay = live.localapp.local.domain.model.pointsForMilestone(progress.action, displayMilestone!!)
                 Spacer(Modifier.height(2.dp))
                 Text(
-                    "${formatNumber(ptsAtDisplay)} pts at ${formatNumber(displayMilestone!!)}",
+                    "${formatNumber(ptsAtDisplay)} FOMO at ${formatNumber(displayMilestone!!)}",
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.SemiBold,
@@ -1594,7 +1602,7 @@ private fun MilestoneToast(
                         ),
                     )
                     Text(
-                        "+${event.points} PTS",
+                        "+${event.points} FOMO",
                         style = TextStyle(
                             fontFamily = AppFonts.Body,
                             fontWeight = FontWeight.ExtraBold,
@@ -1711,7 +1719,7 @@ private fun LevelUpOverlay(
             )
             Spacer(Modifier.height(12.dp))
             Text(
-                "${event.totalPoints} total points",
+                "${event.totalPoints} total FOMO",
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.SemiBold,
@@ -1915,17 +1923,34 @@ private fun stateAbbrevToFull(abbrev: String): String = when (abbrev.uppercase()
 // ACCOUNT SECTIONS
 // ═══════════════════════════════════════════════════════════════════
 
+/**
+ * Days left on the app-side Local Pro trial (server-owned `trial_ends_at`),
+ * rounded up. Null when there's no trial, it's unparseable, or it's expired.
+ */
+private fun subscriptionTrialDaysRemaining(trialEndsAt: String?): Int? {
+    if (trialEndsAt.isNullOrBlank()) return null
+    val endMs = try {
+        kotlinx.datetime.Instant.parse(trialEndsAt).toEpochMilliseconds()
+    } catch (_: Exception) { return null }
+    val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
+    if (endMs <= nowMs) return null
+    return kotlin.math.ceil((endMs - nowMs) / 1000.0 / 86_400.0).toInt()
+}
+
 @Composable
-private fun SubscriptionSection(onUpgrade: () -> Unit) {
+private fun SubscriptionSection(trialEndsAt: String?, onUpgrade: () -> Unit) {
     val gate = remember { live.localapp.local.ui.chat.PremiumGate() }
     var introPrice by remember { mutableStateOf<String?>(null) }
-    var monthlyPrice by remember { mutableStateOf("$6.99") }
+    var monthlyPrice by remember { mutableStateOf("$0.99") }
     LaunchedEffect(Unit) {
         live.localapp.local.platform.fetchSubscriptionPricing { m, _, i ->
             if (m != null) monthlyPrice = m
             introPrice = i
         }
     }
+    // Three states: paid (RevenueCat) → active trial (server trial_ends_at) → free.
+    val trialDaysLeft = remember(trialEndsAt) { subscriptionTrialDaysRemaining(trialEndsAt) }
+    val onTrial = !gate.isPremium && trialDaysLeft != null
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1955,6 +1980,32 @@ private fun SubscriptionSection(onUpgrade: () -> Unit) {
                 style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = AppColors.Sky),
                 modifier = Modifier.clickable { live.localapp.local.platform.openAppSettings() },
             )
+        } else if (onTrial) {
+            val days = trialDaysLeft!!
+            val dayLabel = if (days == 1) "day" else "days"
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Local Pro Trial", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AppColors.Coral))
+                Spacer(Modifier.width(8.dp))
+                Text("$days $dayLabel left", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = AppColors.CoralDk),
+                    modifier = Modifier.background(AppColors.CoralLt, RoundedCornerShape(50)).padding(horizontal = 8.dp, vertical = 3.dp))
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "You have full access to Local Pro. Keep it for ${monthlyPrice}/mo.",
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
+            )
+            Spacer(Modifier.height(10.dp))
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(AppColors.Coral)
+                    .clickable(onClick = onUpgrade)
+                    .padding(vertical = 12.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("Upgrade to Local Pro", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = Color.White))
+            }
         } else {
             Text("Free Plan", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AppColors.Ink))
             Spacer(Modifier.height(4.dp))
@@ -1979,96 +2030,7 @@ private fun SubscriptionSection(onUpgrade: () -> Unit) {
 }
 
 @Composable
-private fun NotificationPreferencesSection() {
-    // Reads + writes the same UserPreferences fields as onboarding
-    // (notifTickets / notifNearby / notifVenues), so the toggles in profile
-    // actually drive what server-side jobs send. Maps to:
-    //   • Weekly Snapshot     → notifTickets
-    //   • Reminders           → notifNearby
-    //   • Saved Venue Updates → notifVenues
-    val koin = remember { org.koin.mp.KoinPlatform.getKoin() }
-    val repo = remember { koin.get<live.localapp.local.domain.repository.UserPreferencesRepository>() }
-    val scope = rememberCoroutineScope()
-
-    var prefs by remember { mutableStateOf<live.localapp.local.domain.repository.UserPreferences?>(null) }
-
-    LaunchedEffect(Unit) {
-        val uid = repo.getLocalUserId() ?: return@LaunchedEffect
-        prefs = repo.loadPreferences(uid)
-    }
-
-    val tickets = prefs?.notifTickets ?: true
-    val reminders = prefs?.notifNearby ?: true
-    val venues = prefs?.notifVenues ?: true
-
-    fun update(transform: (live.localapp.local.domain.repository.UserPreferences) -> live.localapp.local.domain.repository.UserPreferences) {
-        val current = prefs ?: return
-        val next = transform(current)
-        prefs = next
-        scope.launch {
-            try {
-                val uid = repo.getLocalUserId()
-                if (uid != null) repo.savePreferencesWithId(uid, next) else repo.savePreferences(next)
-            } catch (e: Throwable) {
-                println("NotificationPreferencesSection: save failed (${e.message})")
-            }
-        }
-    }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp)
-            .background(Color.White, RoundedCornerShape(16.dp))
-            .border(1.dp, AppColors.Pebble, RoundedCornerShape(16.dp))
-            .padding(16.dp),
-    ) {
-        Text("NOTIFICATIONS", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = AppColors.Ink3, letterSpacing = 1.sp))
-        Spacer(Modifier.height(10.dp))
-
-        NotifToggleRow("Weekly Snapshot", "Events you'll love this week", tickets) {
-            update { it.copy(notifTickets = !it.notifTickets) }
-        }
-        Spacer(Modifier.height(8.dp))
-        NotifToggleRow("Reminders", "Nudges for upcoming plans", reminders) {
-            update { it.copy(notifNearby = !it.notifNearby) }
-        }
-        Spacer(Modifier.height(8.dp))
-        NotifToggleRow("Saved Venue Updates", "New events at your favorites", venues) {
-            update { it.copy(notifVenues = !it.notifVenues) }
-        }
-    }
-}
-
-@Composable
-private fun NotifToggleRow(title: String, subtitle: String, isOn: Boolean, onToggle: () -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(title, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Ink))
-            Text(subtitle, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3))
-        }
-        Box(
-            modifier = Modifier
-                .size(width = 44.dp, height = 26.dp)
-                .background(if (isOn) AppColors.Coral else AppColors.Pebble, RoundedCornerShape(13.dp))
-                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onToggle),
-        ) {
-            Box(
-                modifier = Modifier
-                    .padding(3.dp)
-                    .size(20.dp)
-                    .align(if (isOn) Alignment.CenterEnd else Alignment.CenterStart)
-                    .background(Color.White, RoundedCornerShape(10.dp)),
-            )
-        }
-    }
-}
-
-@Composable
-private fun SupportSection(onRateApp: () -> Unit) {
+private fun SupportSection(onRateApp: () -> Unit, onNotifications: () -> Unit) {
     val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
 
     Column(
@@ -2082,7 +2044,9 @@ private fun SupportSection(onRateApp: () -> Unit) {
         Text("SUPPORT & INFO", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = AppColors.Ink3, letterSpacing = 1.sp))
         Spacer(Modifier.height(10.dp))
 
-        SupportRow("Help & Support") { uriHandler.openUri("mailto:support@localapp.live") }
+        SupportRow("Notifications") { onNotifications() }
+        Spacer(Modifier.height(10.dp))
+        SupportRow("Help & Support") { live.localapp.local.platform.composeSupportEmail("support@localapp.live") }
         Spacer(Modifier.height(10.dp))
         SupportRow("Rate Local") { onRateApp() }
         Spacer(Modifier.height(10.dp))

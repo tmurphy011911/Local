@@ -209,9 +209,14 @@ actual fun openPlanChatSheet(
         org.koin.core.parameter.parametersOf(plan)
     }
 
+    // "+ Add event" posts a deterministic canned question via the VM rather than
+    // pre-filling the input box with the sentinel string.
+    val addDay = live.localapp.local.ui.plans.PlanChatViewModel.parseAddEventDay(prePopulatedMessage)
+    if (addDay != null) vm.beginAddEventFlow(addDay)
+
     PlanChatBridge.planTitle = plan.title
     PlanChatBridge.planId = plan.id
-    PlanChatBridge.prePopulatedMessage = prePopulatedMessage
+    PlanChatBridge.prePopulatedMessage = if (addDay != null) null else prePopulatedMessage
     PlanChatBridge.currentUserId = koin
         .get<live.localapp.local.domain.repository.UserPreferencesRepository>()
         .getLocalUserId()
@@ -250,9 +255,11 @@ actual fun showNativeEventDetail(
     onFavorited: ((String) -> Unit)?,
     showDirections: Boolean,
     isFavorited: Boolean,
+    onShare: ((String) -> Unit)?,
 ) {
     EventDetailBridge.onDismissed = onDismissed
     EventDetailBridge.onFavorited = onFavorited
+    EventDetailBridge.onShare = onShare
     EventDetailBridge.showDirections = showDirections
 
     // Tapping the venue card on the native event detail opens that venue's
@@ -344,6 +351,7 @@ actual fun showNativePlanDetail(
     onDeletePlan: () -> Unit,
     onAddDay: () -> Unit,
     onAddEvent: (Int) -> Unit,
+    onAddSlotManual: (Int, String, String, String, String?, Double?, Double?) -> Unit,
     onSetSlotReserved: (Int, String, Boolean) -> Unit,
     onSaveReservationDetails: (Int, String, Int, String) -> Unit,
     onReservationUnavailable: (Int, String) -> Unit,
@@ -375,6 +383,7 @@ actual fun showNativePlanDetail(
     PlanDetailBridge.onDeletePlan = onDeletePlan
     PlanDetailBridge.onAddDay = onAddDay
     PlanDetailBridge.onAddEvent = onAddEvent
+    PlanDetailBridge.onAddSlotManual = onAddSlotManual
     PlanDetailBridge.onSetSlotReserved = onSetSlotReserved
     PlanDetailBridge.onSaveReservationDetails = onSaveReservationDetails
     PlanDetailBridge.onReservationUnavailable = onReservationUnavailable

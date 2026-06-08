@@ -74,6 +74,14 @@ actual fun checkSubscriptionStatus(onResult: (Boolean, String?) -> Unit) {
     live.localapp.local.RevenueCatBridge.checkSubscriptionStatus?.invoke(onResult) ?: onResult(false, null)
 }
 
+actual fun identifyRevenueCatUser(appUserId: String, onResult: (Boolean, String?) -> Unit) {
+    live.localapp.local.RevenueCatBridge.logIn?.invoke(appUserId, onResult) ?: onResult(false, null)
+}
+
+actual fun logOutRevenueCatUser() {
+    live.localapp.local.RevenueCatBridge.logOut?.invoke()
+}
+
 actual fun fetchSubscriptionPricing(onResult: (String?, String?, String?) -> Unit) {
     live.localapp.local.RevenueCatBridge.fetchPricing?.invoke(onResult) ?: onResult(null, null, null)
 }
@@ -90,6 +98,24 @@ actual fun openAppStoreListing() {
 actual fun openAppSettings() {
     val url = platform.Foundation.NSURL(string = platform.UIKit.UIApplicationOpenSettingsURLString)!!
     platform.UIKit.UIApplication.sharedApplication.openURL(url, emptyMap<Any?, Any>()) { _ -> }
+}
+
+actual fun composeSupportEmail(recipient: String) {
+    val url = platform.Foundation.NSURL(string = "mailto:$recipient") ?: return
+    platform.UIKit.UIApplication.sharedApplication.openURL(url, emptyMap<Any?, Any>()) { _ -> }
+}
+
+actual fun areNotificationsEnabled(onResult: (Boolean) -> Unit) {
+    val center = platform.UserNotifications.UNUserNotificationCenter.currentNotificationCenter()
+    center.getNotificationSettingsWithCompletionHandler { settings ->
+        val status = settings?.authorizationStatus
+        val enabled = status == platform.UserNotifications.UNAuthorizationStatusAuthorized ||
+            status == platform.UserNotifications.UNAuthorizationStatusProvisional ||
+            status == platform.UserNotifications.UNAuthorizationStatusEphemeral
+        platform.darwin.dispatch_async(platform.darwin.dispatch_get_main_queue()) {
+            onResult(enabled)
+        }
+    }
 }
 
 actual fun requestNotificationPermission(onResult: (Boolean) -> Unit) {

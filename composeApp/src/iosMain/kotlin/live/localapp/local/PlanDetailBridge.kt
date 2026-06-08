@@ -44,8 +44,14 @@ object PlanDetailBridge {
     // ── Day-level actions ──────────────────────────────────────────────
     /** Tapped + Add day. */
     var onAddDay: (() -> Unit)? = null
-    /** Tapped + Add event on the active day. Param: dayIndex. */
+    /** Tapped + Add event on the active day → opens the native chooser
+     *  (Add manually / Ask Bo). The "Ask Bo" branch invokes this. Param: dayIndex. */
     var onAddEvent: ((Int) -> Unit)? = null
+    /** "Add manually" form saved. Builds a custom slot on the Kotlin side and
+     *  pushes refreshed plan state back. Params:
+     *  dayIndex, name, time (e.g. "7:30 PM"), locationName,
+     *  address (nullable), lat (nullable), lng (nullable). */
+    var onAddSlotManual: ((Int, String, String, String, String?, Double?, Double?) -> Unit)? = null
     /** Inline "Edit day" shortcut (asks Bo to change a specific day). Param: dayLabel. */
     var onEditDay: ((String) -> Unit)? = null
 

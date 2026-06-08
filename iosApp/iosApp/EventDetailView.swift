@@ -246,6 +246,7 @@ struct EventDetailView: View {
     let event: EventDetailData
     let onDismiss: () -> Void
     var onFavorite: ((String) -> Void)? = nil
+    var onShare: ((String) -> Void)? = nil
 
     @State private var countdown: Countdown
     @State private var isFavorited = false
@@ -260,9 +261,10 @@ struct EventDetailView: View {
     /// at present time) and updated async via the bridge notification.
     @State private var venueEventCount: Int
 
-    init(event: EventDetailData, onDismiss: @escaping () -> Void, onFavorite: ((String) -> Void)? = nil) {
+    init(event: EventDetailData, onDismiss: @escaping () -> Void, onFavorite: ((String) -> Void)? = nil, onShare: ((String) -> Void)? = nil) {
         self.event = event
         self.onFavorite = onFavorite
+        self.onShare = onShare
         self.onDismiss = onDismiss
         self._countdown = State(initialValue: computeCountdown(startAt: event.startAt))
         self._isFavorited = State(initialValue: event.isFavorited)
@@ -381,6 +383,7 @@ struct EventDetailView: View {
                             let shareUrl = "https://localapp.live/e/\(event.id)"
                             let shareText = event.title
                             ShareBridge.shared.presentShareSheet?(shareText, shareUrl)
+                            onShare?(event.id)
                         }
                         heroIconButton(
                             systemName: isFavorited ? "heart.fill" : "heart",

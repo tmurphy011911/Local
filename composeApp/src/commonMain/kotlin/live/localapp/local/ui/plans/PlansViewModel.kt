@@ -22,6 +22,7 @@ import live.localapp.local.domain.model.ReservationState
 import live.localapp.local.domain.model.TicketState
 import live.localapp.local.domain.model.Venue
 import live.localapp.local.domain.repository.CommunityInterestRepository
+import live.localapp.local.domain.repository.InteractionType
 import live.localapp.local.domain.repository.EventRepository
 import live.localapp.local.domain.repository.PlanRepository
 import live.localapp.local.domain.repository.UserPreferencesRepository
@@ -428,6 +429,18 @@ class PlansViewModel(
             } catch (e: Throwable) {
                 println("PlansVM.loadSavedItems error: ${e::class.simpleName}: ${e.message}")
             }
+        }
+    }
+
+    /**
+     * Un-saves a venue from the "Ask Bo for Upcoming Events at..." list. Mirrors
+     * PlacesViewModel.toggleVenueFavorite's remove branch — clears the favorite
+     * and optimistically drops the row so the list updates without a refetch.
+     */
+    fun unsaveVenue(venueId: String) {
+        communityInterestRepository.removeFavorite(venueId, InteractionType.PLACE)
+        _uiState.update { state ->
+            state.copy(savedVenues = state.savedVenues.filterNot { it.id == venueId })
         }
     }
 }

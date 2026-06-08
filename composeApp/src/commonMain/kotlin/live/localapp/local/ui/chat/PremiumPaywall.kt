@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.width
 import live.localapp.local.ui.common.CircleShape
 import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
@@ -76,19 +77,23 @@ fun PremiumPaywall(
     isPurchasing: Boolean = false,
     monthlyIntroEligible: Boolean = false,
 ) {
+    // Live prices come from RevenueCat (monthlyPrice/annualPrice/introPrice).
+    // The hardcoded strings here are only fallbacks for when RC pricing hasn't
+    // loaded yet — keep them in sync with the store products ($0.99/mo, $8.99/yr).
     val hasIntro = introPrice != null && monthlyIntroEligible
-    val displayMonthly = if (hasIntro) introPrice!! else (monthlyPrice ?: "$6.99")
-    val displayMonthlySubtext = if (hasIntro) "then ${monthlyPrice ?: "$6.99"}/mo" else "/month"
+    val displayMonthly = if (hasIntro) introPrice!! else (monthlyPrice ?: "$0.99")
+    val displayMonthlySubtext = if (hasIntro) "then ${monthlyPrice ?: "$0.99"}/month" else "${monthlyPrice ?: "$0.99"}/month"
     val displayMonthlyBadge = if (hasIntro) "First month" else null
-    val displayAnnual = annualPrice ?: "$49.99"
+    val displayAnnual = annualPrice ?: "$8.99"
     val annualPerMonth = try {
         val raw = displayAnnual.replace(Regex("[^0-9.]"), "").toDouble()
-        val perMonth = raw / 12
-        val whole = perMonth.toInt()
-        val frac = ((perMonth - whole) * 100).toInt()
-        "$$whole.${frac.toString().padStart(2, '0')}/mo"
-    } catch (_: Exception) { "$4.17/mo" }
-    var isAnnual by remember { mutableStateOf(true) }
+        val cents = kotlin.math.round(raw / 12 * 100).toInt()
+        "$${cents / 100}.${(cents % 100).toString().padStart(2, '0')}/month"
+    } catch (_: Exception) { "$0.75/month" }
+    // Bug #25: default to Monthly (iOS parity — PaywallView.swift `isAnnual =
+    // false`) so the first-month intro offer + "Try for $X" CTA is the default
+    // surface. Was defaulting to Annual, which hid the intro offer entirely.
+    var isAnnual by remember { mutableStateOf(false) }
 
     Box(
         modifier = Modifier
@@ -334,10 +339,13 @@ private fun PaywallBoTagline(text: String) {
 
 @Composable
 private fun ComparisonMatrix() {
+    // (feature, inFree, inPro). Free = browse only; Pro unlocks everything else.
     val rows = listOf(
-        Triple("Saved Events", "5", "Unlimited"),
-        Triple("Saved Places", "5", "Unlimited"),
-        Triple("Plans Created", "1", "Unlimited"),
+        Triple("Browse Events and Places", true, true),
+        Triple("See Event and Place Info", false, true),
+        Triple("Save Events and Places", false, true),
+        Triple("Ask Bo", false, true),
+        Triple("Create Plans", false, true),
     )
     Column(
         modifier = Modifier
@@ -346,21 +354,55 @@ private fun ComparisonMatrix() {
             .background(Color.White.copy(alpha = 0.04f))
             .padding(horizontal = 18.dp),
     ) {
-        MatrixRow(feature = "", free = "Free", pro = "Pro", isHeader = true)
-        rows.forEach { (feature, free, pro) ->
+        MatrixHeaderRow()
+        rows.forEach { (feature, inFree, inPro) ->
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(1.dp)
                     .background(Color.White.copy(alpha = 0.06f)),
             )
-            MatrixRow(feature = feature, free = free, pro = pro)
+            MatrixRow(feature = feature, inFree = inFree, inPro = inPro)
         }
     }
 }
 
 @Composable
-private fun MatrixRow(feature: String, free: String, pro: String, isHeader: Boolean = false) {
+private fun MatrixHeaderRow() {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Spacer(Modifier.weight(1f))
+        Text(
+            "Free",
+            modifier = Modifier.width(52.dp),
+            textAlign = TextAlign.Center,
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = FontWeight.Bold,
+                fontSize = 11.sp,
+                color = Color.White.copy(alpha = 0.5f),
+            ),
+        )
+        Text(
+            "Pro",
+            modifier = Modifier.width(60.dp),
+            textAlign = TextAlign.Center,
+            style = TextStyle(
+                fontFamily = AppFonts.Body,
+                fontWeight = FontWeight.Black,
+                fontSize = 11.sp,
+                color = AppColors.Coral,
+            ),
+        )
+    }
+}
+
+@Composable
+private fun MatrixRow(feature: String, inFree: Boolean, inPro: Boolean) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -370,34 +412,38 @@ private fun MatrixRow(feature: String, free: String, pro: String, isHeader: Bool
         Text(
             feature,
             modifier = Modifier.weight(1f),
+            maxLines = 1,
             style = TextStyle(
                 fontFamily = AppFonts.Body,
                 fontWeight = FontWeight.ExtraBold,
-                fontSize = 14.sp,
+                fontSize = 13.sp,
                 color = Color.White,
             ),
         )
-        Text(
-            free,
-            modifier = Modifier.width(72.dp),
-            textAlign = TextAlign.Center,
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = if (isHeader) FontWeight.Bold else FontWeight.SemiBold,
-                fontSize = if (isHeader) 11.sp else 13.sp,
-                color = Color.White.copy(alpha = if (isHeader) 0.5f else 0.45f),
-            ),
+        Box(modifier = Modifier.width(52.dp), contentAlignment = Alignment.Center) {
+            MatrixCell(included = inFree, isPro = false)
+        }
+        Box(modifier = Modifier.width(60.dp), contentAlignment = Alignment.Center) {
+            MatrixCell(included = inPro, isPro = true)
+        }
+    }
+}
+
+@Composable
+private fun MatrixCell(included: Boolean, isPro: Boolean) {
+    if (included) {
+        Icon(
+            Icons.Outlined.Check,
+            contentDescription = "Included",
+            modifier = Modifier.size(18.dp),
+            tint = if (isPro) AppColors.Coral else Color.White.copy(alpha = 0.5f),
         )
-        Text(
-            pro,
-            modifier = Modifier.width(88.dp),
-            textAlign = TextAlign.Center,
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = if (isHeader) FontWeight.Black else FontWeight.ExtraBold,
-                fontSize = if (isHeader) 11.sp else 13.sp,
-                color = AppColors.Coral,
-            ),
+    } else {
+        Box(
+            modifier = Modifier
+                .width(12.dp)
+                .height(2.dp)
+                .background(Color.White.copy(alpha = 0.25f)),
         )
     }
 }

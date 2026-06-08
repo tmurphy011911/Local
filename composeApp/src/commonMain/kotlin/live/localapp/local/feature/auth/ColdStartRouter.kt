@@ -140,7 +140,7 @@ class ColdStartRouter(
         // Guarded on the bypass flag AND !clearCache so the strict prod
         // invariant (no real session → never Home) is completely untouched when
         // TEST_AUTH_BYPASS is false.
-        if (live.localapp.local.Config.TEST_AUTH_BYPASS && !clearCache) {
+        if (live.localapp.local.Config.testAuthBypassActive && !clearCache) {
             val localId = userPrefsRepo.getLocalUserId()
             if (localId != null && userPrefsRepo.isOnboardingComplete()) {
                 return RouteDestination.Home(authUserId = localId)

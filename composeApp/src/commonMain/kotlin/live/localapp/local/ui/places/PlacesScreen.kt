@@ -51,6 +51,7 @@ import androidx.compose.foundation.border
 import live.localapp.local.ui.common.CircleShape
 import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
@@ -95,6 +96,7 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
@@ -166,6 +168,24 @@ fun PlacesScreen(
     val homeViewModel = remember { KoinPlatform.getKoin().get<HomeViewModel>() }
     val homeState by homeViewModel.uiState.collectAsState()
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    // Collapse the soft keyboard the moment the user scrolls a results list.
+    // clearFocus() alone only drops the focus ring on iOS — the keyboard
+    // controller is what actually retracts the soft keyboard there.
+    val dismissKeyboardOnScroll = remember(focusManager, keyboardController) {
+        object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
+            override fun onPreScroll(
+                available: androidx.compose.ui.geometry.Offset,
+                source: androidx.compose.ui.input.nestedscroll.NestedScrollSource,
+            ): androidx.compose.ui.geometry.Offset {
+                if (available.y != 0f) {
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                }
+                return androidx.compose.ui.geometry.Offset.Zero
+            }
+        }
+    }
     val cityLabel = state.locationName.split(",").firstOrNull()?.trim().orEmpty()
 
     Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow).clickable(
@@ -231,7 +251,7 @@ fun PlacesScreen(
             PullToRefreshBox(
                 isRefreshing = state.isRefreshing,
                 onRefresh = { viewModel.refresh() },
-                modifier = Modifier.weight(1f),
+                modifier = Modifier.weight(1f).nestedScroll(dismissKeyboardOnScroll),
             ) {
                 when (state.activeTab) {
                     SearchTab.PLACES -> {
@@ -1149,7 +1169,10 @@ private fun SavedVenueAlbumCard(vm: VenueWithMeta, onClick: (Rect) -> Unit, onFa
 // ═══════════════════════════════════════════════════════════════════
 
 @Composable
-private fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -> Unit, onFavoriteToggle: () -> Unit) {
+// `internal` (not `private`) so the Plans tab can reuse the exact same place-row
+// card for its "Ask Bo for Upcoming Events at..." section — one component, no
+// duplicated layout. See PlansScreen.SavedVenueRow.
+internal fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -> Unit, onFavoriteToggle: () -> Unit) {
     val v = vm.venue
     // Hero source rect = the thumbnail, not the whole row, so the detail
     // page expands/collapses from the image.
@@ -1378,6 +1401,7 @@ fun VenueDetailPage(
     var customEnd by remember { mutableStateOf<LocalDate?>(null) }
     val datePicker = rememberNativeDateRangePicker()
     val communityInterestRepo = remember { KoinPlatform.getKoin().get<CommunityInterestRepository>() }
+    val uriHandler = LocalUriHandler.current
     val v = venueWithMeta.venue
 
     // Enter animation — approximates the iOS card-to-fullscreen morph
@@ -1442,7 +1466,20 @@ fun VenueDetailPage(
                     modifier = Modifier.weight(1f),
                 )
                 Spacer(Modifier.width(8.dp))
-                // Favorite
+                // Share — LEFT of favorite, matching the event detail header
+                // (share left, save right). Bug #16.
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .background(AppColors.Snow, RoundedCornerShape(10.dp))
+                        .clip(RoundedCornerShape(10.dp))
+                        .clickable(onClick = onShare),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Outlined.IosShare, contentDescription = "Share", modifier = Modifier.size(18.dp), tint = AppColors.Ink)
+                }
+                Spacer(Modifier.width(6.dp))
+                // Favorite (save) — RIGHTmost
                 Box(
                     modifier = Modifier
                         .size(36.dp)
@@ -1457,18 +1494,6 @@ fun VenueDetailPage(
                         modifier = Modifier.size(18.dp),
                         tint = if (isFavorited) AppColors.Coral else AppColors.Ink,
                     )
-                }
-                Spacer(Modifier.width(6.dp))
-                // Share
-                Box(
-                    modifier = Modifier
-                        .size(36.dp)
-                        .background(AppColors.Snow, RoundedCornerShape(10.dp))
-                        .clip(RoundedCornerShape(10.dp))
-                        .clickable(onClick = onShare),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Outlined.IosShare, contentDescription = "Share", modifier = Modifier.size(18.dp), tint = AppColors.Ink)
                 }
             }
 
@@ -1545,20 +1570,29 @@ fun VenueDetailPage(
 
                     Spacer(Modifier.height(4.dp))
 
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-                        SheetButton(
-                            label = "Directions",
-                            isPrimary = true,
-                            modifier = Modifier.weight(1f),
-                            icon = { Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(14.dp), tint = Color.White) },
-                            onClick = {},
-                        )
-                        if (!v.website.isNullOrBlank()) {
-                            SheetButton(
-                                label = "Website",
-                                isPrimary = false,
-                                modifier = Modifier.weight(1f),
-                                onClick = { /* TODO: open v.website in browser */ },
+                    // Directions — full-width sky button, matching iOS
+                    // VenueDetailView (skyLt fill, sky text, mappin icon).
+                    if (v.latitude != null && v.longitude != null) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(48.dp)
+                                .background(AppColors.SkyLt, RoundedCornerShape(14.dp))
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable {
+                                    val url = "https://www.google.com/maps/dir/?api=1" +
+                                        "&destination=${v.latitude},${v.longitude}"
+                                    uriHandler.openUri(url)
+                                }
+                                .padding(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(Icons.Outlined.Place, contentDescription = null, modifier = Modifier.size(18.dp), tint = AppColors.Sky)
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                "Directions",
+                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 15.sp, color = AppColors.Sky),
                             )
                         }
                     }
@@ -1665,6 +1699,29 @@ fun VenueDetailPage(
                                 VenueEventListRow(event = event, onClick = { selectedEvent = event })
                                 Spacer(Modifier.height(4.dp))
                             }
+                        }
+                    }
+
+                    // Visit Website — bottom coral CTA, matching iOS
+                    // VenueDetailView ctaBar. Hidden in shared deep-link mode
+                    // (that surface shows "Add to Favorites" instead).
+                    if (!isShared && !v.website.isNullOrBlank()) {
+                        Spacer(Modifier.height(20.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(50.dp)
+                                .background(AppColors.Coral, RoundedCornerShape(14.dp))
+                                .clip(RoundedCornerShape(14.dp))
+                                .clickable { uriHandler.openUri(v.website) }
+                                .padding(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.Center,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                "Visit Website",
+                                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = Color.White),
+                            )
                         }
                     }
 
