@@ -1569,6 +1569,138 @@ async function crawlSquarespace(venue, baseUrl) {
   }
 }
 
+// ── Art Center Canvas crawler (class-registration SPA) ──
+//
+// Venues on the "Art Center Canvas" platform (e.g. New Art Center,
+// canvas.newartcenter.org) render their public catalog as a Vercel-hosted
+// React SPA behind an anti-bot security checkpoint — un-scrapeable directly,
+// even with Scrapfly JS-render. But the catalog itself is served open (no auth)
+// from the platform's storefront API on a separate domain:
+//   https://storefront-api-2.artcentercanvas.com/v1/<slug>/classes/open
+// The <slug> is the org key (e.g. "newartcenter"), derived from the canvas
+// hostname and verified against /classes/count before we trust it — so the
+// adapter works for any Art Center Canvas venue, not just this one.
+//
+// Each catalog item is a class/workshop. We split them by session span:
+//   • single-session (one classDay, start==end date) → a discrete event that
+//     flows into the normal feed like any other event.
+//   • multi-session series (multi-week courses) → emitted as one dated span,
+//     defaulted to category "always_on" so isGeneralFeedEvent keeps them out
+//     of topical rails (recurring / Experiences lane only).
+// classify_events.js still owns final taxonomy.
+const ACC_STOREFRONT = "https://storefront-api-2.artcentercanvas.com/v1";
+
+function accSlugFromHost(hostname) {
+  // canvas.newartcenter.org → newartcenter
+  const h = hostname.replace(/^canvas\./i, "");
+  return h.split(".")[0] || null;
+}
+
+// "6/4/26" + "6:00 PM" → "2026-06-04T18:00:00" (local, no tz; tagEasternTime
+// adds the offset downstream). Returns date-only when time is missing so
+// normalizeEvent flags time_known=false.
+function accDateTime(dateStr, timeStr) {
+  if (!dateStr) return null;
+  const m = String(dateStr).match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  if (!m) return null;
+  let [, mo, day, yr] = m;
+  if (yr.length === 2) yr = "20" + yr;
+  const date = `${yr}-${mo.padStart(2, "0")}-${day.padStart(2, "0")}`;
+  if (!timeStr) return date; // date-only → time_known=false downstream
+  const t = String(timeStr).trim().match(/^(\d{1,2}):(\d{2})\s*(AM|PM)$/i);
+  if (!t) return date;
+  let hh = parseInt(t[1], 10);
+  const mer = t[3].toUpperCase();
+  if (mer === "PM" && hh !== 12) hh += 12;
+  if (mer === "AM" && hh === 12) hh = 0;
+  return `${date}T${String(hh).padStart(2, "0")}:${t[2]}:00`;
+}
+
+async function crawlArtCenterCanvas(venue, baseUrl) {
+  try {
+    const origin = new URL(baseUrl).origin;
+    const slug = accSlugFromHost(new URL(baseUrl).hostname);
+    if (!slug) return null;
+    const api = `${ACC_STOREFRONT}/${slug}`;
+    // The storefront API gates JSON on a same-site Origin/Referer (matching the
+    // SPA's own requests); without them it returns a non-array error body.
+    const headers = {
+      Accept: "application/json",
+      "User-Agent": "Mozilla/5.0",
+      Origin: origin,
+      Referer: `${origin}/`,
+    };
+
+    // Verify this is really an Art Center Canvas org before trusting the slug —
+    // keeps the adapter from claiming any unrelated canvas.* host.
+    const countRes = await fetch(`${api}/classes/count`, { headers });
+    if (!countRes.ok) return null;
+    const countJson = await countRes.json().catch(() => null);
+    if (!countJson?.ok) return null;
+
+    const res = await fetch(`${api}/classes/open?skipCache=1`, { headers });
+    if (!res.ok) {
+      console.log(`    Art Center Canvas API error: ${res.status}`);
+      return null;
+    }
+    const items = await res.json();
+    if (!Array.isArray(items) || items.length === 0) return null;
+
+    const events = [];
+    for (const it of items) {
+      if (!it.title || it.cancelled) continue;
+      const sessions = Array.isArray(it.classDays) ? it.classDays.length : 0;
+      const isSingle = sessions <= 1 && it.startDate === it.endDate;
+
+      const start_date = accDateTime(it.startDate, it.startTime);
+      if (!start_date) continue;
+      const end_date = accDateTime(it.endDate || it.startDate, it.endTime);
+
+      const prices = [it.costMember, it.costNon].filter((p) => typeof p === "number");
+      const price_min = prices.length ? Math.min(...prices) : null;
+      const price_max = prices.length ? Math.max(...prices) : null;
+      const is_free = prices.length > 0 && price_max === 0;
+
+      const descr = (it.descr || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+
+      events.push({
+        title: it.title,
+        start_date,
+        end_date: end_date || null,
+        description: descr || null,
+        source_url: `${origin}/classes/${it.catalogId}`,
+        is_free,
+        price_min,
+        price_max,
+        // Multi-week courses are recurring offerings, not one-off events —
+        // default them out of the topical feed. classify_events.js may refine.
+        seriesCategory: isSingle ? null : "always_on",
+        confidence: 0.9,
+      });
+    }
+
+    if (events.length === 0) return null;
+
+    const rows = events.map((e) => {
+      const row = normalizeEvent(e, venue);
+      if (e.seriesCategory) row.category = e.seriesCategory;
+      return row;
+    });
+    await upsertEvents(rows);
+    await updateVenueCrawlStatus(venue.id, true, venue.crawl_success_rate);
+    const seriesCount = events.filter((e) => e.seriesCategory).length;
+    const discreteCount = rows.length - seriesCount;
+    return {
+      venue: venue.name,
+      events: rows.length,
+      status: `ok (art-center-canvas: ${discreteCount} events, ${seriesCount} series)`,
+    };
+  } catch (err) {
+    console.log(`    Art Center Canvas crawl error: ${err.message}`);
+    return null;
+  }
+}
+
 // ── TicketWeb tw-calendar crawler (Middle East, etc.) ──
 //
 // TicketWeb's WordPress widget renders a FullCalendar shell ("Calendar
@@ -1730,6 +1862,15 @@ async function detectAndCrawlPlatform(venue) {
     // 3b. LiveWhale
     if (liveWhaleDomains.some((d) => hostname.includes(d))) {
       return await crawlLiveWhale(venue, url);
+    }
+
+    // 3c. Art Center Canvas (class-registration SPA, e.g. New Art Center).
+    // The public site is an anti-bot-walled React SPA, but the catalog is
+    // served open from the storefront API. crawlArtCenterCanvas self-verifies
+    // the slug, so a false-positive canvas.* host just falls through to null.
+    if (hostname.startsWith("canvas.") || hostname.includes("artcentercanvas")) {
+      const accResult = await crawlArtCenterCanvas(venue, url);
+      if (accResult) return accResult;
     }
   } catch (_) {}
 
