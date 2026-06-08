@@ -17,7 +17,7 @@
 const crypto = require("crypto");
 const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
 const { fetchHtml } = require("./lib/scrapfly_fetch");
-const { extractEventsFromHtml } = require("./lib/claude_html_extract");
+const { extractEventsFromHtml, findPageUrls } = require("./lib/claude_html_extract");
 
 let SCRAPFLY_API_KEY = null;
 let ANTHROPIC_API_KEY = null;
@@ -108,6 +108,11 @@ const METRO_COORDS = new Map(); // metro slug → {lat, lng}
 // (a museum running 50 events). Without the cache we'd hit Supabase /
 // Claude once per event; with it, once per unique venue.
 const VENUE_COORDS_CACHE = new Map();
+
+// Cache for town-center coords. Key: lowercase "city|state". A town feed
+// (e.g. Waltham) emits many at-large civic events (venue_name=null) that all
+// resolve to the same town center — geocode it once per run.
+const CITY_COORDS_CACHE = new Map();
 
 /**
  * Resolve venue coordinates with a 3-step fallback chain:
@@ -213,6 +218,108 @@ async function askClaudeForCoords(name, city, state) {
   }
 }
 
+/**
+ * Resolve a TOWN's center coordinates. Used as the at-large fallback for
+ * civic events with no named venue (city-wide festivals, parades, "on the
+ * Common") — these belong at the feed's OWN town, not its metro center.
+ *
+ * Stamping a Waltham city festival with downtown-Boston metro coords (~10mi
+ * off) is the same class of bug as the MASS MoCA case: it lands the event in
+ * the wrong place on the map and in the wrong radius bucket. A town is an
+ * unambiguous geocode (city + state), so we resolve it cheaply:
+ *   1. metros table, when the town happens to be a metro center.
+ *   2. cities table (if present) by name + state.
+ *   3. Claude geocode of "Town, ST" (gated at confidence ≥ 0.8).
+ *   4. null — caller falls back to metro center or null.
+ *
+ * Cached per town for the run.
+ */
+async function resolveCityCoords(rawCity, state) {
+  if (!rawCity) return null;
+  // Strip discovery-added qualifiers like "Cambridge (visitor)" /
+  // "Johnstown (tourism)" so the geocoder sees a clean town name.
+  const city = rawCity.replace(/\s*\([^)]*\)\s*/g, " ").trim();
+  if (!city) return null;
+  const key = `${city.toLowerCase()}|${(state || "").toLowerCase()}`;
+  if (CITY_COORDS_CACHE.has(key)) return CITY_COORDS_CACHE.get(key);
+
+  let coords = METRO_COORDS.get(city.toLowerCase()) || null;
+
+  // cities table lookup (best-effort — table may not exist in every env).
+  if (!coords) {
+    try {
+      const url =
+        `${SUPABASE_URL}/rest/v1/cities?name=ilike.${encodeURIComponent(city)}` +
+        `${state ? `&state=eq.${encodeURIComponent(state)}` : ""}` +
+        `&lat=not.is.null&lng=not.is.null&select=lat,lng&limit=1`;
+      const res = await fetch(url, {
+        headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` },
+      });
+      if (res.ok) {
+        const rows = await res.json();
+        if (rows[0]?.lat != null && rows[0]?.lng != null) coords = { lat: rows[0].lat, lng: rows[0].lng };
+      }
+    } catch (_) { /* table may not exist — fall through to Claude */ }
+  }
+
+  // Claude geocode of the town center. A dedicated municipality prompt (NOT
+  // the venue prompt, which scores a bare "Town, ST" at low confidence and
+  // rejects it) — a US town + state is an unambiguous, high-confidence
+  // geocode.
+  if (!coords && ANTHROPIC_API_KEY) {
+    coords = await askClaudeForCityCenter(city, state);
+  }
+
+  CITY_COORDS_CACHE.set(key, coords);
+  return coords;
+}
+
+async function askClaudeForCityCenter(city, state) {
+  const prompt =
+    `What are the latitude and longitude of the geographic center (downtown / city hall) of the ` +
+    `municipality of ${city}, ${state}, USA?\n\n` +
+    `Return ONLY a JSON object: {"lat": <number>, "lng": <number>, "confidence": <0..1>}.\n` +
+    `For any real, uniquely-identifiable US town/city the confidence should be ≥ 0.9. ` +
+    `Drop below 0.6 ONLY if "${city}, ${state}" does not identify a real place or is genuinely ambiguous.`;
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "x-api-key": ANTHROPIC_API_KEY,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 200,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    if (!res.ok) {
+      console.log(`    Claude city geocode ${city}, ${state}: HTTP ${res.status}`);
+      return null;
+    }
+    const data = await res.json();
+    const text = data.content?.[0]?.text || "";
+    const match = text.match(/\{[\s\S]*\}/);
+    if (!match) return null;
+    const obj = JSON.parse(match[0]);
+    if (typeof obj.lat !== "number" || typeof obj.lng !== "number") return null;
+    const conf = typeof obj.confidence === "number" ? obj.confidence : 0;
+    if (conf < 0.8) {
+      console.log(`    Claude city geocode "${city}, ${state}": conf=${conf.toFixed(2)} — rejected`);
+      return null;
+    }
+    if (Math.abs(obj.lat) < 0.01 && Math.abs(obj.lng) < 0.01) return null;
+    if (Math.abs(obj.lat) > 90 || Math.abs(obj.lng) > 180) return null;
+    console.log(`    Claude geocoded town "${city}, ${state}" → ${obj.lat.toFixed(4)},${obj.lng.toFixed(4)} (conf ${conf.toFixed(2)})`);
+    return { lat: obj.lat, lng: obj.lng };
+  } catch (err) {
+    console.log(`    Claude city geocode error for "${city}, ${state}": ${err.message}`);
+    return null;
+  }
+}
+
 async function buildEvent(feed, raw) {
   // raw is { title, description, startAt, endAt, sourceId, sourceUrl,
   //          venueName, venueAddress, venueCity, venueState, isFree, imageUrl,
@@ -239,10 +346,16 @@ async function buildEvent(feed, raw) {
   //   1. raw.venueLat / raw.venueLng if the feed provided them (best).
   //   2. resolveVenueCoords(): venues table lookup → Claude fallback (gated
   //      at confidence ≥ 0.8 with sanity checks).
-  //   3. Metro center ONLY when venue_name is null (truly at-large civic
-  //      events — e.g. a city-wide block party with no specific venue).
-  //   4. Null — better to drop a far-away event from radius queries than
-  //      to ship it stamped 150 miles from where it actually is.
+  //   3. TOWN center when venue_name is null (truly at-large civic events —
+  //      a city-wide festival / parade / "on the Common"). This MUST be the
+  //      feed's own town, not its metro: a Waltham festival belongs in
+  //      Waltham, not stamped ~10mi away at downtown-Boston metro center
+  //      (the RiverBeat bug — same family as the MASS MoCA mis-stamp).
+  //   4. Metro center only as a last resort, and only for a feed that IS a
+  //      metro (feed.city == feed.metro) — otherwise we'd re-introduce the
+  //      wrong-location stamp we just fixed.
+  //   5. Null — better to drop a far-away event from radius queries than to
+  //      ship it stamped miles from where it actually is.
   let venueLat = raw.venueLat ?? null;
   let venueLng = raw.venueLng ?? null;
   if ((venueLat == null || venueLng == null) && venueName) {
@@ -257,9 +370,19 @@ async function buildEvent(feed, raw) {
     }
   }
   if ((venueLat == null || venueLng == null) && !venueName) {
-    // At-large event with no named venue — metro center is the right default.
-    venueLat = venueLat ?? metro?.lat ?? null;
-    venueLng = venueLng ?? metro?.lng ?? null;
+    // At-large event — resolve the feed's OWN town center.
+    const town = await resolveCityCoords(raw.venueCity || feed.city, raw.venueState || feed.state);
+    if (town) {
+      if (venueLat == null) venueLat = town.lat;
+      if (venueLng == null) venueLng = town.lng;
+    }
+    // Last-resort metro center, only when the feed is itself the metro hub —
+    // never silently relocate a named town's event to the metro centroid.
+    const feedIsMetro = (feed.city || "").toLowerCase() === (feed.metro || "").toLowerCase();
+    if ((venueLat == null || venueLng == null) && feedIsMetro) {
+      venueLat = venueLat ?? metro?.lat ?? null;
+      venueLng = venueLng ?? metro?.lng ?? null;
+    }
   }
 
   return {
@@ -516,6 +639,13 @@ async function fetchClaudeHtml(feed) {
   if (!SCRAPFLY_API_KEY || !ANTHROPIC_API_KEY) {
     throw new Error("claude_html requires SCRAPFLY_API_KEY and ANTHROPIC_API_KEY");
   }
+  // Cap the number of calendar pages we fetch per feed. Each page is a
+  // separate Scrapfly renderJs call (credits) + a Claude extraction, so 4 is
+  // a deliberate ceiling: enough to capture a town's real upcoming events
+  // without runaway cost on calendars with dozens of pages of repeats.
+  const MAX_PAGES = 4;
+  const keyOf = (e) => `${e?.title || ""}|${e?.start_at || ""}|${e?.venue_name || ""}`;
+
   const { html } = await fetchHtml(feed.url, {
     scrapflyKey: SCRAPFLY_API_KEY,
     renderJs: true,
@@ -528,6 +658,42 @@ async function fetchClaudeHtml(feed) {
     city: feed.city,
     state: feed.state,
   });
+
+  // Follow the calendar's own pagination (pages 2..MAX_PAGES) so later-dated
+  // events aren't dropped — single-page extraction only sees the soonest ~15.
+  // Stop early when a page contributes no NEW events (empty / out-of-range
+  // page) to avoid burning Scrapfly credits on trailing blank pages.
+  const seen = new Set(extracted.map(keyOf));
+  const pageUrls = findPageUrls(html, feed.url, MAX_PAGES - 1);
+  for (const pageUrl of pageUrls) {
+    let pageHtml;
+    try {
+      ({ html: pageHtml } = await fetchHtml(pageUrl, {
+        scrapflyKey: SCRAPFLY_API_KEY,
+        renderJs: true,
+        timeoutMs: 45000,
+      }));
+    } catch { continue; }
+    let pageEvents = [];
+    try {
+      pageEvents = await extractEventsFromHtml({
+        html: pageHtml,
+        sourceUrl: pageUrl,
+        anthropicKey: ANTHROPIC_API_KEY,
+        city: feed.city,
+        state: feed.state,
+      });
+    } catch { continue; }
+    let added = 0;
+    for (const e of pageEvents) {
+      const k = keyOf(e);
+      if (!e?.title || seen.has(k)) continue;
+      seen.add(k);
+      extracted.push(e);
+      added++;
+    }
+    if (added === 0) break;
+  }
   // Stable per-event hash so weekly re-extraction upserts instead of dup-ing.
   // Title + start_at + venue is the strongest natural key for these.
   const events = [];
@@ -660,7 +826,16 @@ async function main() {
     console.warn(`Metro fetch failed: ${metrosRes.status} — events without coords will be dropped from carousels`);
   }
 
-  const feeds = await fetchEnabledFeeds();
+  let feeds = await fetchEnabledFeeds();
+  // Optional scoping for targeted/manual runs (e.g. push one town live now or
+  // re-sync a single state). Unset in CI, so the weekly job still syncs all.
+  const cityFilter = (process.env.FEED_CITY || "").trim().toLowerCase();
+  const stateFilter = (process.env.FEED_STATE || process.env.STATE || "").trim().toUpperCase();
+  if (cityFilter) feeds = feeds.filter((f) => (f.city || "").toLowerCase() === cityFilter);
+  if (stateFilter) feeds = feeds.filter((f) => (f.state || "").toUpperCase() === stateFilter);
+  if (cityFilter || stateFilter) {
+    console.log(`Scope filter — city=${cityFilter || "*"} state=${stateFilter || "*"}`);
+  }
   console.log(`Municipal Feed Sync — ${feeds.length} enabled feed(s)\n`);
 
   let totalFetched = 0, totalUpserted = 0, totalErrors = 0;

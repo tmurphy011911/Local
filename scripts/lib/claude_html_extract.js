@@ -75,4 +75,38 @@ async function extractEventsFromHtml({ html, sourceUrl, anthropicKey, city, stat
   catch { return []; }
 }
 
-module.exports = { extractEventsFromHtml };
+/**
+ * findPageUrls — discover additional calendar pages from the pagination links
+ * already present in a page's HTML.
+ *
+ * Municipal calendars (CivicPlus, The Events Calendar, etc.) render only the
+ * current page's events server-side and expose the rest behind "1 2 3 4 …"
+ * links. A single-page extraction therefore misses every later-dated event.
+ * Rather than guessing each platform's URL scheme, we read the site's OWN
+ * pagination anchors (handles ?page=N, ?paged=N, ?tribe_paged=N, /page/N/),
+ * resolve them absolutely, and return pages 2..(1+maxExtra) in order.
+ *
+ * Returns [] when the page isn't paginated.
+ */
+function findPageUrls(html, baseUrl, maxExtra = 3) {
+  if (!html) return [];
+  let base;
+  try { base = new URL(baseUrl); } catch { return []; }
+  const found = new Map(); // pageNum -> absolute url
+  const re =
+    /href\s*=\s*["']([^"']*?(?:[?&](?:page|paged|tribe_paged|pg)=(\d+)|\/page\/(\d+))[^"']*)["']/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const num = parseInt(m[2] || m[3], 10);
+    if (!num || num < 2) continue;
+    let abs;
+    try { abs = new URL(m[1].replace(/&amp;/g, "&"), base).toString(); } catch { continue; }
+    if (!found.has(num)) found.set(num, abs);
+  }
+  return [...found.entries()]
+    .filter(([n]) => n >= 2 && n <= 1 + maxExtra)
+    .sort((a, b) => a[0] - b[0])
+    .map(([, url]) => url);
+}
+
+module.exports = { extractEventsFromHtml, findPageUrls };

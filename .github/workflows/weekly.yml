@@ -118,6 +118,11 @@ jobs:
 
   discover-municipal-feeds:
     runs-on: ubuntu-latest
+    # The script self-limits via DISCOVER_MAX_MINUTES (default 22m) and exits
+    # 0 gracefully, resuming uncovered cities next run. This job timeout is the
+    # hard backstop only — kept comfortably above the script budget so the job
+    # finishes green instead of being killed mid-probe (which used to skip the
+    # downstream sync).
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -131,8 +136,17 @@ jobs:
         run: node discover_municipal_feeds.js
 
   sync-municipal-feeds:
+    # discover-municipal-feeds ROUTINELY hits its 30m timeout (enumerating +
+    # probing every municipality is slow). Under a plain `needs:` that failure
+    # SKIPS this job — so the weekly refresh of existing feeds never runs and
+    # feeds (e.g. Waltham) go stale for weeks. discover upserts feeds as it
+    # goes, so partial progress persists; this job just needs to run AFTER it,
+    # not depend on its success. always() makes sync run regardless of
+    # discover's outcome (success / failure / timeout). Mirrors the same guard
+    # already applied to classify-events above.
     runs-on: ubuntu-latest
     needs: discover-municipal-feeds
+    if: ${{ always() }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

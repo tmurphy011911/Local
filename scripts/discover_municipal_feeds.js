@@ -32,6 +32,17 @@ let SUPABASE_SERVICE_KEY, ANTHROPIC_API_KEY, SCRAPFLY_API_KEY;
 const ONLY_STATE = process.env.STATE || null;
 const PROBE_TIMEOUT_MS = 8000;
 
+// Wall-clock budget. Enumerating + probing every candidate (700+ for a big
+// state) takes far longer than CI's job timeout, so the runner used to KILL
+// the job mid-probe — which (under the old `needs:` wiring) skipped the
+// downstream sync entirely. Instead we stop probing gracefully once the
+// budget is hit and exit 0. Discovery is idempotent (skips already-known
+// feeds), so the next run resumes with the still-uncovered cities. Override
+// with DISCOVER_MAX_MINUTES; default 22m sits safely under the 30m CI cap.
+const MAX_RUNTIME_MS = Number(process.env.DISCOVER_MAX_MINUTES || 22) * 60_000;
+const START_TS = Date.now();
+const timeBudgetExceeded = () => Date.now() - START_TS > MAX_RUNTIME_MS;
+
 // Curated tourism / CVB / chamber domains to seed alongside Claude's
 // city enumeration. These cover MA cities where the .gov calendar is
 // thin or absent but the visitor bureau / chamber publishes a calendar
@@ -287,7 +298,7 @@ async function enumerateCities(stateName, stateCode, knownMetros) {
   // bureaus, chambers of commerce, BIDs, cultural councils, and town libraries.
   // Returning these inline lets us probe ALL of them per city in one pass
   // instead of hand-maintaining a curated list per state.
-  const prompt = `Enumerate up to 40 cities, towns, and culturally significant places in ${stateName} (${stateCode}). Include incorporated cities/towns over 15,000 population AND smaller places that are well-known cultural/event hubs (e.g. Provincetown, Stockbridge, Lenox).
+  const prompt = `Exhaustively enumerate cities, towns, and culturally significant places in ${stateName} (${stateCode}). Include EVERY incorporated city/town over 12,000 population AND smaller places that are well-known cultural/event hubs (e.g. Provincetown, Stockbridge, Lenox). For a large state like Massachusetts this is 100+ municipalities — do not stop at a round number, list them all. Do not omit mid-size cities (e.g. New Bedford, Fall River, Watertown, Medford, Weymouth, Beverly).
 
 For each, return up to FIVE candidate event-source domains in priority order:
 
@@ -315,7 +326,7 @@ Respond with ONLY a JSON array, no prose. Example:
     },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
-      max_tokens: 8192,
+      max_tokens: 32000,
       messages: [{ role: "user", content: prompt }],
     }),
   });
@@ -325,9 +336,24 @@ Respond with ONLY a JSON array, no prose. Example:
   }
   const data = await res.json();
   const text = data.content?.[0]?.text || "";
-  const match = text.match(/\[[\s\S]*\]/);
-  if (!match) throw new Error(`No JSON array in Claude response: ${text.slice(0, 200)}`);
-  const cities = JSON.parse(match[0]);
+  // For a large state the JSON array can exceed max_tokens and arrive
+  // truncated mid-object (Claude's stop_reason === "max_tokens"). Rather
+  // than throw away the entire enumeration, salvage every complete object:
+  // grab from the first "[" and, if a clean parse fails, trim back to the
+  // last "}" and close the array. We lose only the final partial city.
+  const startIdx = text.indexOf("[");
+  if (startIdx < 0) throw new Error(`No JSON array in Claude response: ${text.slice(0, 200)}`);
+  let cities;
+  const tail = text.slice(startIdx);
+  try {
+    const closed = tail.match(/\][\s\S]*$/) ? tail.slice(0, tail.lastIndexOf("]") + 1) : tail;
+    cities = JSON.parse(closed);
+  } catch (_) {
+    const lastObj = tail.lastIndexOf("}");
+    if (lastObj < 0) throw new Error(`Unparseable city JSON: ${tail.slice(0, 200)}`);
+    cities = JSON.parse(tail.slice(0, lastObj + 1) + "]");
+    console.log(`  ⚠ enumeration JSON was truncated — salvaged ${cities.length} complete cities`);
+  }
 
   // Fan out: each city becomes one candidate per domain, so the existing
   // probe loop touches all of them. Backwards-compatible with the legacy
@@ -403,12 +429,22 @@ async function main() {
       candidates = [...curated, ...candidates];
     }
 
+    let budgetHit = false;
     for (const c of candidates) {
       if (!c.domain) continue;
       // Skip if any of this city's domains already has any registered feed.
       const hostKey = c.domain.replace(/^www\./, "").toLowerCase();
       const alreadyHas = [...knownUrls].some(u => u.toLowerCase().includes(hostKey));
       if (alreadyHas) { totalSkipped++; continue; }
+
+      // Stop probing NEW cities once the time budget is spent. Resumes next
+      // run (idempotent). Checked before the probe so we never start one we
+      // can't finish inside the budget.
+      if (timeBudgetExceeded()) {
+        console.log(`\n  ⏳ time budget (${Math.round(MAX_RUNTIME_MS / 60000)}m) reached — stopping probes; remaining uncovered cities will be picked up next run.`);
+        budgetHit = true;
+        break;
+      }
 
       totalProbed++;
       process.stdout.write(`  Probing ${c.name} (${c.domain})... `);
@@ -435,6 +471,7 @@ async function main() {
         console.log("✗ insert failed");
       }
     }
+    if (budgetHit) break; // don't start the next state once the budget is spent
   }
 
   console.log("\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
