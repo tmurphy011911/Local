@@ -56,6 +56,10 @@ const TABLES = [
   { name: "metros",         filter: "" },
   { name: "curated_events", filter: "" },
   { name: "carousel_cache", filter: "", orderBy: "lat_bucket.asc,lng_bucket.asc,category.asc" },
+  // Small static config the client reads at runtime (SplashConfigService,
+  // VersionCheckService, FeatureFlagsRepository). Both key on text, not id.
+  { name: "app_config",     filter: "", orderBy: "key.asc" },
+  { name: "feature_flags",  filter: "", orderBy: "name.asc" },
 ];
 
 function assertSafeTarget() {
