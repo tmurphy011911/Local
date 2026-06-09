@@ -77,9 +77,9 @@ function headers(key, extra = {}) {
   return { apikey: key, Authorization: `Bearer ${key}`, ...extra };
 }
 
-async function readPage(table, filter, offset) {
+async function readPage(table, filter, offset, orderBy = "id.asc") {
   const sep = filter ? "&" : "";
-  const url = `${PROD_URL}/rest/v1/${table}?select=*${sep}${filter}&order=id.asc&limit=${READ_PAGE}&offset=${offset}`;
+  const url = `${PROD_URL}/rest/v1/${table}?select=*${sep}${filter}&order=${orderBy}&limit=${READ_PAGE}&offset=${offset}`;
   const res = await fetch(url, { headers: headers(PROD_KEY) });
   if (!res.ok) {
     throw new Error(`read ${table} @${offset} -> ${res.status} ${(await res.text()).slice(0, 200)}`);
@@ -102,7 +102,7 @@ async function upsertBatch(table, rows) {
   }
 }
 
-async function copyTable({ name, filter, transform }, now) {
+async function copyTable({ name, filter, transform, orderBy }, now) {
   const resolvedFilter = filter.replace("{now}", encodeURIComponent(now));
   let offset = 0;
   let copied = 0;
@@ -110,7 +110,7 @@ async function copyTable({ name, filter, transform }, now) {
   for (;;) {
     let page;
     try {
-      page = await readPage(name, resolvedFilter, offset);
+      page = await readPage(name, resolvedFilter, offset, orderBy);
     } catch (err) {
       console.warn(`  [${name}] read failed, skipping table: ${err.message}`);
       return;
