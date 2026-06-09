@@ -42,15 +42,20 @@ const WRITE_BATCH = parseInt(process.env.WRITE_BATCH || "500", 10);
 // `{now}` is replaced with the current ISO timestamp at runtime.
 // `transform` (optional) rewrites each row before upsert — used to strip
 // self-referential FKs that would dangle under a scoped (active/future) copy.
+// `orderBy` is the PostgREST `order` clause used for stable pagination. Most
+// tables have an `id` PK, but some don't (states keys on `code`, carousel_cache
+// has a composite (lat_bucket,lng_bucket,category) key) — paginating those by a
+// nonexistent `id` column 400s, so each table declares its own. Defaults to id.
 const TABLES = [
   { name: "venues",         filter: "is_active=eq.true" },
   // events.duplicate_of -> events(id) is a self-FK; the target row is often an
   // older/inactive canonical that's outside this scoped copy, so null it.
   { name: "events",         filter: "is_active=eq.true&start_at=gte.{now}", transform: (r) => ({ ...r, duplicate_of: null }) },
-  { name: "states",         filter: "" },
+  // states must precede metros (metros.state_code -> states.code FK).
+  { name: "states",         filter: "", orderBy: "code.asc" },
   { name: "metros",         filter: "" },
   { name: "curated_events", filter: "" },
-  { name: "carousel_cache", filter: "" },
+  { name: "carousel_cache", filter: "", orderBy: "lat_bucket.asc,lng_bucket.asc,category.asc" },
 ];
 
 function assertSafeTarget() {
