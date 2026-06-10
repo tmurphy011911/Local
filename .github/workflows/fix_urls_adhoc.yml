@@ -1,0 +1,53 @@
+name: Ad-hoc — Fix Venue URLs (state-scoped)
+
+# Manually-dispatched fix_venue_urls run scoped to one state. Built to move the
+# long greenfield/gap-fill fix_urls pass off a flaky local machine and into the
+# cloud where it runs to completion (6h timeout) without being killed mid-run.
+#
+# Only SUPABASE_SERVICE_KEY is needed as a repo secret — ANTHROPIC_API_KEY and
+# SCRAPFLY_API_KEY are fetched from the Supabase `secrets` table by getSecrets().
+
+on:
+  workflow_dispatch:
+    inputs:
+      state:
+        description: "State code to scope to (e.g. CA, NY)"
+        required: true
+        type: string
+      no_deactivate:
+        description: "Never flip is_active=false (required for fresh Google-discovered states)"
+        required: false
+        type: boolean
+        default: true
+      skip_url_check:
+        description: "Skip the serial pre-check of existing events_urls; only fill NULL ones"
+        required: false
+        type: boolean
+        default: true
+      concurrency:
+        description: "Parallel venue workers"
+        required: false
+        type: string
+        default: "5"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  fix-venue-urls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Fix Venue URLs (${{ inputs.state }})
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          STATE: ${{ inputs.state }}
+          NO_DEACTIVATE: ${{ inputs.no_deactivate && '1' || '' }}
+          SKIP_URL_CHECK: ${{ inputs.skip_url_check && '1' || '' }}
+          CONCURRENCY: ${{ inputs.concurrency }}
+        run: node fix_venue_urls.js

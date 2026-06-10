@@ -27,6 +27,9 @@ const METRO = process.env.METRO || "boston";
 const DRY_RUN = process.env.DRY_RUN === "1";
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || "3", 10);
 const RECHECK_ALL = process.env.RECHECK_ALL === "1";
+// Skip the serial HTTP pre-check of venues that already have an events_url and
+// only process the ones missing it. See the candidate-selection block below.
+const SKIP_URL_CHECK = process.env.SKIP_URL_CHECK === "1";
 // Optional state scope (e.g. STATE=NJ). Limits the venue fetch to one state so a
 // new-state run can't touch — or deactivate — venues in already-live states.
 const STATE = (process.env.STATE || "").trim().toUpperCase() || null;
@@ -403,6 +406,15 @@ async function main() {
   let candidates;
   if (RECHECK_ALL) {
     candidates = allVenues.filter((v) => v.website);
+  } else if (SKIP_URL_CHECK) {
+    // Greenfield/resume mode: skip the serial HTTP pre-check of venues that
+    // ALREADY have an events_url — just fill the ones missing it. That pre-check
+    // takes ~1h on a 27k-venue state and, because long runs here keep getting
+    // killed by environment blips, the hour is re-paid on every restart for zero
+    // forward progress. SKIP_URL_CHECK=1 jumps straight to the events_url=NULL
+    // venues. (A periodic RECHECK_ALL run can re-validate existing URLs.)
+    candidates = allVenues.filter((v) => v.website && !v.events_url);
+    console.log(`\nSKIP_URL_CHECK: filling ${candidates.length} venues with no events_url (existing URLs untouched).`);
   } else {
     // Check which events_urls are broken by testing them
     console.log("\nChecking existing events_urls...");
