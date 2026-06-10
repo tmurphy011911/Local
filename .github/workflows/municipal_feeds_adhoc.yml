@@ -1,0 +1,51 @@
+name: Ad-hoc — Discover Municipal Feeds (state-scoped)
+
+# Manually-dispatched municipal/CVB feed discovery scoped to one state. Same
+# motivation as the fix_urls ad-hoc workflow: the claude_html slow-path probe
+# (~30-90s/domain) makes a full top-N pass long enough that a flaky local
+# machine keeps killing it mid-run. In the cloud it runs to completion.
+#
+# Idempotent: skips domains that already have a registered feed and writes each
+# new feed as it's found, so a re-run only probes uncovered candidates.
+#
+# Only SUPABASE_SERVICE_KEY is needed as a repo secret — ANTHROPIC_API_KEY and
+# SCRAPFLY_API_KEY come from the Supabase `secrets` table via getSecrets().
+
+on:
+  workflow_dispatch:
+    inputs:
+      state:
+        description: "State code to scope to (e.g. CA, NY)"
+        required: true
+        type: string
+      top_n:
+        description: "Probe the top N value-ranked candidates per state"
+        required: false
+        type: string
+        default: "50"
+      max_minutes:
+        description: "Time budget before the run stops probing (resumes next run)"
+        required: false
+        type: string
+        default: "300"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  discover-municipal-feeds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Discover Municipal Feeds (${{ inputs.state }})
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          STATE: ${{ inputs.state }}
+          TOP_N: ${{ inputs.top_n }}
+          DISCOVER_MAX_MINUTES: ${{ inputs.max_minutes }}
+        run: node discover_municipal_feeds.js

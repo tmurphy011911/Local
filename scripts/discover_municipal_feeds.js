@@ -290,17 +290,25 @@ async function probeDomain(domain) {
     for (const base of bases) {
       for (const htmlPath of HTML_PROBE_PATHS) {
         const candidate = `${base}${htmlPath}`;
-        try {
-          const { html } = await fetchHtml(candidate, {
-            scrapflyKey: SCRAPFLY_API_KEY,
-            renderJs: true,
-            renderingWait: 4000,
-            timeoutMs: FALLBACK_TIMEOUT_MS,
-          });
-          if (looksLikeEventCalendar(html)) {
-            return { url: candidate, type: "claude_html" };
-          }
-        } catch (_) { /* try next path */ }
+        // The most aggressive WAFs (sftravel.com, sandiego.org — likely
+        // DataDome/Akamai) block Scrapfly's ASP bypass *intermittently*: the
+        // same path that 403s one moment returns 165KB of real content the
+        // next. One retry recovers most of these high-value tourism domains
+        // that would otherwise come back "none".
+        for (let attempt = 0; attempt < 2; attempt++) {
+          try {
+            const { html } = await fetchHtml(candidate, {
+              scrapflyKey: SCRAPFLY_API_KEY,
+              renderJs: true,
+              renderingWait: 4000,
+              timeoutMs: FALLBACK_TIMEOUT_MS,
+            });
+            if (looksLikeEventCalendar(html)) {
+              return { url: candidate, type: "claude_html" };
+            }
+            break; // got HTML but no calendar signal — don't retry, try next path
+          } catch (_) { /* WAF block / timeout — retry once, then next path */ }
+        }
       }
     }
   }
