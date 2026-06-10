@@ -97,6 +97,7 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.TextStyle
@@ -361,14 +362,14 @@ private fun SearchSubTabRow(active: SearchTab, onSelect: (SearchTab) -> Unit) {
             iconName = "events",
             isActive = active == SearchTab.EVENTS,
             onClick = { onSelect(SearchTab.EVENTS) },
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).testTag("explore_tab_events"),
         )
         SubTabTile(
             label = "Places",
             iconName = "places",
             isActive = active == SearchTab.PLACES,
             onClick = { onSelect(SearchTab.PLACES) },
-            modifier = Modifier.weight(1f),
+            modifier = Modifier.weight(1f).testTag("explore_tab_places"),
         )
     }
 }
@@ -572,7 +573,8 @@ private fun SearchBar(query: String, onQueryChange: (String) -> Unit, placeholde
         modifier = Modifier
             .fillMaxWidth()
             .height(56.dp)
-            .shadow(4.dp, RoundedCornerShape(16.dp)),
+            .shadow(4.dp, RoundedCornerShape(16.dp))
+            .testTag("explore_search_field"),
     )
 }
 
@@ -775,6 +777,7 @@ private fun EventDateFilterRow(
                                 if (selectedCategoryId == cat.id) onSelectCategory("All")
                                 else onSelectCategory(cat.id)
                             },
+                            modifier = Modifier.testTag("explore_category_chip"),
                         )
                     }
                 }
@@ -861,6 +864,7 @@ private fun FilterChip(
     onClick: () -> Unit,
     onDismiss: (() -> Unit)? = null,
     dismissOnLeft: Boolean = false,
+    modifier: Modifier = Modifier,
 ) {
     val bg = if (selected) AppColors.Coral else AppColors.White
     val fg = if (selected) AppColors.White else AppColors.Ink2
@@ -891,7 +895,8 @@ private fun FilterChip(
                 end = if (hasDismiss && !dismissOnLeft) 6.dp else 14.dp,
                 top = 8.dp,
                 bottom = 8.dp,
-            ),
+            )
+            .then(modifier),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (hasDismiss && dismissOnLeft) {

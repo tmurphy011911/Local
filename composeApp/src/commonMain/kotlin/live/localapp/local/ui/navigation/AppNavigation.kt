@@ -90,6 +90,7 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.delay
 import coil3.compose.AsyncImage
 import live.localapp.local.domain.model.Event
+import live.localapp.local.domain.model.boLevel
 import live.localapp.local.ui.common.pressable
 import live.localapp.local.ui.chat.ChatScreen
 import live.localapp.local.ui.chat.ChatViewModel
@@ -1903,7 +1904,6 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             }
             val chatSheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
             val premiumGate = remember { live.localapp.local.ui.chat.PremiumGate() }
-            var showTutorial by remember { mutableStateOf(premiumGate.shouldShowTutorial()) }
             var showPaywall by remember { mutableStateOf(pendingShowPaywall) }
             // Tracks a save attempt that was interrupted by the paywall so we can
             // resume the save automatically once the user subscribes / restores.
@@ -1983,37 +1983,28 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             scaleY = bounceScale.value
                         },
                 ) {
-                    if (showTutorial) {
-                        live.localapp.local.ui.chat.YocalTutorial(
-                            onComplete = {
-                                premiumGate.tutorialSeen = true
-                                showTutorial = false
-                            },
-                        )
-                    } else {
-                        ChatScreen(
-                            viewModel = chatVm,
-                            onBack = { dismissChat(null) },
-                            onNavigateToPlans = {
-                                dismissChat {
-                                    selectedTab = Tab.PLANS
-                                    // Force refresh even if already on Plans tab
-                                    val plansVm = koin.get<PlansViewModel>()
-                                    plansVm.refresh()
-                                }
-                            },
-                            onNavigateHome = { dismissChat { selectedTab = Tab.HOME } },
-                            onLoginRequired = {
-                                // Close chat and navigate to auth
-                                dismissChat {
-                                    // TODO: show auth sheet or navigate to login
-                                    // For now, show an alert-style message
-                                }
-                            },
-                            showUpgradeBanner = premiumGate.hasDeclinedPaywall,
-                            onUpgrade = { showPaywall = true },
-                        )
-                    }
+                    ChatScreen(
+                        viewModel = chatVm,
+                        onBack = { dismissChat(null) },
+                        onNavigateToPlans = {
+                            dismissChat {
+                                selectedTab = Tab.PLANS
+                                // Force refresh even if already on Plans tab
+                                val plansVm = koin.get<PlansViewModel>()
+                                plansVm.refresh()
+                            }
+                        },
+                        onNavigateHome = { dismissChat { selectedTab = Tab.HOME } },
+                        onLoginRequired = {
+                            // Close chat and navigate to auth
+                            dismissChat {
+                                // TODO: show auth sheet or navigate to login
+                                // For now, show an alert-style message
+                            }
+                        },
+                        showUpgradeBanner = premiumGate.hasDeclinedPaywall,
+                        onUpgrade = { showPaywall = true },
+                    )
                 }
             }
 
@@ -2563,6 +2554,8 @@ private fun GlobalMilestoneToast(event: CelebrationEvent.MilestoneEarned, onDism
 private fun GlobalLevelUpOverlay(event: CelebrationEvent.StatusLevelUp, onDismiss: () -> Unit) {
     val scale = remember { Animatable(0.6f) }
     val contentAlpha = remember { Animatable(0f) }
+    // 0f = showing the previous Bo, 1f = fully morphed into the new Bo.
+    val morph = remember { Animatable(0f) }
     val haptic = LocalHapticFeedback.current
 
     LaunchedEffect(Unit) {
@@ -2574,6 +2567,10 @@ private fun GlobalLevelUpOverlay(event: CelebrationEvent.StatusLevelUp, onDismis
         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
         contentAlpha.animateTo(1f, tween(300))
         scale.animateTo(1f, spring(dampingRatio = 0.5f, stiffness = androidx.compose.animation.core.Spring.StiffnessLow))
+        // Hold on the old Bo a beat, then morph into the new one.
+        delay(350)
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        morph.animateTo(1f, spring(dampingRatio = 0.55f, stiffness = androidx.compose.animation.core.Spring.StiffnessLow))
         // One more haptic on the bounce
         delay(200)
         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
@@ -2592,6 +2589,41 @@ private fun GlobalLevelUpOverlay(event: CelebrationEvent.StatusLevelUp, onDismis
                 .padding(horizontal = 32.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            // Prev Bo morphs into the new Bo: old shrinks/fades out as the new
+            // one scales up and fades in.
+            val m = morph.value
+            Box(
+                modifier = Modifier.size(140.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                live.localapp.local.ui.character.Bo(
+                    size = 140.dp,
+                    level = event.previousTier.boLevel,
+                    showSparkles = false,
+                    showShadow = false,
+                    modifier = Modifier
+                        .size(140.dp)
+                        .graphicsLayer {
+                            alpha = (1f - m * 1.4f).coerceIn(0f, 1f)
+                            val s = 1f - 0.2f * m
+                            scaleX = s; scaleY = s
+                        },
+                )
+                live.localapp.local.ui.character.Bo(
+                    size = 140.dp,
+                    level = event.newTier.boLevel,
+                    showSparkles = true,
+                    showShadow = false,
+                    modifier = Modifier
+                        .size(140.dp)
+                        .graphicsLayer {
+                            alpha = ((m - 0.35f) / 0.65f).coerceIn(0f, 1f)
+                            val s = 0.8f + 0.2f * m
+                            scaleX = s; scaleY = s
+                        },
+                )
+            }
+            Spacer(Modifier.height(24.dp))
             Text(
                 "LEVEL UP",
                 style = TextStyle(

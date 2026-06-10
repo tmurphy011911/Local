@@ -642,6 +642,7 @@ private fun ReturningSplash(
                 expression = BoExpression.Default,
                 eyeOpen = eyeOpen.value,
                 showShadow = false,
+                level = live.localapp.local.ui.character.cachedBoLevel(),
             )
         }
     }

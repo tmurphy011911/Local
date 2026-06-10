@@ -1,0 +1,10 @@
+# Maestro workspace config. `maestro test .maestro/flows` runs every flow file
+# in alphabetical order (01_onboarding first, which establishes signed-in +
+# onboarded local state that the later tab flows reuse).
+flows:
+  - "flows/*.yaml"
+
+# Subflows live under subflows/ and are pulled in via runFlow; they are not
+# top-level flows themselves.
+includeTags: []
+excludeTags: []

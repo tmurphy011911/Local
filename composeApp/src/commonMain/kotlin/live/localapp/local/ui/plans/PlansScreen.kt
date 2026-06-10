@@ -70,6 +70,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -990,7 +991,8 @@ private fun HeroPlanCard(
             .background(
                 Brush.linearGradient(listOf(AppColors.Coral, Color(0xFFFF4F4F))),
                 cardShape,
-            ),
+            )
+            .testTag("plan_card"),
     ) {
         // Background venue image
         if (firstImageUrl != null) {
@@ -1050,7 +1052,8 @@ private fun HeroPlanCard(
                         .size(30.dp)
                         .background(Color.White.copy(alpha = 0.2f), CircleShape)
                         .clip(CircleShape)
-                        .clickable { onShare() },
+                        .clickable { onShare() }
+                        .testTag("plan_share_btn"),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(Icons.Outlined.IosShare, contentDescription = "Share", modifier = Modifier.size(14.dp), tint = Color.White)
@@ -1501,6 +1504,7 @@ private fun PlanTemplates(
                 // sparkle used, but ties the entry point to Bo explicitly.
                 live.localapp.local.ui.character.Bo(
                     size = 28.dp,
+                    level = live.localapp.local.ui.character.cachedBoLevel(),
                     showSparkles = false,
                     showShadow = false,
                     modifier = Modifier.size(28.dp),

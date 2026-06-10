@@ -1,0 +1,25 @@
+# Regression: favoriting / unfavoriting an event from its Home feed card.
+# The heart control is tagged on the card itself, so this is cross-platform
+# (Compose maps testTag -> resource-id on Android, accessibilityIdentifier on iOS).
+appId: live.localapp.local
+tags:
+  - favorites
+  - smoke
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+# A card with a heart control must be present.
+- assertVisible:
+    id: "home_event_card"
+- assertVisible:
+    id: "home_event_favorite"
+
+# Favorite, then unfavorite — a clean round-trip must not crash the feed.
+- tapOn:
+    id: "home_event_favorite"
+- tapOn:
+    id: "home_event_favorite"
+
+# Feed survived the toggles.
+- assertVisible:
+    id: "home_event_card"

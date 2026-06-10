@@ -119,6 +119,9 @@ private val SUPPORTED_STATE_BOUNDS = listOf(
     // disambiguates cross-river metros. Client bounds only gate "is this a
     // supported state at all", so the overlap is harmless here.
     StateBounds("NJ", 38.9, 41.4, -75.6, -73.9),
+    // CA is geographically isolated from the eastern live set — its box overlaps
+    // no other state, so the resolveUserState tie-break never has to disambiguate it.
+    StateBounds("CA", 32.5, 42.0, -124.5, -114.1),
 )
 
 fun isLocationInSupportedState(lat: Double?, lng: Double?): Boolean {
@@ -136,6 +139,7 @@ private val PLACEHOLDER_CITIES_BY_STATE = mapOf(
     "PA" to listOf("Philadelphia", "Pittsburgh", "Lancaster"),
     "NY" to listOf("New York City", "Buffalo", "Albany"),
     "NJ" to listOf("Newark", "Jersey City", "Princeton"),
+    "CA" to listOf("Los Angeles", "San Francisco", "San Diego"),
 )
 private val DEFAULT_PLACEHOLDER_CITIES = listOf("a city or neighborhood")
 
@@ -657,6 +661,8 @@ class HomeViewModel(
         "burlington", "montpelier" -> "VT"
         "portsmouth", "concord", "nashua", "manchester" -> "NH"
         "hartford", "new haven", "stamford" -> "CT"
+        "los angeles", "san francisco", "san diego", "sacramento", "fresno",
+        "san jose", "oakland", "long beach", "anaheim", "santa monica" -> "CA"
         else -> "MA"
     }
 

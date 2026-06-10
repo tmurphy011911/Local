@@ -15,7 +15,7 @@ import live.localapp.local.domain.repository.UserPreferencesRepository
 import live.localapp.local.observability.Analytics
 import live.localapp.local.observability.AnalyticsEvent
 
-enum class AuthStep { PHONE, OTP, NAME }
+enum class AuthStep { PHONE, OTP, EMAIL }
 
 /** Minimal RFC-pragmatic email check: non-empty local part, "@", domain with a dot. */
 fun isValidEmail(value: String): Boolean {
@@ -65,22 +65,10 @@ class PhoneAuthViewModel(
         if (digits.length == 6) verifyOtp()
     }
 
-    fun updateFirstName(value: String) {
-        _state.update { it.copy(firstName = value, error = null) }
-    }
-
-    fun updateLastName(value: String) {
-        _state.update { it.copy(lastName = value, error = null) }
-    }
-
     fun sendOtp() {
         val phone = _state.value.phone
         if (phone.length < 10) {
             _state.update { it.copy(error = "Please enter a valid 10-digit phone number") }
-            return
-        }
-        if (!isValidEmail(_state.value.email)) {
-            _state.update { it.copy(error = "Please enter a valid email address") }
             return
         }
 
@@ -132,7 +120,10 @@ class PhoneAuthViewModel(
                     signInTestUser()
                     val userId = supabaseClient.auth.currentSessionOrNull()?.user?.id
                         ?: throw IllegalStateException("No session after test sign-in")
-                    val hasProfile = userPreferencesRepository.profileExistsForAuthId(userId)
+                    // Force-onboarding: ignore the canned account's existing profile
+                    // so the onboarding flow runs every sign-in (regression testing).
+                    val hasProfile = !live.localapp.local.Config.testForceOnboardingActive &&
+                        userPreferencesRepository.profileExistsForAuthId(userId)
                     Analytics.identify(userId = userId)
                     if (hasProfile) {
                         userPreferencesRepository.recoverProfileByAuthId(userId)
@@ -141,7 +132,7 @@ class PhoneAuthViewModel(
                         }
                     } else {
                         _state.update {
-                            it.copy(isLoading = false, authComplete = true, authUserId = userId)
+                            it.copy(isLoading = false, step = AuthStep.EMAIL, authUserId = userId)
                         }
                     }
                 } catch (e: Exception) {
@@ -185,12 +176,12 @@ class PhoneAuthViewModel(
                         )
                     }
                 } else {
-                    // New user: skip name collection, go straight to onboarding
+                    // New user: collect email before onboarding
                     Analytics.track(AnalyticsEvent.signedUp(method = "phone_otp", entryPoint = "organic"))
                     _state.update {
                         it.copy(
                             isLoading = false,
-                            authComplete = true,
+                            step = AuthStep.EMAIL,
                             authUserId = userId,
                         )
                     }
@@ -238,13 +229,13 @@ class PhoneAuthViewModel(
         sendOtp()
     }
 
-    fun submitName() {
+    fun submitEmail() {
         val s = _state.value
-        if (s.firstName.isBlank()) {
-            _state.update { it.copy(error = "Please enter your first name") }
+        if (!isValidEmail(s.email)) {
+            _state.update { it.copy(error = "Please enter a valid email address") }
             return
         }
-        // Signal ready for onboarding
+        // Email captured — signal ready for onboarding
         _state.update { it.copy(authComplete = true) }
     }
 

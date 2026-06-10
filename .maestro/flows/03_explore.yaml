@@ -1,0 +1,35 @@
+# Regression: Explore (Places) tab — search events/places.
+appId: live.localapp.local
+tags:
+  - explore
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+- tapOn: "Explore"
+
+# Search field + both sub-tabs are present (hard gate).
+- assertVisible:
+    id: "explore_search_field"
+- assertVisible:
+    id: "explore_tab_events"
+- assertVisible:
+    id: "explore_tab_places"
+
+# Search the events tab.
+- tapOn:
+    id: "explore_search_field"
+- inputText: "music"
+- hideKeyboard
+
+# Results (or an empty-state) should render without crashing.
+- scroll
+
+# Switch to the Places sub-tab — it must stay rendered.
+- tapOn:
+    id: "explore_tab_places"
+- assertVisible:
+    id: "explore_search_field"
+
+# Back to Home.
+- tapOn: "Home"
+- assertVisible: "Explore"

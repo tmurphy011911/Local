@@ -41,13 +41,22 @@ data class BadgeMilestone(
 enum class StatusTier(val label: String, val threshold: Int) {
     NEW_IN_TOWN("New in Town", 0),
     FINDING_MY_WAY("Finding My Way", 500),
-    GETTING_OUT_THERE("Getting Out There", 2500),
-    REGULAR("Regular", 10000),
+    SETTLING_IN("Settling In", 2500),
+    GETTING_OUT_THERE("Getting Out There", 10000),
+    REGULAR("Regular", 25000),
     INSIDER("Insider", 50000),
-    TOWNIE("Townie", 150000),
+    TOWNIE("Townie", 100000),
     LOCAL("Local", 500000),
     LOCAL_LEGEND("Local Legend", 1000000),
 }
+
+/**
+ * Bo character level (0–8) for a tier — drives which prop/face Bo wears.
+ * Index matches the enum declaration order, so inserting a tier keeps the
+ * mapping correct automatically.
+ */
+val StatusTier.boLevel: Int
+    get() = StatusTier.entries.indexOf(this)
 
 /** Determine status tier from total points. */
 fun statusTierForPoints(points: Int): StatusTier {

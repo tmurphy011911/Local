@@ -51,6 +51,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -126,7 +127,8 @@ fun CreatePlanButton(
                     },
                 )
             }
-            .padding(horizontal = 14.dp),
+            .padding(horizontal = 14.dp)
+            .testTag("plan_create_btn"),
         contentAlignment = Alignment.Center,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -308,10 +310,11 @@ private fun BounceInMenuItem(
             // character instead of a sparkle icon — gives Bo a recognizable
             // entry point and replaces the generic AutoAwesome glyph.
             live.localapp.local.ui.character.Bo(
-                size = 32.dp,
+                size = 44.dp,
+                level = live.localapp.local.ui.character.cachedBoLevel(),
                 showSparkles = false,
                 showShadow = false,
-                modifier = Modifier.size(32.dp),
+                modifier = Modifier.size(44.dp),
             )
         } else {
             Box(

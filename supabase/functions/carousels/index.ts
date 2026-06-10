@@ -2603,6 +2603,39 @@ async function fetchUserPreferences(
     }
   }
 
+  // --- REVERTIBLE BLOCK: event-favorite → category promotion (added 2026-06-09) ---
+  // Mirrors the place-save → selected_venues merge above. Categories a user
+  // favorites at the EVENT level (community_interactions, item_type='event')
+  // get the same dedicated-rail + preference treatment that saved PLACES
+  // already get, instead of only nudging sort order via category affinity.
+  // TO REVERT: set MERGE_EVENT_FAVORITE_CATEGORIES = false (no-op), or delete
+  // this whole block and change the return below back to
+  //   selected_categories: data.selected_categories ?? [],
+  const MERGE_EVENT_FAVORITE_CATEGORIES = true;
+  const onboardingCategories: string[] = data.selected_categories ?? [];
+  let mergedCategories: string[] = onboardingCategories;
+  if (MERGE_EVENT_FAVORITE_CATEGORIES) {
+    const { data: evFavRows } = await supabase
+      .from("community_interactions")
+      .select("category")
+      .eq("user_id", userId)
+      .eq("item_type", "event")
+      .eq("interaction_type", "favorite");
+    const seenCat = new Set(onboardingCategories.map((c) => c.toLowerCase()));
+    mergedCategories = [...onboardingCategories];
+    for (const row of (evFavRows ?? []) as { category?: string }[]) {
+      const cat = (row.category ?? "").trim();
+      if (!cat) continue;
+      const lc = cat.toLowerCase();
+      if (lc === "other") continue; // catch-all bucket, not a real preference
+      if (!seenCat.has(lc)) {
+        mergedCategories.push(cat);
+        seenCat.add(lc);
+      }
+    }
+  }
+  // --- END REVERTIBLE BLOCK ---
+
   return {
     id: data.id,
     first_name: data.first_name ?? null,
@@ -2613,7 +2646,7 @@ async function fetchUserPreferences(
     user_lng: data.user_lng ?? null,
     selected_neighborhoods: data.selected_neighborhoods ?? [],
     selected_venues: mergedVenues,
-    selected_categories: data.selected_categories ?? [],
+    selected_categories: mergedCategories,
     notif_tickets: data.notif_tickets ?? true,
     notif_nearby: data.notif_nearby ?? true,
     notif_venues: data.notif_venues ?? true,

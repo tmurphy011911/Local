@@ -28,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -189,7 +190,8 @@ fun AppHeader(
                     .background(AppColors.Coral, AppShapes.Avatar)
                     .border(2.dp, AppColors.CoralDk, AppShapes.Avatar)
                     .clip(AppShapes.Avatar)
-                    .clickable { onProfileClick() },
+                    .clickable { onProfileClick() }
+                    .testTag("nav_profile_avatar"),
                 contentAlignment = Alignment.Center,
             ) {
                 if (userInitial.isNotEmpty()) {

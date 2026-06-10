@@ -62,8 +62,30 @@ class PlanDetailTransitionController {
         self.sheetDismissDelegate = delegate
         self.hostingController = hostVC
 
+        presentWhenReady(hostVC: hostVC, in: window, attempt: 0)
+    }
+
+    /// Present only once the topmost view controller is NOT mid-transition.
+    ///
+    /// The plan-success "View Plan" CTA dismisses the chat sheet (animated) and
+    /// then asks to open the saved plan. If we present while that dismissal is
+    /// still in flight, UIKit drops the present and strands an orphaned
+    /// transition/dimming layer over the window — the app looks "completely
+    /// frozen" (touches swallowed, no crash). Waiting for the transition to
+    /// settle instead of guessing a fixed delay removes the race entirely.
+    private func presentWhenReady(hostVC: UIViewController, in window: UIWindow, attempt: Int) {
         guard let topVC = topViewController(in: window) else {
-            onDismissed()
+            onDismissed?()
+            return
+        }
+        let isTransitioning = topVC.isBeingDismissed
+            || topVC.isBeingPresented
+            || topVC.transitionCoordinator != nil
+        // ~1s ceiling (20 * 50ms) so a stuck transition can never wait forever.
+        if isTransitioning && attempt < 20 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.presentWhenReady(hostVC: hostVC, in: window, attempt: attempt + 1)
+            }
             return
         }
         topVC.present(hostVC, animated: true)

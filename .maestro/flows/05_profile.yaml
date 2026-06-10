@@ -1,0 +1,23 @@
+# Regression: Profile (progress/badges) screen opens from the header avatar.
+appId: live.localapp.local
+tags:
+  - profile
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+# Profile is reached via the header avatar (tagged), not a bottom tab.
+- tapOn:
+    id: "nav_profile_avatar"
+
+# Progress screen is up — Log Out and the Notifications support row are stable
+# anchors that render for every account.
+- scrollUntilVisible:
+    element:
+      text: "Log Out"
+    direction: DOWN
+- assertVisible: "Log Out"
+- assertVisible: "Notifications"
+
+# NOTE: no trailing `back` — the Progress screen has no BackHandler, so a system
+# back drops to the Android launcher and exits the app. We end on the in-app
+# assertion above; the next flow relaunches cleanly via ensure_home.

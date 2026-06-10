@@ -89,7 +89,7 @@ private fun StepIcon(page: Int, trigger: Int) {
         // Page 1 is "Meet Bo" — render the actual Bo character.
         1 -> live.localapp.local.ui.character.Bo(
             size = size,
-            expression = live.localapp.local.ui.character.BoExpression.Default,
+            level = live.localapp.local.ui.character.cachedBoLevel(),
             trigger = trigger,
             modifier = mod,
         )

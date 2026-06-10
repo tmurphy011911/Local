@@ -1,0 +1,27 @@
+# Regression: Home feed loads with carousels and is scrollable.
+appId: live.localapp.local
+tags:
+  - home
+  - smoke
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+# Feed must render at least one event card (hard gate — a blank/crashed feed
+# regresses here instead of silently passing).
+- assertVisible:
+    id: "home_event_card"
+
+# The concierge "Ask Bo" bar is part of the Home chrome.
+- assertVisible:
+    id: "home_concierge_input"
+
+# Feed scrolls without crashing and another card is reachable below the fold.
+- scroll
+- scroll
+- assertVisible:
+    id: "home_event_card"
+
+# Bottom tabs are present.
+- assertVisible: "Home"
+- assertVisible: "Explore"
+- assertVisible: "Plans"

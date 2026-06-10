@@ -294,6 +294,13 @@ class ChatViewModel(
         // timeout. The tool loop's circuit breaker counts consecutive rounds
         // where every data tool returned this and bails early.
         const val TOOL_INFRA_TIMEOUT_MARKER = """{"error":"infra_timeout"}"""
+        // Sentinel returned when Bo emits a CLIENT tool_use for a server-side
+        // tool (web_search / web_fetch) that the current round didn't include.
+        // Haiku does this when the prompt urges a search but the per-round gate
+        // omitted the tool. The loop turns this into a "tool now enabled, retry"
+        // signal instead of the old "Unknown tool" dead end that made Bo answer
+        // from DB scraps only (the "web result cut off" bug).
+        const val TOOL_WEB_PHANTOM_MARKER = """{"_phantom_web_tool":true}"""
     }
 
     private fun persistScope(name: String, lat: Double?, lng: Double?, radiusMiles: Double) {
@@ -889,12 +896,12 @@ class ChatViewModel(
                     pendingBuildHandoff = BuildHandoff(eventIds, addingToExisting),
                     quickReplies = listOf(
                         QuickReply(
-                            label = "No, create the plan",
+                            label = "Create the plan",
                             isGreen = true,
                             action = "handoff_build_now",
                         ),
                         QuickReply(
-                            label = "Yes",
+                            label = "Add something else",
                             action = "handoff_show_extras",
                         ),
                     ),
@@ -968,18 +975,18 @@ class ChatViewModel(
         else -> "th"
     }
 
-    /** "No, create the plan" chip — build immediately, no extras. */
+    /** "Create the plan" chip — build immediately, no extras. */
     private fun handoffBuildImmediate() {
         val pending = _uiState.value.pendingBuildHandoff ?: return
-        addUserMessage("No, create the plan")
+        addUserMessage("Create the plan")
         _uiState.update { it.copy(pendingBuildHandoff = null, quickReplies = emptyList()) }
         sendBuildIntent(pending.eventIds, pending.addingToExisting, extras = null)
     }
 
-    /** "Yes" chip — show the four extras chips. Keeps pendingBuildHandoff. */
+    /** "Add something else" chip — show the four extras chips. Keeps pendingBuildHandoff. */
     private fun handoffShowExtrasChips() {
         if (_uiState.value.pendingBuildHandoff == null) return
-        addUserMessage("Yes")
+        addUserMessage("Add something else")
         addMessage(
             ChatMessage(
                 role = MessageRole.AI,
@@ -2356,13 +2363,12 @@ class ChatViewModel(
         // which calls search_venues, hits the empty-DB gate, then web search.
         // Substring match is intentionally loose: a false positive only costs
         // the old two-call path (the safe default), never correctness.
-        val venueDiscoverySignals = listOf(
-            "restaurant", "dining", "where to eat", "places to eat", "good eats",
-            "bar", "pub", "cafe", "café", "coffee", "bakery", "diner",
-            "brewery", "breweries", "brewpub", "winery", "wineries", "distillery",
-            "speakeasy", "cocktail", "rooftop",
-        )
-        if (venueDiscoverySignals.any { lower.contains(it) }) return null
+        // Any dining/food-and-drink ask (incl. bare "food" / "eat" / "brunch")
+        // is venue discovery, not an event browse. Priming food EVENTS for these
+        // both yields non-matches AND force-terminates present_suggestions on
+        // round 0 — before Bo can search venues or escalate to web_search (which
+        // a dining ask should always reach). Bounce them to the normal flow.
+        if (isDiningIntent(userText)) return null
 
         // Category keyword → canonical category (the set search_events +
         // present_suggestions understand).
@@ -2508,6 +2514,11 @@ class ChatViewModel(
         var consecutiveTimeoutRounds = 0
         // Start with Haiku for fast clarifying questions. Switch to Opus when tools are needed.
         var currentModel = live.localapp.local.data.remote.ClaudeApiService.MODEL_CHAT
+        // Set once Bo has tried to call web_search/web_fetch but the round's
+        // gate hadn't included the server-side tool (the phantom-call case).
+        // Forces the server tool into every subsequent round's tool list so
+        // Bo's retry actually runs server-side instead of dead-ending again.
+        var forceWebTools = false
 
         // Phase 1: Bo's web search/fetch gate. Per-turn check against:
         //  - Live-state rule (user must be in a state with is_live=true)
@@ -2529,9 +2540,25 @@ class ChatViewModel(
             // can reach the empty-DB web fallback instead of dead-ending on chips.
             val dbCameUpEmpty =
                 (searchEventsRan || searchVenuesRan) && !turnHadAnyEvents && !turnHadAnyVenues
+            // Second unlock: pure-information turns (the INFORMATION VS EVENTS
+            // carve-out). The user asked for facts about a place/venue, not a
+            // list of events, so the DB-first gate doesn't apply — make
+            // web_search available from the start. Still budget-gated below; the
+            // prompt decides whether to actually call it.
+            val infoIntent = isInfoOnlyIntent(lastUserMessage)
+            // Third unlock: dining/food-and-drink discovery. Our DB may carry
+            // some restaurants, but it will never have more than the open web,
+            // so a "good restaurants nearby" ask should reach web_search from
+            // the start — even when the local DB returned venue hits (which the
+            // dbCameUpEmpty gate would otherwise suppress).
+            val diningIntent = isDiningIntent(lastUserMessage)
+            // Fourth unlock: Bo already reached for web_search this turn but the
+            // tool wasn't in the round (phantom call). Force it in now so the
+            // retry runs server-side. Still budget-gated — forceWebTools is only
+            // set when budget.allowWebSearch was true.
             return toolsWithWeb(
                 base = claudeTools,
-                allowWebSearch = budget?.allowWebSearch == true && dbCameUpEmpty,
+                allowWebSearch = budget?.allowWebSearch == true && (dbCameUpEmpty || infoIntent || diningIntent || forceWebTools),
                 allowWebFetch = budget?.allowWebFetch == true,
                 includeWebFinding = buildFromWeb,
             )
@@ -2750,12 +2777,20 @@ class ChatViewModel(
                         if (r.trimStart().startsWith("[")) turnHadAnyVenues = true
                     }
                 }
+                // At the round cap we can't grant another web round — if Bo
+                // emitted a phantom web_search here, tell it plainly to finish
+                // without one rather than echoing the internal marker.
+                val finalResultContents = finalRoundResults.map { r ->
+                    if (r == TOOL_WEB_PHANTOM_MARKER)
+                        """{"status":"web_search_unavailable","note":"No more web searches available this turn. Answer with what you have now."}"""
+                    else r
+                }
                 val toolResultBlocks = kotlinx.serialization.json.buildJsonArray {
                     toolCalls.forEachIndexed { i, call ->
                         add(kotlinx.serialization.json.buildJsonObject {
                             put("type", JsonPrimitive("tool_result"))
                             put("tool_use_id", JsonPrimitive(call.id))
-                            put("content", JsonPrimitive(anchor + finalRoundResults[i]))
+                            put("content", JsonPrimitive(anchor + finalResultContents[i]))
                         })
                     }
                 }
@@ -2852,6 +2887,25 @@ class ChatViewModel(
                 }
             }
 
+            // Phantom web-tool recovery. Bo (Haiku) sometimes emits a CLIENT
+            // tool_use for web_search/web_fetch when the prompt pushes a search
+            // but the round's gate didn't include the server-side tool. Left as
+            // an "Unknown tool" error, Bo abandons the web and answers from DB
+            // scraps — the "web result cut off" bug. Instead: if the user's
+            // web budget allows, force the server tool into the next round and
+            // hand Bo a tool_result telling it to retry (which then runs
+            // server-side). If budget is exhausted/region-blocked, tell Bo
+            // plainly so it stops retrying and answers with what it has.
+            val resultContents = results.mapIndexed { i, r ->
+                if (r != TOOL_WEB_PHANTOM_MARKER) return@mapIndexed r
+                if (budget?.allowWebSearch == true) {
+                    forceWebTools = true
+                    """{"status":"web_search_enabled","note":"Web search is now available this turn. Call web_search again with your query to get live results before answering."}"""
+                } else {
+                    """{"status":"web_search_unavailable","note":"Web search isn't available right now. Answer using your existing knowledge and the local database results, or ask the user to refine — do not call web_search again."}"""
+                }
+            }
+
             // Circuit breaker: did this round's data tools ALL time out?
             // (Terminal/UI tools don't count — only data fetches that hit the
             // network.) If so, the backend is unreachable; bumping the counter.
@@ -2879,7 +2933,7 @@ class ChatViewModel(
                     add(kotlinx.serialization.json.buildJsonObject {
                         put("type", JsonPrimitive("tool_result"))
                         put("tool_use_id", JsonPrimitive(call.id))
-                        put("content", JsonPrimitive(anchor + results[i]))
+                        put("content", JsonPrimitive(anchor + resultContents[i]))
                     })
                 }
             }
@@ -3053,6 +3107,12 @@ class ChatViewModel(
                     "get_event_details" -> getEventDetails(input)
                     "recommend_and_save_venue" -> recommendAndSaveVenue(input)
                     "save_web_finding" -> saveWebFinding(input)
+                    // web_search / web_fetch are Anthropic server-side tools — they
+                    // should never reach here as a client tool_use. When they do,
+                    // the round's gate omitted the server tool while the prompt
+                    // still urged a search; flag it as a phantom so the loop can
+                    // re-enable the real tool and let Bo retry (see sendWithToolLoop).
+                    "web_search", "web_fetch" -> return TOOL_WEB_PHANTOM_MARKER
                     else -> return """{"error": "Unknown tool: $name"}"""
                 }
                 return result
@@ -3486,6 +3546,16 @@ class ChatViewModel(
                     appendLine("'best restaurants in Watertown', 'cool bars nearby' (not asking a factual")
                     appendLine("question). In that case web_search is REQUIRED (not last resort) — see the")
                     appendLine("EMPTY DB FALLBACK section below for the exact flow.")
+                    appendLine("")
+                    appendLine("OR — DINING/FOOD-AND-DRINK EXCEPTION — rules 1-3 above DO NOT apply when the")
+                    appendLine("user is asking for restaurants, bars, cafes, breweries, or anywhere to eat or")
+                    appendLine("drink (e.g. 'good restaurants nearby', 'where can I get brunch', 'cool")
+                    appendLine("cocktail bars'). Our DB carries only a thin slice of local dining — the open")
+                    appendLine("web always has more. So for a dining ask, run ONE web_search for the cuisine/")
+                    appendLine("vibe + location (e.g. 'best Italian restaurants in Waltham MA') EVEN WHEN")
+                    appendLine("search_venues returned hits, and fold the web finds in alongside any DB")
+                    appendLine("matches. Do NOT dead-end on a short DB-only list for dining. Still ONE")
+                    appendLine("web_search call, not a research spree.")
                     appendLine("")
                     appendLine("DO NOT use web_search for:")
                     appendLine("  • Explaining what something is (history, geography, biography, definitions).")
@@ -4981,6 +5051,49 @@ class ChatViewModel(
         return if (planSignals.any { lower.contains(it) }) "plan" else "info"
     }
 
+    /**
+     * Detect a pure-INFORMATION request (vs an event search). Used only to
+     * UNLOCK Anthropic web_search for the turn — it never forces a web call
+     * (the system prompt's INFORMATION VS EVENTS carve-out decides that) and it
+     * stays gated behind [fetchBoWebBudget]. Catches both the one-shot info
+     * question ("Dorney Park hours", "top spots for tourists") and the user's
+     * "just the info" reply to Bo's events-vs-info clarifier.
+     */
+    private fun isInfoOnlyIntent(userText: String): Boolean {
+        val lower = userText.lowercase()
+        // "just the hours" / "only the info" / "just the spots" — the info-branch reply.
+        if (Regex("\\b(just|only)\\b.{0,16}\\b(info|information|hours|spots|places|facts|details)\\b").containsMatchIn(lower)) return true
+        val infoSignals = listOf(
+            "hours", "what time", "opening time", "open today", "is it open", "are they open",
+            "top spots", "best places", "best spots", "tourist", "tourists",
+            "hottest restaurant", "tell me about", "info about", "information about",
+        )
+        return infoSignals.any { lower.contains(it) }
+    }
+
+    /**
+     * Dining/food-and-drink discovery intent ("good restaurants nearby",
+     * "where can I eat", "brunch spots", "cool bars"). For these, web search is
+     * ALWAYS unlocked — our DB may carry some restaurants, but it will never
+     * have more than the open web, so a dining ask should be allowed to reach
+     * web_search even when the local DB returns hits (unlike the generic
+     * empty-DB gate). Kept loose on purpose: a false positive only adds the
+     * web_search tool to the round (the prompt still decides whether to call
+     * it), it never forces a search.
+     */
+    private fun isDiningIntent(userText: String): Boolean {
+        val lower = userText.lowercase()
+        val diningSignals = listOf(
+            "restaurant", "dining", "where to eat", "where can i eat", "places to eat",
+            "good eats", "food", "eat", "foodie", "brunch", "breakfast", "lunch", "dinner",
+            "bar", "pub", "cafe", "café", "coffee", "bakery", "diner",
+            "brewery", "breweries", "brewpub", "winery", "wineries", "distillery",
+            "speakeasy", "cocktail", "rooftop", "sushi", "pizza", "tacos", "ramen",
+            "steakhouse", "oyster",
+        )
+        return diningSignals.any { lower.contains(it) }
+    }
+
     private fun buildSystemPrompt(): String {
         val state = _uiState.value
 
@@ -5057,7 +5170,7 @@ You are Bo, an AI assistant inside a local events and dining app called Local. B
 
 ABSOLUTE RULES (highest priority — these override every other rule and example below):
 0. NO EMOJI. ZERO emoji characters in any response — not in greetings, not in tool result `text` fields, not in headlines, not in slot names or details, NOWHERE. This includes faces (🙂 😊 🤖), gestures (👋 🙌 🙏), hearts (❤️ 💕), sparkles (✨), arrows (↕️ ➡️), symbols (✓ ✅ ⭐), and ALL ZWJ-sequence variants (🙂‍↕️). The iOS rendering layer cannot draw above-BMP code points and they show up as box-question-marks. Write plain text only. If you find yourself reaching for an emoji to soften a greeting, just don't — natural prose works fine.
-1. STAY IN SCOPE. You ONLY help users discover local events/venues and build plans. You do not engage with off-topic chat (history, geography, jokes, advice, biography, definitions, news, weather alone, sports scores, math, code, recipes, debates, therapy, current events, etc.). For ANY off-topic message, call present_scope_redirect with one redirect chip — do not free-text an answer, do not "just this once," do not be helpful in another domain.
+1. STAY IN SCOPE. Your scope is LOCAL: (a) cities/states and the places in them, (b) venues/places, (c) events and things to do. You help users discover events/venues, build plans, AND answer factual questions about a place or venue when they ask (hours, "top spots", "best places", what a venue is, neighborhood info) — see INFORMATION VS EVENTS below for how. You do NOT engage with anything OUTSIDE those three buckets: pure trivia/biography ("when did the Beatles break up"), general history/science, math, code, recipes, debates, therapy, news, sports scores, jokes-on-demand. For a message outside all three buckets, call present_scope_redirect with one redirect chip — do not free-text an answer, do not "just this once." A question about a real city/state, a venue/place, or events/things to do is IN scope even if it's "just information" — handle it, don't redirect it.
 2. NEVER PRESENT AN EVENT ON THE WRONG DAY. The day a user sees an event under (group label, plan slot's day, "Next: <date>" line, anything) MUST equal the calendar day of that event's `start_at` in the user's local timezone. If you cannot verify the day, do NOT include the event. Never bucket a Friday event under a Thursday or Saturday label. Never say "Next: May 9" for an event whose local start_at is May 8.
 3. PROXIMITY FIRST. Default to events closest to the user. Search at the user's coords first; only widen the radius if the first pass returns < 3 results AND the user has NOT named a different city/town. If the user did name a location ("Cape Cod", "Concord"), search there — never silently fall back to the user's coords on a UNRESOLVED_LOCATION signal, never substitute a different city.
 4. NEVER MISCATEGORIZE. An "outdoor events" group must contain only outdoor events; an "arts" group must contain only arts; etc. Before submitting present_suggestions, check every event in every group against its label and DROP any event whose `category`/`subcategory` doesn't fit. If that empties a group, drop the group. Better to return fewer accurate picks than to pad with unrelated events. The client also re-buckets by actual category/day, but mismatches in your JSON are a bug — fix it on your side too.
@@ -5083,6 +5196,19 @@ SEARCH-FIRST (hard rule):
   - This applies especially when the user named a date with no other filter (e.g. "I want to do something May 15"). The search has already produced a cross-section across all categories — show the cross-section. The user picked the date themselves; they're explicitly browsing.
   - Vibe/category narrowing happens AFTER they've seen options, not before. If the user then says "actually just music", run a second search with the new filter — but only after present_suggestions has shown the broad set first.
   - The ONE exception: if the search returned 0-2 results, you may ask whether to broaden (date or category) — but per SEARCH DEPTH, you must run a broadened second search yourself first before claiming nothing's there.
+
+INFORMATION VS EVENTS (carve-out to SEARCH-FIRST — ask once, then branch):
+- TRIGGER: the user asks about a place, city/state, or a venue but names NO event/activity word — i.e. they might want general information, not a list of events. Signals: "hours" / "open" / "best places" / "top spots" / "things to do" used as a destination question / "hottest restaurants in X" / a bare venue name with nothing else / "what's good in {city}". These are ambiguous: the user might want events, or might just want the facts.
+- ACTION: do NOT search yet and do NOT redirect. Reply with ONE short, friendly question that offers BOTH paths — events/things-to-do OR just the information — then STOP. Templates (adapt naturally, no emoji):
+  - Venue hours: "I can go find {venue}'s hours — want me to find events or things to do there too, or just the hours?"
+  - Best/hottest places: "I can find the hottest restaurants in {city}. Want me to find events going on in {city} too, or just the top spots?"
+  - Top spots / tourists: "Are you looking for events and things to do too, or just the top spots?"
+  - Bare venue name: "Are you looking for events at {venue}, or specific information about it?"
+- AFTER THEY ANSWER:
+  - "events" / "things to do" / "both" → SEARCH-FIRST resumes in full: search immediately and present_suggestions.
+  - "just the {info}" / "just hours" / "just the spots" → answer the factual question. Use web_search if it's available this turn (the app unlocks it for information requests), then deliver the answer via present_quick_fact (or present_venue_brief for a venue). If web_search is NOT available, answer from what you reliably know and say it may not be current — do not invent hours/prices.
+- This is the ONLY other pre-search question allowed besides LOCATION CASE C and BARE-REFINEMENT. If the user ALREADY named an event/activity word ("live music in {city}", "things to do Friday", "jazz spots near {place}"), this carve-out does NOT apply — that's concrete event intent, search immediately, do not ask.
+- A pure out-of-scope question (not about a real city/state, venue/place, or events) is NOT this carve-out — redirect it per ABSOLUTE RULE #1.
 
 BARE-REFINEMENT CHIPS (narrow carve-out to SEARCH-FIRST — ask, don't guess):
 - The suggestion tray footer shows refinement chips. Tapping one sends a short message like "How about another day?" (Different day), "Cast a wider net, Bo" (Search wider), or "Try something different" (Different category). These are DIRECTION without the PARAMETER — you don't yet know WHICH day, HOW to widen, or WHICH category. SEARCH-FIRST does NOT apply because there is no concrete intent to search on yet.

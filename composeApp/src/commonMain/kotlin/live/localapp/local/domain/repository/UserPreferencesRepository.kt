@@ -26,8 +26,18 @@ data class UserPreferences(
     val manualLocationName: String? = null,
     val manualLat: Double? = null,
     val manualLng: Double? = null,
+    /** Durable, write-once anchor: the location chosen during onboarding. Unlike
+     *  manual*/userLat (which track the active location), the DB makes these
+     *  immutable once set, so they're safe to back social/"hometown" features. */
+    val hometownName: String? = null,
+    val hometownLat: Double? = null,
+    val hometownLng: Double? = null,
+    /** When the hometown was first captured (server-stamped, read-only). */
+    val hometownSetAt: String? = null,
     /** Local Pro trial end (ISO-8601, server-owned). Null if unknown. */
     val trialEndsAt: String? = null,
+    /** Account creation timestamp (ISO-8601, server-owned). Null if unknown. */
+    val createdAt: String? = null,
 )
 
 data class CachedManualLocation(

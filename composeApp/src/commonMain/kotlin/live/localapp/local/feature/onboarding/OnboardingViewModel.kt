@@ -353,6 +353,13 @@ class OnboardingViewModel(
                     manualLocationName = if (isManual) s.userCity.replaceFirstChar { it.uppercase() } else null,
                     manualLat = if (isManual) s.userLat else null,
                     manualLng = if (isManual) s.userLng else null,
+                    // Durable hometown anchor: the location chosen here, at
+                    // onboarding. Manual users get the address they typed; GPS
+                    // users get the resolved city. The DB makes it write-once, so
+                    // this only "takes" on the first save and is immutable after.
+                    hometownName = s.userCity.replaceFirstChar { it.uppercase() }.ifBlank { "Boston" },
+                    hometownLat = s.userLat,
+                    hometownLng = s.userLng,
                 )
 
                 // Mirror the chosen location into the local cache up-front, before

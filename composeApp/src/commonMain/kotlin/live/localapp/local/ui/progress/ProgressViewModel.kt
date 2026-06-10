@@ -37,6 +37,7 @@ sealed interface CelebrationEvent {
     ) : CelebrationEvent
 
     data class StatusLevelUp(
+        val previousTier: StatusTier,
         val newTier: StatusTier,
         val totalPoints: Int,
     ) : CelebrationEvent
@@ -80,6 +81,8 @@ data class ProgressUiState(
     val pendingCelebrations: List<CelebrationEvent> = emptyList(),
     // Subscription / trial (server-owned, mirrored from user_profiles.trial_ends_at)
     val trialEndsAt: String? = null,
+    // Account creation timestamp (server-owned, mirrored from user_profiles.created_at)
+    val createdAt: String? = null,
     // Loading
     val isLoaded: Boolean = false,
 )
@@ -113,6 +116,7 @@ class ProgressViewModel(
                         state = celebration.state,
                     )
                     is BadgeCelebration.StatusLevelUp -> CelebrationEvent.StatusLevelUp(
+                        previousTier = celebration.previousTier,
                         newTier = celebration.newTier,
                         totalPoints = celebration.totalPoints,
                     )
@@ -240,7 +244,7 @@ class ProgressViewModel(
                 }
                 val name = prefs?.username ?: ""
                 val initial = name.firstOrNull()?.uppercase() ?: ""
-                _uiState.update { it.copy(userName = name, userInitial = initial, trialEndsAt = prefs?.trialEndsAt) }
+                _uiState.update { it.copy(userName = name, userInitial = initial, trialEndsAt = prefs?.trialEndsAt, createdAt = prefs?.createdAt) }
             } catch (e: Throwable) {
                 println("ProgressVM.loadProfile error: ${e.message}")
             }
@@ -308,6 +312,10 @@ class ProgressViewModel(
                 val totalPoints = milestones.distinctBy { "${it.actionType}_${it.milestone}" }.sumOf { it.points }
                 val currentTier = statusTierForPoints(totalPoints)
                 val next = nextStatusTier(currentTier)
+
+                // Persist the current tier so early surfaces (splash, first-open)
+                // can render the right Bo before badge data loads.
+                settings.putString("bo_current_tier", currentTier.name)
 
                 val tierProgress = if (next != null) {
                     val rangeStart = currentTier.threshold

@@ -7,6 +7,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.WindowCompat
@@ -18,6 +20,7 @@ import live.localapp.local.observability.Analytics
 import live.localapp.local.observability.AnalyticsEvent
 
 class MainActivity : ComponentActivity() {
+    @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         // Install the SplashScreen API *before* super.onCreate. The library
         // shows the @style/Theme.App.Starting frame (cream + app icon) and
@@ -62,7 +65,20 @@ class MainActivity : ComponentActivity() {
         }
 
         setContent {
-            App()
+            // Expose Compose testTags as Android resource-ids so Maestro (and any
+            // other UIAutomator-based tooling) can target tagged elements by id.
+            // Debug-only — release builds never opt in, keeping the tree clean.
+            if (BuildConfig.DEBUG) {
+                androidx.compose.foundation.layout.Box(
+                    modifier = androidx.compose.ui.Modifier.semantics {
+                        testTagsAsResourceId = true
+                    },
+                ) {
+                    App()
+                }
+            } else {
+                App()
+            }
         }
         // setContent is synchronous about *enqueueing* the composition, so
         // flipping this immediately is safe — the first Compose frame will

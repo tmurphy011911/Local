@@ -1,0 +1,82 @@
+# Regression: the manual "Build a Plan" wizard, end to end through the builder.
+#
+# HARD GATE: title -> date range -> party size -> "Build your plan" -> the
+#   Add-event sheet with all three of its inputs. Every wizard step must render
+#   and advance, or this fails.
+# SOFT TAIL: actually saving an event + the whole plan is best-effort only,
+#   because saving an event hard-requires a Google Places autocomplete network
+#   pick to populate the location (no offline path exists — see
+#   ManualPlanSheet.canSave). We deliberately don't gate on that network call,
+#   mirroring the suite's standing "avoid Places autocomplete" decision.
+appId: live.localapp.local
+tags:
+  - plans
+  - plan-build
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+- tapOn: "Plans"
+- tapOn:
+    id: "plan_create_btn"
+- tapOn: "Build a Plan Manually"
+
+# --- Step 1: name + date range ---
+- assertVisible: "Name your plan"
+# The name field lives inside a ModalBottomSheet, which renders in a SEPARATE
+# Android window. testTagsAsResourceId is only opted-in at the activity root
+# (MainActivity) and is an Android-only API unavailable in commonMain, so the
+# sheet's testTags don't surface as resource-ids — and the placeholder Text is
+# merged away by the empty EditText. So we tap the field by position (it sits
+# just under the "Name your plan" header) and verify the typed title rendered.
+- tapOn:
+    point: "50%,20%"
+- inputText: "Maestro Regression Plan"
+- hideKeyboard
+- assertVisible: "Maestro Regression Plan"
+
+- assertVisible: "When is it?"
+- tapOn: "Tap to pick"          # opens the Material3 DateRangePicker
+
+# Compute two real day-cell labels (relative to now) and tap them. The dialog is
+# a scrollable month list, so scroll the cell into view before tapping.
+- runScript: ../scripts/pick_dates.js
+- scrollUntilVisible:
+    element:
+      text: ${output.startDesc}
+    direction: DOWN
+- tapOn: ${output.startDesc}
+- scrollUntilVisible:
+    element:
+      text: ${output.endDesc}
+    direction: DOWN
+- tapOn: ${output.endDesc}
+- tapOn: "Done"
+
+- assertVisible: "Continue"
+- tapOn: "Continue"
+
+# --- Step 2: party size ---
+- assertVisible: "How many people?"
+- tapOn: "Continue"
+
+# --- Step 3: build days ---
+- assertVisible: "Build your plan"
+- tapOn:
+    text: "Add an event|Add another event"
+
+# --- Add-event sheet: opened with all three inputs (hard gate on the sheet) ---
+# Assert on the sheet's REAL Texts (header + the "Event"/"Location"/"Start time"
+# section labels + the "Pick a start time" field), NOT the InputBar placeholders.
+# The placeholders are merged away by their empty EditTexts (same reason the name
+# field above needed a positional tap), so Maestro can't see them.
+- assertVisible: "Add an event"
+- assertVisible: "Event"
+- assertVisible: "Location"
+- assertVisible: "Start time"
+- assertVisible: "Pick a start time"
+
+# Reaching this fully-rendered Add-event sheet is the end of the deterministic
+# wizard. The actual save hard-requires a live Google Places autocomplete pick to
+# populate the location (ManualPlanSheet.canSave — no offline path), so we
+# deliberately stop here rather than gate on a flaky network call. The next flow
+# relaunches cleanly via ensure_home.

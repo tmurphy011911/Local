@@ -175,7 +175,7 @@ private let searchingPhrases: [String] = [
     "Holding the elevator...", "Hunting for street parking...", "Ignoring the calorie count...",
     "Improvising...", "Inspecting the glassware...", "Jaywalking responsibly...",
     "Keeping it casual...", "Layering appropriately...", "Learning the specials...",
-    "Licking the spoon...", "Loosening the belt...",
+    "Licking the spoon...",
     "Making a fashionably late entrance...", "Marinating the chicken...",
     "Microwaving nothing...", "Mispronouncing the entrée...", "Nabbing the window seat...",
     "Nodding at the sommelier...", "Opening all the tabs...", "Ordering water first...",
@@ -240,6 +240,20 @@ struct ChatView: View {
     @State private var heightBelowLatestUser: CGFloat = 0
     @State private var latestUserBubbleY: CGFloat = 0
     @State private var contentEndY: CGFloat = 0
+    // Generation token for the bottom-follow retry loop. Bumped each time a
+    // follow is (re)started so stale loops from a prior token cancel out.
+    @State private var followGen: Int = 0
+    // Bumped (throttled) by the typewriter as it reveals chars. The final
+    // reply is typed client-side — no streaming/message-count change fires as
+    // it grows — so this is what drives bottom-following during the animation.
+    @State private var typewriterTick: Int = 0
+    // Bottom edge (maxY) of the latest AI text bubble, in "chatScroll" space
+    // (origin = viewport top). Measured directly on the bubble — which IS
+    // rendered — so it's reliable even when the bubble overflows the fold.
+    // (`contentEndY`'s sentinel is the LAST LazyVStack child, which isn't laid
+    // out while off-screen, so it can't detect overflow — the bug that kept
+    // the follow from firing.) Overflow ⟺ lastAiBubbleMaxY > viewport height.
+    @State private var lastAiBubbleMaxY: CGFloat = 0
     let onDismiss: () -> Void
     let showUpgradeBanner: Bool
     let onUpgrade: () -> Void
@@ -266,6 +280,64 @@ struct ChatView: View {
     /// a viewport of dead space beneath it.
     private var lastPlanCardId: String? {
         state.messages.last(where: { $0.isPlanCard })?.id
+    }
+
+    /// ID of the most recent PRESENTATION card — either a plan/day card
+    /// (`isPlanCard`) OR a structured suggestion tray (`structured != nil`,
+    /// e.g. "This week in Media"). Neither is a user message, so the
+    /// user-bubble anchor never moves them. A structured tray previously had
+    /// NO anchor at all, so a second tray sent after history built up just
+    /// appended below the fold — the user saw it peeking in at the very
+    /// bottom edge, unreadable (the reported bug). Anchoring this to the top
+    /// of the viewport brings the whole freshly-arrived card on screen.
+    private var lastPresentationCardId: String? {
+        state.messages.last(where: { $0.isPlanCard || $0.structured != nil })?.id
+    }
+
+    /// ID of the most recent settled AI *text* reply (not a card/tray, not a
+    /// user bubble). We attach a bottom-edge geometry reader to only this row
+    /// so a single measurement drives the bottom-follow.
+    private var lastAiTextMessageId: String? {
+        state.messages.last(where: { !$0.isUser && !$0.isPlanCard && $0.structured == nil })?.id
+    }
+
+    /// Follow the bottom of a growing/long reply, ChatGPT-style.
+    ///
+    /// A single deferred check is unreliable: `contentEndY` / `latestUserBubbleY`
+    /// are updated by `onGeometryChange` only AFTER the closure runs, and a new
+    /// message animates in over 0.22s — so an immediate measurement reads the
+    /// pre-layout `below` (<= viewport), the overflow guard fails, and nothing
+    /// scrolls (the "still not autoscrolling" bug). Android dodges this by
+    /// retrying in a loop until layout settles; we mirror that here.
+    ///
+    /// We poll for ~1.5s (every 60ms). On each tick, IFF the content below the
+    /// anchored user bubble exceeds the viewport (i.e. the reply overflowed),
+    /// we pin the target's bottom to the viewport bottom. The overflow guard is
+    /// what keeps SHORT replies untouched: while they fit, `below <= v`, so the
+    /// user bubble stays anchored at the top. A `followGen` token cancels any
+    /// loop still running from a previous reply/token.
+    private func startBottomFollow(
+        geo: GeometryProxy,
+        proxy: ScrollViewProxy,
+        targetId: String
+    ) {
+        followGen += 1
+        let myGen = followGen
+        func tick(_ attempt: Int) {
+            guard attempt < 26 else { return }       // ~26 * 60ms ≈ 1.6s budget
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.06) {
+                guard myGen == followGen else { return }  // superseded — stop
+                let v = geo.size.height
+                let below = contentEndY - latestUserBubbleY
+                if below > v {
+                    // Non-animated so continuous following (token-by-token)
+                    // reads as a smooth scroll rather than stacked animations.
+                    proxy.scrollTo(targetId, anchor: .bottom)
+                }
+                tick(attempt + 1)
+            }
+        }
+        tick(0)
     }
 
     // Trailing-spacer height is now a constant fraction of viewport. The
@@ -338,6 +410,21 @@ struct ChatView: View {
                                                         p.frame(in: .named("chatScroll")).minY
                                                     } action: { newY in
                                                         latestUserBubbleY = newY
+                                                    }
+                                            }
+                                        } else if message.id == lastAiTextMessageId {
+                                            // Bottom edge of the latest AI text
+                                            // bubble. Measured here (on the
+                                            // rendered row) — not via the lazy
+                                            // bottom sentinel — so it reflects
+                                            // the true bottom even when the
+                                            // reply runs past the viewport.
+                                            GeometryReader { proxy in
+                                                Color.clear
+                                                    .onGeometryChange(for: CGFloat.self) { p in
+                                                        p.frame(in: .named("chatScroll")).maxY
+                                                    } action: { newMaxY in
+                                                        lastAiBubbleMaxY = newMaxY
                                                     }
                                             }
                                         }
@@ -418,20 +505,62 @@ struct ChatView: View {
                         if state.messages.last?.isPlanCard == true {
                             inputFocused = false
                         }
+                        // Catch-up follow: when a long text reply settles out
+                        // of streaming into the message list, the streaming
+                        // follow below stops (streamingText empties). If that
+                        // reply overflowed the viewport, pin its bottom so the
+                        // newest text stays on screen. Only for plain AI text —
+                        // cards are top-anchored by lastPresentationCardId.
+                        let last = state.messages.last
+                        if let last, !last.isUser, !last.isPlanCard, last.structured == nil {
+                            startBottomFollow(geo: geo, proxy: proxy, targetId: last.id)
+                        }
                     }
-                    .onChange(of: lastPlanCardId) { newId in
+                    .onChange(of: lastPresentationCardId) { newId in
                         guard let id = newId else { return }
                         // Defer two runloops: one for SwiftUI to lay out the
-                        // new (tall) plan card row, one more so the dynamic
-                        // trailing spacer at .id("trailingSpacer") has settled
-                        // to its clamped height before we anchor — otherwise a
-                        // stale spacer height makes scrollTo land short.
+                        // new (tall) card row, one more so the dynamic trailing
+                        // spacer at .id("trailingSpacer") has settled to its
+                        // clamped height before we anchor — otherwise a stale
+                        // spacer height makes scrollTo land short.
                         DispatchQueue.main.async {
                             DispatchQueue.main.async {
                                 withAnimation(.easeOut(duration: 0.25)) {
                                     proxy.scrollTo(id, anchor: .top)
                                 }
                             }
+                        }
+                    }
+                    // Follow the bottom as Bo's reply streams in (ChatGPT-style).
+                    // The user bubble is anchored to the top on send and we
+                    // intentionally don't re-scroll for SHORT replies. But once
+                    // the reply grows TALLER than the viewport it runs off the
+                    // bottom edge with nothing pulling the newest tokens into
+                    // view (the reported "Bo kept chatting past where I could
+                    // see" bug). While streaming, if the content below the
+                    // anchored user bubble exceeds the viewport, keep the
+                    // streaming bubble's bottom pinned to the viewport bottom.
+                    .onChange(of: state.streamingText) { newText in
+                        // Restart the retry-follow loop on each streamed chunk.
+                        // The loop's overflow guard keeps short replies anchored
+                        // at the top; once the streaming bubble grows past the
+                        // viewport it pins the newest text to the bottom.
+                        guard !newText.isEmpty else { return }
+                        startBottomFollow(geo: geo, proxy: proxy, targetId: "streaming")
+                    }
+                    .onChange(of: typewriterTick) { _ in
+                        // Follow the client-side typewriter as it reveals text.
+                        // Overflow is detected from the bubble's own measured
+                        // bottom edge (reliable past the fold), NOT the lazy
+                        // bottom sentinel. While the bubble's bottom sits below
+                        // the viewport, pin it to the viewport bottom so the
+                        // newest line stays visible. Short replies that fit
+                        // (maxY <= viewport) never scroll → they stay top-
+                        // anchored under the user bubble.
+                        guard let id = lastAiTextMessageId else { return }
+                        // Small slack so we don't fight sub-pixel jitter.
+                        if lastAiBubbleMaxY > geo.size.height + 1 {
+                            proxy.scrollTo(id, anchor: .bottom)
                         }
                     }
                 }
@@ -690,7 +819,7 @@ struct ChatView: View {
             } else if typedMessageIds.contains(message.id) {
                 aiMessageBubble(message.text)
             } else {
-                TypewritingAiBubble(text: message.text) {
+                TypewritingAiBubble(rawText: message.text, onReveal: { typewriterTick &+= 1 }) {
                     typedMessageIds.insert(message.id)
                     // Mirror into the app-lifetime store so reopens of the
                     // sheet skip the animation for this message.
@@ -733,10 +862,15 @@ struct ChatView: View {
     }
 
     private func markdownText(_ text: String) -> some View {
-        let lines = text.components(separatedBy: "\n")
+        // Normalize first so multi-blank-line runs don't survive as a stack of
+        // full-height empty Text rows (the returning "huge spacing" bug). A
+        // blank line then renders as a single modest gap, not a line-height.
+        let lines = collapseBlankLines(text).components(separatedBy: "\n")
         return VStack(alignment: .leading, spacing: 4) {
             ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
-                if line.hasPrefix("- ") {
+                if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                    Color.clear.frame(height: 6)
+                } else if line.hasPrefix("- ") {
                     HStack(alignment: .top, spacing: 6) {
                         Text("•")
                             .font(F.body(15))
@@ -1786,12 +1920,69 @@ private struct PlanCelebrationOverlay: View {
 /// Once the animation completes, the parent moves the message id into its
 /// "already typed" set so re-renders (state pushes, scrolling) don't
 /// replay the effect. The visual matches `aiMessageBubble`.
+/// Collapse runs of 2+ blank lines (i.e. 3+ consecutive newlines, ignoring
+/// intra-line whitespace) down to a single blank line, and trim leading/
+/// trailing whitespace. Bo sometimes emits big `\n\n\n…` blocks that render
+/// as multiple full-height empty lines — dead vertical space (the "huge
+/// spacing" bug). One blank line between paragraphs is plenty.
+func collapseBlankLines(_ text: String) -> String {
+    let collapsed = text.replacingOccurrences(
+        of: "\n[ \t]*\n([ \t]*\n)+",
+        with: "\n\n",
+        options: .regularExpression
+    ).trimmingCharacters(in: .whitespacesAndNewlines)
+    return reflowSoftBreaks(collapsed)
+}
+
+/// The model sometimes emits a hard paragraph break (`\n\n`) in the MIDDLE of a
+/// sentence, splitting one thought across several "paragraphs" — the returning
+/// "random line breaks / huge gaps" bug (e.g. "Media Farmers Market on Sundays"
+/// / "is a beloved local ritual with" / "year-round local farmers…" rendered as
+/// three gapped blocks). Re-join a block onto the previous one when the break is
+/// clearly mid-sentence: the next block starts lowercase, or the previous block
+/// ends on continuation punctuation (— – - , ;). Genuine paragraph breaks (prev
+/// ends with . ! ? : and next starts uppercase) and list items are preserved.
+func reflowSoftBreaks(_ text: String) -> String {
+    let blocks = text
+        .components(separatedBy: "\n\n")
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    guard !blocks.isEmpty else { return "" }
+
+    let continuation: Set<Character> = ["—", "–", "-", ",", ";"]
+    func isBullet(_ s: String) -> Bool {
+        s.hasPrefix("- ") || s.hasPrefix("• ") || s.hasPrefix("#")
+    }
+
+    var paragraphs: [String] = []
+    for block in blocks {
+        if let prev = paragraphs.last, !isBullet(block), !isBullet(prev) {
+            let startsLower = block.first?.isLowercase ?? false
+            let prevEndsContinuation = prev.last.map { continuation.contains($0) } ?? false
+            if startsLower || prevEndsContinuation {
+                paragraphs[paragraphs.count - 1] = prev + " " + block
+                continue
+            }
+        }
+        paragraphs.append(block)
+    }
+    return paragraphs.joined(separator: "\n\n")
+}
+
 private struct TypewritingAiBubble: View {
-    let text: String
+    let rawText: String
+    /// Throttled progress callback (fired every few revealed chars) so the
+    /// host can follow the growing bubble's bottom while it types — the
+    /// reveal is client-side, so no streaming/message-count change fires.
+    var onReveal: (() -> Void)? = nil
     let onComplete: () -> Void
 
     @State private var revealCount: Int = 0
     @State private var caretOn: Bool = true
+
+    // Normalize once so the typing phase shows the same tightened spacing as
+    // the settled markdown render.
+    private var text: String { collapseBlankLines(rawText) }
 
     private var revealed: String {
         let chars = Array(text)
@@ -1844,6 +2035,9 @@ private struct TypewritingAiBubble: View {
                 try? await Task.sleep(nanoseconds: 11_000_000 + jitter)
                 if Task.isCancelled { return }
                 revealCount = i
+                // Throttle the follow signal to ~every 8 chars (and the last)
+                // so the host re-evaluates ~7×/sec, not per character.
+                if i % 8 == 0 || i == total { onReveal?() }
             }
             // Tiny hold so the caret blink is visible at the end before it disappears.
             try? await Task.sleep(nanoseconds: 280_000_000)

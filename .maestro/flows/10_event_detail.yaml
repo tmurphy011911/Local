@@ -1,0 +1,27 @@
+# Regression: tapping a Home event card opens the event detail screen.
+#
+# PLATFORM SPLIT: on Android this is the Compose EventDetailScreen (labels below
+#   are real). On iOS it's a NATIVE SwiftUI screen (EventDetailView.swift) whose
+#   controls have no accessibilityIdentifiers yet, so the text anchors here only
+#   hold on Android. iOS hardening = add identifiers in EventDetailView.swift
+#   (tracked as a follow-up).
+appId: live.localapp.local
+tags:
+  - event-detail
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+# Open the first event card on the feed.
+- assertVisible:
+    id: "home_event_card"
+- tapOn:
+    id: "home_event_card"
+
+# Detail screen: the primary CTA is one of these three (free / ticketed / info),
+# and one of the countdown banners renders. Hard gate that detail actually opened.
+- assertVisible:
+    text: "RSVP|Get Tickets|More Info"
+
+# NOTE: no trailing `back` — on Android the native/Compose event detail screen
+# has no BackHandler, so a system back exits the app. The CTA assertion above is
+# the hard gate; the next flow relaunches via ensure_home.

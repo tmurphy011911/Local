@@ -187,7 +187,7 @@ fun ChatScreen(
     // versions only used LaunchedEffect and never worked on iOS, so we're
     // belt-and-suspenders: every scroll API is tried, and the call site is
     // wired in two places so neither timing path can drop it.
-    suspend fun anchorTo(tag: String, predicate: (ChatMessage) -> Boolean) {
+    suspend fun anchorTo(tag: String, yieldToOverflowBelow: Boolean = false, predicate: (ChatMessage) -> Boolean) {
         val msgs = viewModel.uiState.value.messages
         val targetIdx = msgs.indexOfLast(predicate)
         println("[ChatScroll/$tag] start targetIdx=$targetIdx msgCount=${msgs.size}")
@@ -196,6 +196,23 @@ fun ChatScreen(
             delay(if (attempt == 0) 32 else 50)
             if (listState.isScrollInProgress) return@repeat
             val info = listState.layoutInfo
+            // If a reply BELOW the anchor target is already overflowing the
+            // viewport, stop trying to pin the target to the top. For a tall
+            // reply the user wants to follow its bottom (handled by the
+            // follow-the-bottom effect), not have their question yanked back
+            // up while Bo's answer runs off the screen. Without this, a fast /
+            // fully-rendered reply that lands inside this 30-attempt window
+            // stays stuck with the question pinned at top and the answer
+            // overflowing unread.
+            if (yieldToOverflowBelow) {
+                val lastVisible = info.visibleItemsInfo.lastOrNull()
+                if (lastVisible != null && lastVisible.index > targetIdx &&
+                    (lastVisible.offset + lastVisible.size) - info.viewportEndOffset > 0
+                ) {
+                    println("[ChatScroll/$tag] reply overflow below anchor — yielding to follow")
+                    return
+                }
+            }
             val visible = info.visibleItemsInfo.map { it.index }
             val target = info.visibleItemsInfo.firstOrNull { it.index == targetIdx }
             println("[ChatScroll/$tag] att=$attempt visible=$visible first=${listState.firstVisibleItemIndex}@${listState.firstVisibleItemScrollOffset} target=${target?.offset}")
@@ -230,24 +247,29 @@ fun ChatScreen(
     }
 
     suspend fun anchorLatestUserMessage(tag: String) =
-        anchorTo(tag) { it.role == MessageRole.USER }
+        anchorTo(tag, yieldToOverflowBelow = true) { it.role == MessageRole.USER }
 
     val lastUserMessageId = state.messages.lastOrNull { it.role == MessageRole.USER }?.id
     LaunchedEffect(lastUserMessageId) {
         if (lastUserMessageId != null) anchorLatestUserMessage("reactive")
     }
 
-    // Plan cards aren't user messages, so the anchor above never moves them.
-    // A freshly built (or updated) plan card must snap to the top of the
-    // viewport — otherwise a tall card lands wherever the prior scroll left
-    // it, scrolled off the top with dead space beneath. Anchor on the plan
-    // card's id so this also fires when an update appends a new card.
-    val isPlanCard: (ChatMessage) -> Boolean = {
-        it.content is MessageContent.MultiDayPlanRef || it.content is MessageContent.DayCardRef
+    // Presentation cards (plan cards AND structured event-presentation cards
+    // like "This week in and around Perkasie") aren't user messages, so the
+    // user-message anchor above never moves them. A freshly built (or updated)
+    // card must snap to the TOP of the viewport — otherwise a tall card lands
+    // wherever the prior scroll left it: scrolled off the top with dead space
+    // beneath, OR (for a second card sent after history has built up) peeking
+    // in at the very bottom edge, unreadable. Anchor on the newest card's id
+    // so this fires again whenever a new card is appended.
+    val isPresentationCard: (ChatMessage) -> Boolean = {
+        it.content is MessageContent.MultiDayPlanRef ||
+            it.content is MessageContent.DayCardRef ||
+            it.content is MessageContent.Structured
     }
-    val lastPlanCardId = state.messages.lastOrNull(isPlanCard)?.id
-    LaunchedEffect(lastPlanCardId) {
-        if (lastPlanCardId != null) anchorTo("plan-card", isPlanCard)
+    val lastCardId = state.messages.lastOrNull(isPresentationCard)?.id
+    LaunchedEffect(lastCardId) {
+        if (lastCardId != null) anchorTo("card", predicate = isPresentationCard)
     }
 
     // Auto-follow a growing/revealing message: as Bo's reply types out (or a
@@ -277,6 +299,69 @@ fun ChatScreen(
                 listState.scrollBy(overflow.toFloat())
             }
         }
+    }
+
+    // Catch-up follow: the snapshotFlow follow above only acts on distinct
+    // emissions, and skips any that land while a scroll is in progress (e.g.
+    // the user-message anchor settling). When Bo's reply arrives fast or
+    // fully-rendered, its emissions get skipped during that window and there
+    // are no further emissions once the layout settles — so the reply ends up
+    // overflowing with nothing pulling the newest text on screen. This effect
+    // re-keys on the reply CONTENT itself (streamed text + the newest text
+    // message) and drives a retry loop that pins the bottom of the reply to
+    // the viewport bottom. Scoped to streaming + plain AI text replies so it
+    // never overrides the top-anchoring of plan / structured event cards.
+    //
+    // The loop runs a ~3s budget — LONGER than the user-message anchor's
+    // ~1.5s loop — because the two run concurrently: when a text reply is
+    // sent, the anchor pins the question to the top (correct while the reply
+    // is empty/short) and only yields once the reply overflows. An 8-attempt
+    // (~0.3s) follow exited while the anchor was still scrolling, so every
+    // follow tick hit `isScrollInProgress` and was skipped, leaving the
+    // question pinned at top and the answer overflowing unread (the reported
+    // iOS bug). We outlast the anchor and keep retrying until the bottom is
+    // pinned and a few frames have settled.
+    val lastTextMessageId = state.messages.lastOrNull {
+        it.role == MessageRole.AI && it.content is MessageContent.Text
+    }?.id
+    LaunchedEffect(state.streamingText, state.isTyping, lastTextMessageId) {
+        val lastMsg = state.messages.lastOrNull()
+        val followable = state.streamingText.isNotEmpty() ||
+            (lastMsg?.role == MessageRole.AI && lastMsg.content is MessageContent.Text)
+        if (!followable) return@LaunchedEffect
+        var settledFrames = 0
+        repeat(60) { attempt ->
+            delay(if (attempt == 0) 16L else 50L)
+            // Skip (don't give up) while a scroll/drag is in progress — this is
+            // usually the anchor still settling, or the user actively dragging.
+            if (listState.isScrollInProgress) return@repeat
+            val info = listState.layoutInfo
+            val last = info.visibleItemsInfo.lastOrNull() ?: return@repeat
+            // User scrolled up to read history → the newest item is no longer
+            // the last visible one; stop following so we never yank them down.
+            if (last.index < info.totalItemsCount - 1) {
+                println("[ChatScroll/follow] att=$attempt user scrolled up (lastVisible=${last.index} < ${info.totalItemsCount - 1}) — stop")
+                return@LaunchedEffect
+            }
+            val overflow = (last.offset + last.size) - info.viewportEndOffset
+            println("[ChatScroll/follow] att=$attempt lastIdx=${last.index}/${info.totalItemsCount} offset=${last.offset} size=${last.size} vpEnd=${info.viewportEndOffset} overflow=$overflow first=${listState.firstVisibleItemIndex}@${listState.firstVisibleItemScrollOffset}")
+            if (overflow > 1f) {
+                try {
+                    val consumed = listState.scrollBy(overflow.toFloat())
+                    println("[ChatScroll/follow] scrollBy($overflow) consumed=$consumed")
+                } catch (e: Throwable) { println("[ChatScroll/follow] scrollBy err: $e") }
+                settledFrames = 0
+            } else {
+                // Bottom is pinned. Require a few stable frames before exiting,
+                // in case more text is still streaming in.
+                settledFrames++
+                if (settledFrames >= 3 && state.streamingText.isEmpty()) {
+                    println("[ChatScroll/follow] att=$attempt bottom pinned + settled — done")
+                    return@LaunchedEffect
+                }
+            }
+        }
+        println("[ChatScroll/follow] exhausted budget, first=${listState.firstVisibleItemIndex}@${listState.firstVisibleItemScrollOffset}")
     }
 
     // Navigate to Plans when plan is approved
@@ -674,10 +759,11 @@ private fun ChatHeader(
                 )
                 Spacer(Modifier.width(8.dp))
                 live.localapp.local.ui.character.Bo(
-                    size = 28.dp,
+                    size = 40.dp,
+                    level = live.localapp.local.ui.character.cachedBoLevel(),
                     showSparkles = false,
                     showShadow = false,
-                    modifier = Modifier.size(28.dp),
+                    modifier = Modifier.size(40.dp),
                 )
             }
 
@@ -1117,7 +1203,6 @@ private val searchingPhrases = listOf(
     "Layering appropriately...",
     "Learning the specials...",
     "Licking the spoon...",
-    "Loosening the belt...",
     "Making a fashionably late entrance...",
     "Marinating the chicken...",
     "Microwaving nothing...",

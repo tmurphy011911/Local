@@ -1,0 +1,20 @@
+# Dismisses the launch splash, which is a TAP-TO-CONTINUE gate by design
+# (SplashScreen.kt: Box.clickable { if (appReady) onComplete() }). It never
+# auto-advances. Taps land only after appReady flips true, and the variant
+# (Animated on first launch / Returning afterward) controls when that happens,
+# so a single tap isn't reliable — repeat-tap until the next surface shows:
+# AUTH ("Continue →"), Home ("Explore"), or onboarding's first step.
+appId: live.localapp.local
+---
+- repeat:
+    times: 10
+    commands:
+      - runFlow:
+          when:
+            notVisible:
+              text: "Continue →|Explore|Allow Location Access|Skip all →"
+          commands:
+            - tapOn:
+                point: "50%,50%"
+            - waitForAnimationToEnd:
+                timeout: 1000

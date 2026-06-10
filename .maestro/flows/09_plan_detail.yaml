@@ -1,0 +1,37 @@
+# Regression: opening a saved plan shows its detail screen with the share CTA.
+#
+# Conditional gate: the canned account may have no saved plans on a freshly
+# force-onboarded run. If a plan card exists we hard-assert the detail screen;
+# if not, the flow no-ops cleanly (becomes a hard gate once the account has a
+# plan — e.g. after 07_plan_build_manual persists one server-side).
+appId: live.localapp.local
+tags:
+  - plans
+  - plan-detail
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+- tapOn: "Plans"
+
+# Only proceed when there is a real plan card to open.
+- runFlow:
+    when:
+      visible:
+        id: "plan_card"
+    commands:
+      - tapOn:
+          id: "plan_card"
+
+      # Plan detail is up: the persistent Share CTA + a "stop(s)" count are stable
+      # anchors that render for every plan.
+      - assertVisible: "Share Plan"
+      - assertVisible:
+          text: ".*stop.*"
+      # NOTE: no trailing `back` — plan detail has no BackHandler, so a system
+      # back exits the app. The asserts above are the hard gate for this branch;
+      # the next flow relaunches via ensure_home.
+
+# Holds in both branches: either we're on the opened plan detail ("Share Plan")
+# or still on the Plans list (populated or empty-state).
+- assertVisible:
+    text: "Share Plan|Plans|Upcoming Plans|Add Your Saved Events to a Plan"

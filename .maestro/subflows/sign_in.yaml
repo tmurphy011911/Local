@@ -1,0 +1,32 @@
+# Reusable sign-in via TEST_AUTH_BYPASS (debug builds only).
+# Any 6-digit OTP works; signs into the canned testbypass@localapp.live account.
+# Does NOT clear state — caller decides whether to launch fresh.
+appId: live.localapp.local
+---
+# The splash is a tap-to-continue gate; clear it before expecting AUTH.
+- runFlow: dismiss_splash.yaml
+- extendedWaitUntil:
+    visible: "Continue →"
+    timeout: 30000
+
+- tapOn:
+    id: "auth_email_field"
+- inputText: "testbypass@localapp.live"
+- hideKeyboard
+
+- tapOn:
+    id: "auth_phone_field"
+- inputText: "5551234567"
+- hideKeyboard
+
+- tapOn: "Continue →"
+
+# OTP step. The field is an invisible (alpha 0) overlay, so Maestro can't tap it
+# by id — but it auto-focuses on appear (PhoneAuthScreen LaunchedEffect →
+# focusRequester.requestFocus()), so we type straight into the focused field.
+# Any 6 digits auto-verify. "Verify →" is the screen's stable anchor.
+- assertVisible: "Verify →"
+- inputText: "123456"
+- tapOn:
+    text: "Verify →"
+    optional: true   # auto-verify usually fires at the 6th digit

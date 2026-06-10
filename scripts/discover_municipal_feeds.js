@@ -31,6 +31,12 @@ let SUPABASE_SERVICE_KEY, ANTHROPIC_API_KEY, SCRAPFLY_API_KEY;
 
 const ONLY_STATE = process.env.STATE || null;
 const PROBE_TIMEOUT_MS = 8000;
+// The claude_html fallback (Step 3) routes through Scrapfly with asp=true +
+// render_js=true. Anti-bot bypass + JS render on heavy WAF-protected DMO/CVB
+// SPAs (sftravel.com, sandiego.org, etc.) routinely takes 15–30s; the 8s probe
+// timeout reliably aborts it, falls through to a direct fetch that 403s, and
+// the high-value tourism domains all come back "none". Give the fallback room.
+const FALLBACK_TIMEOUT_MS = 35000;
 
 // Wall-clock budget. Enumerating + probing every candidate (700+ for a big
 // state) takes far longer than CI's job timeout, so the runner used to KILL
@@ -75,6 +81,27 @@ const CURATED_TOURISM_DOMAINS = {
     { name: "Bucks County (CVB)", domain: "visitbuckscounty.com", nearest_metro: "Philadelphia" },
     { name: "Hershey/Harrisburg (CVB)", domain: "visithersheyharrisburg.org", nearest_metro: "Philadelphia" },
   ],
+  NY: [
+    { name: "New York City (NYC Tourism)", domain: "nyctourism.com", nearest_metro: "New York City" },
+    { name: "New York City (gov events)", domain: "nyc.gov/events", nearest_metro: "New York City" },
+    { name: "Hudson Valley (CVB)", domain: "visithudsonvalley.com", nearest_metro: "New York City" },
+    { name: "Albany (Discover)", domain: "albany.org", nearest_metro: "Albany" },
+    { name: "Saratoga (CVB)", domain: "discoversaratoga.org", nearest_metro: "Albany" },
+    { name: "Buffalo Niagara (CVB)", domain: "visitbuffaloniagara.com", nearest_metro: "Buffalo" },
+    { name: "Rochester (CVB)", domain: "visitrochester.com", nearest_metro: "Rochester" },
+    { name: "Syracuse (CVB)", domain: "visitsyracuse.com", nearest_metro: "Syracuse" },
+  ],
+  CA: [
+    { name: "Los Angeles (Discover LA)", domain: "discoverlosangeles.com", nearest_metro: "Los Angeles" },
+    { name: "Santa Monica (CVB)", domain: "santamonica.com", nearest_metro: "Los Angeles" },
+    { name: "Pasadena (CVB)", domain: "visitpasadena.com", nearest_metro: "Los Angeles" },
+    { name: "San Francisco (SF Travel)", domain: "sftravel.com", nearest_metro: "San Francisco" },
+    { name: "Oakland (CVB)", domain: "visitoakland.com", nearest_metro: "San Francisco" },
+    { name: "Napa Valley (CVB)", domain: "visitnapavalley.com", nearest_metro: "San Francisco" },
+    { name: "San Diego (CVB)", domain: "sandiego.org", nearest_metro: "San Diego" },
+    { name: "Sacramento (CVB)", domain: "visitsacramento.com", nearest_metro: "Sacramento" },
+    { name: "Fresno County (CVB)", domain: "visitfresnocounty.org", nearest_metro: "Fresno" },
+  ],
 };
 const PROBE_PATHS = [
   { path: "/jsonapi/node/event",  type: "drupal_jsonapi", validate: validateDrupal },
@@ -94,7 +121,15 @@ const PROBE_PATHS = [
 const HTML_PROBE_PATHS = [
   "/calendar/upcoming",
   "/calendar",
+  "/calendar/",
   "/events",
+  // Trailing-slash + DMO/CVB conventions. Tourism bureaus (sftravel.com,
+  // sandiego.org, visitsacramento.com) 403 the bare "/events" at their WAF but
+  // serve the real listing at "/events/" or "/things-to-do/events/".
+  "/events/",
+  "/things-to-do/events/",
+  "/event-calendar/",
+  "/calendar-of-events/",
   "/Calendar.aspx",
   "/CivicAlerts.aspx",
 ];
@@ -259,7 +294,8 @@ async function probeDomain(domain) {
           const { html } = await fetchHtml(candidate, {
             scrapflyKey: SCRAPFLY_API_KEY,
             renderJs: true,
-            timeoutMs: PROBE_TIMEOUT_MS,
+            renderingWait: 4000,
+            timeoutMs: FALLBACK_TIMEOUT_MS,
           });
           if (looksLikeEventCalendar(html)) {
             return { url: candidate, type: "claude_html" };
@@ -281,12 +317,23 @@ function looksLikeEventCalendar(html) {
   // Multiple month/day mentions OR multiple time entries OR multiple
   // event-shaped class/id markers.
   const monthHits = (html.match(/\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}/gi) || []).length;
+  // Abbreviated months ("Jun 12", "Sept. 3") — DMO/CVB SPAs (visitsacramento,
+  // sandiego) render event cards this way, so the full-month regex above missed
+  // them entirely and the page scored 0 despite 65 real event links.
+  const abbrMonthHits = (html.match(/\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\.?\s+\d{1,2}\b/g) || []).length;
+  const isoDateHits = (html.match(/\b\d{4}-\d{2}-\d{2}\b/g) || []).length;
   const timeHits = (html.match(/\b\d{1,2}:\d{2}\s?(?:am|pm|AM|PM)\b/g) || []).length;
   const eventClassHits = (html.match(/class=["'][^"']*\bevent[^"']*["']/gi) || []).length;
   const dateAttrHits = (html.match(/data-(?:event-)?date=/gi) || []).length;
+  // Density of links into individual event/detail pages — a strong signal a
+  // page is a calendar/listing even when dates are rendered as images or in
+  // formats our regexes miss.
+  const eventLinkHits = (html.match(/href=["'][^"']*\/event[s]?\/[^"'?#]+/gi) || []).length;
   // Need multiple signals — single-date pages (e.g. a contact page with one
   // upcoming meeting) shouldn't trigger the fallback.
-  return (monthHits >= 3) || (timeHits >= 3 && eventClassHits >= 2) || (dateAttrHits >= 3);
+  return (monthHits >= 3) || (abbrMonthHits >= 3) || (isoDateHits >= 3)
+    || (timeHits >= 3 && eventClassHits >= 2) || (dateAttrHits >= 3)
+    || (eventLinkHits >= 6);
 }
 
 // ── Claude city enumeration ──
@@ -327,6 +374,7 @@ Respond with ONLY a JSON array, no prose. Example:
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
       max_tokens: 32000,
+      stream: true,
       messages: [{ role: "user", content: prompt }],
     }),
   });
@@ -334,24 +382,66 @@ Respond with ONLY a JSON array, no prose. Example:
     const body = await res.text();
     throw new Error(`Claude API ${res.status}: ${body.slice(0, 200)}`);
   }
-  const data = await res.json();
-  const text = data.content?.[0]?.text || "";
+  // Stream the response. A 100+ municipality enumeration generates a very large
+  // (~20k-token) JSON body; a non-streaming request emits no bytes until the
+  // whole generation finishes, which trips undici's socket timeout → the
+  // "fetch failed" we kept hitting. Streaming keeps bytes flowing so the
+  // connection stays alive. We accumulate every text_delta into `text` and the
+  // existing truncation-salvage parser below handles it exactly as before.
+  let text = "";
+  {
+    const decoder = new TextDecoder();
+    let buf = "";
+    for await (const chunk of res.body) {
+      buf += decoder.decode(chunk, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (!line.startsWith("data:")) continue;
+        const payload = line.slice(5).trim();
+        if (!payload || payload === "[DONE]") continue;
+        try {
+          const evt = JSON.parse(payload);
+          if (evt.type === "content_block_delta" && evt.delta?.type === "text_delta") {
+            text += evt.delta.text;
+          }
+        } catch (_) { /* keep-alive / non-JSON SSE line */ }
+      }
+    }
+  }
   // For a large state the JSON array can exceed max_tokens and arrive
-  // truncated mid-object (Claude's stop_reason === "max_tokens"). Rather
-  // than throw away the entire enumeration, salvage every complete object:
-  // grab from the first "[" and, if a clean parse fails, trim back to the
-  // last "}" and close the array. We lose only the final partial city.
+  // truncated mid-object (Claude's stop_reason === "max_tokens"). Rather than
+  // throw away the entire enumeration, salvage every COMPLETE top-level city
+  // object. A naive "trim to the last }" breaks when the cut lands inside a
+  // nested `domains` array (the trailing } belongs to a domain, leaving the
+  // city object unclosed → "Expected ',' or '}'"). So we walk the string
+  // tracking string-literal state and brace depth, and collect each object
+  // that opens and closes at array level (depth 0→1→0). Nested [] don't affect
+  // {} depth, so each captured slice includes its full domains array.
   const startIdx = text.indexOf("[");
   if (startIdx < 0) throw new Error(`No JSON array in Claude response: ${text.slice(0, 200)}`);
-  let cities;
   const tail = text.slice(startIdx);
+  let cities;
   try {
-    const closed = tail.match(/\][\s\S]*$/) ? tail.slice(0, tail.lastIndexOf("]") + 1) : tail;
-    cities = JSON.parse(closed);
+    cities = JSON.parse(tail);
   } catch (_) {
-    const lastObj = tail.lastIndexOf("}");
-    if (lastObj < 0) throw new Error(`Unparseable city JSON: ${tail.slice(0, 200)}`);
-    cities = JSON.parse(tail.slice(0, lastObj + 1) + "]");
+    const objs = [];
+    let depth = 0, inStr = false, esc = false, objStart = -1;
+    for (let i = 0; i < tail.length; i++) {
+      const ch = tail[i];
+      if (inStr) {
+        if (esc) esc = false;
+        else if (ch === "\\") esc = true;
+        else if (ch === '"') inStr = false;
+        continue;
+      }
+      if (ch === '"') inStr = true;
+      else if (ch === "{") { if (depth === 0) objStart = i; depth++; }
+      else if (ch === "}") { if (--depth === 0 && objStart >= 0) { objs.push(tail.slice(objStart, i + 1)); objStart = -1; } }
+    }
+    if (!objs.length) throw new Error(`Unparseable city JSON near: ${tail.slice(0, 200)}`);
+    cities = objs.map((o) => JSON.parse(o));
     console.log(`  ⚠ enumeration JSON was truncated — salvaged ${cities.length} complete cities`);
   }
 
@@ -426,16 +516,46 @@ async function main() {
     const curated = CURATED_TOURISM_DOMAINS[state.code] || [];
     if (curated.length) {
       console.log(`  + ${curated.length} curated tourism/CVB domain(s)`);
-      candidates = [...curated, ...candidates];
+      candidates = [...curated.map(c => ({ ...c, curated: true })), ...candidates];
     }
 
+    // Rank candidates by likely event-calendar value, then probe only the top
+    // TOP_N (default 50) and stop. The slow path (claude_html fallback) costs
+    // ~90s/domain, so exhausting Claude's full 1,400-candidate enumeration isn't
+    // worth it for a SUPPLEMENTARY source (the venue crawl is the primary event
+    // engine). Ranking sends that budget to the highest-yield domains first:
+    // curated CVBs lead; then tourism/BID/cultural sources outrank thin
+    // municipal/library/chamber pages; and cities that ARE a metro (or sit
+    // nearest one) get a prominence bonus.
+    const TOP_N = parseInt(process.env.TOP_N || "50", 10);
+    const metroSet = new Set(metros.map(m => m.name.toLowerCase()));
+    const KIND_WEIGHT = { tourism: 6, bid: 5, cultural_council: 5, municipal: 3, library: 3, chamber: 1 };
+    const scoreOf = (c) => {
+      let s = c.curated ? 100 : 0;
+      s += KIND_WEIGHT[c.kind] ?? 2;
+      const city = (c.name || "").toLowerCase();
+      if ([...metroSet].some((m) => city.includes(m))) s += 10;
+      if (c.nearest_metro && metroSet.has(c.nearest_metro.toLowerCase())) s += 3;
+      return s;
+    };
+    candidates.sort((a, b) => scoreOf(b) - scoreOf(a));
+    console.log(`  Ranked ${candidates.length} candidates → probing top ${TOP_N} by value.`);
+
     let budgetHit = false;
+    let probedThisState = 0;
     for (const c of candidates) {
       if (!c.domain) continue;
       // Skip if any of this city's domains already has any registered feed.
       const hostKey = c.domain.replace(/^www\./, "").toLowerCase();
       const alreadyHas = [...knownUrls].some(u => u.toLowerCase().includes(hostKey));
       if (alreadyHas) { totalSkipped++; continue; }
+
+      // Value cap: once we've probed the top TOP_N unknown candidates for this
+      // state, stop — the long tail isn't worth the slow-probe budget.
+      if (probedThisState >= TOP_N) {
+        console.log(`\n  ✓ probed top ${TOP_N} value-ranked candidates for ${state.code} — stopping (long tail skipped by design).`);
+        break;
+      }
 
       // Stop probing NEW cities once the time budget is spent. Resumes next
       // run (idempotent). Checked before the probe so we never start one we
@@ -447,6 +567,7 @@ async function main() {
       }
 
       totalProbed++;
+      probedThisState++;
       process.stdout.write(`  Probing ${c.name} (${c.domain})... `);
       const hit = await probeDomain(c.domain);
       if (!hit) { console.log("none"); continue; }

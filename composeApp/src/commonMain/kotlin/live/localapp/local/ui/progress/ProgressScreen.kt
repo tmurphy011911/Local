@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -46,6 +47,7 @@ import androidx.compose.foundation.rememberScrollState
 import live.localapp.local.ui.common.CircleShape
 import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Person
@@ -95,6 +97,7 @@ import live.localapp.local.domain.model.BadgeAction
 import live.localapp.local.platform.hapticSelection
 import live.localapp.local.domain.model.StateProgress
 import live.localapp.local.domain.model.StatusTier
+import live.localapp.local.domain.model.boLevel
 import live.localapp.local.domain.model.nextStatusTier
 import live.localapp.local.ProfanityFilter
 import live.localapp.local.ui.common.AppHeader
@@ -305,8 +308,10 @@ fun ProgressScreen(
 
                 // Paid users keep the subscription card in its original (lower)
                 // spot; trial/free users get it promoted above the stats so the
-                // upgrade CTA is the first thing they see.
-                val isPaidPro = remember { live.localapp.local.ui.chat.PremiumGate().isPremium }
+                // upgrade CTA is the first thing they see. Gate on the *paid*
+                // signal — an active trial is not a paid sub, so trial users
+                // should still get the promoted placement.
+                val isPaidPro = remember { live.localapp.local.ui.chat.PremiumGate().hasPaidSubscription }
 
                 // ── Subscription Status (promoted for non-paid users) ──
                 if (!isPaidPro) {
@@ -430,7 +435,7 @@ private fun HeroCard(
         Column(
             modifier = Modifier.padding(20.dp),
         ) {
-            // Avatar + name row
+            // Avatar + name row — the user's current Bo (blinking) is the avatar.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier
@@ -440,24 +445,13 @@ private fun HeroCard(
                         .border(3.dp, AppColors.White.copy(alpha = 0.5f), CircleShape),
                     contentAlignment = Alignment.Center,
                 ) {
-                    if (state.userInitial.isNotEmpty()) {
-                        Text(
-                            state.userInitial,
-                            style = TextStyle(
-                                fontFamily = AppFonts.Heading,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 24.sp,
-                                color = AppColors.White,
-                            ),
-                        )
-                    } else {
-                        Icon(
-                            Icons.Outlined.Person,
-                            contentDescription = "Account",
-                            modifier = Modifier.size(28.dp),
-                            tint = AppColors.White,
-                        )
-                    }
+                    live.localapp.local.ui.character.Bo(
+                        size = 56.dp,
+                        level = displayTier.boLevel,
+                        showSparkles = false,
+                        showShadow = false,
+                        modifier = Modifier.size(56.dp),
+                    )
                 }
 
                 Spacer(Modifier.width(14.dp))
@@ -511,10 +505,7 @@ private fun HeroCard(
                         }
                     }
                     Text(
-                        // TODO(parity-backlog): plumb a real `createdAt` field through
-                        // ProgressUiState (sourced from `user_profiles.created_at`).
-                        // Until then this falls back to "Member since recently".
-                        formatMemberSince(null),
+                        formatMemberSince(state.createdAt),
                         style = TextStyle(
                             fontFamily = AppFonts.Body,
                             fontWeight = FontWeight.SemiBold,
@@ -988,47 +979,68 @@ private fun JourneyCard(currentTier: StatusTier, totalPoints: Int) {
             val isLast = index == tiers.lastIndex
             val reward = premiumGate.rewardForTier(tier)
 
-            Row(modifier = Modifier.fillMaxWidth()) {
-                // Spine column (node + line) — fixed width, vertically centered with content
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.width(32.dp),
-                ) {
-                    // Node circle
-                    Box(
-                        modifier = Modifier
-                            .size(28.dp)
-                            .clip(CircleShape)
-                            .then(
-                                when {
-                                    isCurrent -> Modifier.background(AppColors.Sky)
-                                    isReached -> Modifier
-                                        .background(AppColors.SageLt)
-                                        .border(2.dp, AppColors.Sage, CircleShape)
-                                    else -> Modifier
-                                        .background(AppColors.Snow)
-                                        .border(2.dp, AppColors.Pebble.copy(alpha = 0.5f), CircleShape)
-                                }
-                            ),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        when {
-                            isCurrent -> Icon(Icons.Rounded.Star, contentDescription = null, tint = AppColors.White, modifier = Modifier.size(14.dp))
-                            isReached -> Icon(Icons.Rounded.Check, contentDescription = null, tint = AppColors.Sage, modifier = Modifier.size(14.dp))
-                        }
-                    }
+            val nextReached = if (index + 1 < tiers.size) totalPoints >= tiers[index + 1].threshold else false
+            val rowHeight = if (reward != null) 92.dp else 72.dp
+            val stubHeight = (rowHeight - 56.dp) / 2
 
-                    // Line segment
-                    if (!isLast) {
-                        val nextReached = if (index + 1 < tiers.size) totalPoints >= tiers[index + 1].threshold else false
+            Row(
+                modifier = Modifier.fillMaxWidth().height(rowHeight),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                // Spine (Bo node centered, connector stubs above/below) — the Bo
+                // is vertically centered so it lines up with the tier name.
+                Box(
+                    modifier = Modifier.width(56.dp).fillMaxHeight(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    // Connector up to the previous node.
+                    if (index != 0) {
                         Box(
                             modifier = Modifier
+                                .align(Alignment.TopCenter)
                                 .width(2.dp)
-                                .height(if (reward != null) 32.dp else 18.dp)
+                                .height(stubHeight)
+                                .background(
+                                    if (isReached) AppColors.Sage.copy(alpha = 0.4f)
+                                    else AppColors.Pebble.copy(alpha = 0.3f)
+                                ),
+                        )
+                    }
+                    // Connector down to the next node.
+                    if (!isLast) {
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.BottomCenter)
+                                .width(2.dp)
+                                .height(stubHeight)
                                 .background(
                                     if (isReached && nextReached) AppColors.Sage.copy(alpha = 0.4f)
                                     else AppColors.Pebble.copy(alpha = 0.3f)
                                 ),
+                        )
+                    }
+                    // Each tier's Bo is the node — full color once reached/current,
+                    // faded while locked. The current tier gets a highlight ring.
+                    Box(
+                        modifier = Modifier
+                            .size(56.dp)
+                            .then(
+                                if (isCurrent) Modifier
+                                    .clip(CircleShape)
+                                    .background(AppColors.Coral.copy(alpha = 0.2f))
+                                    .border(2.dp, AppColors.Coral, CircleShape)
+                                else Modifier
+                            ),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        live.localapp.local.ui.character.Bo(
+                            size = 50.dp,
+                            level = tier.boLevel,
+                            showSparkles = false,
+                            showShadow = false,
+                            modifier = Modifier
+                                .size(50.dp)
+                                .graphicsLayer { alpha = if (isReached || isCurrent) 1f else 0.35f },
                         )
                     }
                 }
@@ -1949,8 +1961,22 @@ private fun SubscriptionSection(trialEndsAt: String?, onUpgrade: () -> Unit) {
         }
     }
     // Three states: paid (RevenueCat) → active trial (server trial_ends_at) → free.
-    val trialDaysLeft = remember(trialEndsAt) { subscriptionTrialDaysRemaining(trialEndsAt) }
-    val onTrial = !gate.isPremium && trialDaysLeft != null
+    // ProgressViewModel loads trialEndsAt once on init, and days-left is keyed on
+    // that (unchanging) end-date string — so bump a tick on each ON_RESUME to make
+    // the countdown re-evaluate against the current date instead of staying frozen.
+    var trialResumeTick by remember { mutableStateOf(0) }
+    val trialLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    androidx.compose.runtime.DisposableEffect(trialLifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) trialResumeTick++
+        }
+        trialLifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { trialLifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+    val trialDaysLeft = remember(trialEndsAt, trialResumeTick) { subscriptionTrialDaysRemaining(trialEndsAt) }
+    // Branch on the *paid* signal, not isPremium: isPremium is true during an
+    // active trial too, which would mislabel a trialing user as paid "Active".
+    val onTrial = !gate.hasPaidSubscription && trialDaysLeft != null
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1962,7 +1988,7 @@ private fun SubscriptionSection(trialEndsAt: String?, onUpgrade: () -> Unit) {
         Text("SUBSCRIPTION", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = AppColors.Ink3, letterSpacing = 1.sp))
         Spacer(Modifier.height(10.dp))
 
-        if (gate.isPremium) {
+        if (gate.hasPaidSubscription) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("Local Pro", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AppColors.Coral))
                 Spacer(Modifier.width(8.dp))
@@ -2088,8 +2114,8 @@ private fun SupportRow(title: String, onClick: () -> Unit) {
 //
 // Accepts a Postgres-style timestamp ("2026-03-14T15:09:26.123456+00:00"),
 // an ISO-8601 instant, or any string starting with "yyyy-MM" and renders
-// "Member since Mar 2026". Falls back to "Member since recently" when the
-// input is null/blank/unparseable so the UI never shows a hardcoded year.
+// "Member since Mar 26" (MMM YY). Falls back to "Member since recently" when
+// the input is null/blank/unparseable so the UI never shows a hardcoded year.
 private fun formatMemberSince(createdAt: String?): String {
     if (createdAt.isNullOrBlank()) return "Member since recently"
     // Cheap parse \u2014 pluck the leading "yyyy-MM" and look up the month name.
@@ -2104,5 +2130,6 @@ private fun formatMemberSince(createdAt: String?): String {
         "Jan", "Feb", "Mar", "Apr", "May", "Jun",
         "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     )[month - 1]
-    return "Member since $monthName $year"
+    val yy = (year % 100).toString().padStart(2, '0')
+    return "Member since $monthName $yy"
 }

@@ -2,6 +2,7 @@ package live.localapp.local.feature.auth
 
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.withStyle
@@ -153,11 +154,9 @@ fun PhoneAuthScreen(
             when (step) {
                 AuthStep.PHONE -> PhoneInputContent(
                     phone = state.phone,
-                    email = state.email,
                     isLoading = state.isLoading,
                     error = state.error,
                     onPhoneChange = viewModel::updatePhone,
-                    onEmailChange = viewModel::updateEmail,
                     onContinue = viewModel::sendOtp,
                     onSkip = onSkip,
                 )
@@ -171,13 +170,12 @@ fun PhoneAuthScreen(
                     onResend = viewModel::resendOtp,
                     onBack = viewModel::goBackToPhone,
                 )
-                AuthStep.NAME -> NameInputContent(
-                    firstName = state.firstName,
-                    lastName = state.lastName,
+                AuthStep.EMAIL -> EmailInputContent(
+                    email = state.email,
+                    isLoading = state.isLoading,
                     error = state.error,
-                    onFirstNameChange = viewModel::updateFirstName,
-                    onLastNameChange = viewModel::updateLastName,
-                    onContinue = viewModel::submitName,
+                    onEmailChange = viewModel::updateEmail,
+                    onContinue = viewModel::submitEmail,
                 )
             }
         }
@@ -187,11 +185,9 @@ fun PhoneAuthScreen(
 @Composable
 private fun PhoneInputContent(
     phone: String,
-    email: String,
     isLoading: Boolean,
     error: String?,
     onPhoneChange: (String) -> Unit,
-    onEmailChange: (String) -> Unit,
     onContinue: () -> Unit,
     onSkip: (() -> Unit)? = null,
 ) {
@@ -244,7 +240,7 @@ private fun PhoneInputContent(
             Spacer(Modifier.height(10.dp))
 
             Text(
-                "Enter your email and phone number to get started.",
+                "Enter your phone number to get started.",
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.SemiBold,
@@ -255,53 +251,6 @@ private fun PhoneInputContent(
             )
 
             Spacer(Modifier.height(28.dp))
-
-            // Email input
-            BasicTextField(
-                value = email,
-                onValueChange = onEmailChange,
-                textStyle = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 16.sp,
-                    color = AppColors.Ink,
-                ),
-                cursorBrush = SolidColor(AppColors.Coral),
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Email,
-                    capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None,
-                    autoCorrect = false,
-                ),
-                singleLine = true,
-                enabled = !isLoading,
-                decorationBox = { innerTextField ->
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                            .background(AppColors.White, RoundedCornerShape(16.dp))
-                            .border(2.5.dp, if (error != null) AppColors.Coral else AppColors.Pebble, RoundedCornerShape(16.dp))
-                            .padding(horizontal = 14.dp),
-                        contentAlignment = Alignment.CenterStart,
-                    ) {
-                        if (email.isEmpty()) {
-                            Text(
-                                "you@email.com",
-                                style = TextStyle(
-                                    fontFamily = AppFonts.Body,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 16.sp,
-                                    color = AppColors.Pebble,
-                                ),
-                            )
-                        }
-                        innerTextField()
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            Spacer(Modifier.height(12.dp))
 
             // Phone input
             Row(
@@ -371,6 +320,7 @@ private fun PhoneInputContent(
                             innerTextField()
                         }
                     },
+                    modifier = Modifier.testTag("auth_phone_field"),
                 )
             }
 
@@ -407,7 +357,7 @@ private fun PhoneInputContent(
                 )
                 Spacer(Modifier.width(10.dp))
                 Text(
-                    "We\u2019ll send a verification code. No password needed. We\u2019ll never share your number or email.",
+                    "We\u2019ll send a verification code. No password needed. We\u2019ll never share your number.",
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.Bold,
@@ -426,7 +376,7 @@ private fun PhoneInputContent(
         ) {
             AuthButton(
                 text = if (isLoading) "Sending..." else "Continue \u2192",
-                enabled = phone.length == 10 && isValidEmail(email) && !isLoading,
+                enabled = phone.length == 10 && !isLoading,
                 isLoading = isLoading,
                 onClick = onContinue,
             )
@@ -587,7 +537,8 @@ private fun OtpVerificationContent(
                     modifier = Modifier
                         .matchParentSize()
                         .alpha(0f)
-                        .focusRequester(focusRequester),
+                        .focusRequester(focusRequester)
+                        .testTag("auth_otp_field"),
                 )
             }
 
@@ -640,12 +591,11 @@ private fun OtpVerificationContent(
 }
 
 @Composable
-private fun NameInputContent(
-    firstName: String,
-    lastName: String,
+private fun EmailInputContent(
+    email: String,
+    isLoading: Boolean,
     error: String?,
-    onFirstNameChange: (String) -> Unit,
-    onLastNameChange: (String) -> Unit,
+    onEmailChange: (String) -> Unit,
     onContinue: () -> Unit,
 ) {
     Column(
@@ -667,7 +617,7 @@ private fun NameInputContent(
                 buildAnnotatedString {
                     append("What\u2019s your ")
                     withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = AppColors.Coral)) {
-                        append("name?")
+                        append("email?")
                     }
                 },
                 style = TextStyle(
@@ -681,7 +631,7 @@ private fun NameInputContent(
             Spacer(Modifier.height(10.dp))
 
             Text(
-                "Whatever you prefer to be called.",
+                "We\u2019ll use it to keep your account safe and send you the occasional update.",
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.SemiBold,
@@ -693,10 +643,10 @@ private fun NameInputContent(
 
             Spacer(Modifier.height(28.dp))
 
-            // First name
+            // Email input
             BasicTextField(
-                value = firstName,
-                onValueChange = onFirstNameChange,
+                value = email,
+                onValueChange = onEmailChange,
                 textStyle = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.ExtraBold,
@@ -704,21 +654,26 @@ private fun NameInputContent(
                     color = AppColors.Ink,
                 ),
                 cursorBrush = SolidColor(AppColors.Coral),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Email,
+                    capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None,
+                    autoCorrect = false,
+                ),
                 singleLine = true,
+                enabled = !isLoading,
                 decorationBox = { innerTextField ->
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(52.dp)
+                            .height(56.dp)
                             .background(AppColors.White, RoundedCornerShape(16.dp))
-                            .border(2.5.dp, AppColors.Pebble, RoundedCornerShape(16.dp))
+                            .border(2.5.dp, if (error != null) AppColors.Coral else AppColors.Pebble, RoundedCornerShape(16.dp))
                             .padding(horizontal = 14.dp),
                         contentAlignment = Alignment.CenterStart,
                     ) {
-                        if (firstName.isEmpty()) {
+                        if (email.isEmpty()) {
                             Text(
-                                "First name",
+                                "you@email.com",
                                 style = TextStyle(
                                     fontFamily = AppFonts.Body,
                                     fontWeight = FontWeight.ExtraBold,
@@ -730,49 +685,7 @@ private fun NameInputContent(
                         innerTextField()
                     }
                 },
-                modifier = Modifier.fillMaxWidth(),
-            )
-
-            Spacer(Modifier.height(12.dp))
-
-            // Last name
-            BasicTextField(
-                value = lastName,
-                onValueChange = onLastNameChange,
-                textStyle = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 16.sp,
-                    color = AppColors.Ink,
-                ),
-                cursorBrush = SolidColor(AppColors.Coral),
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
-                singleLine = true,
-                decorationBox = { innerTextField ->
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(52.dp)
-                            .background(AppColors.White, RoundedCornerShape(16.dp))
-                            .border(2.5.dp, AppColors.Pebble, RoundedCornerShape(16.dp))
-                            .padding(horizontal = 14.dp),
-                        contentAlignment = Alignment.CenterStart,
-                    ) {
-                        if (lastName.isEmpty()) {
-                            Text(
-                                "Last name (optional)",
-                                style = TextStyle(
-                                    fontFamily = AppFonts.Body,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 16.sp,
-                                    color = AppColors.Pebble,
-                                ),
-                            )
-                        }
-                        innerTextField()
-                    }
-                },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth().testTag("auth_email_field"),
             )
 
             // Error
@@ -796,7 +709,8 @@ private fun NameInputContent(
         ) {
             AuthButton(
                 text = "Continue \u2192",
-                enabled = firstName.isNotBlank(),
+                enabled = isValidEmail(email) && !isLoading,
+                isLoading = isLoading,
                 onClick = onContinue,
             )
         }

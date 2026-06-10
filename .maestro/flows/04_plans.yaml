@@ -1,0 +1,29 @@
+# Regression: Plans tab + Create Plan picker.
+appId: live.localapp.local
+tags:
+  - plans
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+- tapOn: "Plans"
+
+# Either populated ("Upcoming Plans") or the empty-state prompt.
+- assertVisible:
+    text: "Upcoming Plans|Add Your Saved Events to a Plan"
+    optional: true
+
+# Open the Create Plan picker (tagged FAB) and confirm both build paths are
+# offered — this picker is local UI, so both rows are hard assertions.
+- tapOn:
+    id: "plan_create_btn"
+- assertVisible: "Build a Plan Manually"
+- assertVisible: "Ask Bo"
+
+# Dismiss the picker by tapping the scrim. It's a CreatePlanScrim overlay
+# (not a system sheet), so `back` wouldn't dismiss it — tap the dim area up top,
+# clear of the chips that spring up from the bottom FAB.
+- tapOn:
+    point: "50%,20%"
+
+- tapOn: "Home"
+- assertVisible: "Explore"

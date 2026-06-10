@@ -1,0 +1,72 @@
+# Drives the onboarding flow (shown because TEST_FORCE_ONBOARDING=true) all the
+# way to Home. Uses a fixed Boston location instead of the flaky network-backed
+# manual-address autocomplete. Assumes the caller already signed in.
+appId: live.localapp.local
+---
+# Seed a known MA location so the post-onboarding feed has real content.
+- setLocation:
+    latitude: 42.3601
+    longitude: -71.0589
+
+# --- LOCATION step ---
+# Permission is pre-granted by the launchApp `permissions` block in the caller,
+# so tapping through resolves the seeded location and advances automatically.
+- assertVisible:
+    text: "Allow Location Access"
+    optional: true
+- tapOn:
+    text: "Allow Location Access"
+    optional: true
+# Grant any system location dialog that still appears (belt and suspenders).
+- tapOn:
+    text: "Allow While Using App|While using the app|Allow|OK"
+    optional: true
+
+# --- SUCCESS step (auto-advancing loader: "Nice!", "... events loaded") ---
+- assertVisible:
+    text: "Nice!"
+    optional: true
+
+# --- NEIGHBOURHOODS ---
+- assertVisible:
+    text: "Skip all →"
+    optional: true
+- tapOn:
+    text: "Skip all →"
+    optional: true
+
+# --- VENUES ---
+- assertVisible:
+    text: "Next: Event types →|Skip →"
+    optional: true
+- tapOn:
+    text: "Skip →"
+    optional: true
+
+# --- CATEGORIES ---
+- tapOn:
+    text: "Skip →|Continue →"
+    optional: true
+
+# --- FAVOURITES ---
+- tapOn:
+    text: "Continue anyway →|Save my picks →"
+    optional: true
+
+# --- NOTIFICATIONS ---
+- tapOn:
+    text: "Skip →|Turn on notifications →"
+    optional: true
+- tapOn:
+    text: "Don’t Allow|Allow|While using the app|OK"
+    optional: true
+
+# --- HOME tutorial overlay (HomeTutorial.kt) shows on first landing and covers
+# the bottom tabs. "Skip" dismisses the whole 5-page overlay. ---
+- tapOn:
+    text: "Skip"
+    optional: true
+
+# --- HOME reached ---
+- assertVisible:
+    text: "Explore"   # bottom-tab label, present only on Home

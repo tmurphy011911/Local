@@ -1,0 +1,36 @@
+# Launches the app and guarantees we end up on Home, regardless of whether
+# local state already has a completed onboarding. Lets the tab flows run
+# independently and in any order without each re-driving onboarding.
+appId: live.localapp.local
+---
+- launchApp:
+    permissions:
+      location: allow
+      notifications: allow
+- setLocation:
+    latitude: 42.3601
+    longitude: -71.0589
+
+# Clear the tap-to-continue splash first, otherwise the branch conditions below
+# get evaluated while it's still up and skip both subflows.
+- runFlow: dismiss_splash.yaml
+
+# Cold/cleared state -> AUTH screen. Sign in.
+- runFlow:
+    when:
+      visible: "Continue →"
+    file: sign_in.yaml
+
+# Force-onboarding (or genuinely new) -> onboarding LOCATION step. Complete it.
+- runFlow:
+    when:
+      visible:
+        text: "Allow Location Access|Skip all →"
+    file: complete_onboarding.yaml
+
+# Dismiss the first-run Home tutorial overlay if it's covering the tabs.
+- tapOn:
+    text: "Skip"
+    optional: true
+
+- assertVisible: "Explore"

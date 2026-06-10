@@ -25,6 +25,7 @@ sealed interface BadgeCelebration {
     ) : BadgeCelebration
 
     data class StatusLevelUp(
+        val previousTier: StatusTier,
         val newTier: StatusTier,
         val totalPoints: Int,
     ) : BadgeCelebration
@@ -164,6 +165,7 @@ class BadgeService(
             if (newTier != previousTier) {
                 _celebrations.emit(
                     BadgeCelebration.StatusLevelUp(
+                        previousTier = previousTier,
                         newTier = newTier,
                         totalPoints = totalPointsCache,
                     )

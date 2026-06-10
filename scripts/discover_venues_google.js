@@ -18,6 +18,14 @@ let GOOGLE_PLACES_API_KEY, SUPABASE_SERVICE_KEY;
 
 const RADIUS_METERS = parseInt(process.env.RADIUS_METERS || "50000", 10);
 const DRY_RUN = process.env.DRY_RUN === "1";
+// Density lever: DISTANCE_PASS=1 adds a second Nearby pass ranked by distance
+// (nearest 20) on top of the default prominence pass (top 20). Doubles Nearby
+// calls. Defaults OFF so the monthly cron's other states are unchanged.
+const RANK_PASSES = process.env.DISTANCE_PASS === "1"
+  ? ["POPULARITY", "DISTANCE"]
+  : [null];
+// Density lever: DENSE_QUERIES=1 splits dense categories into many text queries.
+const DENSE_QUERIES = process.env.DENSE_QUERIES === "1";
 const CATEGORY_FILTER = process.env.CATEGORY
   ? process.env.CATEGORY.split(",").map((s) => s.trim())
   : null;
@@ -45,7 +53,7 @@ const PLACES_FIELDS = [
   "places.priceLevel",
 ].join(",");
 
-async function searchNearby(includedTypes, centerLat, centerLng) {
+async function searchNearby(includedTypes, centerLat, centerLng, radiusMeters = RADIUS_METERS, rankPreference = null) {
   const allPlaces = [];
 
   const body = {
@@ -53,12 +61,16 @@ async function searchNearby(includedTypes, centerLat, centerLng) {
     locationRestriction: {
       circle: {
         center: { latitude: centerLat, longitude: centerLng },
-        radius: RADIUS_METERS,
+        radius: radiusMeters,
       },
     },
     maxResultCount: 20,
     languageCode: "en",
   };
+  // rankPreference: POPULARITY (default) returns the most prominent 20; a
+  // second DISTANCE pass returns the nearest 20 (different long-tail venues).
+  // Both are deduped by Google place id in the caller, so overlap is free.
+  if (rankPreference) body.rankPreference = rankPreference;
 
   let pageToken = null;
   let page = 0;
@@ -117,7 +129,7 @@ const TEXT_FIELDS = [
   "places.priceLevel",
 ].join(",");
 
-async function searchText(query, centerLat, centerLng) {
+async function searchText(query, centerLat, centerLng, radiusMeters = RADIUS_METERS) {
   const allPlaces = [];
 
   const body = {
@@ -125,7 +137,7 @@ async function searchText(query, centerLat, centerLng) {
     locationBias: {
       circle: {
         center: { latitude: centerLat, longitude: centerLng },
-        radius: RADIUS_METERS,
+        radius: radiusMeters,
       },
     },
     maxResultCount: 20,
@@ -549,10 +561,17 @@ async function fetchLiveStates() {
       console.log("  Falling back to default: MA (Massachusetts)");
       return [{ code: "MA", name: "Massachusetts" }];
     }
-    const states = await res.json();
+    let states = await res.json();
     if (!Array.isArray(states) || states.length === 0) {
       console.log("  No live states found, falling back to default: MA (Massachusetts)");
       return [{ code: "MA", name: "Massachusetts" }];
+    }
+    // Optional STATES=CA,NY filter — restrict a run to specific live states
+    // (e.g. a targeted discovery pass) without touching the others. Default: all live.
+    if (process.env.STATES) {
+      const want = process.env.STATES.split(",").map((s) => s.trim().toUpperCase());
+      states = states.filter((s) => want.includes(s.code));
+      console.log(`  STATES filter active → ${states.map((s) => s.code).join(", ")}`);
     }
     return states;
   } catch (err) {
@@ -565,7 +584,7 @@ async function fetchLiveStates() {
 // ── Build categories for a given state name ──
 
 function buildCategories(stateName) {
-  return [
+  const cats = [
     // ── Eat & Drink ──
     { category: "restaurant", includedTypes: ["restaurant"], textQuery: `restaurants in ${stateName}` },
     { category: "bar", includedTypes: ["bar"], textQuery: `bars in ${stateName}` },
@@ -622,6 +641,33 @@ function buildCategories(stateName) {
     { category: "sports_venue", includedTypes: ["sports_complex", "arena", "gym"], textQuery: `sports venues arenas in ${stateName}` },
     { category: "stadium", includedTypes: ["stadium"], textQuery: null },
   ];
+
+  // Density lever: DENSE_QUERIES=1 splits high-density categories into multiple
+  // text queries. Each query returns its own ~20-60 results past the per-call
+  // cap, surfacing the long tail. OFF by default so other states' monthly runs
+  // are unchanged. Extra queries are appended to the category's textQuery list.
+  if (DENSE_QUERIES) {
+    const extra = {
+      restaurant: ["italian", "mexican", "chinese", "japanese sushi", "thai", "indian", "korean", "vietnamese", "mediterranean", "seafood", "steakhouse", "vegan vegetarian", "tapas", "farm to table", "brunch"].map((c) => `${c} restaurants in ${stateName}`),
+      bar: ["cocktail bars", "wine bars", "sports bars", "dive bars", "rooftop bars", "speakeasy"].map((c) => `${c} in ${stateName}`),
+      music_venue: ["live music venues", "jazz clubs", "concert halls", "comedy clubs", "dance clubs", "small music venues"].map((c) => `${c} in ${stateName}`),
+      theater: ["community theaters", "playhouses", "performing arts theaters", "opera houses"].map((c) => `${c} in ${stateName}`),
+      arts_center: ["cultural centers", "art galleries", "art studios", "makerspaces"].map((c) => `${c} in ${stateName}`),
+      museum: ["history museums", "science museums", "children museums", "art museums", "specialty museums"].map((c) => `${c} in ${stateName}`),
+      brewery: ["breweries taprooms", "distilleries", "cideries"].map((c) => `${c} in ${stateName}`),
+      park: ["state parks", "nature preserves", "recreation areas"].map((c) => `${c} in ${stateName}`),
+      public_space: ["event venues", "banquet halls", "community centers", "convention centers"].map((c) => `${c} in ${stateName}`),
+      market: ["farmers markets", "flea markets", "night markets", "food halls"].map((c) => `${c} in ${stateName}`),
+    };
+    for (const cat of cats) {
+      const add = extra[cat.category];
+      if (!add) continue;
+      const base = Array.isArray(cat.textQuery) ? cat.textQuery : cat.textQuery ? [cat.textQuery] : [];
+      cat.textQuery = [...base, ...add];
+    }
+  }
+
+  return cats;
 }
 
 // ── Helpers ──
@@ -644,15 +690,23 @@ async function discoverForGrid(gridCenters, categoriesToRun, currentStateCode) {
       for (const center of gridCenters) {
         console.log(`  Searching around ${center.label} (${center.lat}, ${center.lng})...`);
 
+        // Per-cell radius if the grid row carries one (dense metro micro-cells
+        // can be tighter than rural cells); else the global RADIUS_METERS env.
+        const cellRadius = center.radius_meters || RADIUS_METERS;
+
         // Nearby Search by type. Some categories (e.g. escape_room) aren't
         // valid Place types in API v1 — they're handled by textQuery only.
+        // RANK_PASSES: POPULARITY (prominent) + DISTANCE (nearest) surface
+        // different venues for the same type; controlled by DISTANCE_PASS env.
         for (const type of (cat.includedTypes || [])) {
-          const places = await searchNearby([type], center.lat, center.lng);
-          for (const p of places) {
-            if (p.businessStatus === "CLOSED_PERMANENTLY") continue;
-            if (p.id && !placesMap.has(p.id)) placesMap.set(p.id, p);
+          for (const rank of RANK_PASSES) {
+            const places = await searchNearby([type], center.lat, center.lng, cellRadius, rank);
+            for (const p of places) {
+              if (p.businessStatus === "CLOSED_PERMANENTLY") continue;
+              if (p.id && !placesMap.has(p.id)) placesMap.set(p.id, p);
+            }
+            await sleep(300);
           }
-          await sleep(300);
         }
 
         // Text Search for broader coverage — textQuery can be string or array
@@ -660,7 +714,7 @@ async function discoverForGrid(gridCenters, categoriesToRun, currentStateCode) {
           ? cat.textQuery
           : cat.textQuery ? [cat.textQuery] : [];
         for (const q of textQueries) {
-          const textPlaces = await searchText(q, center.lat, center.lng);
+          const textPlaces = await searchText(q, center.lat, center.lng, cellRadius);
           for (const p of textPlaces) {
             if (p.businessStatus === "CLOSED_PERMANENTLY") continue;
             if (p.id && !placesMap.has(p.id)) placesMap.set(p.id, p);

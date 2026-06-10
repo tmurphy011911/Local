@@ -12,8 +12,22 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.scale
+import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.PathParser
+import live.localapp.local.ui.character.drawBeret
+import live.localapp.local.ui.character.drawBinoculars
+import live.localapp.local.ui.character.drawCoffee
+import live.localapp.local.ui.character.drawCrown
+import live.localapp.local.ui.character.drawLegendHalo
+import live.localapp.local.ui.character.drawLevelEyesScaled
+import live.localapp.local.ui.character.drawLevelMouth
+import live.localapp.local.ui.character.drawMap
+import live.localapp.local.ui.character.drawPennant
+import live.localapp.local.ui.character.drawPlant
+import live.localapp.local.ui.character.drawSuitcase
+import live.localapp.local.ui.character.drawSunglasses
 
 /**
  * "Stubby Bo" — the mascot, rendered as a Compose vector from the canonical
@@ -50,6 +64,12 @@ fun BoCharacter(
     expression: BoExpression = BoExpression.Default,
     eyeOpen: Float = 1f,
     showShadow: Boolean = true,
+    /**
+     * Loyalty level 0–8. When set, Bo wears the matching prop/face and renders
+     * in the extended viewBox (so crown/beret/suitcase don't clip). [eyeOpen]
+     * still drives the blink. When null, draws the plain splash mascot.
+     */
+    level: Int? = null,
 ) {
     val bodyPath = remember { svgPath(BODY_D) }
     val eyeHappyL = remember { svgPath(EYE_HAPPY_L_D) }
@@ -57,6 +77,42 @@ fun BoCharacter(
     val mouthDefault = remember { svgPath(MOUTH_DEFAULT_D) }
     val mouthHappy = remember { svgPath(MOUTH_HAPPY_D) }
     val mouthExcited = remember { svgPath(MOUTH_EXCITED_D) }
+
+    if (level != null) {
+        val lvl = level.coerceIn(0, 8)
+        Canvas(modifier = modifier) {
+            // Extended viewBox (-20,-26 .. 120,104) for prop headroom.
+            val s = minOf(size.width, size.height) / 140f
+            val offX = (size.width - 140f * s) / 2f
+            // Bias up by ~half the body's offset from frame center so Bo reads
+            // as vertically centered (matches Bo.kt's level-mode centering).
+            val offY = (size.height - 130f * s) / 2f - 13f * s
+            translate(left = offX, top = offY) {
+                scale(s, s, pivot = Offset.Zero) {
+                    translate(left = 20f, top = 26f) {
+                        if (showShadow) ellipse(50f, 88f, 26f, 3f, BoInk, alpha = 0.18f)
+                        if (lvl == 8) drawLegendHalo(0f)
+                        drawPath(bodyPath, BoCoral)
+                        drawPath(bodyPath, BoInk, style = Stroke(width = 3.5f, join = StrokeJoin.Round))
+                        ellipse(28f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
+                        ellipse(72f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
+                        if (lvl == 4) drawPennant()
+                        drawLevelEyesScaled(lvl, eyeOpen)
+                        if (lvl == 5) drawSunglasses()
+                        drawLevelMouth(lvl)
+                        if (lvl == 2) drawPlant()
+                        if (lvl == 3) drawBinoculars()
+                        if (lvl == 1) drawMap()
+                        if (lvl == 6) drawCoffee()
+                        if (lvl == 0) drawSuitcase()
+                        if (lvl == 7) drawBeret()
+                        if (lvl == 8) drawCrown()
+                    }
+                }
+            }
+        }
+        return
+    }
 
     Canvas(modifier = modifier) {
         // Map the 100×100 viewBox onto the (square-ish) canvas, centered.

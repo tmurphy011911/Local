@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.wrapContentWidth
@@ -124,6 +125,7 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.zIndex
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.platform.testTag
 import live.localapp.local.ui.common.ProximityFilterChip
 import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.Config
@@ -178,6 +180,15 @@ private fun trialDaysRemaining(trialEndsAt: String?): Int? {
     if (endMs <= nowMs) return null
     val secondsLeft = (endMs - nowMs) / 1000.0
     return kotlin.math.ceil(secondsLeft / 86_400.0).toInt()
+}
+
+/** Today's local calendar date as an ISO string (yyyy-MM-dd). */
+private fun todayLocalDateIso(): String {
+    val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
+    return kotlinx.datetime.Instant.fromEpochMilliseconds(nowMs)
+        .toLocalDateTime(kotlinx.datetime.TimeZone.currentSystemDefault())
+        .date
+        .toString()
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -247,18 +258,39 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
         }
 
         // Local Pro trial countdown. Shows with < 14 days left, only
-        // for non-paid users still in trial. Dismissible at 7–14 days (honors
-        // the persisted flag); under 7 days it's non-dismissible and always
-        // shows. Tapping it opens the paywall.
+        // for non-paid users still in trial. Dismissible at 7–14 days, but
+        // dismissal only silences it for that calendar day — it returns each
+        // new day. Under 7 days it's non-dismissible and always shows. Tapping
+        // it opens the paywall.
         run {
             val trialGate = remember { live.localapp.local.ui.chat.PremiumGate() }
-            val trialDaysLeft = remember(state.userPreferences?.trialEndsAt) {
+            // HomeViewModel is a Koin singleton that loads trialEndsAt once, and
+            // the days-left value is keyed below on that (unchanging) end-date
+            // string — so without a resume nudge the countdown stays frozen on
+            // whatever it read at process start. Bump a tick on every ON_RESUME so
+            // trialDaysRemaining() re-evaluates against the current date.
+            var trialResumeTick by remember { mutableStateOf(0) }
+            val trialLifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+            androidx.compose.runtime.DisposableEffect(trialLifecycleOwner) {
+                val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+                    if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) trialResumeTick++
+                }
+                trialLifecycleOwner.lifecycle.addObserver(observer)
+                onDispose { trialLifecycleOwner.lifecycle.removeObserver(observer) }
+            }
+            val trialDaysLeft = remember(state.userPreferences?.trialEndsAt, trialResumeTick) {
                 trialDaysRemaining(state.userPreferences?.trialEndsAt)
             }
-            var trialBannerDismissed by remember { mutableStateOf(trialGate.trialBannerDismissed) }
-            if (!trialGate.isPremium && trialDaysLeft != null && trialDaysLeft in 1..14) {
+            // Re-evaluated on each ON_RESUME so the "dismissed today" check rolls
+            // over at midnight without needing a process restart.
+            val today = remember(trialResumeTick) { todayLocalDateIso() }
+            var trialBannerDismissedOn by remember { mutableStateOf(trialGate.trialBannerDismissedOn) }
+            // Guard on the *paid* signal, not isPremium — isPremium is true
+            // during an active trial, which would suppress the very banner meant
+            // to count that trial down. Show for non-paid users in their window.
+            if (!trialGate.hasPaidSubscription && trialDaysLeft != null && trialDaysLeft in 1..14) {
                 val dismissible = trialDaysLeft >= 7
-                val showBanner = if (dismissible) !trialBannerDismissed else true
+                val showBanner = if (dismissible) trialBannerDismissedOn != today else true
                 androidx.compose.animation.AnimatedVisibility(
                     visible = showBanner,
                     exit = androidx.compose.animation.fadeOut(
@@ -272,8 +304,8 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                         dismissible = dismissible,
                         onUpgrade = onUpgrade,
                         onDismiss = {
-                            trialGate.trialBannerDismissed = true
-                            trialBannerDismissed = true
+                            trialGate.trialBannerDismissedOn = today
+                            trialBannerDismissedOn = today
                         },
                     )
                 }
@@ -1125,7 +1157,8 @@ fun EventCard(data: EventCardData, modifier: Modifier = Modifier.width(156.dp), 
                         }
                     },
                 )
-            },
+            }
+            .testTag("home_event_card"),
     ) {
         // Shadow
         Box(
@@ -1198,7 +1231,8 @@ fun EventCard(data: EventCardData, modifier: Modifier = Modifier.width(156.dp), 
                                     }
                                     onFavorite()
                                 }
-                            },
+                            }
+                            .testTag("home_event_favorite"),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(
@@ -1667,14 +1701,17 @@ private fun AiConciergeCard(
                 .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 14.dp),
         ) {
             Column {
-                // Title — tap focuses the input. Bo character sits after the
-                // "Ask Bo" text to match the chat header's placement.
+                // Title row: "Ask Bo" on the left, Bo character on the right.
+                // Bo lives inside this row (not absolutely positioned) so the
+                // input bar always flows below it and they never overlap.
                 Row(
-                    modifier = Modifier.clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = { focusRequester.requestFocus() },
-                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(
+                            interactionSource = remember { MutableInteractionSource() },
+                            indication = null,
+                            onClick = { focusRequester.requestFocus() },
+                        ),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Text("Ask ", style = AppType.AiTitle)
@@ -1682,13 +1719,22 @@ private fun AiConciergeCard(
                         "Bo",
                         style = AppType.AiTitle.copy(fontStyle = FontStyle.Italic),
                     )
-                    Spacer(Modifier.width(8.dp))
-                    live.localapp.local.ui.character.Bo(
-                        size = 32.dp,
-                        showSparkles = false,
-                        showShadow = false,
-                        modifier = Modifier.size(32.dp),
-                    )
+                    Spacer(Modifier.weight(1f))
+                    // Bo keeps its 72dp drawn size but lives in a shorter box so
+                    // it doesn't inflate the row height. Its transparent headroom
+                    // overflows the box rather than adding vertical space.
+                    Box(
+                        modifier = Modifier.size(width = 72.dp, height = 40.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        live.localapp.local.ui.character.Bo(
+                            size = 72.dp,
+                            level = live.localapp.local.ui.character.cachedBoLevel(),
+                            showSparkles = false,
+                            showShadow = false,
+                            modifier = Modifier.requiredSize(72.dp),
+                        )
+                    }
                 }
 
                 Spacer(Modifier.height(12.dp))
@@ -1738,7 +1784,8 @@ private fun AiConciergeCard(
                                             selection = androidx.compose.ui.text.TextRange(0, displayPrompt.length),
                                         )
                                     }
-                                },
+                                }
+                                .testTag("home_concierge_input"),
                         )
                         // Typewriter overlay shown only while empty + unfocused.
                         // The typewriter component types once and holds (no auto-cycle).
@@ -1767,7 +1814,8 @@ private fun AiConciergeCard(
                                 interactionSource = remember { MutableInteractionSource() },
                                 indication = null,
                                 onClick = { performSend() },
-                            ),
+                            )
+                            .testTag("home_concierge_send"),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(Icons.Outlined.Send, contentDescription = "Send", modifier = Modifier.size(14.dp), tint = AppColors.Coral)

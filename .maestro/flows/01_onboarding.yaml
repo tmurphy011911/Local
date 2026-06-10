@@ -1,0 +1,23 @@
+# Regression: brand-new user signs in (bypass) and completes onboarding to Home.
+# Requires Config.TEST_FORCE_ONBOARDING = true (debug build) so the canned
+# account is routed through onboarding instead of straight to Home.
+appId: live.localapp.local
+tags:
+  - onboarding
+  - smoke
+---
+- launchApp:
+    clearState: true        # wipe local prefs -> forces a fresh onboarding run
+    permissions:
+      location: allow
+      notifications: allow
+
+# Splash auto-advances to the AUTH screen.
+- runFlow: ../subflows/sign_in.yaml
+
+# New-user routing lands on the onboarding LOCATION step.
+- runFlow: ../subflows/complete_onboarding.yaml
+
+# Sanity: the four primary surfaces are reachable from Home.
+- assertVisible: "Explore"
+- assertVisible: "Plans"

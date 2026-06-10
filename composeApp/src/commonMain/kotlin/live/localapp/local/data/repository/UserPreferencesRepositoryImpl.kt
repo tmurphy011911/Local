@@ -39,8 +39,17 @@ private data class UserProfileDto(
     @SerialName("manual_location_name") val manualLocationName: String? = null,
     @SerialName("manual_lat") val manualLat: Double? = null,
     @SerialName("manual_lng") val manualLng: Double? = null,
+    // Write-once onboarding anchor. The DB guard trigger makes these immutable
+    // once set, so re-sending them on every general save is a harmless no-op.
+    @SerialName("hometown_name") val hometownName: String? = null,
+    @SerialName("hometown_lat") val hometownLat: Double? = null,
+    @SerialName("hometown_lng") val hometownLng: Double? = null,
+    // Server-stamped on first capture (guard trigger owns it); we only read it.
+    @SerialName("hometown_set_at") val hometownSetAt: String? = null,
     // Server-owned (guard trigger protects it on write); we only read it.
     @SerialName("trial_ends_at") val trialEndsAt: String? = null,
+    // Server-owned join timestamp (DEFAULT NOW()); read-only on the client.
+    @SerialName("created_at") val createdAt: String? = null,
 )
 
 @Serializable
@@ -90,6 +99,9 @@ class UserPreferencesRepositoryImpl(
             manualLocationName = prefs.manualLocationName,
             manualLat = prefs.manualLat,
             manualLng = prefs.manualLng,
+            hometownName = prefs.hometownName,
+            hometownLat = prefs.hometownLat,
+            hometownLng = prefs.hometownLng,
         )
 
         val result = if (existingId != null) {
@@ -152,11 +164,21 @@ class UserPreferencesRepositoryImpl(
                 manualLocationName = dto.manualLocationName,
                 manualLat = dto.manualLat,
                 manualLng = dto.manualLng,
+                hometownName = dto.hometownName,
+                hometownLat = dto.hometownLat,
+                hometownLng = dto.hometownLng,
+                hometownSetAt = dto.hometownSetAt,
                 trialEndsAt = dto.trialEndsAt,
+                createdAt = dto.createdAt,
             ).also { prefs ->
                 prefs.firstName?.takeIf { it.isNotBlank() }?.let { settings.putString(KEY_FIRST_NAME, it) }
                     ?: settings.remove(KEY_FIRST_NAME)
                 if (prefs.city.isNotBlank()) settings.putString(KEY_USER_CITY, prefs.city)
+                // Mirror the server-owned trial end so PremiumGate can treat an
+                // active trial as full Pro access (bypass the paywall).
+                dto.trialEndsAt?.takeIf { it.isNotBlank() }
+                    ?.let { settings.putString(live.localapp.local.ui.chat.PremiumGate.KEY_TRIAL_ENDS_AT, it) }
+                    ?: settings.remove(live.localapp.local.ui.chat.PremiumGate.KEY_TRIAL_ENDS_AT)
             }
         } catch (_: Exception) {
             null
@@ -273,6 +295,9 @@ class UserPreferencesRepositoryImpl(
             manualLocationName = prefs.manualLocationName,
             manualLat = prefs.manualLat,
             manualLng = prefs.manualLng,
+            hometownName = prefs.hometownName,
+            hometownLat = prefs.hometownLat,
+            hometownLng = prefs.hometownLng,
         )
 
         // Check if row exists already

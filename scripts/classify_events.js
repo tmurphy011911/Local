@@ -135,10 +135,34 @@ const AUTO_EXCLUDE_PATTERNS = [
 // "cancel") so titles like "Cancel Culture: A Comedy Show" don't get caught.
 const SOLD_OUT_OR_CANCELED_RE = /\b(sold[\s-]+out|cancell?ed)\b/i;
 
+// Participant-only studio events \u2014 dance/music recitals, dress/tech rehearsals,
+// studio picture days. Only the families/performers involved attend, so they're
+// hidden from public surfaces. Matched against the TITLE alone (mirrors the
+// one-time backfill 2026-06-09). Tuned to NOT catch marquee concert-hall
+// recitals ("Yuja Wang in Recital", faculty/alumni/organ recitals, "Recital
+// Series") or concert tours literally named "Picture Day Tour".
+const PARTICIPANT_ONLY_TITLE = [
+  /\b(dress|tech|technical|costume|stage)\s+rehearsal/i,
+  /\b(dance|ballet)\s+recital\b/i,
+  /\b(annual|spring|summer|winter|fall|june|july|december|holiday|studio|childrens?|children.s)\s+recital\b/i,
+  /\brecital\s*(#\s*\d|day|week|weekend|matinee|evening|performance|fee|(19|20)\d{2})\b/i,
+  /\b\d+(st|nd|rd|th)\s+annual\s+recital\b/i,
+  /\b(19|20)\d{2}\s+(annual\s+)?recital\b/i,
+  /\bpicture\s+(day|week)\b(?!\s+tour)/i,
+];
+// Bare "Recital"/"Rehearsal" is too generic for an all-venue rule (it would catch
+// public music recitals), so it only excludes when the VENUE is a dance studio.
+const DANCE_VENUE = /\b(dance|ballet)\b/i;
+const BARE_RECITAL_OR_REHEARSAL = /\b(recitals?|rehearsals?)\b/i;
+
 function autoExcludeReason(event) {
   const title = event.title || "";
   // Title-only rule runs first and is intentionally narrow (see regex above).
   if (SOLD_OUT_OR_CANCELED_RE.test(title)) return "sold-out-or-canceled";
+
+  if (PARTICIPANT_ONLY_TITLE.some((re) => re.test(title))) return "participant-only";
+  if (DANCE_VENUE.test(event.venue_name || "") && BARE_RECITAL_OR_REHEARSAL.test(title))
+    return "participant-only";
 
   const haystack = [title, event.description || "", event.venue_name || ""].join(" \u2014 ");
   for (const pat of AUTO_EXCLUDE_PATTERNS) {

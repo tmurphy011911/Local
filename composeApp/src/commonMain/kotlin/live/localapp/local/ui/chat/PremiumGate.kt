@@ -19,11 +19,6 @@ class PremiumGate {
 
     private val settings = Settings()
 
-    /** Whether the user has seen the tutorial */
-    var tutorialSeen: Boolean
-        get() = settings.getBoolean(KEY_TUTORIAL_SEEN, false)
-        set(value) = settings.putBoolean(KEY_TUTORIAL_SEEN, value)
-
     /** Total number of plans created across all sources (for analytics/debug). */
     var plansCreated: Int
         get() = settings.getInt(KEY_PLANS_CREATED, 0)
@@ -49,27 +44,55 @@ class PremiumGate {
         get() = settings.getString(KEY_PAID_SUB_EXPIRY, "")
         set(value) = settings.putString(KEY_PAID_SUB_EXPIRY, value)
 
+    /**
+     * Server-owned Local Pro trial end as an ISO-8601 instant, mirrored from
+     * `user_profiles.trial_ends_at` by UserPreferencesRepositoryImpl. Empty when
+     * there is no trial on record. Key must stay in sync with the writer there.
+     */
+    var trialEndsAt: String
+        get() = settings.getString(KEY_TRIAL_ENDS_AT, "")
+        set(value) = settings.putString(KEY_TRIAL_ENDS_AT, value)
+
+    /** Whether the server-granted free trial is still active (end instant in the future). */
+    val isTrialActive: Boolean
+        get() {
+            val raw = trialEndsAt
+            if (raw.isBlank()) return false
+            val endMs = try {
+                kotlinx.datetime.Instant.parse(raw).toEpochMilliseconds()
+            } catch (_: Exception) {
+                return false
+            }
+            return endMs > kotlin.time.Clock.System.now().toEpochMilliseconds()
+        }
+
     /** Track that the user has been shown the paywall */
     var hasSeenPaywall: Boolean
         get() = settings.getBoolean(KEY_HAS_SEEN_PAYWALL, false)
         set(value) = settings.putBoolean(KEY_HAS_SEEN_PAYWALL, value)
 
     /**
-     * Whether the user dismissed the home trial-countdown banner. Only honored
-     * while >= 20 days remain; under 20 days the banner is non-dismissible and
-     * ignores this flag.
+     * ISO local date (yyyy-MM-dd) on which the user last dismissed the home
+     * trial-countdown banner, or empty if never. Dismissal only suppresses the
+     * banner for that calendar day — it re-appears each new day. Only honored
+     * while >= 7 days remain; under 7 days the banner is non-dismissible and
+     * ignores this value.
      */
-    var trialBannerDismissed: Boolean
-        get() = settings.getBoolean(KEY_TRIAL_BANNER_DISMISSED, false)
-        set(value) = settings.putBoolean(KEY_TRIAL_BANNER_DISMISSED, value)
+    var trialBannerDismissedOn: String
+        get() = settings.getString(KEY_TRIAL_BANNER_DISMISSED_ON, "")
+        set(value) = settings.putString(KEY_TRIAL_BANNER_DISMISSED_ON, value)
 
     /** Whether the user has seen the paywall and is still not premium */
     val hasDeclinedPaywall: Boolean
         get() = hasSeenPaywall && !isPremium
 
-    /** Whether the user currently has premium access. */
+    /**
+     * Whether the user currently has premium access — either a paid RevenueCat
+     * subscription OR an active server-granted free trial. The trial promises
+     * "full access to Local Pro", so it must bypass the paywall just like a paid sub.
+     */
     val isPremium: Boolean
-        get() = hasPaidSubscription
+        get() = hasPaidSubscription || isTrialActive
 
     /** Record that a plan was created from [source]. Increments the total + the per-source counter. */
     fun recordPlanCreated(source: PlanSource) {
@@ -97,9 +120,6 @@ class PremiumGate {
         return used < 1
     }
 
-    /** Whether the tutorial should show (first Yocal open) */
-    fun shouldShowTutorial(): Boolean = !tutorialSeen
-
     /** Get the reward description for a tier (for display). */
     fun rewardForTier(tier: StatusTier): String? = when (tier) {
         StatusTier.INSIDER -> "$10 Ticketmaster Gift Card"
@@ -111,7 +131,6 @@ class PremiumGate {
 
     /** Clear all state (for logout) */
     fun clear() {
-        settings.remove(KEY_TUTORIAL_SEEN)
         settings.remove(KEY_PLANS_CREATED)
         settings.remove(KEY_YOCAL_PLANS_CREATED)
         settings.remove(KEY_MANUAL_PLANS_CREATED)
@@ -121,11 +140,11 @@ class PremiumGate {
         settings.remove(KEY_REWARD_EXPIRY)
         settings.remove(KEY_LAST_REWARDED_TIER)
         settings.remove(KEY_HAS_SEEN_PAYWALL)
-        settings.remove(KEY_TRIAL_BANNER_DISMISSED)
+        settings.remove(KEY_TRIAL_BANNER_DISMISSED_ON)
+        settings.remove(KEY_TRIAL_ENDS_AT)
     }
 
     companion object {
-        private const val KEY_TUTORIAL_SEEN = "yocal_tutorial_seen"
         private const val KEY_PLANS_CREATED = "yocal_plans_created"
         private const val KEY_YOCAL_PLANS_CREATED = "yocal_plans_created_yocal"
         private const val KEY_MANUAL_PLANS_CREATED = "yocal_plans_created_manual"
@@ -134,6 +153,8 @@ class PremiumGate {
         private const val KEY_REWARD_EXPIRY = "yocal_reward_expiry"
         private const val KEY_LAST_REWARDED_TIER = "yocal_last_rewarded_tier"
         private const val KEY_HAS_SEEN_PAYWALL = "yocal_has_seen_paywall"
-        private const val KEY_TRIAL_BANNER_DISMISSED = "local_trial_banner_dismissed"
+        private const val KEY_TRIAL_BANNER_DISMISSED_ON = "local_trial_banner_dismissed_on"
+        // Written by UserPreferencesRepositoryImpl.loadPreferences — keep the literal in sync.
+        const val KEY_TRIAL_ENDS_AT = "local_trial_ends_at"
     }
 }

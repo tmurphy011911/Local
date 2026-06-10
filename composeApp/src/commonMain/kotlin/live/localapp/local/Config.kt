@@ -20,13 +20,29 @@ object Config {
     const val TEST_AUTH_BYPASS = false
 
     /**
-     * Effective bypass switch: the developer flag AND a debug binary. This is
-     * the only thing call sites should branch on. Guarantees the OTP bypass +
-     * canned-account sign-in are inert in any release build regardless of the
+     * Review-build escape hatch. When true, the OTP bypass is active even in a
+     * RELEASE binary, so Google Play / App Store reviewers can sign in with any
+     * 6-digit code (the normal [isDebugBuild] guard would otherwise lock them
+     * out of the signed artifact and trigger a "Missing sign in details"
+     * rejection).
+     *
+     * ⚠️ MUST be flipped back to false before promoting any build to
+     * production. While true, the uploaded artifact contains a UNIVERSAL auth
+     * bypass — anyone who enters any 6-digit OTP lands in the canned test
+     * account. Only ship a true value to a closed review track, never to prod.
+     */
+    const val REVIEW_BUILD_BYPASS = false
+
+    /**
+     * Effective bypass switch: the developer flag AND (a debug binary OR the
+     * review-build escape hatch). This is the only thing call sites should
+     * branch on. With [REVIEW_BUILD_BYPASS] false, the OTP bypass + canned
+     * account sign-in are inert in any release build regardless of the
      * source-level [TEST_AUTH_BYPASS] value.
      */
     val testAuthBypassActive: Boolean
-        get() = TEST_AUTH_BYPASS && live.localapp.local.platform.isDebugBuild
+        get() = TEST_AUTH_BYPASS &&
+            (live.localapp.local.platform.isDebugBuild || REVIEW_BUILD_BYPASS)
 
     /**
      * Canned email/password account used only when [testAuthBypassActive] (i.e.
@@ -40,6 +56,27 @@ object Config {
      */
     const val TEST_AUTH_EMAIL = "testbypass@localapp.live"
     const val TEST_AUTH_PASSWORD = "LocalTestBypass!2026"
+
+    /**
+     * Developer intent flag: under the test-auth bypass, route the canned account
+     * through ONBOARDING on every sign-in instead of dropping straight to Home.
+     *
+     * The canned account already has a completed user_profiles row, so the normal
+     * bypass path sees `hasProfile=true` and skips onboarding — which makes the
+     * onboarding flow untestable via the bypass. When this is on, verifyOtp treats
+     * the test sign-in as a brand-new user (no local profile recovered), so the
+     * onboarding flow runs. On finish, savePreferences inserts a throwaway profile
+     * row (id=null → server-generated); the auth session remains the canned
+     * account, so Bo / claude-proxy entitlement still passes.
+     *
+     * Flip to false to test the returning-user → Home fast path instead. Gated on
+     * [testForceOnboardingActive] so it can never affect a release build.
+     */
+    const val TEST_FORCE_ONBOARDING = false
+
+    /** Effective force-onboarding switch: only when the bypass itself is active. */
+    val testForceOnboardingActive: Boolean
+        get() = TEST_FORCE_ONBOARDING && testAuthBypassActive
 
     const val SUPABASE_URL = "https://blifubxslaucshmlphdc.supabase.co"
     const val SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJsaWZ1YnhzbGF1Y3NobWxwaGRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3MjgyNjEsImV4cCI6MjA4ODMwNDI2MX0.xx-iy7kKhHviAjtjfXdxNHp4pmKU-in3efr2SkvWTf0"

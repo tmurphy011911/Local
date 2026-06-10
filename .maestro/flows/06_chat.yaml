@@ -1,0 +1,31 @@
+# Regression: Bo chat opens from the Home "Ask Bo" concierge bar and responds.
+appId: live.localapp.local
+tags:
+  - chat
+  - bo
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+# The "Ask Bo" concierge bar sits at the top of the Home feed. Tapping the tagged
+# input pre-fills it with the rotating prompt (fully selected), so typing replaces
+# it; then the tagged send button opens the full chat sheet.
+- tapOn:
+    id: "home_concierge_input"
+- inputText: "Fun things to do this weekend"
+- tapOn:
+    id: "home_concierge_send"
+
+# Chat sheet opened — the chat header renders a real Text("Ask Bo") that exists
+# nowhere on Home, so it's the hard gate that the sheet actually opened.
+- extendedWaitUntil:
+    visible:
+      text: "Ask Bo"
+    timeout: 15000
+
+# Bo streams a reply (network + Claude). Give it room, then assert the sheet
+# is still alive (no crash). This is a soft check — a hard content assertion
+# would be flaky against a live model.
+- extendedWaitUntil:
+    visible:
+      text: "Ask Bo"
+    timeout: 30000
