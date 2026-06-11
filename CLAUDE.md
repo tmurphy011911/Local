@@ -94,6 +94,29 @@ Platform-specific crawlers auto-detect and use structured APIs before falling ba
 - **Weekly** (Sun 9am UTC): Crawl venues → classify events → extract venue names
 - **Monthly** (1st, 8am UTC): Seed grids → discover venues → fix URLs → rank → backfill photos
 
+## Backend Releases (monthly train)
+
+Backend changes promote **dev → prod** on the monthly release train. Procedure in
+`RELEASE.md`; to actually ship, use the `/release` skill. Two projects: prod
+`blifubxslaucshmlphdc` (serves ALL live App Store versions), dev
+`xbyqwekcanrzovytxmdv` (staging, fed daily by `sync_dev.yml`). The CLI is linked to
+**prod** by default — always pass `--project-ref` / `supabase link` deliberately.
+
+**Hard rule — additive-only / backward-compatible.** One prod DB + one set of edge
+functions serves every installed client version at once, and updates roll out over
+days. So anything promoted to prod must keep the **oldest live client** working:
+- Schema: `ADD COLUMN`/`CREATE TABLE`/`CREATE INDEX`/new RPCs OK. **No**
+  `DROP`/`RENAME`/`ALTER ... TYPE`/new `SET NOT NULL` on a live column. Destructive
+  changes split across two releases (expand → ship → contract).
+- Edge functions: new params optional; never remove/retype a response field a live
+  client reads. Breaking shape → new endpoint, not an in-place edit.
+- `.github/workflows/migration-lint.yml` fails the build on destructive DDL in a new
+  migration unless it carries `-- migration-lint: destructive-ok <reason>`.
+
+Migrations are authored in `supabase/migrations/` and applied with `supabase db push`
+(not the SQL editor — that's the legacy source of remote-ledger drift; reconcile once
+via `supabase migration repair`, see RELEASE.md).
+
 ## Key Files
 
 | File | Purpose |

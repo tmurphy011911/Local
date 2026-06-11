@@ -1,0 +1,79 @@
+name: Migration Lint (additive-only)
+
+# Guards the single-prod-DB invariant: one prod DB serves EVERY live App Store
+# version at once, so a destructive schema change breaks clients still in the
+# wild. This fails the build if a NEW migration contains destructive DDL, unless
+# the migration explicitly acknowledges it with:
+#   -- migration-lint: destructive-ok <reason>
+#
+# See RELEASE.md → "Backend change rules". Only newly-added/changed migration
+# files are scanned, so existing history never re-trips it.
+
+on:
+  push:
+    paths: ['supabase/migrations/**']
+  pull_request:
+    paths: ['supabase/migrations/**']
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need history to diff against the base
+
+      - name: Scan new migrations for destructive DDL
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # Determine the base to diff against.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          else
+            BASE="${{ github.event.before }}"
+          fi
+          # New branch / unknown base (all-zero sha) -> fall back to previous commit.
+          if [ -z "$BASE" ] || ! git cat-file -e "$BASE^{commit}" 2>/dev/null; then
+            BASE="$(git rev-parse HEAD~1 2>/dev/null || git rev-parse HEAD)"
+          fi
+
+          CHANGED=$(git diff --name-only --diff-filter=AM "$BASE" "${{ github.sha }}" -- 'supabase/migrations/*.sql' || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No new/changed migration files. OK."
+            exit 0
+          fi
+
+          echo "Scanning:"; echo "$CHANGED" | sed 's/^/  /'
+
+          # Destructive DDL patterns. SET NOT NULL on an existing column is also a
+          # compat risk (old clients may not populate it) — flagged here too.
+          PATTERN='drop[[:space:]]+table|drop[[:space:]]+column|alter[[:space:]]+table[[:space:]].*[[:space:]]drop[[:space:]]|rename[[:space:]]+column|rename[[:space:]]+to|alter[[:space:]]+column[[:space:]].*[[:space:]]type[[:space:]]|set[[:space:]]+data[[:space:]]+type|set[[:space:]]+not[[:space:]]+null|drop[[:space:]]+function'
+
+          FAIL=0
+          while IFS= read -r f; do
+            [ -z "$f" ] && continue
+            # An explicit ack line exempts the whole file.
+            if grep -qiE '^[[:space:]]*--[[:space:]]*migration-lint:[[:space:]]*destructive-ok' "$f"; then
+              echo "  [ack] $f — destructive-ok acknowledged, skipping"
+              continue
+            fi
+            HITS=$(grep -inE "$PATTERN" "$f" || true)
+            if [ -n "$HITS" ]; then
+              echo "::error file=$f::Destructive/back-incompat DDL in a new migration."
+              echo "  $f:"; echo "$HITS" | sed 's/^/    /'
+              FAIL=1
+            fi
+          done <<< "$CHANGED"
+
+          if [ "$FAIL" = "1" ]; then
+            echo ""
+            echo "A single prod DB serves every live App Store version. The above DDL can"
+            echo "break clients still on an older version. Either:"
+            echo "  • split into an expand/contract pair across two releases (see RELEASE.md), or"
+            echo "  • if genuinely safe (no shipped client reads/writes it), add a line:"
+            echo "      -- migration-lint: destructive-ok <reason>"
+            exit 1
+          fi
+          echo "No destructive DDL. OK."
