@@ -124,6 +124,7 @@ fun PlansScreen(
     radiusFilter: Double? = null,
 ) {
     val state by viewModel.uiState.collectAsState()
+    val currentUserId = remember { viewModel.currentUserId() }
 
     // Refresh plans + attendee counts whenever the app comes back to the
     // foreground. Without realtime, this is the cheapest way to make the
@@ -232,6 +233,8 @@ fun PlansScreen(
                     SwipeToRevealDelete(onDelete = { viewModel.deletePlan(heroPlan.id) }) {
                         HeroPlanCard(
                             plan = heroPlan,
+                            isCreator = !heroPlan.isAcceptedCopy &&
+                                (heroPlan.creatorId == null || heroPlan.creatorId == currentUserId),
                             onClick = { bounds -> onPlanClick(heroPlan, bounds) },
                             onShare = { onSharePlan?.invoke(heroPlan) },
                         )
@@ -244,6 +247,8 @@ fun PlansScreen(
                         SwipeToRevealDelete(onDelete = { viewModel.deletePlan(plan.id) }) {
                             CompactPlanRow(
                                 plan = plan,
+                                isCreator = !plan.isAcceptedCopy &&
+                                    (plan.creatorId == null || plan.creatorId == currentUserId),
                                 onClick = { bounds -> onPlanClick(plan, bounds) },
                                 onShare = { onSharePlan?.invoke(plan) },
                             )
@@ -970,6 +975,7 @@ private fun PlansSkeletonLoader() {
 @Composable
 private fun HeroPlanCard(
     plan: Plan,
+    isCreator: Boolean = true,
     onClick: (androidx.compose.ui.geometry.Rect) -> Unit = {},
     onShare: () -> Unit = {},
 ) {
@@ -1020,33 +1026,38 @@ private fun HeroPlanCard(
         }
 
         Column(modifier = Modifier.padding(20.dp)) {
-            // Top row: confirmed + share
+            // Top row: confirmed tally (creator-only) + share (always). Anyone can
+            // share a plan, but the confirmation tally is the creator's — an
+            // invited attendee doesn't own the plan, so they don't see "X/Y
+            // confirmed". The share button stays right-aligned either way.
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                val confirmed = plan.attendees.count { it.confirmed }
-                // Use the creator-set group size as the denominator so a 3-person
-                // plan reads "1/3 confirmed" while invites are still pending,
-                // not "1/1 confirmed". Falls back to attendees.size for legacy
-                // plans where groupSize was never set.
-                val total = (plan.groupSize ?: plan.attendees.size)
-                    .coerceAtLeast(plan.attendees.size)
-                    .coerceAtLeast(1)
-                Row(
-                    modifier = Modifier
-                        .background(Color.White.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
-                        .padding(horizontal = 8.dp, vertical = 3.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Icon(Icons.Outlined.People, contentDescription = null, modifier = Modifier.size(12.dp), tint = Color.White)
-                    Text(
-                        "$confirmed/$total confirmed",
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = Color.White),
-                    )
+                if (isCreator) {
+                    val confirmed = plan.attendees.count { it.confirmed }
+                    // Use the creator-set group size as the denominator so a 3-person
+                    // plan reads "1/3 confirmed" while invites are still pending,
+                    // not "1/1 confirmed". Falls back to attendees.size for legacy
+                    // plans where groupSize was never set.
+                    val total = (plan.groupSize ?: plan.attendees.size)
+                        .coerceAtLeast(plan.attendees.size)
+                        .coerceAtLeast(1)
+                    Row(
+                        modifier = Modifier
+                            .background(Color.White.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                            .padding(horizontal = 8.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Icon(Icons.Outlined.People, contentDescription = null, modifier = Modifier.size(12.dp), tint = Color.White)
+                        Text(
+                            "$confirmed/$total confirmed",
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = Color.White),
+                        )
+                    }
                 }
+                Spacer(Modifier.weight(1f))
                 Box(
                     modifier = Modifier
                         .size(30.dp)
@@ -1099,6 +1110,7 @@ private fun HeroPlanCard(
 @Composable
 private fun CompactPlanRow(
     plan: Plan,
+    isCreator: Boolean = true,
     onClick: (androidx.compose.ui.geometry.Rect) -> Unit = {},
     onShare: () -> Unit = {},
 ) {
@@ -1165,7 +1177,8 @@ private fun CompactPlanRow(
                 )
             }
 
-            // Share
+            // Share — available to anyone (the compact row shows no confirmation
+            // tally, so there's nothing creator-specific to gate here).
             Box(
                 modifier = Modifier.fillMaxHeight().padding(end = 8.dp),
                 contentAlignment = Alignment.Center,

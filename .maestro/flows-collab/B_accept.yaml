@@ -1,0 +1,27 @@
+# Collab E2E — step 2b (device B / testbypass+b@).
+# Runs AFTER the orchestrator fires the share-token VIEW intent into B's already-
+# foregrounded (signed-in, on Home) app. DeepLinkHandler now delivers warm deep
+# links, so the shared-plan preview (isShared=true) opens and its CTA "Accept
+# Invite" appears. Accepting calls acceptPlanInvite -> the accept_plan_invite RPC
+# records B's confirmed plan_attendees row (server-side) + the creator's badge.
+#
+# No launchApp / no splash tapping here: the app is already running and the warm
+# intent routes straight to the preview, so we just wait for the CTA.
+appId: live.localapp.local
+---
+- extendedWaitUntil:
+    visible: "Accept Invite"
+    timeout: 30000
+- tapOn: "Accept Invite"
+
+# Accept routes to the Plans tab. The accepted plan now appears in B's list.
+- extendedWaitUntil:
+    visible: "Collab E2E Plan"
+    timeout: 20000
+
+# B's accepted copy: the share button STAYS (anyone can share), but the
+# creator-only "X/Y confirmed" tally must be gone (gated on !plan.isAcceptedCopy).
+# Guards the accepted_from_creator_id plumbing.
+- assertVisible:
+    id: "plan_share_btn"
+- assertNotVisible: "confirmed"

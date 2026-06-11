@@ -27,8 +27,8 @@ data class UserPreferences(
     val manualLat: Double? = null,
     val manualLng: Double? = null,
     /** Durable, write-once anchor: the location chosen during onboarding. Unlike
-     *  manual*/userLat (which track the active location), the DB makes these
-     *  immutable once set, so they're safe to back social/"hometown" features. */
+     *  the manual/userLat fields (which track the active location), the DB makes
+     *  these immutable once set, so they're safe to back "hometown" features. */
     val hometownName: String? = null,
     val hometownLat: Double? = null,
     val hometownLng: Double? = null,

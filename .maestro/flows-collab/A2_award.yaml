@@ -1,0 +1,25 @@
+# Collab E2E — step 3 (device A / testbypass@). The payoff.
+# A relaunches and reopens the plan B accepted. This flow just confirms A lands
+# back on their own creator view of the plan (the "Share Plan" CTA is creator-
+# only); the substantive proof lives in the orchestrator's `node ... verify`
+# step, which asserts BOTH A's +2,500 INVITE_ACCEPTED badge AND B's confirmed
+# attendee row in plan_attendees.
+#
+# Two reasons we don't assert UI counts/toast here:
+#  • The +2,500 badge is awarded server-side by the accept_plan_invite RPC at
+#    accept time, not on A's device — so no celebration toast fires on reopen.
+#  • With group_size=2, B's accept makes the plan fully confirmed (2/2), and the
+#    creator Share CTA intentionally drops its subtext when all are confirmed —
+#    so there's no "N unconfirmed" / "2 confirmed" string left to assert.
+appId: live.localapp.local
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+- tapOn: "Plans"
+- assertVisible: "Collab E2E Plan"
+- tapOn: "Collab E2E Plan"
+
+# A is back on their own plan -> the creator-only Share Plan CTA is present.
+- extendedWaitUntil:
+    visible: "Share Plan"
+    timeout: 20000

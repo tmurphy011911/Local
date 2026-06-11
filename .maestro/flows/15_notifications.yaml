@@ -1,0 +1,28 @@
+# Regression: account → Notification Settings screen opens with its toggle.
+#
+# We do NOT flip the toggle: it mirrors the OS-level notification permission, so
+# tapping it routes out to the Android system settings (NotificationSettingsScreen
+# comment) — out of scope and disruptive for a regression. We hard-gate that the
+# settings screen renders with its control, then end here (the screen has a custom
+# back arrow / no BackHandler, so the next flow relaunches via ensure_home — same
+# pattern as 05_profile).
+appId: live.localapp.local
+tags:
+  - account
+  - notifications
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+- tapOn:
+    id: "nav_profile_avatar"
+- scrollUntilVisible:
+    element:
+      text: "Notifications"
+    direction: DOWN
+- tapOn: "Notifications"
+
+# Settings screen is up — "Allow Notifications" is the toggle row label and
+# exists nowhere else, so it's the hard gate that we navigated in.
+- extendedWaitUntil:
+    visible: "Allow Notifications"
+    timeout: 10000

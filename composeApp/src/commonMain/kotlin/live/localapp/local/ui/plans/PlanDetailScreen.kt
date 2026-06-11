@@ -443,25 +443,28 @@ fun PlanDetailScreen(
         // Group chat removed for V1 (per Plan Detail spec, April 27, 2026).
         // PlanChatViewModel + bridge code remains in place for re-enable later.
 
-        // Persistent Share Plan CTA — shown when this is the user's own plan
-        // (not a shared preview). Subtext adapts to RSVP state per spec:
+        // Persistent Share Plan CTA — shown on any non-preview plan (the creator's
+        // own plan AND an invited attendee's accepted copy): anyone can share.
+        // The confirmation subtext, however, is creator-only — guests don't own
+        // the plan, so they get the bare "Share Plan" button. Subtext (creator):
         //   • solo (groupSize == 1): no subtext
-        //   • only creator confirmed: "Only you have confirmed — X total"
-        //   • partial confirmation: "X of Y confirmed"
-        //   • all confirmed: "X confirmed"
+        //   • partial confirmation: "N unconfirmed" (N = group size − confirmed)
+        //   • all confirmed: no subtext (CTA shrinks to a single line)
         if (!isShared) {
-            val totalGoing = (plan.groupSize ?: plan.attendees.size.coerceAtLeast(1))
-                .coerceAtLeast(1)
-            val confirmedGoing = plan.attendees.count { it.confirmed }.coerceAtLeast(0)
-            val unconfirmed = (totalGoing - confirmedGoing).coerceAtLeast(0)
-            val subtext = when {
-                totalGoing <= 1 -> null
-                unconfirmed == 0 -> "$totalGoing confirmed"
-                else -> {
-                    val noun = if (unconfirmed == 1) "person" else "people"
-                    "$unconfirmed $noun unconfirmed"
+            val subtext = if (isCreator) {
+                val totalGoing = (plan.groupSize ?: plan.attendees.size.coerceAtLeast(1))
+                    .coerceAtLeast(1)
+                val confirmedGoing = plan.attendees.count { it.confirmed }.coerceAtLeast(0)
+                val unconfirmed = (totalGoing - confirmedGoing).coerceAtLeast(0)
+                when {
+                    totalGoing <= 1 -> null
+                    unconfirmed == 0 -> null
+                    else -> {
+                        val noun = if (unconfirmed == 1) "person" else "people"
+                        "$unconfirmed $noun unconfirmed"
+                    }
                 }
-            }
+            } else null
             Box(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)

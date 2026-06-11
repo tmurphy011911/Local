@@ -9,7 +9,7 @@ tags:
 - launchApp:
     clearState: true        # wipe local prefs -> forces a fresh onboarding run
     permissions:
-      location: allow
+      location: inuse
       notifications: allow
 
 # Splash auto-advances to the AUTH screen.

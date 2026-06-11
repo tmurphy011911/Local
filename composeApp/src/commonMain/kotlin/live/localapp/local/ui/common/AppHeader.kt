@@ -130,7 +130,8 @@ fun AppHeader(
                             indication = null,
                             onClick = onLocationClick,
                         )
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                        .testTag("location_pill"),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     val leadingIcon = if (isUnsupportedState) Icons.Outlined.Warning else Icons.Outlined.Place

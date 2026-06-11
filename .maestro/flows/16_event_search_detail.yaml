@@ -1,0 +1,49 @@
+# Regression (advanced): Explore EVENTS search → tap a result → event detail.
+# Complements 12 (venue search→detail) and 10 (Home card→detail) by covering the
+# Events-tab search→detail path specifically.
+appId: live.localapp.local
+tags:
+  - advanced
+  - explore
+  - event-detail
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+- tapOn: "Explore"
+- assertVisible:
+    id: "explore_tab_events"
+
+# Covered market via GPS (Boston) so event results actually return — the account
+# may be pinned (manual) to an uncovered city. See 12_explore_filters.
+- tapOn:
+    id: "location_pill"
+- assertVisible: "Current Location"
+- tapOn: "Current Location"
+- tapOn:
+    text: "Allow|While using the app|Only this time|OK"
+    optional: true
+- tapOn:
+    text: "Done"
+    optional: true
+
+# Events tab (default), search a broad term.
+- tapOn:
+    id: "explore_tab_events"
+- tapOn:
+    id: "explore_search_field"
+- inputText: "music"
+- waitForAnimationToEnd:
+    timeout: 2500
+
+# A result row renders → tap it → event detail opens (primary CTA is the gate).
+- extendedWaitUntil:
+    visible:
+      id: "explore_event_card"
+    timeout: 30000
+- tapOn:
+    id: "explore_event_card"
+    index: 0
+- extendedWaitUntil:
+    visible: "RSVP|Get Tickets|More Info"
+    timeout: 20000
+# Ends on event detail (no BackHandler — next flow relaunches via ensure_home).

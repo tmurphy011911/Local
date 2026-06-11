@@ -181,6 +181,27 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     var showCreatePlanMenu by remember { mutableStateOf(false) }
     var showManualPlanSheet by remember { mutableStateOf(false) }
 
+    // ── Premium gating (paywall gates 1–4 + 6, and Bo) ──────────────────────
+    // A non-premium user — no active Local Pro trial AND no paid subscription —
+    // is blocked from: opening an event detail, saving an event, opening a place
+    // detail, saving a place, opening a plan, and creating a plan from Bo. The
+    // paywall appears instead of performing the action. `premiumGate` reads the
+    // same persisted Settings the RevenueCat sync writes, so `isPremium` is
+    // current at tap time. The paywall reuses the global account paywall (native
+    // on iOS, Compose dialog on Android) — same surface as the "Upgrade" button.
+    val premiumGate = remember { live.localapp.local.ui.chat.PremiumGate() }
+    val showPaywallGate: () -> Unit = {
+        if (hasNativeTabBar) {
+            live.localapp.local.platform.presentNativePaywall { _ -> }
+        } else {
+            showAccountPaywall = true
+        }
+    }
+    // Run [action] only if the user is premium; otherwise surface the paywall.
+    val gateOrPaywall: (() -> Unit) -> Unit = { action ->
+        if (premiumGate.isPremium) action() else showPaywallGate()
+    }
+
     // Home lobby tutorial — only fires for users who *just* completed onboarding
     // this session. Returning users (session-restore, re-login) never see it.
     var showHomeTutorial by remember { mutableStateOf(showTutorial) }
@@ -320,12 +341,18 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     val currentUserId = userPrefsRepo.getLocalUserId()
     LaunchedEffect(currentUserId) {
         val gate = live.localapp.local.ui.chat.PremiumGate()
-        // Start from a clean slate for the new user; RevenueCat re-populates
-        // below if the actual entitlement is still active.
-        gate.hasPaidSubscription = false
-        gate.paidSubscriptionExpiry = ""
+        // Wipe the cached paid status ONLY when the active user actually changed
+        // (logout → different login). On a same-user relaunch we keep the cached
+        // value while RevenueCat re-confirms async — otherwise a paying customer
+        // would read hasPaidSubscription=false during that round-trip and get
+        // paywalled on launch now that the gates fire on opening any event/place.
+        if (gate.paidSubscriptionUserId != (currentUserId ?: "")) {
+            gate.hasPaidSubscription = false
+            gate.paidSubscriptionExpiry = ""
+        }
         val applyStatus = { isPro: Boolean, expiryDate: String? ->
             gate.hasPaidSubscription = isPro
+            gate.paidSubscriptionUserId = currentUserId ?: ""
             if (expiryDate != null) {
                 gate.paidSubscriptionExpiry = expiryDate.take(10) // ISO date
             }
@@ -515,6 +542,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         HomeScreen(
                             homeVm,
                             onEventClick = { event, transitionInfo ->
+                                if (!premiumGate.isPremium) { showPaywallGate(); return@HomeScreen }
                                 homeVm.recordEventClick(event.id, event.subcategory ?: event.category)
                                 if (hasNativeHeroTransition) {
                                     // iOS: show native SwiftUI detail with transition
@@ -550,6 +578,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             onProfileClick = { selectedTab = Tab.PROFILE },
                             onLocationClick = { showLocationSheet = true },
                             onFavorite = { event ->
+                                if (!premiumGate.isPremium) { showPaywallGate(); return@HomeScreen }
                                 homeVm.toggleEventFavorite(event.id, event.subcategory ?: event.category)
                             },
                             showUpdateBanner = showUpdateBanner,
@@ -565,6 +594,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 }
                             },
                             onSeeAllVenue = { venueName, _ ->
+                                if (!premiumGate.isPremium) { showPaywallGate(); return@HomeScreen }
                                 // Resolve the venue by name (fav-venue rails carry only the
                                 // name in their title) then open its detail page. iOS MUST
                                 // use the native detail — the Compose VenueDetailPage overlay
@@ -627,6 +657,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         val initial = homeState.userName.firstOrNull()?.uppercase() ?: ""
                         PlacesScreen(
                             placesVm,
+                            gate = gateOrPaywall,
                             onProfileClick = { selectedTab = Tab.PROFILE },
                             onLocationClick = { showLocationSheet = true },
                             userInitial = initial,
@@ -730,6 +761,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             // bypassing the manual option.
                             onNewPlan = { showCreatePlanMenu = true },
                             onPlanClick = { plan, bounds ->
+                                if (!premiumGate.isPremium) { showPaywallGate(); return@PlansScreen }
                                 if (hasNativeHeroTransition) {
                                     val sharePlanLink: () -> Unit = {
                                         scope.launch {
@@ -1209,12 +1241,14 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 val plansVm: PlansViewModel = koin.get()
                 val plansState by plansVm.uiState.collectAsState()
                 val currentUserId = plansVm.currentUserId()
-                // Creator is authoritatively determined by plan.creatorId. Previously
-                // this also fell back to "is the plan in the user's own plans list,"
-                // but accepted-invite plans are also copied into the attendee's
-                // plans list, so that check falsely promoted attendees to creators
-                // and gave them the full edit UI.
-                val isCreator = plan.creatorId != null && plan.creatorId == currentUserId
+                // Accepted-invite plans are copied into the attendee's own plans
+                // list with user_id = the attendee, so creatorId (which maps from
+                // user_id) equals currentUserId for them too — it can't tell an
+                // accepted copy from a self-made plan. acceptedFromCreatorId is the
+                // authoritative signal: non-null = saved from someone's invite, so
+                // the viewer is NOT the creator and gets no share / confirm UI.
+                val isCreator = !plan.isAcceptedCopy &&
+                    (plan.creatorId == null || plan.creatorId == currentUserId)
                 var showPlanChat by remember(plan.id) { mutableStateOf(false) }
                 var planChatPrefill by remember(plan.id) { mutableStateOf<String?>(null) }
                 Box(modifier = Modifier.fillMaxSize().background(AppColors.Snow)) {
@@ -1903,16 +1937,18 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 }
             }
             val chatSheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
-            val premiumGate = remember { live.localapp.local.ui.chat.PremiumGate() }
+            // Reuses the hoisted `premiumGate` (single Settings-backed instance).
             var showPaywall by remember { mutableStateOf(pendingShowPaywall) }
             // Tracks a save attempt that was interrupted by the paywall so we can
             // resume the save automatically once the user subscribes / restores.
             var pendingPlanSaveAfterPaywall by remember { mutableStateOf(false) }
             if (pendingShowPaywall) pendingShowPaywall = false
 
-            // Wire premium gate into chat ViewModel. Yocal and the manual builder
-            // each get their own free-save quota via PlanSource.
-            chatVm.onPlanApprovalCheck = { premiumGate.canCreatePlan(live.localapp.local.ui.chat.PlanSource.YOCAL) }
+            // Wire premium gate into chat ViewModel. Creating a plan from Bo is
+            // PREMIUM-ONLY (no free quota) — a non-premium user always hits the
+            // paywall on approval. (The manual builder keeps its own first-free
+            // quota via PlanSource.MANUAL elsewhere.)
+            chatVm.onPlanApprovalCheck = { premiumGate.isPremium }
             chatVm.onPlanBlocked = {
                 showPaywall = true
                 premiumGate.hasSeenPaywall = true
@@ -2004,6 +2040,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         },
                         showUpgradeBanner = premiumGate.hasDeclinedPaywall,
                         onUpgrade = { showPaywall = true },
+                        gate = gateOrPaywall,
                     )
                 }
             }

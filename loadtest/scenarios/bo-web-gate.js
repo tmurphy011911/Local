@@ -25,15 +25,19 @@ export const options = {
   },
 };
 
-const URL = `${COMMON.SUPABASE_URL}/functions/v1/bo-web-gate`;
+// Renamed 2026-06-11: the gate function is `bo-web-budget`, and the gate
+// CHECK is a GET (?user_id=…); the POST path just logs calls. A UUID-format
+// user_id that won't resolve still exercises the real resolveUserState
+// indexed lookup → returns {allow_web_search:false,...} 200, which is the
+// per-turn latency we care about.
+const URL = `${COMMON.SUPABASE_URL}/functions/v1/bo-web-budget`;
 
 export default function () {
-  const userId = `loadtest-vu-${__VU}`;
-  const body = JSON.stringify({ user_id: userId });
+  const userId = `00000000-0000-4000-8000-${String(__VU).padStart(12, '0')}`;
 
-  const res = http.post(URL, body, {
+  const res = http.get(`${URL}?user_id=${userId}`, {
     headers: COMMON.anonHeaders(),
-    tags: { name: 'bo-web-gate' },
+    tags: { name: 'bo-web-budget' },
     timeout: '5s',
   });
 

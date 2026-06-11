@@ -164,6 +164,10 @@ fun PlacesScreen(
     userInitial: String = "",
     onVenueClickWithBounds: ((VenueWithMeta, Rect) -> Unit)? = null,
     onEventClick: ((live.localapp.local.domain.model.Event, Rect) -> Unit)? = null,
+    // Premium gate: runs the given action only if the user has access, otherwise
+    // surfaces the paywall. Wraps event/place OPEN + SAVE (paywall gates 1–4).
+    // Defaults to running the action (no gating) for previews/tests.
+    gate: ((() -> Unit) -> Unit) = { it() },
 ) {
     val state by viewModel.uiState.collectAsState()
     val homeViewModel = remember { KoinPlatform.getKoin().get<HomeViewModel>() }
@@ -285,14 +289,18 @@ fun PlacesScreen(
                                     // doesn't open behind a soft keyboard the
                                     // user left up after typing in the search.
                                     focusManager.clearFocus()
-                                    if (onVenueClickWithBounds != null) {
-                                        onVenueClickWithBounds(venue, bounds)
-                                    } else {
-                                        viewModel.selectVenue(venue)
+                                    gate {  // gate 3: open place detail
+                                        if (onVenueClickWithBounds != null) {
+                                            onVenueClickWithBounds(venue, bounds)
+                                        } else {
+                                            viewModel.selectVenue(venue)
+                                        }
                                     }
                                 },
                                 onFavoriteToggle = { venue ->
-                                    viewModel.toggleVenueFavorite(venue.venue.id, venue.primaryCategory)
+                                    gate {  // gate 4: save a place
+                                        viewModel.toggleVenueFavorite(venue.venue.id, venue.primaryCategory)
+                                    }
                                 },
                                 scrollResetKey = state.placeSort,
                             )
@@ -324,10 +332,14 @@ fun PlacesScreen(
                                     // doesn't open behind a soft keyboard the
                                     // user left up after typing in the search.
                                     focusManager.clearFocus()
-                                    onEventClick?.invoke(event, bounds)
+                                    gate {  // gate 1: open event detail
+                                        onEventClick?.invoke(event, bounds)
+                                    }
                                 },
                                 onFavoriteToggle = { event ->
-                                    viewModel.toggleEventFavorite(event.id, event.subcategory ?: event.category)
+                                    gate {  // gate 2: save an event
+                                        viewModel.toggleEventFavorite(event.id, event.subcategory ?: event.category)
+                                    }
                                 },
                                 scrollResetKey = Triple(state.dateFilter, state.customStart, state.customEnd),
                             )
@@ -1187,7 +1199,8 @@ internal fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) 
             .fillMaxWidth()
             .height(92.dp)
             .pressable(onClick = { onClick(imageBounds) })
-            .localCardSurface(cornerRadius = 14.dp),
+            .localCardSurface(cornerRadius = 14.dp)
+            .testTag("venue_card"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Thumbnail — flush to card edge (top/left/bottom), full card height.
@@ -1296,7 +1309,8 @@ internal fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) 
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                     onClick = onFavoriteToggle,
-                ),
+                )
+                .testTag("venue_favorite"),
             contentAlignment = Alignment.Center,
         ) {
             Icon(
@@ -2376,7 +2390,8 @@ private fun EventRowCard(
             .fillMaxWidth()
             .height(92.dp)
             .pressable(onClick = { onClick(imageBounds) })
-            .localCardSurface(cornerRadius = 14.dp),
+            .localCardSurface(cornerRadius = 14.dp)
+            .testTag("explore_event_card"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Thumbnail — flush to card edge (top/left/bottom), full card height
@@ -2482,7 +2497,8 @@ private fun EventRowCard(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                     onClick = onFavoriteToggle,
-                ),
+                )
+                .testTag("event_favorite"),
             contentAlignment = Alignment.Center,
         ) {
             Icon(

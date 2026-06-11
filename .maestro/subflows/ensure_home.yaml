@@ -5,7 +5,7 @@ appId: live.localapp.local
 ---
 - launchApp:
     permissions:
-      location: allow
+      location: inuse
       notifications: allow
 - setLocation:
     latitude: 42.3601

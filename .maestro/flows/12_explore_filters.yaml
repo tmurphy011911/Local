@@ -1,0 +1,149 @@
+# Regression: Explore DEPTH — exercises the Places/Events filter, sort, radius,
+# location, search, and result→detail plumbing that 03_explore (basic search +
+# tab switch) doesn't touch.
+#
+# Unlike the earlier liveness-only version, this asserts REAL DATA renders:
+#   • venue cards (id: venue_card) actually appear in a covered market
+#   • a search query returns a matching card
+#   • tapping a card opens the venue detail ("Directions" anchor)
+#   • changing radius updates the location pill
+#   • switching to Current Location re-targets the feed to the GPS city
+#
+# COVERED-MARKET SETUP: the test account may be pinned (manual mode) to an
+# uncovered city (e.g. San Francisco) where the venue feed is legitimately
+# empty. We switch to "Current Location" so the feed uses the Maestro-mocked GPS
+# (Boston, 42.3601/-71.0589 from ensure_home) — a launched market with data.
+# This both guarantees data AND exercises the location-change path.
+appId: live.localapp.local
+tags:
+  - explore
+  - explore-depth
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+- tapOn: "Explore"
+- assertVisible:
+    id: "explore_search_field"
+- assertVisible:
+    id: "explore_tab_events"
+- assertVisible:
+    id: "explore_tab_places"
+
+# ── Places tab ──
+- tapOn:
+    id: "explore_tab_places"
+- assertVisible:
+    id: "explore_search_field"
+
+# ── CHANGE LOCATION: switch to Current Location (GPS, mocked to Boston) ──
+# Re-targets the feed to the GPS city and lands on a covered market. The header
+# pill flips to "Boston, MA".
+- tapOn:
+    id: "location_pill"
+- assertVisible: "Location Settings"
+- assertVisible: "RADIUS"
+- assertVisible: "Current Location"
+- tapOn: "Current Location"
+- tapOn:
+    text: "Allow|While using the app|Only this time|OK"
+    optional: true
+- tapOn:
+    text: "Done"
+    optional: true
+# Header reflects the GPS city. Android pill reads "Boston, MA", iOS reads
+# "Boston" — match either (the venue_card render below is the real covered-market
+# proof). Maestro does full-string regex matching, so wrap with .*.
+- assertVisible: ".*Boston.*"
+- assertVisible:
+    id: "explore_search_field"
+
+# ── VENUE ROWS RENDER (real data, not just liveness) ──
+- extendedWaitUntil:
+    visible:
+      id: "venue_card"
+    timeout: 30000
+
+# ── CHANGE RADIUS ── 25-mile cap; the pill reflects "· 25 mi".
+- tapOn:
+    id: "location_pill"
+- assertVisible: "RADIUS"
+- tapOn: "25 mi"
+- tapOn:
+    text: "Done"
+    optional: true
+# Pill updates async after the sheet closes — wait for "Boston, MA · 25 mi".
+# Maestro does FULL-string regex matching, so wrap with .* to match the pill.
+- extendedWaitUntil:
+    visible: ".*25 mi.*"
+    timeout: 10000
+- extendedWaitUntil:
+    visible:
+      id: "venue_card"
+    timeout: 30000
+
+# ── SEARCH ── a known Boston venue; the query must return a card.
+- tapOn:
+    id: "explore_search_field"
+- inputText: "Aquarium"
+- waitForAnimationToEnd:
+    timeout: 2500
+- assertVisible:
+    id: "venue_card"
+- eraseText: 20
+- waitForAnimationToEnd:
+    timeout: 2000
+
+# ── CLICK A SEARCH RESULT → venue detail ──
+- extendedWaitUntil:
+    visible:
+      id: "venue_card"
+    timeout: 30000
+- tapOn:
+    id: "venue_card"
+    index: 0
+- extendedWaitUntil:
+    visible: "Directions"
+    timeout: 20000
+- pressKey: Back
+- assertVisible:
+    id: "explore_search_field"
+
+# ── EVENTS tab: date preset toggle + category chip ──
+# (Category chips live on the Events tab; Places uses sort chips instead.)
+- tapOn:
+    id: "explore_tab_events"
+- assertVisible:
+    id: "explore_search_field"
+- tapOn: "This Weekend"
+- assertVisible:
+    id: "explore_search_field"
+- tapOn: "This Weekend"
+- assertVisible:
+    id: "explore_search_field"
+
+# Category chips are data-driven (labels vary by market) but share one testTag —
+# tap the first by index. Tapping re-queries; tapping again toggles back to All.
+- tapOn:
+    id: "explore_category_chip"
+    index: 0
+- assertVisible:
+    id: "explore_search_field"
+- tapOn:
+    id: "explore_category_chip"
+    index: 0
+- assertVisible:
+    id: "explore_search_field"
+
+# ── Places SORT ──
+- tapOn:
+    id: "explore_tab_places"
+- tapOn: "Closest"
+- assertVisible:
+    id: "explore_search_field"
+- tapOn: "Most Popular"
+- assertVisible:
+    id: "explore_search_field"
+
+# ── Back Home cleanly ──
+- tapOn: "Home"
+- assertVisible: "Explore"

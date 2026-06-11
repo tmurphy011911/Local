@@ -19,7 +19,6 @@ tags:
 - tapOn:
     id: "explore_search_field"
 - inputText: "music"
-- hideKeyboard
 
 # Results (or an empty-state) should render without crashing.
 - scroll

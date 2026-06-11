@@ -53,6 +53,13 @@ object Config {
      * unconfirmed, unusable user). Not a real secret: a trial test user on the
      * shared project. These string constants are inert in release builds (the
      * only code path that reads them is gated behind isDebugBuild).
+     *
+     * MULTI-ACCOUNT: this is the DEFAULT bypass account. [signInTestUser] will
+     * instead use the entered email when it's a bypass-family address
+     * (testbypass+a@localapp.live, testbypass+b@localapp.live, ...), letting a
+     * two-device regression sign each device into a distinct user. Every such
+     * account must be provisioned server-side the same way (email pre-confirmed)
+     * and share [TEST_AUTH_PASSWORD]. Provisioning is NOT done by the client.
      */
     const val TEST_AUTH_EMAIL = "testbypass@localapp.live"
     const val TEST_AUTH_PASSWORD = "LocalTestBypass!2026"
@@ -80,5 +87,6 @@ object Config {
 
     const val SUPABASE_URL = "https://blifubxslaucshmlphdc.supabase.co"
     const val SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJsaWZ1YnhzbGF1Y3NobWxwaGRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3MjgyNjEsImV4cCI6MjA4ODMwNDI2MX0.xx-iy7kKhHviAjtjfXdxNHp4pmKU-in3efr2SkvWTf0"
-    const val TICKETMASTER_API_KEY = "5l1bGU8HgMBDBB8OTKhja8MRtBBvSpGo"
+    // Ticketmaster sync runs server-side (daily GitHub Action); the key lives in
+    // CI secrets, never the client. Do not re-add it here — it ships in the binary.
 }

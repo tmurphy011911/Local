@@ -131,6 +131,10 @@ fun ChatScreen(
     onNativeVenueClick: ((String) -> Unit)? = null,           // venueName
     showUpgradeBanner: Boolean = false,
     onUpgrade: () -> Unit = {},
+    // Premium gate: chat itself is free, but opening an event/place detail from
+    // Bo's results is gated (paywall gates 1/3). Runs the action only if the user
+    // has access, otherwise surfaces the paywall. Defaults to no gating.
+    gate: ((() -> Unit) -> Unit) = { it() },
 ) {
     val state by viewModel.uiState.collectAsState()
     val listState = rememberLazyListState()
@@ -374,6 +378,10 @@ fun ChatScreen(
     // Load event when slot is tapped
     LaunchedEffect(selectedEventId) {
         val id = selectedEventId ?: return@LaunchedEffect
+        // Gate 1 (from Bo results): non-premium users can't open an event detail.
+        var allowed = false
+        gate { allowed = true }
+        if (!allowed) { selectedEventId = null; return@LaunchedEffect }
         val event = viewModel.getEventById(id) ?: return@LaunchedEffect
         // If the DB event has no image, fall back to the slot's image (often a venue photo)
         selectedEvent = if (event.imageUrl == null) {
@@ -385,6 +393,10 @@ fun ChatScreen(
     // Load venue when venue slot is tapped
     LaunchedEffect(selectedVenueName) {
         val name = selectedVenueName ?: return@LaunchedEffect
+        // Gate 3 (from Bo results): non-premium users can't open a place detail.
+        var allowed = false
+        gate { allowed = true }
+        if (!allowed) { selectedVenueName = null; return@LaunchedEffect }
         selectedVenue = viewModel.getVenueByName(name)
     }
 

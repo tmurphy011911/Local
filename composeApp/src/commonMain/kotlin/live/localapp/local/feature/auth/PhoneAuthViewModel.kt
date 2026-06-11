@@ -218,8 +218,21 @@ class PhoneAuthViewModel(
      * the caller as a clean error instead of looping into a dead sign-up path.
      */
     private suspend fun signInTestUser() {
+        // Multi-account bypass keyed on the PHONE number — the only field entered
+        // before OTP, which is when this sign-in fires (email is now collected on
+        // a later step, after the session already exists). A reserved test number
+        // routes to a distinct bypass-family account so a two-device regression
+        // signs each device into a DISTINCT user; every other number uses the
+        // canned default, leaving normal single-account flows unchanged. All
+        // bypass accounts share TEST_AUTH_PASSWORD and are provisioned
+        // server-side, email pre-confirmed (see Config.TEST_AUTH_EMAIL). Fully
+        // debug-gated (only reached under testAuthBypassActive).
+        val email = when (_state.value.phone) {
+            "5559876543" -> "testbypass+b@localapp.live"
+            else -> live.localapp.local.Config.TEST_AUTH_EMAIL
+        }
         supabaseClient.auth.signInWith(Email) {
-            this.email = live.localapp.local.Config.TEST_AUTH_EMAIL
+            this.email = email
             this.password = live.localapp.local.Config.TEST_AUTH_PASSWORD
         }
     }

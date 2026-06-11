@@ -1,0 +1,45 @@
+# Regression (advanced): favorite / unfavorite a venue from the Places list.
+# Parallels 11_favorite (Home event heart) for the Places venue heart, which is a
+# distinct control + repository path (favoriteVenueIds / venue favorites).
+appId: live.localapp.local
+tags:
+  - advanced
+  - favorites
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+- tapOn: "Explore"
+- tapOn:
+    id: "explore_tab_places"
+
+# Covered market via GPS (Boston) so the venue feed has rows. See 12.
+- tapOn:
+    id: "location_pill"
+- assertVisible: "Current Location"
+- tapOn: "Current Location"
+- tapOn:
+    text: "Allow|While using the app|Only this time|OK"
+    optional: true
+- tapOn:
+    text: "Done"
+    optional: true
+
+# Venue rows render; the heart control is tagged on the card.
+- extendedWaitUntil:
+    visible:
+      id: "venue_card"
+    timeout: 30000
+- assertVisible:
+    id: "venue_favorite"
+
+# Favorite, then unfavorite — a clean round-trip must not crash the list.
+- tapOn:
+    id: "venue_favorite"
+    index: 0
+- tapOn:
+    id: "venue_favorite"
+    index: 0
+
+# List survived the toggles.
+- assertVisible:
+    id: "venue_card"

@@ -195,7 +195,12 @@ struct PlanDetailSlot: Decodable, Equatable {
             }
             if let addr = venueAddress, !addr.isEmpty {
                 let neighborhood = addr.split(separator: ",").first.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
-                if !neighborhood.isEmpty { parts.append(neighborhood) }
+                // Skip a ZIP-only / "STATE ZIP" first segment — same leak as the
+                // event branch; "02114" is not a useful neighborhood label.
+                if !neighborhood.isEmpty,
+                   !looksLikeBareZip(neighborhood), !looksLikeStateZip(neighborhood) {
+                    parts.append(neighborhood)
+                }
             }
             return parts.joined(separator: " · ")
         }
@@ -209,7 +214,11 @@ struct PlanDetailSlot: Decodable, Equatable {
             parts.append(v)
         }
         let city: String? = {
-            if let c = venueCity, !c.isEmpty { return c }
+            // Trust `venueCity` only when it actually reads as a city — some
+            // rows have a ZIP or "STATE ZIP" leaked into venue_city, which we
+            // must not surface verbatim (bug: "02114" shown instead of "Boston").
+            if let c = venueCity, !c.isEmpty,
+               !looksLikeBareZip(c), !looksLikeStateZip(c) { return c }
             // Fallback to address parse when venueCity wasn't provided
             // (legacy slots / Bo-Web findings without explicit city).
             //
@@ -228,7 +237,7 @@ struct PlanDetailSlot: Decodable, Equatable {
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
             if segs.isEmpty { return nil }
-            if let last = segs.last, looksLikeStateZip(last) {
+            if let last = segs.last, looksLikeStateZip(last) || looksLikeBareZip(last) {
                 segs.removeLast()
             }
             // Also drop a trailing "USA" / "United States" if present.
@@ -253,6 +262,15 @@ struct PlanDetailSlot: Decodable, Equatable {
     /// the city instead.
     private func looksLikeStateZip(_ s: String) -> Bool {
         let pattern = #"^[A-Z]{2}( \d{5}(-\d{4})?)?$"#
+        return s.range(of: pattern, options: .regularExpression) != nil
+    }
+
+    /// True when [s] is a bare US ZIP ("02114" or ZIP+4 "02114-1234") with no
+    /// city text. The crawler sometimes leaks a ZIP into `venue_city` (or a
+    /// ZIP-only `venue_address`); these must never render as a location, since
+    /// "02114" is meaningless to a user expecting "Boston".
+    private func looksLikeBareZip(_ s: String) -> Bool {
+        let pattern = #"^\d{5}(-\d{4})?$"#
         return s.range(of: pattern, options: .regularExpression) != nil
     }
 

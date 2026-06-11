@@ -128,15 +128,30 @@ object ActivityProvider {
 
 /** Stores pending deep link path for pickup by Compose. */
 object DeepLinkHandler {
-    var pendingPath: String? = null
     var callback: ((String) -> Unit)? = null
         set(value) {
             field = value
-            // Deliver any pending path immediately
+            // Cold start: callback is assigned after the activity stored a
+            // pendingPath in onCreate -> deliver it now.
             val path = pendingPath
             if (value != null && path != null) {
                 pendingPath = null
                 value(path)
+            }
+        }
+
+    // Warm start: the activity is already composed (callback assigned) when a
+    // new deep-link intent arrives via onNewIntent. A plain field would just
+    // sit here unread, silently dropping the link. Deliver straight to the live
+    // callback if one is registered; otherwise hold it for the callback setter.
+    var pendingPath: String? = null
+        set(value) {
+            val cb = callback
+            if (value != null && cb != null) {
+                field = null
+                cb(value)
+            } else {
+                field = value
             }
         }
 }

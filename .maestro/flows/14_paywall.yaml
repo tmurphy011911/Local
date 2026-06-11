@@ -1,0 +1,36 @@
+# Regression: Pro gating — the Upgrade entry on the account page opens the
+# premium paywall, and it can be dismissed.
+#
+# Assumes the canned account is on the free/trial tier (RevenueCat pro=false),
+# so the Progress page shows "Upgrade to Local Pro". A pro account would show
+# "Manage Subscription" instead and this flow would no-op the upgrade branch.
+appId: live.localapp.local
+tags:
+  - account
+  - paywall
+  - gating
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+- tapOn:
+    id: "nav_profile_avatar"
+- scrollUntilVisible:
+    element:
+      text: "Upgrade to Local Pro"
+    direction: DOWN
+- tapOn: "Upgrade to Local Pro"
+
+# Paywall is up — hard-gate on its headline + two feature rows (PremiumPaywall).
+- extendedWaitUntil:
+    visible: "Plan together, effortlessly."
+    timeout: 15000
+- assertVisible: "Ask Bo"
+- assertVisible: "Create Plans"
+
+# Dismiss via "Not Now" — back on the Progress screen.
+- tapOn: "Not Now"
+- scrollUntilVisible:
+    element:
+      text: "Log Out"
+    direction: DOWN
+- assertVisible: "Log Out"

@@ -1,0 +1,32 @@
+# Device-B sign-in via TEST_AUTH_BYPASS multi-account.
+# Uses the reserved test phone 5559876543, which PhoneAuthViewModel.signInTestUser
+# maps to testbypass+b@localapp.live — a DISTINCT user from the default
+# testbypass@ (device A). Order: PHONE -> OTP -> (EMAIL if profile-less).
+appId: live.localapp.local
+---
+- runFlow: dismiss_splash.yaml
+- extendedWaitUntil:
+    visible: "Continue →"
+    timeout: 30000
+
+- tapOn:
+    id: "auth_phone_field"
+- inputText: "5559876543"
+- tapOn: "Continue →"
+
+- assertVisible: "Verify →"
+- inputText: "123456"
+- tapOn:
+    text: "Verify →"
+    optional: true
+
+# +b@ typically has no completed profile, so the EMAIL step shows after OTP.
+- runFlow:
+    when:
+      visible:
+        id: "auth_email_field"
+    commands:
+      - tapOn:
+          id: "auth_email_field"
+      - inputText: "testbypass+b@localapp.live"
+      - tapOn: "Continue →"

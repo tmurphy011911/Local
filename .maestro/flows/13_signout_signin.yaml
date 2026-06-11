@@ -1,0 +1,45 @@
+# Regression: account gating — sign out from Profile, then sign back in to Home.
+# Exercises the logged-out → logged-in auth round-trip (the gate that decides
+# which surfaces are reachable).
+appId: live.localapp.local
+tags:
+  - account
+  - auth
+  - gating
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+# Profile (header avatar) → Log Out lives at the bottom of the Progress screen.
+- tapOn:
+    id: "nav_profile_avatar"
+- scrollUntilVisible:
+    element:
+      text: "Log Out"
+    direction: DOWN
+- tapOn: "Log Out"
+# Some builds confirm logout in a dialog; tap through if present.
+- tapOn:
+    text: "Log Out|Log out|Sign Out|Confirm|Yes"
+    optional: true
+
+# Logged out — depending on routing we land on the AUTH screen directly or a
+# logged-out surface with a "Sign in" CTA. Tap the CTA if it's there, then the
+# bypass sign-in subflow drives PHONE → OTP → Home.
+- tapOn:
+    text: "Sign in"
+    optional: true
+- runFlow: ../subflows/sign_in.yaml
+
+# A profile-complete account returns straight to Home; if the build forces
+# onboarding, complete it.
+- runFlow:
+    when:
+      visible: "Skip all →"
+    commands:
+      - runFlow: ../subflows/complete_onboarding.yaml
+
+# Back on Home, signed in.
+- extendedWaitUntil:
+    visible: "Explore"
+    timeout: 60000
+- assertVisible: "Plans"

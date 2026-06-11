@@ -1,0 +1,101 @@
+# Paywall bypass regression — verifies a PREMIUM user (active trial OR upgraded
+# to Local Pro) is NOT gated: every action that paywalls a free user succeeds,
+# and the paywall ("Plan together, effortlessly.") never appears.
+#
+# The gate is a single `premiumGate.isPremium` check (isTrialActive ||
+# hasPaidSubscription), so an active trial exercises the exact same bypass branch
+# a paid upgrade does. The orchestrator (paywall_gating.sh) sets trial_ends_at to
+# the FUTURE + `pm clear`s before this runs.
+#
+# Detail screens (event/venue/plan) have no reliable back handler, so we relaunch
+# between detail-opens instead of pressing Back.
+appId: live.localapp.local
+tags:
+  - paywall
+  - premium-bypass
+---
+- runFlow: ../subflows/ensure_home.yaml
+- tapOn: "Explore"
+- tapOn:
+    id: "location_pill"
+- tapOn: "Current Location"
+- tapOn:
+    text: "Allow|While using the app|Only this time|OK"
+    optional: true
+- tapOn:
+    text: "Done"
+    optional: true
+
+# ── Gates 4 + 2 bypass: saving a place / an event shows NO paywall (no nav) ──
+- tapOn:
+    id: "explore_tab_places"
+- extendedWaitUntil:
+    visible:
+      id: "venue_card"
+    timeout: 30000
+- tapOn:
+    id: "venue_favorite"
+    index: 0
+- assertNotVisible: "Plan together, effortlessly."
+- tapOn:
+    id: "venue_favorite"
+    index: 0   # toggle back
+- tapOn:
+    id: "explore_tab_events"
+- extendedWaitUntil:
+    visible:
+      id: "explore_event_card"
+    timeout: 30000
+- tapOn:
+    id: "event_favorite"
+    index: 0
+- assertNotVisible: "Plan together, effortlessly."
+- tapOn:
+    id: "event_favorite"
+    index: 0   # toggle back
+
+# ── Gate 1 bypass: open an event → detail opens, no paywall ──
+- tapOn:
+    id: "explore_event_card"
+    index: 0
+- extendedWaitUntil:
+    visible: "RSVP|Get Tickets|More Info"
+    timeout: 20000
+- assertNotVisible: "Plan together, effortlessly."
+
+# ── Gate 3 bypass: open a place → detail opens, no paywall ──
+- launchApp
+- runFlow: ../subflows/ensure_home.yaml
+- tapOn: "Explore"
+- tapOn:
+    id: "explore_tab_places"
+- extendedWaitUntil:
+    visible:
+      id: "venue_card"
+    timeout: 30000
+- tapOn:
+    id: "venue_card"
+    index: 0
+- extendedWaitUntil:
+    visible: "Directions"
+    timeout: 20000
+- assertNotVisible: "Plan together, effortlessly."
+
+# ── Gate 6 bypass: open a plan → detail opens, no paywall ──
+- launchApp
+- runFlow: ../subflows/ensure_home.yaml
+- tapOn: "Plans"
+- runFlow:
+    when:
+      visible:
+        id: "plan_card"
+    commands:
+      - tapOn:
+          id: "plan_card"
+      - waitForAnimationToEnd:
+          timeout: 4000
+      # Empty seeded plan's detail can be slow to lay out — give it room.
+      - extendedWaitUntil:
+          visible: "Share Plan"
+          timeout: 30000
+      - assertNotVisible: "Plan together, effortlessly."

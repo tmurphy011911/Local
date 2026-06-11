@@ -31,7 +31,6 @@ tags:
 - tapOn:
     point: "50%,20%"
 - inputText: "Maestro Regression Plan"
-- hideKeyboard
 - assertVisible: "Maestro Regression Plan"
 
 - assertVisible: "When is it?"

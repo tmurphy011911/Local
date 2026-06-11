@@ -45,6 +45,17 @@ class PremiumGate {
         set(value) = settings.putString(KEY_PAID_SUB_EXPIRY, value)
 
     /**
+     * The user id the cached [hasPaidSubscription] belongs to. Lets the launch
+     * sync wipe the cached paid status only on an actual account *change* (not on
+     * every same-user relaunch) — otherwise a paying customer would momentarily
+     * read hasPaidSubscription=false during the async RevenueCat round-trip and
+     * get paywalled on launch. Empty when never synced.
+     */
+    var paidSubscriptionUserId: String
+        get() = settings.getString(KEY_PAID_SUB_USER_ID, "")
+        set(value) = settings.putString(KEY_PAID_SUB_USER_ID, value)
+
+    /**
      * Server-owned Local Pro trial end as an ISO-8601 instant, mirrored from
      * `user_profiles.trial_ends_at` by UserPreferencesRepositoryImpl. Empty when
      * there is no trial on record. Key must stay in sync with the writer there.
@@ -136,6 +147,7 @@ class PremiumGate {
         settings.remove(KEY_MANUAL_PLANS_CREATED)
         settings.remove(KEY_HAS_PAID_SUB)
         settings.remove(KEY_PAID_SUB_EXPIRY)
+        settings.remove(KEY_PAID_SUB_USER_ID)
         // Legacy reward keys — remove if present from older builds.
         settings.remove(KEY_REWARD_EXPIRY)
         settings.remove(KEY_LAST_REWARDED_TIER)
@@ -150,6 +162,7 @@ class PremiumGate {
         private const val KEY_MANUAL_PLANS_CREATED = "yocal_plans_created_manual"
         private const val KEY_HAS_PAID_SUB = "yocal_has_paid_sub"
         private const val KEY_PAID_SUB_EXPIRY = "yocal_paid_sub_expiry"
+        private const val KEY_PAID_SUB_USER_ID = "yocal_paid_sub_user_id"
         private const val KEY_REWARD_EXPIRY = "yocal_reward_expiry"
         private const val KEY_LAST_REWARDED_TIER = "yocal_last_rewarded_tier"
         private const val KEY_HAS_SEEN_PAYWALL = "yocal_has_seen_paywall"

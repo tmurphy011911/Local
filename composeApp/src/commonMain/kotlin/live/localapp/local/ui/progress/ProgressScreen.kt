@@ -791,7 +791,6 @@ private fun PerActionRewardRow(progress: ActionProgress) {
         BadgeAction.GROUP_10_CONFIRMED -> Icons.Rounded.Celebration
         else -> Icons.Rounded.Star
     }
-    val earned = progress.currentCount * progress.action.basePoints
 
     Row(
         modifier = Modifier
@@ -821,19 +820,11 @@ private fun PerActionRewardRow(progress: ActionProgress) {
             )
         }
 
-        // Count + earned
-        Column(horizontalAlignment = Alignment.End) {
-            Text(
-                "${progress.currentCount}",
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = AppColors.Ink),
-            )
-            if (earned > 0) {
-                Text(
-                    "${earned.formatPoints()} FOMO",
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 10.sp, color = AppColors.Sage),
-                )
-            }
-        }
+        // Count
+        Text(
+            "${progress.currentCount}",
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = AppColors.Ink),
+        )
     }
 }
 

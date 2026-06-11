@@ -1,0 +1,99 @@
+# Paywall gating regression — verifies that a NON-PREMIUM user (trial expired,
+# not Local Pro) hits the paywall on each gated action instead of performing it.
+#
+# PRECONDITION: the account must be in the free state. The orchestrator
+# (paywall_gating.sh) sets trial_ends_at to the past + `pm clear`s the app before
+# this runs, and restores premium after. Running this as a premium user FAILS
+# (no paywall appears) — that's intentional; it lives outside flows/ so the main
+# suite (premium account) never runs it.
+#
+# The paywall headline "Plan together, effortlessly." is the shared gate anchor;
+# "Not Now" dismisses it (the gated action did NOT happen).
+appId: live.localapp.local
+tags:
+  - paywall
+  - gating
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+- tapOn: "Explore"
+# Covered market (Boston GPS) so the event/place feeds have rows. See 12.
+- tapOn:
+    id: "location_pill"
+- tapOn: "Current Location"
+- tapOn:
+    text: "Allow|While using the app|Only this time|OK"
+    optional: true
+- tapOn:
+    text: "Done"
+    optional: true
+
+# ── Gate 3: open a place → paywall ──
+- tapOn:
+    id: "explore_tab_places"
+- extendedWaitUntil:
+    visible:
+      id: "venue_card"
+    timeout: 30000
+- tapOn:
+    id: "venue_card"
+    index: 0
+- extendedWaitUntil:
+    visible: "Plan together, effortlessly."
+    timeout: 15000
+- tapOn: "Not Now"
+# Place detail did NOT open — still on the Places list.
+- assertVisible:
+    id: "explore_search_field"
+
+# ── Gate 4: save a place → paywall (not saved) ──
+- tapOn:
+    id: "venue_favorite"
+    index: 0
+- extendedWaitUntil:
+    visible: "Plan together, effortlessly."
+    timeout: 15000
+- tapOn: "Not Now"
+
+# ── Gate 1: open an event → paywall ──
+- tapOn:
+    id: "explore_tab_events"
+- extendedWaitUntil:
+    visible:
+      id: "explore_event_card"
+    timeout: 30000
+- tapOn:
+    id: "explore_event_card"
+    index: 0
+- extendedWaitUntil:
+    visible: "Plan together, effortlessly."
+    timeout: 15000
+- tapOn: "Not Now"
+- assertVisible:
+    id: "explore_search_field"
+
+# ── Gate 2: save an event → paywall (not saved) ──
+- tapOn:
+    id: "event_favorite"
+    index: 0
+- extendedWaitUntil:
+    visible: "Plan together, effortlessly."
+    timeout: 15000
+- tapOn: "Not Now"
+
+# ── Gate 6: open a plan → paywall (orchestrator seeds one) ──
+- tapOn: "Plans"
+- runFlow:
+    when:
+      visible:
+        id: "plan_card"
+    commands:
+      - tapOn:
+          id: "plan_card"
+      - waitForAnimationToEnd:
+          timeout: 4000
+      - extendedWaitUntil:
+          visible: "Plan together, effortlessly."
+          timeout: 30000
+      - tapOn: "Not Now"
+# Also covers the hero plan card (first plan renders as plan_card too).

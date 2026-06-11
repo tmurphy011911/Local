@@ -36,6 +36,7 @@ private data class PlanDto(
     @SerialName("is_past") val isPast: Boolean = false,
     @SerialName("group_size") val groupSize: Int? = null,
     @SerialName("attendees_can_edit") val attendeesCanEdit: Boolean = false,
+    @SerialName("accepted_from_creator_id") val acceptedFromCreatorId: String? = null,
 )
 
 @Serializable
@@ -98,6 +99,7 @@ private data class PlanInsertDto(
     val city: String,
     val days: List<PlanDayDto>,
     @SerialName("group_size") val groupSize: Int? = null,
+    @SerialName("accepted_from_creator_id") val acceptedFromCreatorId: String? = null,
 )
 
 // ── Mappers ──
@@ -214,6 +216,7 @@ private fun PlanDto.toDomain(creatorFirstName: String? = null): Plan {
         creatorId = userId,
         groupSize = groupSize,
         attendeesCanEdit = attendeesCanEdit,
+        acceptedFromCreatorId = acceptedFromCreatorId,
     )
 }
 
@@ -351,6 +354,13 @@ class PlanRepositoryImpl(
                 todayStr // Use today as fallback — the day labels are display-only
             } catch (_: Throwable) { null }
 
+            // If we're saving someone else's shared plan (accept-invite), the
+            // source plan's creatorId is the original owner and differs from us.
+            // Stamp it so this copy is recognizable as an accepted invite (no
+            // share / confirm-tally UI for the guest). Self-made plans have a
+            // null or self creatorId here, so this stays null for them.
+            val acceptedFrom = plan.creatorId?.takeIf { it != userId }
+
             val insertDto = PlanInsertDto(
                 userId = userId,
                 name = plan.title,
@@ -358,6 +368,7 @@ class PlanRepositoryImpl(
                 city = plan.city,
                 days = dayDtos,
                 groupSize = plan.groupSize,
+                acceptedFromCreatorId = acceptedFrom,
             )
 
             println("PlanRepository.savePlan: inserting with ${dayDtos.size} days, ${dayDtos.sumOf { it.slots.size }} slots")
@@ -441,7 +452,13 @@ class PlanRepositoryImpl(
             }
             val result = supabaseClient.postgrest.rpc("generate_share_token", params)
             val raw = result.data.trim('"')
-            println("PlanRepository.getShareToken: token=$raw for planId=$planId")
+            println("PlanRepository.getShareToken: generated=${raw.isNotBlank()} for planId=$planId")
+            // Debug-only: surface the raw token on logcat so a two-device Maestro
+            // regression can build the deep link without scraping the native share
+            // sheet. Gated on the test bypass, so it never emits in a release build.
+            if (live.localapp.local.Config.testAuthBypassActive && raw.isNotBlank()) {
+                println("MAESTRO_SHARE_TOKEN=$raw")
+            }
             raw.ifBlank { null }
         } catch (e: Throwable) {
             println("PlanRepository.getShareToken error: ${e::class.simpleName}: ${e.message}")
@@ -467,15 +484,9 @@ class PlanRepositoryImpl(
                 val acceptCount = json["accept_count"]?.jsonPrimitive?.intOrNull ?: 0
                 val points = json["points_awarded"]?.jsonPrimitive?.intOrNull ?: 0
                 println("PlanRepository.acceptPlanInvite: success, acceptCount=$acceptCount, points=$points")
-                // Also insert into plan_attendees table
-                val planId = json["plan_id"]?.jsonPrimitive?.contentOrNull
-                if (planId != null) {
-                    try {
-                        supabaseClient.from("plan_attendees").insert(
-                            mapOf("plan_id" to planId, "user_id" to userId, "confirmed" to true, "confirmed_at" to kotlin.time.Clock.System.now().toString()),
-                        )
-                    } catch (_: Throwable) { /* UNIQUE violation OK — already inserted */ }
-                }
+                // The accepting user's plan_attendees row is written server-side
+                // by accept_plan_invite (SECURITY DEFINER) — see migration
+                // 20260610170000. No client-side insert needed.
                 live.localapp.local.domain.repository.AcceptInviteResult(true, null, acceptCount, points)
             }
         } catch (e: Throwable) {
@@ -491,7 +502,7 @@ class PlanRepositoryImpl(
                     filter { eq("share_token", shareToken) }
                 }
             val dtos = result.decodeList<PlanDto>()
-            println("PlanRepository.getSharedPlan: token=$shareToken found=${dtos.size}")
+            println("PlanRepository.getSharedPlan: found=${dtos.size}")
             val dto = dtos.firstOrNull() ?: return null
             val plan = dto.toDomain()
 

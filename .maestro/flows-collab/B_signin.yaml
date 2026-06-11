@@ -1,0 +1,31 @@
+# Collab E2E — step 2a (device B / testbypass+b@).
+# Signs B into a distinct account and lands on Home, ready for the orchestrator
+# to fire the deep link. Mirrors ensure_home but swaps in the device-B sign-in.
+appId: live.localapp.local
+---
+- launchApp:
+    permissions:
+      location: inuse
+      notifications: allow
+- setLocation:
+    latitude: 42.3601
+    longitude: -71.0589
+
+- runFlow: ../subflows/dismiss_splash.yaml
+
+- runFlow:
+    when:
+      visible: "Continue →"
+    file: ../subflows/sign_in_b.yaml
+
+- runFlow:
+    when:
+      visible:
+        text: "Allow Location Access|Skip all →"
+    file: ../subflows/complete_onboarding.yaml
+
+- tapOn:
+    text: "Skip"
+    optional: true
+
+- assertVisible: "Explore"

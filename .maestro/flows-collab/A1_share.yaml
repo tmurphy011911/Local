@@ -1,0 +1,23 @@
+# Collab E2E — step 1 (device A / testbypass@).
+# A signs in, opens the seeded "Collab E2E Plan", and taps Share Plan. Tapping
+# Share calls PlanRepository.getShareToken, which (under the bypass) logs
+# `MAESTRO_SHARE_TOKEN=<token>` to logcat — the orchestrator scrapes it for the
+# device-B deep link. At this point only A has confirmed, so confirmedCount==1
+# and the creator-badge claim does NOT fire yet (gated on confirmedCount > 1).
+appId: live.localapp.local
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+- tapOn: "Plans"
+- assertVisible: "Collab E2E Plan"
+- tapOn: "Collab E2E Plan"
+
+# Plan detail for an owned plan shows the persistent Share CTA. group_size=2 with
+# only the creator confirmed renders the "1 person unconfirmed" subtext.
+- assertVisible: "Share Plan"
+- assertVisible: "1 person unconfirmed"
+- tapOn: "Share Plan"
+
+# Share opens the native Android share sheet (a separate system window). The
+# token was already logged before it appeared, so we're done — dismiss it.
+- pressKey: Back

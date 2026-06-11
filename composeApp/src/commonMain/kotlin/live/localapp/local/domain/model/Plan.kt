@@ -17,7 +17,16 @@ data class Plan(
     val groupSize: Int? = null,
     val confirmedCount: Int = 1,
     val attendeesCanEdit: Boolean = false,
-)
+    // Non-null when this plan is a copy the user saved by accepting someone
+    // else's invite — holds the ORIGINAL creator's user id. Null for plans the
+    // user originated. `creatorId` only tells you the owner (it maps from the
+    // row's user_id), so it can't distinguish an accepted copy from a self-made
+    // plan; this field is the authoritative "is this mine to share/manage" signal.
+    val acceptedFromCreatorId: String? = null,
+) {
+    /** True when this plan was saved by accepting an invite (not originated here). */
+    val isAcceptedCopy: Boolean get() = acceptedFromCreatorId != null
+}
 
 @Serializable
 data class PlanDay(

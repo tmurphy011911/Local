@@ -53,7 +53,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -522,11 +524,22 @@ private fun OtpVerificationContent(
                     }
                 }
 
-                // Invisible text field covering the entire box area to capture taps + input
+                // Invisible text field covering the entire box area to capture taps + input.
+                //
+                // Bind to a TextFieldValue with the caret pinned to the END, not a
+                // plain String. On iOS the platform IME's selection drifts out of
+                // sync after each programmatic value update, so a String-bound field
+                // lets the caret land mid-string — backspace then deletes the wrong
+                // digit and gets stuck with one left (the reported iOS-only bug).
+                // Re-deriving with selection = length on every otpCode change keeps
+                // the caret at the end so backspace always removes the last digit.
+                val otpFieldValue = remember(otpCode) {
+                    TextFieldValue(text = otpCode, selection = TextRange(otpCode.length))
+                }
                 BasicTextField(
-                    value = otpCode,
-                    onValueChange = { raw ->
-                        val digits = raw.filter { it.isDigit() }.take(6)
+                    value = otpFieldValue,
+                    onValueChange = { tfv ->
+                        val digits = tfv.text.filter { it.isDigit() }.take(6)
                         onOtpChange(digits)
                     },
                     textStyle = TextStyle(color = Color.Transparent, fontSize = 1.sp),

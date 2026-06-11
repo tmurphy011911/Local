@@ -53,7 +53,11 @@ sealed class PlanMutation {
         override fun applyTo(plan: Plan): Plan = plan.mapDay(dayIndex) { day ->
             // Idempotent — replaying the same op twice doesn't add a duplicate.
             if (day.slots.any { it.id == slot.id }) day
-            else day.copy(slots = day.slots + slot)
+            // Re-sort after insert so a slot added out of order (e.g. a 7 AM
+            // event added when the day already has a 10 AM stop) lands in its
+            // correct chronological position — matching SwapSlot and
+            // SetReservationDetails, which already re-sort.
+            else day.copy(slots = (day.slots + slot).sortedBy { parseSlotTimeMinutes(it.time) })
         }
     }
 

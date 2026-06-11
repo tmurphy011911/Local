@@ -4554,6 +4554,12 @@ class ChatViewModel(
                                     ticketUrl = slot.ticketUrl,
                                     venueRating = slot.venueRating,
                                     venueAddress = slot.venueAddress,
+                                    // venueCity/venueName must carry through — the
+                                    // plan-detail subtitle renders "{venueName} · {city}",
+                                    // so dropping them leaves Bo-added events with no
+                                    // location line (e.g. Boston Family Days).
+                                    venueCity = slot.venueCity,
+                                    venueName = slot.venueName,
                                     venueLat = slot.venueLat,
                                     venueLng = slot.venueLng,
                                     priceMin = slot.priceMin,
@@ -5487,6 +5493,9 @@ $currentPlanContext
                                     imageUrl = s.imageUrl,
                                     ticketUrl = s.ticketUrl, venueRating = s.venueRating,
                                     venueAddress = s.venueAddress, venueLat = s.venueLat, venueLng = s.venueLng,
+                                    // Carry venueCity/venueName so the plan-detail
+                                    // subtitle ("{venueName} · {city}") isn't blank.
+                                    venueCity = s.venueCity, venueName = s.venueName,
                                     priceMin = s.priceMin, priceMax = s.priceMax,
                                     reservationUrl = s.reservationUrl, sourceUrl = s.sourceUrl,
                                     venueWebsite = s.venueWebsite, venueCategory = s.venueCategory,
