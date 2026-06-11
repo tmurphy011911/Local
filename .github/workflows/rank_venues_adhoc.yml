@@ -1,0 +1,48 @@
+name: Ad-hoc — Rank Venues (state-scoped)
+
+# Manually-dispatched venue ranking scoped to one state. weekly.yml does not
+# rank (that lives in monthly.yml's full discover chain), so freshly-discovered
+# venues sit at public_interest_rank=NULL and sink/hide in the app feed until
+# ranked. This runs rank_venues new-only (NOT FORCE) for one state so the new
+# CA/NY corpus surfaces, without re-ranking the existing pre-ranked venues.
+#
+# Only SUPABASE_SERVICE_KEY needed (Anthropic key comes from Supabase secrets).
+
+on:
+  workflow_dispatch:
+    inputs:
+      state:
+        description: "State code to scope to (e.g. CA, NY)"
+        required: true
+        type: string
+      batch_size:
+        description: "Venues per Claude call"
+        required: false
+        type: string
+        default: "30"
+      concurrency:
+        description: "Parallel Claude calls"
+        required: false
+        type: string
+        default: "3"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  rank-venues:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Rank Venues (${{ inputs.state }})
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          STATE: ${{ inputs.state }}
+          BATCH_SIZE: ${{ inputs.batch_size }}
+          CONCURRENCY: ${{ inputs.concurrency }}
+        run: node rank_venues.js
