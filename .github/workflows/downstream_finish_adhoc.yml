@@ -1,0 +1,89 @@
+name: Ad-hoc — Finish Downstream (sync municipal, classify, dedupe)
+
+# Runs the post-crawl downstream chain WITHOUT re-crawling. Needed when the
+# weekly run's classify step is skipped — its gate is
+# `needs.crawl-venues.result == 'success'`, and a single failed state shard
+# (matrix result = failure) skips classify and everything after it, leaving
+# freshly-crawled events stuck at category="other". This finishes the chain
+# against whatever events already exist (classify scopes to unclassified rows;
+# sync scopes to all registered feeds), so it's safe to run standalone.
+#
+# Only SUPABASE_SERVICE_KEY needed (other keys come from the Supabase secrets table).
+
+on:
+  workflow_dispatch: {}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  sync-municipal-feeds:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Sync Municipal Feeds
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node sync_municipal_feeds.js
+
+  classify-events:
+    runs-on: ubuntu-latest
+    needs: sync-municipal-feeds
+    if: ${{ always() }}
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Classify & Tag Events
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node classify_events.js
+
+  extract-venues:
+    runs-on: ubuntu-latest
+    needs: classify-events
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Extract Venues from Events
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node extract_venues_from_events.js
+
+  split-aggregator-events:
+    runs-on: ubuntu-latest
+    needs: extract-venues
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Split aggregator events
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          WRITE: '1'
+        run: node split_aggregator_events.js
+
+  dedupe-pass:
+    runs-on: ubuntu-latest
+    needs: split-aggregator-events
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Cross-source dedupe (events + venues)
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node dedupe_pass.js
