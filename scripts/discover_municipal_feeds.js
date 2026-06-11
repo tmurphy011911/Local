@@ -90,6 +90,26 @@ const CURATED_TOURISM_DOMAINS = {
     { name: "Buffalo Niagara (CVB)", domain: "visitbuffaloniagara.com", nearest_metro: "Buffalo" },
     { name: "Rochester (CVB)", domain: "visitrochester.com", nearest_metro: "Rochester" },
     { name: "Syracuse (CVB)", domain: "visitsyracuse.com", nearest_metro: "Syracuse" },
+    // Long Island (Nassau + Suffolk). These towns aren't metros, so the value
+    // ranking cut them from the top-50 — only Huntington made it. Curating the
+    // regional DMO + the most event-active LI towns force-probes them first.
+    // nearest_metro = NYC (LI's adjacent metro). Wrong-guess domains just probe
+    // to "none" harmlessly.
+    { name: "Long Island (Discover LI)", domain: "discoverlongisland.com", nearest_metro: "New York City" },
+    { name: "Montauk (chamber)", domain: "montaukchamber.com", nearest_metro: "New York City" },
+    { name: "Sag Harbor (chamber)", domain: "sagharborchamber.com", nearest_metro: "New York City" },
+    { name: "East Hampton (chamber)", domain: "easthamptonchamber.com", nearest_metro: "New York City" },
+    { name: "Southampton (village)", domain: "southamptonvillage.org", nearest_metro: "New York City" },
+    { name: "North Fork (promotion council)", domain: "northfork.org", nearest_metro: "New York City" },
+    { name: "Riverhead (downtown BID)", domain: "downtownriverhead.org", nearest_metro: "New York City" },
+    { name: "Port Jefferson (chamber)", domain: "portjeff.com", nearest_metro: "New York City" },
+    { name: "Patchogue (village)", domain: "patchoguevillage.org", nearest_metro: "New York City" },
+    { name: "Long Beach (city)", domain: "longbeachny.gov", nearest_metro: "New York City" },
+    { name: "Glen Cove (discover)", domain: "discoverglencove.com", nearest_metro: "New York City" },
+    { name: "Babylon Village", domain: "babylonvillage.com", nearest_metro: "New York City" },
+    { name: "Greater Bay Shore (chamber)", domain: "bayshorechamber.com", nearest_metro: "New York City" },
+    { name: "Nassau County", domain: "nassaucountyny.gov", nearest_metro: "New York City" },
+    { name: "Suffolk County", domain: "suffolkcountyny.gov", nearest_metro: "New York City" },
   ],
   CA: [
     { name: "Los Angeles (Discover LA)", domain: "discoverlosangeles.com", nearest_metro: "Los Angeles" },
