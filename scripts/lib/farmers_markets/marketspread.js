@@ -1,0 +1,113 @@
+/**
+ * Source module: MarketSpread association directory (Massachusetts).
+ *
+ * One endpoint embeds `window.farmData.members = [...]` with every market in the
+ * association, fully structured. See crawlers.md → marketspread-farmers-markets.
+ *
+ * Emits normalized market records (see sync_farmers_markets.js for the shape).
+ * Times: MarketSpread's operating_hours datetimes are UTC instants (Waltham
+ * 13:30 UTC = 9:30 AM EDT). We normalize them to ET-local "HH:MM" here so every
+ * source feeds the shared builder in the same (Eastern wall-clock) convention.
+ */
+
+// MA association on MarketSpread (the directory behind massfarmersmarkets.org).
+// Other states would use a different association id.
+const MEMBERS_URL = "https://marketspread.com/widget/association/49/16/members/?content";
+
+const PY_DAY = { Monday: 0, Tuesday: 1, Wednesday: 2, Thursday: 3, Friday: 4, Saturday: 5, Sunday: 6 };
+
+function parseFarmData(html) {
+  const key = "window.farmData.members =";
+  const at = html.indexOf(key);
+  if (at < 0) throw new Error("window.farmData.members not found in MarketSpread payload");
+  const start = at + key.length;
+  let depth = 0, inStr = false, esc = false, begin = -1, end = -1;
+  for (let p = start; p < html.length; p++) {
+    const c = html[p];
+    if (begin < 0) { if (c === "[") { begin = p; depth = 1; } continue; }
+    if (esc) { esc = false; continue; }
+    if (c === "\\") { esc = true; continue; }
+    if (c === '"') { inStr = !inStr; continue; }
+    if (inStr) continue;
+    if (c === "[" || c === "{") depth++;
+    else if (c === "]" || c === "}") { depth--; if (depth === 0) { end = p; break; } }
+  }
+  if (end < 0) throw new Error("could not brace-match the MarketSpread members array");
+  return JSON.parse(html.slice(begin, end + 1));
+}
+
+// UTC "HH:MM:SS" → ET-local "HH:MM", converted on a representative in-season
+// date so DST lands the way the market posts it (markets run in EDT).
+function utcToEtLocal(utcTime, refDateStr) {
+  const d = new Date(`${refDateStr}T${utcTime}Z`);
+  const s = d.toLocaleString("en-US", {
+    timeZone: "America/New_York", hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+  return s.replace(/^24:/, "00:");
+}
+
+function programTags(programs) {
+  return [...new Set((programs || []).flatMap((p) => {
+    const n = (p.name || "").toUpperCase();
+    if (n.includes("SNAP") || n.includes("EBT")) return ["snap-ebt"];
+    if (n.includes("WIC")) return ["wic"];
+    return [];
+  }))];
+}
+
+async function fetchMarkets() {
+  const res = await fetch(MEMBERS_URL, {
+    headers: {
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+      Referer: "https://www.massfarmersmarkets.org/",
+      Accept: "text/html",
+    },
+  });
+  if (!res.ok) throw new Error(`MarketSpread fetch ${res.status}`);
+  const members = parseFarmData(await res.text());
+
+  const out = [];
+  for (const m of members) {
+    const loc = m.location || {};
+    if (loc.lat == null || loc.lng == null) continue;
+
+    const occurrences = (m.operating_hours || [])
+      .filter((h) => Number.isInteger(h.weekday) && h.start_datetime)
+      .map((h) => {
+        const seasonStart = h.is_seasonal ? h.season_start || null : null;
+        const seasonEnd = h.is_seasonal ? h.season_end || null : null;
+        // Reference date for the UTC→ET conversion: season_start (in-season →
+        // EDT) or a mid-summer fallback in the current year.
+        const ref = seasonStart || `${new Date().getUTCFullYear()}-07-01`;
+        const t = (dt) => (dt && dt.includes("T") ? dt.split("T")[1].slice(0, 8) : "09:00:00");
+        return {
+          weekday: h.weekday,
+          startLocal: utcToEtLocal(t(h.start_datetime), ref),
+          endLocal: utcToEtLocal(t(h.end_datetime), ref),
+          seasonStart,
+          seasonEnd,
+        };
+      });
+
+    out.push({
+      dedupePrefix: "marketspread", // preserves existing live MA rows' dedupe_hash
+      source: "marketspread_farmers_market",
+      sourceId: String(m.member_id),
+      name: m.name,
+      lat: loc.lat,
+      lng: loc.lng,
+      address: m.address || null,
+      city: m.city || null,
+      state: m.state || "MA",
+      zip: m.zip || null,
+      website: (m.website_url || "").trim() || m.url || null,
+      bio: (m.bio || "").trim() || null,
+      imageUrl: m.logo_path || null,
+      programTags: programTags(m.programs),
+      occurrences,
+    });
+  }
+  return out;
+}
+
+module.exports = { fetchMarkets, label: "MarketSpread (MA)", PY_DAY };

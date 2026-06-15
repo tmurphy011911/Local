@@ -76,7 +76,10 @@ struct EventDetailData {
     }
 
     var ctaLabel: String {
-        if isFree { return "RSVP" }
+        // Free events link out to the venue/market's own page, not a
+        // ticketing/RSVP flow — "More Info" is the honest CTA. Only paid
+        // events with a real ticket URL say "Get Tickets".
+        if isFree { return "More Info" }
         if ticketUrl != nil { return "Get Tickets" }
         return "More Info"
     }

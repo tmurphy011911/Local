@@ -666,7 +666,10 @@ private fun CtaBar(
         if (ctaUrl != null) {
             PrimaryCtaButton(
                 label = when {
-                    event.isFree -> "RSVP"
+                    // Free events link out to the venue/market's own page, not a
+                    // ticketing/RSVP flow — "More Info" is the honest CTA. Only
+                    // paid events with a real ticket URL say "Get Tickets".
+                    event.isFree -> "More Info"
                     event.ticketUrl != null -> "Get Tickets"
                     else -> "More Info"
                 },

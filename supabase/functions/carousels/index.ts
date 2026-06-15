@@ -14,6 +14,7 @@ interface EventRow {
   category: string;
   subcategory: string | null;
   sub_subcategory: string | null;
+  tags: string[] | null;
   team_name: string | null;
   start_at: string | null;
   end_at: string | null;
@@ -1591,6 +1592,11 @@ function buildCarousels(
   // favorite-category and affinity rails reflect their subcategory's full
   // slate instead of the rank-stratified MV sample. Empty on non-For-You paths.
   subcatEvents: ProcessedEvent[] = [],
+  // Full in-radius farmers-market set, fetched directly so the guaranteed
+  // "Farmers Markets Near You" rail isn't starved by the always_on title cap
+  // (the bug where Waltham et al. fell past the 3000-row cutoff). Empty on
+  // non-For-You paths. See fetchFarmersMarketEvents.
+  farmersMarketEvents: ProcessedEvent[] = [],
 ): CarouselSection[] {
   const filter = resolveFilter(category);
   if (filter.type === "empty") return [];
@@ -1812,6 +1818,42 @@ function buildCarousels(
         filter_type: "weekend",
         events: weekendEvents.slice(0, CAROUSEL_DISPLAY_LIMIT),
       });
+    }
+
+    // 2.5 Farmers Markets — a guaranteed rail shown to EVERY user regardless
+    // of taste profile (product requirement). Farmers markets are recurring
+    // `always_on` events, so isGeneralFeedEvent strips them from `filtered`
+    // and they never reach the topical/interest-gated rails above — we source
+    // straight from allEvents (which includes the always_on geo fetch) and
+    // bypass the For-You interest gate entirely. Nearest-first: a market's
+    // value is proximity. Marked seen so buildRecurringCarousels' "Weekly
+    // Happenings" rail at the bottom doesn't repeat them.
+    // Pool: allEvents (capped always_on fetch) UNIONED with the dedicated
+    // farmers-market fetch (deduped by id), so markets truncated by the
+    // always_on title cap are still present. The direct fetch is the
+    // load-bearing source; allEvents just avoids a re-fetch for the ones it
+    // already had.
+    const farmersMarketPool = (() => {
+      const seen = new Set(allEvents.map(e => e.id));
+      return [...allEvents, ...farmersMarketEvents.filter(e => !seen.has(e.id))];
+    })();
+    const farmersMarketRail = farmersMarketPool
+      .filter(e =>
+        (e.subcategory ?? "").toLowerCase() === "farmers-market" ||
+        (Array.isArray(e.tags) && e.tags.some(t => (t ?? "").toLowerCase() === "farmers-market")))
+      .map(e => withDistance(e, userLat, userLng))
+      .filter(e => maxRadius === Infinity || (e.distance_miles ?? 999) <= maxRadius)
+      .sort((a, b) => (a.distance_miles ?? 999) - (b.distance_miles ?? 999))
+      .slice(0, CAROUSEL_DISPLAY_LIMIT);
+    if (farmersMarketRail.length > 0) {
+      addCarousel({
+        slug: "farmers-markets",
+        title: "Farmers Markets Near You",
+        subtitle: null,
+        filter_type: "farmers_markets",
+        events: farmersMarketRail,
+      });
+      farmersMarketRail.forEach(e => seenEventIds.add(e.id));
     }
 
     // 3+. Interleave remaining pools — never two of the same type in a row
@@ -2455,6 +2497,39 @@ async function fetchSubcategoryEvents(
   return [...byId.values()];
 }
 
+// Farmers markets are always_on, and the always_on slow-path fetch is capped
+// at 3 pages × 1000 ordered by title — in a dense metro there are ~5k always_on
+// rows, so every market alphabetically past the cutoff (e.g. "Waltham") is
+// truncated before it reaches the rail. This dedicated fetch pulls the full
+// in-radius farmers-market set (a tiny pool — ~100 statewide) unbounded by that
+// cap, so the rail always has every nearby market to sort by proximity.
+// No start_at gate: always_on rows carry a recurring next-occurrence; dormant
+// (off-season) markets are is_active=false and excluded here.
+async function fetchFarmersMarketEvents(
+  supabase: ReturnType<typeof createClient>,
+  lat: number,
+  lng: number,
+  radiusMiles: number,
+): Promise<EventRow[]> {
+  const latDelta = radiusMiles / 69.0;
+  const lngDelta = radiusMiles / 50.0;
+  const { data, error } = await supabase
+    .from("events")
+    .select("*")
+    .eq("is_active", true)
+    .eq("subcategory", "farmers-market")
+    .gte("venue_lat", lat - latDelta)
+    .lte("venue_lat", lat + latDelta)
+    .gte("venue_lng", lng - lngDelta)
+    .lte("venue_lng", lng + lngDelta)
+    .limit(500);
+  if (error) {
+    console.error("[carousels] fetchFarmersMarketEvents failed:", error);
+    return [];
+  }
+  return (data ?? []) as EventRow[];
+}
+
 // fetchRawSportsEvents removed — rawSportsEvents is now derived inline
 // in the slow-path handler block by filtering the MV-backed fetchAllEvents
 // result. Same row set, no second 7×1000 paginated scan.
@@ -2917,6 +2992,7 @@ Deno.serve(async (req) => {
     let cityEvents: ProcessedEvent[] = [];
     let venueEvents: ProcessedEvent[] = [];
     let subcatEvents: ProcessedEvent[] = [];
+    let farmersMarketEvents: ProcessedEvent[] = [];
     if (resolveFilter(category).type === "none") {
       const targetCities = [nearestCity];
       for (const n of userPreferences?.selected_neighborhoods ?? []) {
@@ -2938,20 +3014,23 @@ Deno.serve(async (req) => {
       // (fav-venue rails) + subcategory-scoped pool (topical fav-cat/affinity
       // rails). All three bypass the rank-stratified MV's metro-wide sampling so
       // the named city/venue/subcategory's full slate is available per-request.
-      const [cityRows, venueRows, subcatRows] = await Promise.all([
+      const [cityRows, venueRows, subcatRows, farmersMarketRows] = await Promise.all([
         fetchCityEvents(supabase, lat, lng, radiusMiles, targetCities),
         fetchVenueEvents(supabase, lat, lng, radiusMiles, userPreferences?.selected_venues ?? []),
         fetchSubcategoryEvents(supabase, lat, lng, radiusMiles, [...railSubcats]),
+        fetchFarmersMarketEvents(supabase, lat, lng, radiusMiles),
       ]);
       cityEvents = cleanEvents(deduplicateCrossSource(cityRows), venueCache, cityPhotoCache);
       venueEvents = cleanEvents(deduplicateCrossSource(venueRows), venueCache, cityPhotoCache);
       subcatEvents = cleanEvents(deduplicateCrossSource(subcatRows), venueCache, cityPhotoCache);
+      farmersMarketEvents = cleanEvents(deduplicateCrossSource(farmersMarketRows), venueCache, cityPhotoCache);
     }
 
     const carouselSections = buildCarousels(
       allEvents, rawSportsEvents, carouselsConfig, category,
       lat, lng, userPreferences, nearestCity,
       weights, venueCache, communityScores, affinityMap, cityEvents, venueEvents, subcatEvents,
+      farmersMarketEvents,
     );
 
     const categories = buildCategories(allEvents, userPreferences);
