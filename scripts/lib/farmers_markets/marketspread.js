@@ -52,6 +52,15 @@ function utcToEtLocal(utcTime, refDateStr) {
   return s.replace(/^24:/, "00:");
 }
 
+// Many NY rows have a null `city` but a full US address ("1406 Townsend Ave,
+// Bronx, NY 10452, USA"). Pull the city = the component right before "ST ZIP".
+function cityFromAddress(addr) {
+  if (!addr) return null;
+  const parts = String(addr).split(",").map((s) => s.trim());
+  const idx = parts.findIndex((p) => /^[A-Z]{2}\s+\d{5}/.test(p));
+  return idx > 0 ? parts[idx - 1] || null : null;
+}
+
 function programTags(programs) {
   return [...new Set((programs || []).flatMap((p) => {
     const n = (p.name || "").toUpperCase();
@@ -103,7 +112,7 @@ async function fetchAssociation(assoc) {
       lat: loc.lat,
       lng: loc.lng,
       address: m.address || null,
-      city: m.city || null,
+      city: m.city || cityFromAddress(m.address) || null,
       state: m.state || assoc.defaultState,
       zip: m.zip || null,
       website: (m.website_url || "").trim() || m.url || null,

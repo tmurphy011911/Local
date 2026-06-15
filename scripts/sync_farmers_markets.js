@@ -138,6 +138,11 @@ function buildEvent(market, now) {
     ...(market.programTags || []),
   ])];
 
+  // events.city and events.venue_city are NOT NULL. Real data resolves a city
+  // (sources parse it from the address when the field is blank); "" is only a
+  // last-resort guard so one city-less row can't abort the whole upsert batch.
+  const city = market.city || "";
+
   let startAt = null, endAt = null;
   if (active) {
     const day = ymd(next.date);
@@ -163,7 +168,7 @@ function buildEvent(market, now) {
     is_active: active,
     venue_name: market.name,
     venue_address: market.address,
-    venue_city: market.city,
+    venue_city: city,
     venue_state: market.state,
     venue_lat: market.lat,
     venue_lng: market.lng,
@@ -173,7 +178,7 @@ function buildEvent(market, now) {
     confidence_score: 0.95,
     needs_review: false,
     dedupe_hash: `${market.dedupePrefix}:${market.sourceId}`,
-    city: market.city,
+    city,
     last_synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
