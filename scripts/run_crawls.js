@@ -727,7 +727,20 @@ function shadowKey(title, startAt, venueName) {
 }
 
 async function filterDateOnlyShadows(batch) {
-  const dateOnly = batch.filter((r) => r.time_known === false && r.start_at && r.venue_name);
+  // Guard against malformed start_at values (e.g. a bad timezone displacement
+  // that Postgres rejects with 22009). An unparseable date here used to reach
+  // `new Date(NaN).toISOString()` below and throw "Invalid time value", killing
+  // the entire crawl upsert — which in turn skipped the whole downstream
+  // classify/split/dedupe chain for the week. Exclude rows whose date prefix
+  // can't be parsed; they still flow through to upsert (Postgres rejects the
+  // bad row non-fatally), they just don't participate in the shadow check.
+  const isParseableDate = (s) =>
+    typeof s === "string" &&
+    /^\d{4}-\d{2}-\d{2}/.test(s) &&
+    !Number.isNaN(Date.parse(s.slice(0, 10) + "T00:00:00Z"));
+  const dateOnly = batch.filter(
+    (r) => r.time_known === false && r.start_at && r.venue_name && isParseableDate(r.start_at),
+  );
   if (dateOnly.length === 0) return batch;
 
   const venues = [...new Set(dateOnly.map((r) => r.venue_name))];
@@ -735,6 +748,9 @@ async function filterDateOnlyShadows(batch) {
   const minDate = dates[0];
   // Add one day to the max so the half-open range covers the last day's events
   const maxDateMs = Date.parse(dates[dates.length - 1] + "T00:00:00Z") + 86_400_000;
+  // Belt-and-suspenders: if the max somehow still can't be computed, fail open
+  // rather than crash the upsert.
+  if (Number.isNaN(maxDateMs)) return batch;
   const maxDate = new Date(maxDateMs).toISOString().slice(0, 10);
 
   const venueIn = venues.map((v) => `"${v.replace(/"/g, '\\"')}"`).join(",");

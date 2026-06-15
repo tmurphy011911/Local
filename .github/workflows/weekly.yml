@@ -81,14 +81,19 @@ jobs:
     # downstream chain (extract → split → dedupe → backfill). The result is
     # crawler-ingested events piling up at category="other" for weeks.
     #
-    # The `if` guard runs classify whenever crawl-venues SUCCEEDED, regardless
-    # of the municipal branch's outcome (success / failure / skipped). Municipal
-    # events that did load still get picked up; any that didn't are caught next
-    # run (classify scopes to unclassified rows). always() is required so the
-    # job is still evaluated when an upstream need failed.
+    # crawl-venues is a MATRIX (one leg per state). Its aggregate `result` is
+    # 'success' ONLY if EVERY leg passes — so a single state crashing (e.g. a
+    # malformed timestamp in MA) or hitting its 300m timeout (CA/NY) made the
+    # whole chain SKIP, leaving every freshly-crawled event unclassified for
+    # weeks. We don't need a clean sweep: each leg upserts its events as it goes,
+    # and classify scopes to unclassified rows, so partial progress is worth
+    # classifying. `!cancelled()` runs classify whenever the crawl stage ran at
+    # all (success / partial / failed / timed-out leg) and only bails if the
+    # whole workflow was manually cancelled. Municipal-branch outcome is likewise
+    # irrelevant; anything that didn't load is caught next run.
     runs-on: ubuntu-latest
     needs: [crawl-venues, sync-municipal-feeds]
-    if: ${{ always() && needs.crawl-venues.result == 'success' }}
+    if: ${{ !cancelled() }}
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -104,6 +109,10 @@ jobs:
   extract-venues:
     runs-on: ubuntu-latest
     needs: classify-events
+    # Run even if a prior step failed/timed out — these jobs read from the DB
+    # independently and shouldn't cascade-skip off one weak link. `needs` still
+    # enforces ordering; `!cancelled()` just drops the implicit success-gate.
+    if: ${{ !cancelled() }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -166,6 +175,7 @@ jobs:
     # dedupe-pass (so dedupe groups by the corrected lat/lng).
     runs-on: ubuntu-latest
     needs: extract-venues
+    if: ${{ !cancelled() }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -182,6 +192,7 @@ jobs:
   dedupe-pass:
     runs-on: ubuntu-latest
     needs: split-aggregator-events
+    if: ${{ !cancelled() }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -197,6 +208,7 @@ jobs:
   backfill-city-photos:
     runs-on: ubuntu-latest
     needs: dedupe-pass
+    if: ${{ !cancelled() }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
