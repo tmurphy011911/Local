@@ -54,6 +54,14 @@ const TEAM_NAME_BACKFILL = process.env.TEAM_NAME_BACKFILL === "1";
 // have sub_subcategory/tags still go through Claude. Used to repair events
 // stuck at invalid parent categories like "other".
 const ONLY_CATEGORY = process.env.ONLY_CATEGORY || null;
+// Events deliberately tagged subcategory="no-public-interest" are hidden from
+// every user-facing surface (carousels filter them out). They carry subcategory
+// but NOT sub_subcategory/tags, so the "unclassified" filter below would
+// otherwise pick them up and Claude could flip them back to visible — silently
+// undoing manual suppression work. Protect them by default in EVERY mode
+// (including FORCE/ONLY_CATEGORY). Set RECLASSIFY_EXCLUDED=1 only when you
+// genuinely want to re-evaluate suppressed events.
+const RECLASSIFY_EXCLUDED = process.env.RECLASSIFY_EXCLUDED === "1";
 
 // ── Rule-based auto-exclusion ─────────────────────────────────────────
 //
@@ -530,7 +538,13 @@ async function main() {
   //    auto-excluded ones. ONLY_CATEGORY implies the caller knows the rows are
   //    misclassified despite already having sub_subcategory/tags, so we bypass
   //    the unclassified-only filter the same way FORCE does.
-  const remaining = events.filter((e) => !autoExcludedIds.has(e.id));
+  const remaining = events.filter(
+    (e) =>
+      !autoExcludedIds.has(e.id) &&
+      // Never re-send intentionally-suppressed events to Claude (see
+      // RECLASSIFY_EXCLUDED above). Applies in FORCE/ONLY_CATEGORY too.
+      (RECLASSIFY_EXCLUDED || e.subcategory !== "no-public-interest"),
+  );
   const toClassify = (FORCE || ONLY_CATEGORY)
     ? remaining
     : remaining.filter((e) => !e.sub_subcategory && (!e.tags || e.tags.length === 0));
