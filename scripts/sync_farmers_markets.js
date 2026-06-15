@@ -78,11 +78,23 @@ function fmtSeason(occ) {
 
 const pyToJsDay = (py) => (py + 1) % 7;
 
+// Season windows are annual recurring (month/day), but sources carry whatever
+// year the market last edited (NY MarketSpread rows are mostly stamped 2024).
+// Roll the month/day onto the current year so a stale "ended 2024" doesn't
+// permanently bench an active market.
+function seasonBound(dateStr, now) {
+  if (!dateStr) return null;
+  return parseYMD(`${now.getUTCFullYear()}-${String(dateStr).slice(5, 10)}`);
+}
+
 // Next calendar date (UTC noon) on/after `now` (or season_start) matching this
 // occurrence's weekday, within its season window. Null = dormant.
 function nextDateFor(occ, now) {
-  const seasonStart = parseYMD(occ.seasonStart);
-  const seasonEnd = parseYMD(occ.seasonEnd);
+  let seasonStart = seasonBound(occ.seasonStart, now);
+  let seasonEnd = seasonBound(occ.seasonEnd, now);
+  // A window that "ends before it starts" after rolling = bad/cross-year data;
+  // treat as no season (always active) rather than silently benching it.
+  if (seasonStart && seasonEnd && seasonEnd < seasonStart) { seasonStart = null; seasonEnd = null; }
   if (seasonEnd && now > seasonEnd) return null;
   let from = new Date(now);
   if (seasonStart && from < seasonStart) from = new Date(seasonStart);

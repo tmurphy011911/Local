@@ -10,9 +10,15 @@
  * source feeds the shared builder in the same (Eastern wall-clock) convention.
  */
 
-// MA association on MarketSpread (the directory behind massfarmersmarkets.org).
-// Other states would use a different association id.
-const MEMBERS_URL = "https://marketspread.com/widget/association/49/16/members/?content";
+// MarketSpread association directories. Each is a regional federation whose
+// `?content` members endpoint embeds `window.farmData.members`. member_id is
+// global across associations, so dedupe stays clean even if a market appears in
+// two. `defaultState` only fills rows whose own state is null.
+const ASSOCIATIONS = [
+  { path: "49/16", defaultState: "MA", referer: "https://www.massfarmersmarkets.org/" }, // Mass Farmers Markets
+  { path: "152/19", defaultState: "NY", referer: "https://www.nyfarmersmarket.com/" }, // Farmers Market Federation of NY
+];
+const membersUrl = (path) => `https://marketspread.com/widget/association/${path}/members/?content`;
 
 const PY_DAY = { Monday: 0, Tuesday: 1, Wednesday: 2, Thursday: 3, Friday: 4, Saturday: 5, Sunday: 6 };
 
@@ -55,15 +61,15 @@ function programTags(programs) {
   }))];
 }
 
-async function fetchMarkets() {
-  const res = await fetch(MEMBERS_URL, {
+async function fetchAssociation(assoc) {
+  const res = await fetch(membersUrl(assoc.path), {
     headers: {
       "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
-      Referer: "https://www.massfarmersmarkets.org/",
+      Referer: assoc.referer,
       Accept: "text/html",
     },
   });
-  if (!res.ok) throw new Error(`MarketSpread fetch ${res.status}`);
+  if (!res.ok) throw new Error(`MarketSpread ${assoc.path} fetch ${res.status}`);
   const members = parseFarmData(await res.text());
 
   const out = [];
@@ -98,7 +104,7 @@ async function fetchMarkets() {
       lng: loc.lng,
       address: m.address || null,
       city: m.city || null,
-      state: m.state || "MA",
+      state: m.state || assoc.defaultState,
       zip: m.zip || null,
       website: (m.website_url || "").trim() || m.url || null,
       bio: (m.bio || "").trim() || null,
@@ -110,4 +116,20 @@ async function fetchMarkets() {
   return out;
 }
 
-module.exports = { fetchMarkets, label: "MarketSpread (MA)", PY_DAY };
+async function fetchMarkets() {
+  const all = [];
+  const seen = new Set();
+  for (const assoc of ASSOCIATIONS) {
+    const markets = await fetchAssociation(assoc);
+    // member_id is global; if a market is listed in two federations, keep the
+    // first (dedupe_hash would collapse them anyway, but avoid double work).
+    for (const m of markets) {
+      if (seen.has(m.sourceId)) continue;
+      seen.add(m.sourceId);
+      all.push(m);
+    }
+  }
+  return all;
+}
+
+module.exports = { fetchMarkets, label: "MarketSpread (MA, NY)", PY_DAY };
