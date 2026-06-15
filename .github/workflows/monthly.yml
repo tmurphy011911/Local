@@ -122,3 +122,23 @@ jobs:
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node monthly_reverify_bo_web.js
+
+  # Porchfests are annual one-day festivals — monthly is plenty (the original
+  # ask). Independent job. SELECTIVE by default: it only drills directory
+  # entries we DON'T already have as an active future event, so steady-state
+  # runs are cheap (a handful of Scrapfly + web-search lookups). The web-search
+  # fallback recovers fests whose own site is dead/stale. Keys (Scrapfly /
+  # Anthropic / Google) are read from the secrets table via SUPABASE_SERVICE_KEY.
+  sync-porchfests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Sync Porchfests (directory + per-site date drill)
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node sync_porchfests.js

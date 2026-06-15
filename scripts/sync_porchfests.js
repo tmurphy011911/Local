@@ -91,6 +91,40 @@ ${text}`;
   } catch (_) { return null; }
 }
 
+// ── 2b. Fallback: web search ──
+// When the festival's own site is dead, stale, JS-only, or just doesn't state
+// the date, don't give up — let Claude search the live web (official site +
+// Facebook events + local news + Eventbrite) via the web_search server tool.
+// Sonnet 4.6 (not Opus) deliberately: this is a bulk background lookup, ~dozens
+// of calls, and Sonnet supports web_search_20260209.
+async function extractDateViaWebSearch(entry, anthropicKey) {
+  const where = [entry.neighborhood, entry.city, entry.state].filter(Boolean).join(", ");
+  const prompt = `Find the date of the NEXT upcoming porchfest (a one-day neighborhood music festival) in ${where}. Today is ${TODAY}. Search the web — check the festival's official site, its Facebook events page, local news, and Eventbrite. The date must be today or later; if you can only find past dates, the date is null.
+
+Return ONLY strict JSON, no prose:
+{"date":"YYYY-MM-DD"|null,"start_time":"HH:MM"|null,"title":string|null}`;
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: { "x-api-key": anthropicKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6",
+        max_tokens: 1024,
+        tools: [{ type: "web_search_20260209", name: "web_search", max_uses: 4 }],
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+    if (!res.ok) return null;
+    const j = await res.json();
+    const text = (j.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
+    const m = text.match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    const out = JSON.parse(m[0]);
+    if (!out.date || !/^\d{4}-\d{2}-\d{2}$/.test(out.date) || out.date < TODAY) return null;
+    return out;
+  } catch (_) { return null; }
+}
+
 // ── 3. Geocode the city ──
 async function geocode(entry, key) {
   if (!key) return null;
@@ -110,6 +144,16 @@ async function pool(items, n, fn) {
     while (i < items.length) { const idx = i++; out[idx] = await fn(items[idx], idx); }
   }));
   return out;
+}
+
+// Active, future-dated porchfests already in the DB — skip re-drilling these.
+async function fetchCoveredSourceIds() {
+  const url = `${SUPABASE_URL}/rest/v1/events?source=eq.porchfest_org&is_active=eq.true&start_at=gte.${TODAY}&select=source_id`;
+  try {
+    const res = await fetch(url, { headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` } });
+    if (!res.ok) return new Set();
+    return new Set((await res.json()).map((r) => r.source_id));
+  } catch (_) { return new Set(); }
 }
 
 // ── upsert upcoming events ──
@@ -180,29 +224,49 @@ async function main() {
 
   const secrets = await getSecrets(["SCRAPFLY_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_PLACES_API_KEY"]);
   const entries = await fetchDirectory();
-  console.log(`Directory: ${entries.length} porchfests in live states. Drilling (concurrency ${CONCURRENCY})…`);
+
+  // Selective drilling: skip porchfests we already have as an active, future-
+  // dated event. The drill (Scrapfly + web search) is the expensive part, and
+  // porchfest dates don't change once announced. Past-dated rows auto-deactivate
+  // hourly, so once a fest passes it drops out of `covered` and gets re-drilled
+  // next run to pick up the following year's date. SKIP_SELECTIVE=1 forces a
+  // full re-drill (e.g. to refresh dates mid-season).
+  const covered = process.env.SKIP_SELECTIVE === "1" ? new Set() : await fetchCoveredSourceIds();
+  const toDrill = entries.filter((e) => !covered.has(slug(e.label)));
+  console.log(`Directory: ${entries.length} live-state porchfests; ${covered.size} already current, drilling ${toDrill.length} (concurrency ${CONCURRENCY})…`);
 
   let drilled = 0;
-  const found = await pool(entries, CONCURRENCY, async (e) => {
+  const found = await pool(toDrill, CONCURRENCY, async (e) => {
+    if (++drilled % 10 === 0) console.log(`  …${drilled}/${toDrill.length}`);
+    // 1) Cheap path: the festival's own page via Scrapfly + Claude Haiku.
+    let date = null;
     const fetched = await fetchHtml(e.url, { scrapflyKey: secrets.SCRAPFLY_API_KEY, renderJs: true, renderingWait: 3000, timeoutMs: 45000 }).catch(() => null);
-    if (++drilled % 10 === 0) console.log(`  …${drilled}/${entries.length}`);
-    if (!fetched?.html) return null;
-    const date = await extractDate(fetched.html, e, secrets.ANTHROPIC_API_KEY);
+    if (fetched?.html) date = await extractDate(fetched.html, e, secrets.ANTHROPIC_API_KEY);
+    // 2) Fallback: web search — recovers dead/stale/JS-only sites instead of
+    //    giving up. This is what lifts coverage toward "all live-state fests".
+    if (!date) date = await extractDateViaWebSearch(e, secrets.ANTHROPIC_API_KEY);
     if (!date) return null;
     const coords = await geocode(e, secrets.GOOGLE_PLACES_API_KEY);
     if (!coords) return null;
     return { ...e, date: date.date, start_time: date.start_time, title: date.title, lat: coords.lat, lng: coords.lng };
   });
 
-  const porchfests = found.filter(Boolean);
-  console.log(`\nFound upcoming dated porchfests: ${porchfests.length}/${entries.length}`);
-  fs.mkdirSync(path.dirname(OUT), { recursive: true });
-  fs.writeFileSync(OUT, JSON.stringify(porchfests, null, 1));
-  for (const p of porchfests.slice(0, 10)) console.log(`  • ${p.city}, ${p.state} — ${p.date}${p.start_time ? " " + p.start_time : ""}`);
+  const fresh = found.filter(Boolean);
+  console.log(`\nNewly dated porchfests: ${fresh.length}/${toDrill.length} drilled (${covered.size} already current).`);
 
-  if (DRY_RUN) { console.log(`\nDRY_RUN: wrote ${OUT}, no DB write.`); return; }
-  const { ok, errors } = await upsert(porchfests.map(buildEvent));
-  console.log(`\nUpserted ${ok} porchfest events, ${errors} errors.`);
+  // Merge with the prior committed record so the JSON stays complete: keep prior
+  // entries that are still in the future and weren't just re-drilled.
+  const prior = fs.existsSync(OUT) ? JSON.parse(fs.readFileSync(OUT, "utf8")) : [];
+  const freshIds = new Set(fresh.map((p) => slug(p.label)));
+  const merged = [...fresh, ...prior.filter((p) => !freshIds.has(slug(p.label)) && p.date >= TODAY)];
+  fs.mkdirSync(path.dirname(OUT), { recursive: true });
+  fs.writeFileSync(OUT, JSON.stringify(merged, null, 1));
+  for (const p of fresh.slice(0, 10)) console.log(`  • ${p.city}, ${p.state} — ${p.date}${p.start_time ? " " + p.start_time : ""}`);
+
+  if (DRY_RUN) { console.log(`\nDRY_RUN: wrote ${OUT} (${merged.length} total), no DB write.`); return; }
+  // Upsert only the freshly-drilled rows; already-covered ones stay untouched.
+  const { ok, errors } = await upsert(fresh.map(buildEvent));
+  console.log(`\nUpserted ${ok} new porchfest events, ${errors} errors. (${covered.size} already current, untouched.)`);
   if (errors) process.exitCode = 1;
 }
 
