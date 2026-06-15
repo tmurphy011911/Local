@@ -29,6 +29,8 @@ const { SUPABASE_URL } = require("./lib/secrets");
 const SOURCES = [
   require("./lib/farmers_markets/marketspread"),
   require("./lib/farmers_markets/philly_arcgis"),
+  require("./lib/farmers_markets/ca_cdfa"),
+  require("./lib/farmers_markets/visitri"),
 ];
 
 const SUPABASE_SERVICE_KEY = (process.env.SUPABASE_SERVICE_KEY || "").trim();
@@ -51,15 +53,17 @@ function parseYMD(s) {
 }
 const ymd = (d) => d.toISOString().slice(0, 10);
 
-// ET offset ("-04:00"/"-05:00") for a given calendar date — so an ET-local
-// wall-clock time becomes the right absolute instant in the timestamptz column.
-function etOffset(dateStr) {
+// Timezone offset ("-04:00"/"-07:00"/…) for a given calendar date in a given
+// IANA zone — so a market's LOCAL wall-clock time becomes the right absolute
+// instant in the timestamptz column. Markets carry their own tz (Eastern for
+// MA/NY/PA, Pacific for CA), so a 9am market reads as 9am in its own city.
+function zoneOffset(dateStr, tz) {
   const d = new Date(`${dateStr}T12:00:00Z`);
-  const s = d.toLocaleString("en-US", { timeZone: "America/New_York", timeZoneName: "longOffset" });
+  const s = d.toLocaleString("en-US", { timeZone: tz, timeZoneName: "longOffset" });
   const m = s.match(/GMT([+-]\d{2}):?(\d{2})/);
-  return m ? `${m[1]}:${m[2]}` : "-05:00";
+  return m ? `${m[1]}:${m[2]}` : "+00:00";
 }
-const etLocalToIso = (dateStr, hhmm) => `${dateStr}T${hhmm}:00${etOffset(dateStr)}`;
+const localToIso = (dateStr, hhmm, tz) => `${dateStr}T${hhmm}:00${zoneOffset(dateStr, tz)}`;
 
 function fmtTimeLabel(hhmm) {
   const [h, m] = hhmm.split(":").map(Number);
@@ -143,11 +147,12 @@ function buildEvent(market, now) {
   // last-resort guard so one city-less row can't abort the whole upsert batch.
   const city = market.city || "";
 
+  const tz = market.tz || "America/New_York";
   let startAt = null, endAt = null;
   if (active) {
     const day = ymd(next.date);
-    startAt = etLocalToIso(day, next.occ.startLocal);
-    endAt = etLocalToIso(day, next.occ.endLocal);
+    startAt = localToIso(day, next.occ.startLocal, tz);
+    endAt = localToIso(day, next.occ.endLocal, tz);
   }
 
   return {
