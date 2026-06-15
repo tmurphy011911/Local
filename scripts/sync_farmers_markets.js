@@ -31,6 +31,7 @@ const SOURCES = [
   require("./lib/farmers_markets/philly_arcgis"),
   require("./lib/farmers_markets/ca_cdfa"),
   require("./lib/farmers_markets/visitri"),
+  require("./lib/farmers_markets/edible_nj"),
 ];
 
 const SUPABASE_SERVICE_KEY = (process.env.SUPABASE_SERVICE_KEY || "").trim();
