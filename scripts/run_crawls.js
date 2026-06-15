@@ -31,6 +31,14 @@ const VENUE_NAME = process.env.VENUE_NAME || null;
 const STATE_FILTER = (process.env.STATE || "").trim() || null;
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || "3", 10);
 const MAX_VENUES = parseInt(process.env.MAX_VENUES || "0", 10);
+// Wall-clock budget in minutes. When set, the crawl stops pulling NEW venues
+// once the budget is hit (in-flight venues finish), then upserts what it got.
+// Combined with the stalest-first ordering in fetchVenues(), this makes a
+// timeout structurally impossible: each run drains the most-stale venues it
+// can within the budget, and the rest are picked up next run (their
+// last_crawled_at is now newer, so they sort to the back). 0 = no budget
+// (crawl everything — used for manual single-venue/VENUE_NAME runs).
+const MAX_MINUTES = parseInt(process.env.CRAWL_MAX_MINUTES || "0", 10);
 // NPS Developer API — falls back to api.data.gov DEMO_KEY (30 req/hr, 50/day)
 // when NPS_API_KEY isn't set. DEMO_KEY is fine for our 6 NPS venues weekly.
 const NPS_API_KEY = process.env.NPS_API_KEY || "DEMO_KEY";
@@ -379,7 +387,13 @@ async function fetchVenues() {
       ? `&state=eq.${states[0]}`
       : `&state=in.(${states.join(",")})`;
   }
-  baseUrl += "&order=events_url.desc.nullslast,crawl_success_rate.desc";
+  // Stalest-first: among crawlable venues (events_url present), crawl the ones
+  // not touched in the longest time — never-crawled (null) first. Paired with
+  // the CRAWL_MAX_MINUTES budget this gives a rolling crawl that always makes
+  // progress on the oldest data and never re-starts from the same head, so no
+  // venue is permanently starved when a run is time-boxed. crawl_success_rate
+  // is the final tiebreak so reliably-productive venues win ties.
+  baseUrl += "&order=events_url.desc.nullslast,last_crawled_at.asc.nullsfirst,crawl_success_rate.desc";
 
   if (MAX_VENUES > 0) {
     baseUrl += `&limit=${MAX_VENUES}`;
@@ -2031,8 +2045,18 @@ async function crawlWithConcurrency(venues, concurrency) {
   const results = [];
   let index = 0;
 
+  // Hard wall-clock budget (see MAX_MINUTES). Once hit, workers stop claiming
+  // new venues; in-flight crawls finish and we upsert what we have. Infinity
+  // when no budget is set.
+  const deadlineMs = MAX_MINUTES > 0 ? Date.now() + MAX_MINUTES * 60_000 : Infinity;
+  let budgetHit = false;
+
   async function worker() {
     while (index < venues.length) {
+      if (Date.now() >= deadlineMs) {
+        budgetHit = true;
+        break;
+      }
       const i = index++;
       const venue = venues[i];
       console.log(`  [${i + 1}/${venues.length}] ${venue.name} (${venue.category})...`);
@@ -2065,6 +2089,14 @@ async function crawlWithConcurrency(venues, concurrency) {
 
   const workers = Array.from({ length: Math.min(concurrency, venues.length) }, () => worker());
   await Promise.all(workers);
+
+  if (budgetHit) {
+    const remaining = venues.length - index;
+    console.log(
+      `\n  ⏱  CRAWL_MAX_MINUTES (${MAX_MINUTES}m) budget reached — crawled ${results.length}, ` +
+        `${remaining} venue(s) deferred to next run (they remain the stalest, so they go first then).`,
+    );
+  }
 
   return results;
 }
