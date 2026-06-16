@@ -21,6 +21,8 @@ data class LeaderboardEntryDto(
     @SerialName("fomo_total") val fomoTotal: Int = 0,
     @SerialName("in_top_100") val inTop100: Boolean = false,
     @SerialName("is_me") val isMe: Boolean = false,
+    // Member's home city (hometown). Shown as row subtext on State/Country boards.
+    val city: String? = null,
 )
 
 /**

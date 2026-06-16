@@ -255,11 +255,15 @@ private fun LeaderboardSheetContent(
                 // scope has; unclaimed spots show dashes.
                 Podium(byRank[1], byRank[2], byRank[3])
 
+                // City scope: everyone shares the city, so show just the join date.
+                // State/Country: show the member's home city too.
+                val showCity = state.scope != LeaderboardScope.CITY
+
                 Spacer(Modifier.height(12.dp))
                 Column(Modifier.padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     for (r in 4..10) {
                         val e = byRank[r]
-                        if (e != null) ListRow(e, isYou = e.isMe)
+                        if (e != null) ListRow(e, isYou = e.isMe, showCity = showCity)
                         else PlaceholderRow(rank = r)
                     }
                 }
@@ -269,7 +273,7 @@ private fun LeaderboardSheetContent(
                 if (me != null && !meInShown) {
                     PinnedDivider()
                     Column(Modifier.padding(horizontal = 18.dp)) {
-                        ListRow(me, isYou = true)
+                        ListRow(me, isYou = true, showCity = showCity)
                     }
                 }
             }
@@ -379,8 +383,14 @@ private fun PodiumColumn(
 }
 
 @Composable
-private fun ListRow(entry: LeaderboardEntryDto, isYou: Boolean) {
+private fun ListRow(entry: LeaderboardEntryDto, isYou: Boolean, showCity: Boolean) {
     val level = statusTierForPoints(entry.fomoTotal).boLevel.coerceIn(0, 8)
+    val joined = joinedShort(entry.joinedAt)
+    val subtext = when {
+        joined.isEmpty() -> null
+        showCity && !entry.city.isNullOrBlank() -> "${entry.city} · $joined"
+        else -> joined
+    }
 
     Row(
         modifier = Modifier
@@ -394,13 +404,18 @@ private fun ListRow(entry: LeaderboardEntryDto, isYou: Boolean) {
         Text("${entry.rank}", modifier = Modifier.width(26.dp), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = if (isYou) LbGreenDeep else LbSub))
         Bo(size = 38.dp, level = level, showShadow = false, showSparkles = false)
         Spacer(Modifier.width(13.dp))
-        Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-            Text(if (isYou) "You" else (entry.username ?: "Anonymous"), maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = LbInk))
-            if (isYou) {
-                Spacer(Modifier.width(7.dp))
-                Box(Modifier.clip(RoundedCornerShape(999.dp)).background(LbGreen).padding(horizontal = 7.dp, vertical = 1.dp)) {
-                    Text("YOU", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 9.sp, color = AppColors.White))
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(if (isYou) "You" else (entry.username ?: "Anonymous"), maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = LbInk))
+                if (isYou) {
+                    Spacer(Modifier.width(7.dp))
+                    Box(Modifier.clip(RoundedCornerShape(999.dp)).background(LbGreen).padding(horizontal = 7.dp, vertical = 1.dp)) {
+                        Text("YOU", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 9.sp, color = AppColors.White))
+                    }
                 }
+            }
+            if (subtext != null) {
+                Text(subtext, maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = LbSub))
             }
         }
         Spacer(Modifier.width(8.dp))
@@ -473,6 +488,17 @@ private fun IconPodium(size: androidx.compose.ui.unit.Dp, tint: Color = LbGreen)
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+private val MONTHS = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+/** "2026-06-01T..." -> "Joined Jun '26". Returns "" when unparseable. */
+private fun joinedShort(iso: String?): String {
+    if (iso == null || iso.length < 7) return ""
+    val month = iso.substring(5, 7).toIntOrNull() ?: return ""
+    if (month !in 1..12) return ""
+    val yy = iso.substring(2, 4)
+    return "Joined ${MONTHS[month - 1]} '$yy"
+}
 
 /** 1 -> "1st", 2 -> "2nd", 3 -> "3rd", 11 -> "11th", 22 -> "22nd", ... */
 private fun ordinal(n: Int): String {
