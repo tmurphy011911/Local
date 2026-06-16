@@ -1,6 +1,8 @@
 package live.localapp.local.platform
 
 import kotlinx.cinterop.ExperimentalForeignApi
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.coroutines.resume
 import kotlin.coroutines.suspendCoroutine
 import live.localapp.local.ShareBridge
@@ -41,7 +43,12 @@ actual suspend fun checkClipboardForDeepLink(): String? {
     }
     if (!hasUrlPattern) return null
 
-    val clip = pasteboard.string ?: return null
+    // Reading the pasteboard string is a SYNCHRONOUS XPC to the pasteboard
+    // daemon that can stall for seconds (first launch / large clipboard / privacy
+    // subsystem). This runs on Dispatchers.Main (DeepLinkController's scope), so
+    // doing it inline froze the main thread > 2s and the watchdog killed the app
+    // (Fatal App Hang). Hop off-main for just the blocking read.
+    val clip = withContext(Dispatchers.Default) { pasteboard.string } ?: return null
     if (!clip.contains("localapp.live/")) return null
     val regex = Regex("localapp\\.live(/[pev]/[A-Za-z0-9_-]+)")
     val match = regex.find(clip) ?: return null
@@ -52,9 +59,15 @@ actual suspend fun checkClipboardForDeepLink(): String? {
 actual suspend fun checkInstallReferrerForDeepLink(): String? = null
 
 actual fun clearClipboardDeepLink() {
-    val clip = UIPasteboard.generalPasteboard.string ?: return
-    if (clip.contains("localapp.live/")) {
-        UIPasteboard.generalPasteboard.string = ""
+    // Same synchronous-pasteboard hazard as the read in checkClipboardForDeepLink:
+    // both the read and the write can stall on the pasteboard daemon. This is
+    // called from DeepLinkController's Main scope, so dispatch the access onto a
+    // global queue to keep it off the main thread.
+    platform.darwin.dispatch_async(platform.darwin.dispatch_get_global_queue(0L, 0UL)) {
+        val clip = UIPasteboard.generalPasteboard.string ?: return@dispatch_async
+        if (clip.contains("localapp.live/")) {
+            UIPasteboard.generalPasteboard.string = ""
+        }
     }
 }
 

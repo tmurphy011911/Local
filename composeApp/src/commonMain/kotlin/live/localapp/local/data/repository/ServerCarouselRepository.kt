@@ -16,6 +16,8 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import live.localapp.local.Config
 import live.localapp.local.decodeHtmlEntities
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import live.localapp.local.domain.model.CarouselSection
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.repository.CarouselRepository
@@ -161,21 +163,31 @@ class ServerCarouselRepository(
         if (meta.locationName.isNotBlank() && locationName.isNotBlank() && meta.locationName != locationName) {
             return null
         }
-        val parsed = try { json.decodeFromString<CarouselResponse>(payload) } catch (_: Throwable) { return null }
         // Drop events whose start_at has passed. Mirrors the server's
         // `gte("start_at", now)` filter so a stale cache can't paint events
         // from last week. Null start_at = always-on, always kept. Carousels
         // that empty out get dropped entirely.
         val nowIso = kotlin.time.Clock.System.now().toString()
-        val carousels = parsed.carousels
-            .map { section ->
-                section.copy(events = section.events.filter { e ->
-                    e.startAt == null || e.startAt >= nowIso
-                })
+        // Decode + filter + map off the main thread — this is the cold-start
+        // first-paint path and the same heavy CPU work (JSON parse +
+        // per-event decodeHtmlEntities) that hung the UI when run inline on Main.
+        val decoded = withContext(Dispatchers.Default) {
+            val parsed = try {
+                json.decodeFromString<CarouselResponse>(payload)
+            } catch (_: Throwable) {
+                return@withContext null
             }
-            .filter { it.events.isNotEmpty() }
-            .map { it.toDomain() }
-        if (carousels.isEmpty()) return null
+            val carousels = parsed.carousels
+                .map { section ->
+                    section.copy(events = section.events.filter { e ->
+                        e.startAt == null || e.startAt >= nowIso
+                    })
+                }
+                .filter { it.events.isNotEmpty() }
+                .map { it.toDomain() }
+            if (carousels.isEmpty()) return@withContext null
+            carousels to parsed.categories.map { it.toDomain() }
+        } ?: return null
         // Hydrate categories so the tab strip can paint instantly from disk;
         // getCarousels()'s fresh fetch will overwrite it shortly. Do NOT
         // hydrate `carouselCache` here — getCarousels() short-circuits on
@@ -183,8 +195,8 @@ class ServerCarouselRepository(
         // fetch entirely and the cache would never refresh (manifests as
         // missing weekend rails + shrinking carousels as their events age
         // past `now`).
-        if (cachedCategories == null) cachedCategories = parsed.categories.map { it.toDomain() }
-        return carousels
+        if (cachedCategories == null) cachedCategories = decoded.second
+        return decoded.first
     }
 
     private fun writeDiskCache(
@@ -242,18 +254,26 @@ class ServerCarouselRepository(
         }
 
         val body = response.bodyAsText()
-        val parsed = json.decodeFromString<CarouselResponse>(body)
+
+        // Decode + map off the main thread: JSON parse and the per-event
+        // decodeHtmlEntities() over a full carousel payload is heavy CPU work,
+        // and getCarousels runs on the caller's (Main) dispatcher — doing it
+        // inline hung the UI for seconds. Mutate the shared caches back on the
+        // caller's context after this returns, so we don't race main-thread
+        // cache readers (peekCachedCategories / invalidate).
+        val (freshCategories, carousels) = withContext(Dispatchers.Default) {
+            val parsed = json.decodeFromString<CarouselResponse>(body)
+            parsed.categories.map { it.toDomain() } to parsed.carousels.map { it.toDomain() }
+        }
 
         // Cache categories from the response — but don't poison a previously
         // good list with an empty one. A single bad response (precompute row
         // briefly empty, server hiccup, etc.) shouldn't blank the tab strip
         // for the rest of the session.
-        val freshCategories = parsed.categories.map { it.toDomain() }
         if (freshCategories.isNotEmpty() || cachedCategories.isNullOrEmpty()) {
             cachedCategories = freshCategories
         }
 
-        val carousels = parsed.carousels.map { it.toDomain() }
         carouselCache[cacheKey] = carousels
         // Persist the raw JSON to disk so the next cold open can paint
         // immediately. Done after the in-memory cache update so a crash

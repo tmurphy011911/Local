@@ -4,6 +4,8 @@ import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.query.Order
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
@@ -92,20 +94,26 @@ class EventRepositoryImpl(
 
     override suspend fun getEventsByIds(ids: List<String>): List<Event> {
         if (ids.isEmpty()) return emptyList()
-        // Supabase `isIn` has practical limits; paginate in chunks of 100.
-        val raw = ids.chunked(100).flatMap { chunk ->
-            supabaseClient.from("events")
-                .select {
-                    filter { isIn("id", chunk) }
-                }
-                .decodeList<EventDto>()
-                .map { it.toDomain() }
+        // Deserialize + map off the main thread: decodeList + the per-event
+        // toDomain() (decodeHtmlEntities) over a large id set is CPU-heavy, and
+        // this is called from Main-scoped callers (plan slots / saved events) —
+        // running it inline hung the UI. The network calls suspend fine here too.
+        return withContext(Dispatchers.Default) {
+            // Supabase `isIn` has practical limits; paginate in chunks of 100.
+            val raw = ids.chunked(100).flatMap { chunk ->
+                supabaseClient.from("events")
+                    .select {
+                        filter { isIn("id", chunk) }
+                    }
+                    .decodeList<EventDto>()
+                    .map { it.toDomain() }
+            }
+            // Same hydration pass searchEvents runs — fills in missing event
+            // imageUrl from the matching venue's photo_url. Without this, plan
+            // slots built from getEventsByIds end up with blank image tiles even
+            // when the venue has a perfectly good Google Places photo on file.
+            hydrateVenueImages(raw)
         }
-        // Same hydration pass searchEvents runs — fills in missing event
-        // imageUrl from the matching venue's photo_url. Without this, plan
-        // slots built from getEventsByIds end up with blank image tiles even
-        // when the venue has a perfectly good Google Places photo on file.
-        return hydrateVenueImages(raw)
     }
 
     override suspend fun getEventsByCategory(city: String, category: String): List<Event> {
