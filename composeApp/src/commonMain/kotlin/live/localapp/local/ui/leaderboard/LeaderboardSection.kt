@@ -117,6 +117,7 @@ fun LeaderboardCard(
 ) {
     val state by viewModel.uiState.collectAsState()
     var showSheet by remember { mutableStateOf(false) }
+    var showHomeCityEditor by remember { mutableStateOf(false) }
     // Load all three scopes — the subtitle cascades country → state → city.
     LaunchedEffect(Unit) { viewModel.prefetchAll() }
 
@@ -127,47 +128,65 @@ fun LeaderboardCard(
     val visible = !hideAtZeroFomo || (anyMe != null && anyMe.fomoTotal > 0)
 
     if (visible) {
-        Row(
-            modifier = modifier
-                .padding(horizontal = 20.dp, vertical = 6.dp)
-                .fillMaxWidth()
-                // pressable BEFORE clip/background/border so its scale layer wraps
-                // the whole card box, not just the inner content.
-                .pressable(onClick = {
-                    viewModel.resetScopeToState()
-                    showSheet = true
-                }, scale = 0.94f)
-                .clip(RoundedCornerShape(16.dp))
-                .background(AppColors.White, RoundedCornerShape(16.dp))
-                .border(1.5.dp, LbGreen, RoundedCornerShape(16.dp))
-                .padding(horizontal = 16.dp, vertical = 14.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                modifier = Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(LbGreenSoft),
-                contentAlignment = Alignment.Center,
-            ) { IconPodium(size = 23.dp) }
-            Spacer(Modifier.width(13.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                // "local leaderboard" in the wordmark font, green l's on "local".
-                Text(
-                    buildAnnotatedString {
-                        "local".forEach { ch ->
-                            if (ch == 'l') withStyle(SpanStyle(color = LbGreen)) { append(ch) } else append(ch)
-                        }
-                        append(" leaderboard")
-                    },
-                    style = AppType.Logo.copy(fontSize = 20.sp, color = LbInk),
-                )
-                Text(
-                    leaderboardCtaSubtitle(state),
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = LbSub),
-                )
+        Column(modifier) {
+            Row(
+                modifier = Modifier
+                    .padding(horizontal = 20.dp, vertical = 6.dp)
+                    .fillMaxWidth()
+                    // pressable BEFORE clip/background/border so its scale layer wraps
+                    // the whole card box, not just the inner content.
+                    .pressable(onClick = {
+                        viewModel.resetScopeToState()
+                        showSheet = true
+                    }, scale = 0.94f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(AppColors.White, RoundedCornerShape(16.dp))
+                    .border(1.5.dp, LbGreen, RoundedCornerShape(16.dp))
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(LbGreenSoft),
+                    contentAlignment = Alignment.Center,
+                ) { IconPodium(size = 23.dp) }
+                Spacer(Modifier.width(13.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    // "local leaderboard" in the wordmark font, green l's on "local".
+                    Text(
+                        buildAnnotatedString {
+                            "local".forEach { ch ->
+                                if (ch == 'l') withStyle(SpanStyle(color = LbGreen)) { append(ch) } else append(ch)
+                            }
+                            append(" leaderboard")
+                        },
+                        style = AppType.Logo.copy(fontSize = 20.sp, color = LbInk),
+                    )
+                    Text(
+                        leaderboardCtaSubtitle(state),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = LbSub),
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text("›", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = LbGreen))
             }
-            Spacer(Modifier.width(8.dp))
-            Text("›", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = LbGreen))
+            // Home city + edit pencil, BENEATH the card.
+            state.homeCity?.let { hc ->
+                Row(
+                    modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 2.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Home city: $hc", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = LbSub))
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        Icons.Outlined.Edit,
+                        contentDescription = "Edit home city",
+                        tint = LbGreen,
+                        modifier = Modifier.size(14.dp).pressable(onClick = { showHomeCityEditor = true }, scale = 0.85f),
+                    )
+                }
+            }
         }
     }
 
@@ -189,6 +208,10 @@ fun LeaderboardCard(
         ) {
             LeaderboardSheetContent(viewModel)
         }
+    }
+
+    if (showHomeCityEditor) {
+        HomeCityEditSheet(viewModel = viewModel, onDismiss = { showHomeCityEditor = false })
     }
 }
 
@@ -231,7 +254,6 @@ private fun LeaderboardSheetContent(viewModel: LeaderboardViewModel) {
     val state by viewModel.uiState.collectAsState()
     val onSelectScope = viewModel::selectScope
     var showUsernameDialog by remember { mutableStateOf(false) }
-    var showHomeCityEditor by remember { mutableStateOf(false) }
     val current = state.current
     val rows = current?.rows ?: emptyList()
     val me = current?.me
@@ -286,25 +308,6 @@ private fun LeaderboardSheetContent(viewModel: LeaderboardViewModel) {
                         modifier = Modifier.weight(1f),
                         style = AppType.Logo.copy(fontSize = 26.sp, color = LbInk),
                     )
-                }
-                // Home city + edit pencil.
-                state.homeCity?.let { hc ->
-                    Row(
-                        modifier = Modifier.padding(start = 22.dp, end = 22.dp, bottom = 12.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Text(
-                            "Home city: $hc",
-                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = LbSub),
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Icon(
-                            Icons.Outlined.Edit,
-                            contentDescription = "Edit home city",
-                            tint = LbGreen,
-                            modifier = Modifier.size(15.dp).pressable(onClick = { showHomeCityEditor = true }, scale = 0.85f),
-                        )
-                    }
                 }
                 RegionTabs(
                     scope = state.scope,
@@ -371,9 +374,6 @@ private fun LeaderboardSheetContent(viewModel: LeaderboardViewModel) {
             onSave = viewModel::saveUsername,
             onDismiss = { showUsernameDialog = false },
         )
-    }
-    if (showHomeCityEditor) {
-        HomeCityEditSheet(viewModel = viewModel, onDismiss = { showHomeCityEditor = false })
     }
 }
 
