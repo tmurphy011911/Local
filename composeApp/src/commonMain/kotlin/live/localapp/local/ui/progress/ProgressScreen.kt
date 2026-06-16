@@ -319,6 +319,14 @@ fun ProgressScreen(
                     Spacer(Modifier.height(20.dp))
                 }
 
+                // ── Local Leaderboard entry point (flag-gated) ──
+                if (live.localapp.local.Config.FEATURE_LEADERBOARD_ENABLED) {
+                    live.localapp.local.ui.leaderboard.LeaderboardAccountEntry(
+                        remember { org.koin.mp.KoinPlatform.getKoin().get<live.localapp.local.ui.leaderboard.LeaderboardViewModel>() },
+                    )
+                    Spacer(Modifier.height(20.dp))
+                }
+
                 // ── Segment Control: Progress | Tracking ──
                 ProgressTrackingCard(state, viewModel)
 

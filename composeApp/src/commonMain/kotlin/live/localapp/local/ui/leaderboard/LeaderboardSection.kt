@@ -56,7 +56,8 @@ import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 
 // ── Leaderboard palette (Option A "Podium" handoff) ──────────────────────────
-// Green == leaderboard. Medals for the top three.
+// Green == leaderboard. Podium ranks use the app's brand family (same accents as
+// the onboarding steps), not metal medal colors.
 private val LbGreen = Color(0xFF16B26A)
 private val LbGreenDeep = Color(0xFF0E9457)
 private val LbGreenSoft = Color(0xFFE4F6EC)
@@ -64,9 +65,6 @@ private val LbGreenTint = Color(0xFFF1FBF6)
 private val LbGreenLine = Color(0xFFBFE9D2)
 private val LbInk = Color(0xFF15201B)
 private val LbSub = Color(0xFF9A96A2)
-private val Gold = Color(0xFFF5B027); private val GoldFace = Color(0xFFFAC944); private val GoldDeep = Color(0xFFD9911A)
-private val SilverFace = Color(0xFFC4CDD7); private val SilverDeep = Color(0xFF8A97A6)
-private val BronzeFace = Color(0xFFD89A66); private val BronzeDeep = Color(0xFFA96632)
 
 // ── Public host ──────────────────────────────────────────────────────────────
 
@@ -208,7 +206,6 @@ private fun LeaderboardSheetContent(
     val me = current?.me
     val podium = rows.take(3)
     val listRows = rows.drop(3) // ranks 4..100
-    val meInShown = rows.any { it.isMe }
     // City scope: everyone shares the city, so show just the join date.
     // State/Country: show the member's home city too.
     val showCity = state.scope != LeaderboardScope.CITY
@@ -256,6 +253,17 @@ private fun LeaderboardSheetContent(
                 )
             }
             else -> {
+                // The caller's own row always sits at the top, above the podium —
+                // like any other row. If they're in the top 100 they also appear
+                // in their natural slot below (podium or list); that duplicate is
+                // intentional. No dynamic bottom-pinning.
+                if (me != null) {
+                    item("me") {
+                        Box(Modifier.padding(start = 18.dp, end = 18.dp, bottom = 10.dp)) {
+                            ListRow(me, isYou = true, showCity = showCity)
+                        }
+                    }
+                }
                 item("podium") {
                     Podium(podium.getOrNull(0), podium.getOrNull(1), podium.getOrNull(2))
                     Spacer(Modifier.height(12.dp))
@@ -263,15 +271,6 @@ private fun LeaderboardSheetContent(
                 items(listRows, key = { it.rank }) { e ->
                     Box(Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) {
                         ListRow(e, isYou = e.isMe, showCity = showCity)
-                    }
-                }
-                // Pinned own-row when the caller is below the visible top 100.
-                if (me != null && !meInShown) {
-                    item("pinned") {
-                        PinnedDivider()
-                        Box(Modifier.padding(horizontal = 18.dp)) {
-                            ListRow(me, isYou = true, showCity = showCity)
-                        }
                     }
                 }
             }
@@ -326,9 +325,9 @@ private fun Podium(p1: LeaderboardEntryDto?, p2: LeaderboardEntryDto?, p3: Leade
             .padding(start = 14.dp, end = 14.dp, top = 14.dp),
     ) {
         Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            PodiumColumn(p2, place = 2, blockHeight = 86.dp, boSize = 60.dp, face = SilverFace, edge = SilverDeep, modifier = Modifier.weight(1f))
-            PodiumColumn(p1, place = 1, blockHeight = 120.dp, boSize = 88.dp, face = GoldFace, edge = GoldDeep, modifier = Modifier.weight(1f))
-            PodiumColumn(p3, place = 3, blockHeight = 66.dp, boSize = 56.dp, face = BronzeFace, edge = BronzeDeep, modifier = Modifier.weight(1f))
+            PodiumColumn(p2, place = 2, blockHeight = 86.dp, boSize = 60.dp, face = AppColors.Sky, edge = AppColors.SkyDk, modifier = Modifier.weight(1f))
+            PodiumColumn(p1, place = 1, blockHeight = 120.dp, boSize = 88.dp, face = AppColors.Sun, edge = AppColors.SunDk, modifier = Modifier.weight(1f))
+            PodiumColumn(p3, place = 3, blockHeight = 66.dp, boSize = 56.dp, face = AppColors.Orange, edge = AppColors.OrangeDk, modifier = Modifier.weight(1f))
         }
     }
 }
@@ -431,17 +430,71 @@ private fun PlaceholderAvatar(size: Dp) {
     }
 }
 
-/** Dashed green divider labelled "YOUR RANK" above the pinned own-row. */
+/**
+ * Account-page entry point into the leaderboard. A tappable card (matches the
+ * green leaderboard identity) that opens the same B1 podium sheet. Shares the
+ * singleton [LeaderboardViewModel] with the home CTA. Caller gates on the flag.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun PinnedDivider() {
+fun LeaderboardAccountEntry(
+    viewModel: LeaderboardViewModel,
+    modifier: Modifier = Modifier,
+) {
+    val state by viewModel.uiState.collectAsState()
+    var showSheet by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { viewModel.loadCta() }
+
+    val subtitle = state.cta?.let { c ->
+        state.stateCode?.let { sc -> "You're #${c.rank} in $sc" }
+    } ?: "See where you rank"
+
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 12.dp),
+        modifier = modifier
+            .padding(horizontal = 20.dp)
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(AppColors.White, RoundedCornerShape(16.dp))
+            .border(1.5.dp, LbGreen, RoundedCornerShape(16.dp))
+            .pressable(onClick = {
+                viewModel.resetScopeToState()
+                viewModel.prefetchAll()
+                showSheet = true
+            }, scale = 0.98f)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
-        Box(Modifier.weight(1f).height(2.dp).background(LbGreenLine))
-        Text("YOUR RANK", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 11.sp, color = LbGreenDeep))
-        Box(Modifier.weight(1f).height(2.dp).background(LbGreenLine))
+        Box(
+            modifier = Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(LbGreenSoft),
+            contentAlignment = Alignment.Center,
+        ) { IconPodium(size = 23.dp) }
+        Spacer(Modifier.width(13.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text("Leaderboard", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = LbInk))
+            Text(subtitle, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = LbSub))
+        }
+        Spacer(Modifier.width(8.dp))
+        Text("›", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = LbGreen))
+    }
+
+    if (showSheet) {
+        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { showSheet = false },
+            sheetState = sheetState,
+            containerColor = Color(0xFFF6F5F9),
+            dragHandle = {
+                Box(
+                    modifier = Modifier
+                        .padding(top = 12.dp, bottom = 2.dp)
+                        .width(46.dp)
+                        .height(5.dp)
+                        .background(Color(0xFFD2CFDA), RoundedCornerShape(999.dp)),
+                )
+            },
+        ) {
+            LeaderboardSheetContent(state = state, onSelectScope = viewModel::selectScope)
+        }
     }
 }
 
@@ -460,7 +513,7 @@ private fun IconPodium(size: androidx.compose.ui.unit.Dp, tint: Color = LbGreen)
             // flag
             drawLine(LbInk, Offset(32f * s, 8f * s), Offset(32f * s, 20f * s), strokeWidth = 3f * s, cap = StrokeCap.Round)
             val flag = Path().apply { moveTo(32f * s, 9f * s); lineTo(44f * s, 12f * s); lineTo(32f * s, 16f * s); close() }
-            drawPath(flag, Gold)
+            drawPath(flag, AppColors.Sun)
         }
         Text("1", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = (size.value * 0.2f).sp, color = AppColors.White), modifier = Modifier.padding(top = (size.value * 0.18f).dp))
     }
