@@ -41,6 +41,7 @@ const STATES = {
   PA: "Pennsylvania",
   NY: "New York",
   NJ: "New Jersey",
+  CA: "California",
 };
 
 const BROWSER_UA =

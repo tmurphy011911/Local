@@ -666,6 +666,9 @@ private fun CtaBar(
         if (ctaUrl != null) {
             PrimaryCtaButton(
                 label = when {
+                    // Restaurant weeks and "25 Must-Know" picks link out to an
+                    // info/organizer page, not a ticketing flow — "More Info".
+                    event.subcategory?.lowercase() in setOf("restaurant-week", "must-know") -> "More Info"
                     // Free events link out to the venue/market's own page, not a
                     // ticketing/RSVP flow — "More Info" is the honest CTA. Only
                     // paid events with a real ticket URL say "Get Tickets".
