@@ -231,6 +231,7 @@ private fun LeaderboardSheetContent(viewModel: LeaderboardViewModel) {
     val state by viewModel.uiState.collectAsState()
     val onSelectScope = viewModel::selectScope
     var showUsernameDialog by remember { mutableStateOf(false) }
+    var showHomeCityEditor by remember { mutableStateOf(false) }
     val current = state.current
     val rows = current?.rows ?: emptyList()
     val me = current?.me
@@ -286,13 +287,24 @@ private fun LeaderboardSheetContent(viewModel: LeaderboardViewModel) {
                         style = AppType.Logo.copy(fontSize = 26.sp, color = LbInk),
                     )
                 }
-                // Home city (display). Editing is a v2 lift — see below.
+                // Home city + edit pencil.
                 state.homeCity?.let { hc ->
-                    Text(
-                        "Home city: $hc",
+                    Row(
                         modifier = Modifier.padding(start = 22.dp, end = 22.dp, bottom = 12.dp),
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = LbSub),
-                    )
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "Home city: $hc",
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = LbSub),
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        Icon(
+                            Icons.Outlined.Edit,
+                            contentDescription = "Edit home city",
+                            tint = LbGreen,
+                            modifier = Modifier.size(15.dp).pressable(onClick = { showHomeCityEditor = true }, scale = 0.85f),
+                        )
+                    }
                 }
                 RegionTabs(
                     scope = state.scope,
@@ -359,6 +371,9 @@ private fun LeaderboardSheetContent(viewModel: LeaderboardViewModel) {
             onSave = viewModel::saveUsername,
             onDismiss = { showUsernameDialog = false },
         )
+    }
+    if (showHomeCityEditor) {
+        HomeCityEditSheet(viewModel = viewModel, onDismiss = { showHomeCityEditor = false })
     }
 }
 

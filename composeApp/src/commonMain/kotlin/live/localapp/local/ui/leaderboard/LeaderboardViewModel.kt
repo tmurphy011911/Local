@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import live.localapp.local.data.remote.dto.LeaderboardDto
+import live.localapp.local.domain.repository.ChangeHomeCityResult
 import live.localapp.local.domain.repository.LeaderboardRepository
 import live.localapp.local.domain.repository.LeaderboardScope
 import live.localapp.local.domain.repository.UserPreferencesRepository
@@ -62,6 +63,20 @@ class LeaderboardViewModel(
             _uiState.update {
                 it.copy(username = p.username, usernameIsCustom = p.usernameIsCustom, homeCity = p.hometownName)
             }
+        }
+    }
+
+    /** Change home city; on success reloads the profile + leaderboard so everything re-scopes. */
+    fun changeHomeCity(name: String, lat: Double, lng: Double, placeId: String?, onResult: (ChangeHomeCityResult) -> Unit) {
+        viewModelScope.launch {
+            val res = repo.changeHomeCity(name, lat, lng, placeId)
+            if (res is ChangeHomeCityResult.Success) {
+                loadProfile()
+                // Home location moved → every scope's membership changes. Drop the
+                // cache so the sheet re-fetches against the new home.
+                _uiState.update { it.copy(byScope = emptyMap(), attempted = emptySet()) }
+            }
+            onResult(res)
         }
     }
 
