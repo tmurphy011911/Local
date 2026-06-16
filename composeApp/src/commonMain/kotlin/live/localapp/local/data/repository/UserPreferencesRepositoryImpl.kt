@@ -176,13 +176,24 @@ class UserPreferencesRepositoryImpl(
                 if (prefs.city.isNotBlank()) settings.putString(KEY_USER_CITY, prefs.city)
                 // Mirror the server-owned trial end so PremiumGate can treat an
                 // active trial as full Pro access (bypass the paywall).
-                dto.trialEndsAt?.takeIf { it.isNotBlank() }
-                    ?.let { settings.putString(live.localapp.local.ui.chat.PremiumGate.KEY_TRIAL_ENDS_AT, it) }
-                    ?: settings.remove(live.localapp.local.ui.chat.PremiumGate.KEY_TRIAL_ENDS_AT)
+                mirrorTrialEndsAt(dto.trialEndsAt)
             }
         } catch (_: Exception) {
             null
         }
+    }
+
+    /**
+     * Mirror the server-owned `user_profiles.trial_ends_at` into the local
+     * setting PremiumGate reads. Every profile read path (load + both recover
+     * paths) must call this — otherwise a path that re-caches the profile but
+     * skips the trial leaves the gate seeing no trial after a reinstall, even
+     * though the server still holds an active one. Empty/blank clears it.
+     */
+    private fun mirrorTrialEndsAt(trialEndsAt: String?) {
+        trialEndsAt?.takeIf { it.isNotBlank() }
+            ?.let { settings.putString(live.localapp.local.ui.chat.PremiumGate.KEY_TRIAL_ENDS_AT, it) }
+            ?: settings.remove(live.localapp.local.ui.chat.PremiumGate.KEY_TRIAL_ENDS_AT)
     }
 
     override suspend fun recoverProfile(): String? {
@@ -210,6 +221,11 @@ class UserPreferencesRepositoryImpl(
             dto.userLng?.let { settings.putDouble(KEY_USER_LNG, it) }
             dto.firstName?.takeIf { it.isNotBlank() }?.let { settings.putString(KEY_FIRST_NAME, it) }
             if (dto.city.isNotBlank()) settings.putString(KEY_USER_CITY, dto.city)
+            // Mirror the server-owned trial end so PremiumGate treats an active
+            // trial as Pro access. Without this, a reinstall+relogin (local
+            // Settings wiped) leaves the mirror blank and the user is wrongly
+            // shown "trial expired" until loadPreferences() later repopulates it.
+            mirrorTrialEndsAt(dto.trialEndsAt)
             userId
         } catch (_: Exception) {
             null
@@ -268,6 +284,10 @@ class UserPreferencesRepositoryImpl(
             dto.userLng?.let { settings.putDouble(KEY_USER_LNG, it) }
             dto.firstName?.takeIf { it.isNotBlank() }?.let { settings.putString(KEY_FIRST_NAME, it) }
             if (dto.city.isNotBlank()) settings.putString(KEY_USER_CITY, dto.city)
+            // See recoverProfile(): without mirroring the trial here, a
+            // reinstall+relogin shows "trial expired" while the server still
+            // holds an active trial. Keep both recovery paths in sync.
+            mirrorTrialEndsAt(dto.trialEndsAt)
             authUserId
         } catch (_: Exception) {
             null
