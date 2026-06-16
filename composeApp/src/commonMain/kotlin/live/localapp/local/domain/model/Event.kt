@@ -79,6 +79,31 @@ data class Event(
             else -> "${distanceMiles.toInt()} mi"
         }
 
+    // Compact start–end range for multi-day events (e.g. restaurant weeks):
+    // "May 27 – Jun 2", or "Aug 3 – 16" when both ends share a month, or just
+    // "Aug 3" for a single day. Falls back to [dateDisplay] if dates won't parse.
+    val dateRangeDisplay: String
+        get() {
+            val s = startAt ?: return dateDisplay
+            return try {
+                val tz = TimeZone.currentSystemDefault()
+                val months = arrayOf("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+                val start = Instant.parse(s).toLocalDateTime(tz).date
+                val startStr = "${months[start.monthNumber - 1]} ${start.dayOfMonth}"
+                val e = endAt ?: return startStr
+                val end = Instant.parse(e).toLocalDateTime(tz).date
+                if (end == start) return startStr
+                val endStr = if (end.monthNumber == start.monthNumber) {
+                    "${end.dayOfMonth}"
+                } else {
+                    "${months[end.monthNumber - 1]} ${end.dayOfMonth}"
+                }
+                "$startStr – $endStr"
+            } catch (_: Exception) {
+                dateDisplay
+            }
+        }
+
     val dateDisplay: String
         get() {
             val s = startAt ?: return ""

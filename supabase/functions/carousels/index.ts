@@ -526,7 +526,13 @@ function baseTitle(title: string): string {
 function distinctByBaseTitle(events: ProcessedEvent[]): ProcessedEvent[] {
   const seen = new Set<string>();
   return events.filter(event => {
-    const key = baseTitle(event.title);
+    // Restaurant weeks legitimately recur within a year (Wildwoods runs Jun /
+    // Aug / Nov) and each edition is its own dated card, so disambiguate them by
+    // start month instead of collapsing every same-titled edition to one. Every
+    // other event type keeps the plain base-title collapse (no 8 "Hamilton"s).
+    const key = (event.subcategory ?? "").toLowerCase() === "restaurant-week"
+      ? `${baseTitle(event.title)}|${(event.start_at ?? "").slice(0, 7)}`
+      : baseTitle(event.title);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -1032,6 +1038,11 @@ function isDailyEvent(event: ProcessedEvent): boolean {
 function isGeneralFeedEvent(event: ProcessedEvent): boolean {
   return event.source !== "curated"
     && event.category !== "always_on"
+    // Restaurant weeks are dated dining promotions that belong only in the
+    // dedicated "Restaurant Weeks Near You" rail (For You) / the Food-tab P1
+    // rail — never scattered through the generic topical rails. Same intent as
+    // the curated/recurring exclusions above.
+    && (event.subcategory ?? "").toLowerCase() !== "restaurant-week"
     && !isWeeklyEvent(event)
     && !isMonthlyEvent(event);
 }
@@ -1597,6 +1608,18 @@ function buildCarousels(
   // (the bug where Waltham et al. fell past the 3000-row cutoff). Empty on
   // non-For-You paths. See fetchFarmersMarketEvents.
   farmersMarketEvents: ProcessedEvent[] = [],
+  // Full in-radius restaurant-week set, fetched directly so the guaranteed
+  // For-You rail and the Food-tab P1 rail aren't starved by the rank-stratified
+  // MV sample. Empty on paths that build neither rail.
+  restaurantWeekEvents: ProcessedEvent[] = [],
+  // The user's REQUESTED radius (not the metro-inflated maxEventRadius) — used to
+  // cap the Restaurant Weeks rail so an in-state-but-far week (Pittsburgh, 258 mi
+  // from Philly) doesn't show even when the feed's effective radius is widened by
+  // distance-from-metro.
+  rwRadiusMiles: number = MAX_EVENT_DISTANCE_MILES,
+  // Curated "25 Must-Know" editorial picks (from the curated_events table) for
+  // the user's state — drives the state-scoped Must-Know rail. Empty off For-You.
+  curatedEvents: ProcessedEvent[] = [],
 ): CarouselSection[] {
   const filter = resolveFilter(category);
   if (filter.type === "empty") return [];
@@ -1613,6 +1636,73 @@ function buildCarousels(
 
   const seenEventIds = new Set<string>();
   const result: CarouselSection[] = [];
+
+  // Restaurant Weeks rail — built once, used on both For You (guaranteed slot)
+  // and the Food tab (position 1 when ≥3 nearby, else dropped lower). Restaurant
+  // weeks are dated dining promotions stripped from the generic rails by
+  // isGeneralFeedEvent, so this dedicated rail is the only place they surface.
+  // In-state AND within the user's radius (default 75 mi): a Philly user gets
+  // every UPCOMING week in PA that's reasonably close (Manayunk, Lansdale, …) but
+  // NOT a 258-mi Pittsburgh week, and NOT a nearby-but-out-of-state week (a
+  // Wilmington DE / South Jersey one 20 mi away is excluded by the state gate).
+  // No date horizon — a far-future in-state week still shows. Pool = allEvents
+  // UNIONED with the dedicated by-state fetch (the complete in-state source).
+  // Sort: nearest-first, then soonest. Empty when the user is outside the live
+  // footprint.
+  const nowIsoRw = new Date().toISOString();
+  const rwUserState = userStateCode(userLat, userLng);
+  const restaurantWeekSection: CarouselSection = (() => {
+    const events = rwUserState == null ? [] : (() => {
+      const seen = new Set(allEvents.map(e => e.id));
+      return [...allEvents, ...restaurantWeekEvents.filter(e => !seen.has(e.id))]
+        .filter(e => (e.subcategory ?? "").toLowerCase() === "restaurant-week")
+        .filter(e => (e.venue_state ?? "").toUpperCase() === rwUserState)
+        .filter(e => !e.end_at || e.end_at >= nowIsoRw)
+        .map(e => withDistance(e, userLat, userLng))
+        .filter(e => (e.distance_miles ?? 999) <= rwRadiusMiles)
+        .sort((a, b) => {
+          const da = a.distance_miles ?? 999999;
+          const db = b.distance_miles ?? 999999;
+          if (da !== db) return da - db;
+          return (a.start_at ?? "").localeCompare(b.start_at ?? "");
+        })
+        .slice(0, 50);
+    })();
+    return {
+      slug: "restaurant-weeks",
+      title: "Restaurant Week",
+      subtitle: null,
+      filter_type: "restaurant_weeks",
+      events,
+    };
+  })();
+
+  // "25 Must-Know" rail — dated, regionally-iconic editorial picks for the user's
+  // state (curated_events table). State-scoped like Restaurant Weeks, but NOT
+  // distance-capped: a must-know event is iconic statewide, and many rows have no
+  // coords anyway, so it sorts soonest-first by date. Empty outside the footprint.
+  const todayDateIso = nowIsoRw.slice(0, 10);
+  const mustKnowSection: CarouselSection = (() => {
+    const events = rwUserState == null ? [] : curatedEvents
+      .filter(e => (e.venue_state ?? "").toUpperCase() === rwUserState)
+      // Drop anything that's over. With an end_at, it must not have passed; for
+      // open-ended rows (no end_at) keep only the still-upcoming ones, so a
+      // past one-day pick with a null end_at (Lexington Reenactment, the
+      // Marathon) doesn't lead the rail, while ongoing/season rows (Tanglewood,
+      // America250) — which carry a real future end_at — stay.
+      .filter(e => e.end_at ? e.end_at >= nowIsoRw : (e.start_at ?? "") >= todayDateIso)
+      .map(e => withDistance(e, userLat, userLng))
+      .sort((a, b) => (a.start_at ?? "").localeCompare(b.start_at ?? ""))
+      .slice(0, 25);
+    const stateName = (rwUserState && STATE_CODE_NAMES[rwUserState]) || "Your State";
+    return {
+      slug: "must-know",
+      title: `25 Must-Know in ${stateName}`,
+      subtitle: null,
+      filter_type: "must_know",
+      events,
+    };
+  })();
 
   // ── Personalized carousels (only on "For You" tab) ──
   if (filter.type === "none") {
@@ -1856,6 +1946,15 @@ function buildCarousels(
       farmersMarketRail.forEach(e => seenEventIds.add(e.id));
     }
 
+    // 2.6 Restaurant Weeks — a guaranteed rail shown to EVERY user regardless of
+    // taste profile (same rationale as farmers markets). Mark its events seen now
+    // so the recurring rails below don't repeat them, but DON'T pin it to the top
+    // — it's spliced in a bit lower (after the first wave of personalized rails)
+    // at the end of this block.
+    if (restaurantWeekSection.events.length > 0) {
+      restaurantWeekSection.events.forEach(e => seenEventIds.add(e.id));
+    }
+
     // 3+. Interleave remaining pools — never two of the same type in a row
     const pools = {
       favCat: [...favCatCarousels],
@@ -1926,6 +2025,20 @@ function buildCarousels(
       allEvents, null, maxRadius, userLat, userLng, prefs, seenEventIds,
       weights, venueCache, communityScores, affinityMap,
     ));
+
+    // "25 Must-Know" — guaranteed editorial rail placed just ABOVE the Farmers
+    // Markets rail (falls back to ~3rd slot if there's no farmers rail).
+    if (mustKnowSection.events.length > 0) {
+      const fmIdx = result.findIndex(s => s.slug === "farmers-markets");
+      result.splice(fmIdx >= 0 ? fmIdx : Math.min(2, result.length), 0, mustKnowSection);
+    }
+
+    // Place Restaurant Weeks a bit lower than the hero region — below the first
+    // wave of personalized/interest rails, not pinned under "Picked for You".
+    // Clamped so a sparse feed still gets it near the end.
+    if (restaurantWeekSection.events.length > 0) {
+      result.splice(Math.min(6, result.length), 0, restaurantWeekSection);
+    }
   }
 
   // Sports-specific carousels (raw uncleaned events)
@@ -2092,6 +2205,18 @@ function buildCarousels(
     }
   }
 
+  // Food tab: headline the Restaurant Weeks rail at position 1 when there are
+  // enough nearby to lead with (>2), otherwise drop it lower in the order so a
+  // lone week doesn't dominate the tab. Restaurant weeks are excluded from the
+  // tab's other rails by isGeneralFeedEvent, so this never double-shows.
+  if (filter.type === "category" && filter.value === "food" && restaurantWeekSection.events.length > 0) {
+    if (restaurantWeekSection.events.length > 2) {
+      result.unshift(restaurantWeekSection);
+    } else {
+      result.push(restaurantWeekSection);
+    }
+  }
+
   // Hard distance ceiling — final guarantee. Some rails (neighborhood,
   // favorite-venue, city-scoped fetch) intentionally skip the per-rail radius
   // filter, and bounding-box fetches can include corner events past the
@@ -2100,6 +2225,9 @@ function buildCarousels(
   // left empty. Events with unknown coords (null distance) are kept, matching
   // the existing radius-filter convention elsewhere.
   for (const section of result) {
+    // Must-Know is statewide and many rows lack coords — exempt it from the
+    // proximity ceiling so an iconic in-state pick isn't dropped for being far.
+    if (section.slug === "must-know") continue;
     section.events = section.events.filter(
       e => e.distance_miles == null || e.distance_miles <= MAX_EVENT_DISTANCE_MILES,
     );
@@ -2128,7 +2256,7 @@ const subcategoryToParent: Record<string, string> = {
   // Arts sub-subcategories
   gallery: "arts", film: "arts", "street-art": "arts",
   // Food sub-subcategories
-  restaurant: "food", cafe: "food", bakery: "food",
+  restaurant: "food", cafe: "food", bakery: "food", "restaurant-week": "food",
   // Theatre sub-subcategories
   opera: "theatre", dance: "theatre", musical: "theatre",
   // Misc → other
@@ -2530,6 +2658,94 @@ async function fetchFarmersMarketEvents(
   return (data ?? []) as EventRow[];
 }
 
+// The Restaurant Weeks rail is state-scoped (every in-state week regardless of
+// distance), so this fetch pulls by venue_state, NOT a bbox — a bbox would clip
+// the far corners of a state (e.g. Pittsburgh for a Philly user). Tiny pool, so
+// no geo predicate is needed. The rail applies its own sort + end_at filter.
+async function fetchRestaurantWeekEvents(
+  supabase: ReturnType<typeof createClient>,
+  stateCode: string,
+): Promise<EventRow[]> {
+  const { data, error } = await supabase
+    .from("events")
+    .select("*")
+    .eq("is_active", true)
+    .eq("subcategory", "restaurant-week")
+    .eq("venue_state", stateCode)
+    .limit(200);
+  if (error) {
+    console.error("[carousels] fetchRestaurantWeekEvents failed:", error);
+    return [];
+  }
+  return (data ?? []) as EventRow[];
+}
+
+// Display names for the live states (for the Must-Know rail title).
+const STATE_CODE_NAMES: Record<string, string> = {
+  MA: "Massachusetts", RI: "Rhode Island", PA: "Pennsylvania",
+  NY: "New York", NJ: "New Jersey", CA: "California",
+};
+
+// The "25 Must-Know" rail reads the SEPARATE curated_events table — dated,
+// nationally/regionally iconic editorial picks (Jacob's Pillow, Feast of the
+// Madonna, …) refreshed by scripts/refresh_curated_events.js. This is NOT the
+// events-pool `source="curated"` evergreen experiences that feed the Experiences
+// tab; it's a distinct table the rest of the edge fn never touches. State-scoped,
+// so fetched by region. Mapped to ProcessedEvent so it flows through the same
+// rail/card machinery. Many rows have no coords, so the rail sorts by date.
+async function fetchCuratedEvents(
+  supabase: ReturnType<typeof createClient>,
+  stateCode: string,
+): Promise<ProcessedEvent[]> {
+  const nowIso = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("curated_events")
+    .select("*")
+    .eq("is_active", true)
+    .eq("region", stateCode)
+    .or(`end_at.gte.${nowIso},end_at.is.null`)
+    .order("start_at", { ascending: true })
+    .limit(50);
+  if (error) {
+    console.error("[carousels] fetchCuratedEvents failed:", error);
+    return [];
+  }
+  return (data ?? []).map((r: Record<string, unknown>): ProcessedEvent => ({
+    id: r.id as string,
+    title: r.title as string,
+    description: (r.description as string) ?? null,
+    category: "curated",
+    subcategory: "must-know",
+    sub_subcategory: null,
+    tags: null,
+    team_name: null,
+    start_at: (r.start_at as string) ?? null,
+    end_at: (r.end_at as string) ?? null,
+    is_free: false,
+    price_min: null,
+    price_max: null,
+    ticket_url: (r.source_url as string) ?? null,
+    image_url: (r.image_url as string) ?? null,
+    venue_name: (r.venue_name as string) ?? null,
+    venue_address: (r.venue_address as string) ?? null,
+    venue_city: (r.venue_city as string) ?? "",
+    venue_state: (r.venue_state as string) ?? stateCode,
+    venue_lat: (r.venue_lat as number) ?? null,
+    venue_lng: (r.venue_lng as number) ?? null,
+    event_city: null,
+    event_state: null,
+    event_lat: null,
+    event_lng: null,
+    source: "curated",
+    source_url: (r.source_url as string) ?? null,
+    city: (r.venue_city as string) ?? "",
+    time_known: false,
+    distance_miles: null,
+    venue_description: null,
+    venue_photo_url: null,
+  }));
+}
+
 // fetchRawSportsEvents removed — rawSportsEvents is now derived inline
 // in the slow-path handler block by filtering the MV-backed fetchAllEvents
 // result. Same row set, no second 7×1000 paginated scan.
@@ -2586,6 +2802,46 @@ const STATE_BOUNDS: Record<string, { latMin: number; latMax: number; lngMin: num
   "rhode island": { latMin: 41.1, latMax: 42.1, lngMin: -72.0, lngMax: -71.1 },
   pennsylvania: { latMin: 39.7, latMax: 42.3, lngMin: -80.6, lngMax: -74.6 },
 };
+
+// Anchor cities per live state for nearest-anchor (1-NN) state resolution.
+// Resolving the user's state by nearest labeled CITY is far more reliable at the
+// borders that matter than bbox hit-testing: Philadelphia→PA (not NJ), Jersey
+// City→NJ, NYC→NY all come out right, whereas loose overlapping bboxes +
+// nearest-CENTER mis-resolve those cross-river metros. Used only by the
+// state-scoped Restaurant Weeks rail (every in-state week, no out-of-state).
+const STATE_ANCHORS: { code: string; lat: number; lng: number }[] = [
+  { code: "MA", lat: 42.3601, lng: -71.0589 }, // Boston
+  { code: "MA", lat: 42.2626, lng: -71.8023 }, // Worcester
+  { code: "MA", lat: 42.1015, lng: -72.5898 }, // Springfield
+  { code: "RI", lat: 41.8240, lng: -71.4128 }, // Providence
+  { code: "PA", lat: 39.9526, lng: -75.1652 }, // Philadelphia
+  { code: "PA", lat: 40.4406, lng: -79.9959 }, // Pittsburgh
+  { code: "PA", lat: 40.2732, lng: -76.8867 }, // Harrisburg
+  { code: "PA", lat: 40.6084, lng: -75.4902 }, // Allentown
+  { code: "PA", lat: 41.4090, lng: -75.6624 }, // Scranton
+  { code: "NY", lat: 40.7128, lng: -74.0060 }, // New York City
+  { code: "NY", lat: 42.6526, lng: -73.7562 }, // Albany
+  { code: "NY", lat: 43.0481, lng: -76.1474 }, // Syracuse
+  { code: "NY", lat: 42.8864, lng: -78.8784 }, // Buffalo
+  { code: "NY", lat: 43.1610, lng: -77.6109 }, // Rochester
+  { code: "NJ", lat: 40.7357, lng: -74.1724 }, // Newark
+  { code: "NJ", lat: 40.7178, lng: -74.0431 }, // Jersey City
+  { code: "NJ", lat: 40.2206, lng: -74.7597 }, // Trenton
+  { code: "NJ", lat: 39.3643, lng: -74.4229 }, // Atlantic City
+  { code: "NJ", lat: 40.9176, lng: -74.1718 }, // Paterson
+];
+
+// User's state CODE by nearest anchor city. Returns null when the nearest anchor
+// is implausibly far (user outside the live footprint) so an out-of-area user
+// gets an empty Restaurant Weeks rail rather than some other state's weeks.
+function userStateCode(lat: number, lng: number): string | null {
+  let best: { code: string; d: number } | null = null;
+  for (const a of STATE_ANCHORS) {
+    const d = distanceMiles(lat, lng, a.lat, a.lng);
+    if (!best || d < best.d) best = { code: a.code, d };
+  }
+  return best && best.d <= 200 ? best.code : null;
+}
 
 // True when a carousel whose `city` column is `carouselCity` is relevant to a
 // user at (lat,lng). Empty/null city → global carousel (always shown). State
@@ -2993,6 +3249,23 @@ Deno.serve(async (req) => {
     let venueEvents: ProcessedEvent[] = [];
     let subcatEvents: ProcessedEvent[] = [];
     let farmersMarketEvents: ProcessedEvent[] = [];
+    let restaurantWeekEvents: ProcessedEvent[] = [];
+    let curatedEvents: ProcessedEvent[] = [];
+    // Restaurant Weeks rail builds on For You AND the Food tab; the Must-Know rail
+    // is For-You only. Both are state-scoped, so resolve the state once.
+    {
+      const rwFilter = resolveFilter(category);
+      const rwState = userStateCode(lat, lng);
+      if (rwState && (rwFilter.type === "none" || (rwFilter.type === "category" && rwFilter.value === "food"))) {
+        const rwRows = await fetchRestaurantWeekEvents(supabase, rwState);
+        restaurantWeekEvents = cleanEvents(deduplicateCrossSource(rwRows), venueCache, cityPhotoCache);
+      }
+      if (rwState && rwFilter.type === "none") {
+        // curated_events are already editorial (hand-curated titles) — skip the
+        // title-cleaning / cross-source dedup the events pool needs.
+        curatedEvents = await fetchCuratedEvents(supabase, rwState);
+      }
+    }
     if (resolveFilter(category).type === "none") {
       const targetCities = [nearestCity];
       for (const n of userPreferences?.selected_neighborhoods ?? []) {
@@ -3030,7 +3303,7 @@ Deno.serve(async (req) => {
       allEvents, rawSportsEvents, carouselsConfig, category,
       lat, lng, userPreferences, nearestCity,
       weights, venueCache, communityScores, affinityMap, cityEvents, venueEvents, subcatEvents,
-      farmersMarketEvents,
+      farmersMarketEvents, restaurantWeekEvents, radiusMiles, curatedEvents,
     );
 
     const categories = buildCategories(allEvents, userPreferences);

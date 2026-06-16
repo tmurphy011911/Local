@@ -229,3 +229,23 @@ jobs:
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node sync_farmers_markets.js
+
+  # "25 Must-Know" editorial refresh — Claude curates the nationally/regionally
+  # iconic happenings (next 6 months) per live state into curated_events, which
+  # drives the state-scoped Must-Know For-You rail. Weekly: the 6-month horizon
+  # only needs topping up as picks expire. REGION unset → iterates every is_live
+  # state. ANTHROPIC/GOOGLE keys are read from the secrets table via
+  # SUPABASE_SERVICE_KEY. Independent of the crawl chain.
+  refresh-curated-events:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Refresh 25 Must-Know (Claude, all live states)
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node refresh_curated_events.js

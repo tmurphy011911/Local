@@ -311,14 +311,18 @@ HARD GEOGRAPHIC CONSTRAINT: every event MUST take place physically inside the st
 
 HARD TIME CONSTRAINT: TODAY IS ${todayIso}. Every item must have start_at between ${todayIso} and ${horizonIso} (the next 6 months). Events further out — even if iconic — belong to future refreshes, not this one. DO NOT return events that end before today; your training data may be old.
 
-Return exactly ${needed} NEW editorial picks happening in ${region} between ${todayIso} and ${horizonIso}. The list should skew toward:
-  - Signature civic traditions with decades+ of history (North End feasts, St. Patrick's/Evacuation Day parade, Duckling Day, First Night, Lunar New Year parade, Bunker Hill Day, Fisherman's Feast)
-  - Major parades and festivals with national recognition (Boston Pride, Salem Haunted Happenings, Topsfield Fair, Head of the Charles Regatta, Sail Boston / tall ships)
-  - Headline cultural seasons + exhibitions (Tanglewood season, Jacob's Pillow, MFA / Gardner / ICA special exhibitions, Boston Book Festival, Boston Film Festival)
-  - Marquee sports moments (Boston Marathon, Patriots' Day reenactments at Lexington/Concord, World Cup matches, Celtics/Bruins/Red Sox playoff runs when confirmed)
-  - Fireworks and 4th of July anchor events (Boston Pops Fireworks, Boston Harborfest)
-  - Anniversary / once-in-a-generation moments (America250 programming, Sail250, Revolution 250 reenactments)
-  - Civic moments of state-level consequence (elections, major tree lightings, inaugurations)
+Build the list ENTIRELY from ${region}'s OWN iconic events. The Massachusetts names in parentheses below are there ONLY to calibrate HOW famous/established an event must be — never put a Massachusetts event in a non-Massachusetts list; find the genuine ${region} equivalents (for PA that's the Mummers Parade, Welcome America, Pittsburgh Regatta, the Little League World Series, etc. — you supply the right ones).
+
+Do NOT critique or comment on this prompt. If something seems off, ignore it and still return the JSON.
+
+Return exactly ${needed} NEW editorial picks happening in ${region} between ${todayIso} and ${horizonIso}, skewing toward these CATEGORIES:
+  - Signature civic traditions with decades+ of history (MA bar: North End feasts, First Night, Bunker Hill Day)
+  - Major parades + festivals with national/regional recognition (MA bar: Boston Pride, Salem Haunted Happenings, Topsfield Fair, Head of the Charles Regatta, Sail Boston)
+  - Headline cultural seasons + exhibitions (MA bar: Tanglewood, Jacob's Pillow, flagship museum exhibitions, a book/film festival)
+  - Marquee sports moments (MA bar: the Boston Marathon, historic reenactments, World Cup matches, pro-team playoff runs when confirmed)
+  - Fireworks and 4th of July anchor events (MA bar: Boston Pops Fireworks, Harborfest)
+  - Anniversary / once-in-a-generation moments (MA bar: America250 / Sail250 programming)
+  - Civic moments of state-level consequence (major tree lightings, inaugurations)
 
 EXPLICITLY EXCLUDE:
   - Restaurant weeks or any food-week-style dining promotions (a separate feature covers these — DO NOT include them)
@@ -329,7 +333,7 @@ EXPLICITLY EXCLUDE:
   - Any event < 3 years old that hasn't established national recognition
   - Small/niche food festivals
 
-Food festivals ARE allowed IF they are regionally iconic with national name-recognition — e.g. Wellfleet OysterFest (if very well attended), Feast of the Madonna / Saint Anthony's Feast (100+ year North End traditions), Cape Cod Hydrangea-style signature seasonal events. "Summer BBQ Festival Boston 2026" → NO. "Feast of the Madonna Del Soccorso since 1910" → YES.
+Food festivals ARE allowed IF they are regionally iconic with national name-recognition — a century-old religious feast, a signature seasonal festival a whole region travels for (the MA bar here is Wellfleet OysterFest, the North End's Saint Anthony's Feast). A generic "${region} BBQ Festival 2026" → NO; a 100+ year tradition → YES.
 
 Spread across the 6-month window — not clustered in one month. Mix of serious (reenactments, civic) + joyful (parades, fireworks) + cultural (festivals, exhibitions). Real, confirmed events only; if you're not certain it's scheduled between ${todayIso} and ${horizonIso}, skip it.${existingList}
 
@@ -369,16 +373,58 @@ async function callClaude(prompt) {
     throw new Error(`Anthropic ${res.status}: ${body}`);
   }
   const json = await res.json();
-  const text = (json.content?.[0]?.text || "").trim();
-  // Strip accidental fences — Sonnet sometimes wraps despite instructions.
-  const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
-  try {
-    const parsed = JSON.parse(cleaned);
-    return parsed.events || [];
-  } catch (err) {
-    console.error("Failed to parse Claude output:", cleaned.slice(0, 500));
-    throw err;
+  // Scan ALL text blocks (last first) for a {"events":[...]} object. Sonnet
+  // sometimes prefixes a prose preamble ("I need to verify these dates…") or
+  // splits its answer, so content[0] isn't reliably the JSON — a naive
+  // JSON.parse(content[0].text) was failing for whole states (RI/PA/NJ).
+  const textBlocks = (json.content || []).filter((b) => b.type === "text");
+  for (const block of [...textBlocks].reverse()) {
+    const extracted = extractEventsJson(block.text || "");
+    if (extracted !== null) return extracted;
   }
+  const joined = textBlocks.map((b) => b.text || "").join("\n---\n");
+  console.error("No {events:[]} JSON in Claude output:", joined.slice(0, 500));
+  throw new Error("Claude response had no parseable {events:[...]} JSON");
+}
+
+// Locate a {"events": [...]} object inside free text (prose-before-JSON safe)
+// via balanced-brace matching. Returns the .events array or null.
+function extractEventsJson(text) {
+  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "");
+  if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed?.events)) return parsed.events;
+    } catch (_) { /* fall through to scan */ }
+  }
+  for (let start = 0; start < trimmed.length; start++) {
+    if (trimmed[start] !== "{") continue;
+    let depth = 0, inString = false, esc = false;
+    for (let i = start; i < trimmed.length; i++) {
+      const c = trimmed[i];
+      if (inString) {
+        if (esc) esc = false;
+        else if (c === "\\") esc = true;
+        else if (c === '"') inString = false;
+        continue;
+      }
+      if (c === '"') inString = true;
+      else if (c === "{") depth++;
+      else if (c === "}") {
+        depth--;
+        if (depth === 0) {
+          const candidate = trimmed.slice(start, i + 1);
+          if (!candidate.includes('"events"')) break; // try next '{'
+          try {
+            const parsed = JSON.parse(candidate);
+            if (Array.isArray(parsed?.events)) return parsed.events;
+          } catch (_) { /* malformed — try next '{' */ }
+          break;
+        }
+      }
+    }
+  }
+  return null;
 }
 
 // ── Main ──────────────────────────────────────────────────────────────
