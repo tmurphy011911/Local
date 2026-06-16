@@ -143,7 +143,7 @@ private fun LeaderboardCta(
             .clip(RoundedCornerShape(18.dp))
             .background(AppColors.White, RoundedCornerShape(18.dp))
             .border(1.5.dp, LbGreen, RoundedCornerShape(18.dp))
-            .pressable(onClick = onClick, scale = 0.97f)
+            .pressable(onClick = onClick, scale = 0.94f)
             .padding(horizontal = 15.dp, vertical = 13.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -490,7 +490,7 @@ fun LeaderboardAccountEntry(
                 viewModel.resetScopeToState()
                 viewModel.prefetchAll()
                 showSheet = true
-            }, scale = 0.98f)
+            }, scale = 0.94f)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
