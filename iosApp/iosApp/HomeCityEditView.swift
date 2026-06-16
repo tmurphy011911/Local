@@ -65,7 +65,7 @@ struct HomeCityEditView: View {
                     searchStep
                 }
             }
-            .navigationTitle("Change home city")
+            .navigationTitle("Enter new home address")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
@@ -77,7 +77,7 @@ struct HomeCityEditView: View {
 
     private var searchStep: some View {
         VStack(alignment: .leading, spacing: 0) {
-            TextField("Search a city", text: $query)
+            TextField("Search an address", text: $query)
                 .textFieldStyle(.roundedBorder)
                 .autocorrectionDisabled()
                 .padding(16)
@@ -107,7 +107,7 @@ struct HomeCityEditView: View {
 
     private func confirmStep(_ pick: (name: String, lat: Double, lng: Double)) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Change your home city to \(pick.name)?")
+            Text("Change your home address to \(pick.name)?")
                 .font(.headline)
             Text("You won't be able to change it again for a year.")
                 .font(.subheadline).foregroundColor(.secondary)

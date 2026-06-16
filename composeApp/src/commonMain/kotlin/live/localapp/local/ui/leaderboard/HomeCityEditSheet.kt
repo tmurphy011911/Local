@@ -83,7 +83,7 @@ fun HomeCityEditSheet(
         ) {
             Column(Modifier.fillMaxWidth().padding(20.dp)) {
                 Text(
-                    "Change home city",
+                    "Enter new home address",
                     style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 20.sp, color = AppColors.Ink),
                 )
                 Spacer(Modifier.height(14.dp))
@@ -95,7 +95,7 @@ fun HomeCityEditSheet(
                         onValueChange = { input = it },
                         singleLine = true,
                         modifier = Modifier.fillMaxWidth(),
-                        placeholder = { Text("Search a city") },
+                        placeholder = { Text("Search an address") },
                     )
                     Spacer(Modifier.height(10.dp))
                     LazyColumn(Modifier.fillMaxWidth().height(260.dp)) {
@@ -133,7 +133,7 @@ fun HomeCityEditSheet(
                 } else {
                     val (s, d) = pick
                     Text(
-                        "Change your home city to ${d.name}?",
+                        "Change your home address to ${d.name}?",
                         style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AppColors.Ink),
                     )
                     Spacer(Modifier.height(8.dp))
