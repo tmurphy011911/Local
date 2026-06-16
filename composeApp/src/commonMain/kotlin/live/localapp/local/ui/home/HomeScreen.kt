@@ -387,6 +387,17 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                     )
                 }
 
+                // Local Leaderboard — FOMO rank CTA + sheet. Build-time gated so a
+                // pre-readiness App Store build can drop it entirely (see Config).
+                if (live.localapp.local.Config.FEATURE_LEADERBOARD_ENABLED) {
+                    item(key = "leaderboard") {
+                        val leaderboardVm = remember {
+                            KoinPlatform.getKoin().get<live.localapp.local.ui.leaderboard.LeaderboardViewModel>()
+                        }
+                        live.localapp.local.ui.leaderboard.LeaderboardHost(leaderboardVm)
+                    }
+                }
+
                 // "Your Events This Week" album carousel
                 if (state.savedThisWeek.isNotEmpty()) {
                     item(key = "saved_events_album") {
@@ -1371,16 +1382,153 @@ private fun EventCardRow(slug: String, events: List<Event>, onEventClick: (Event
         horizontalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         events.forEach { event ->
-            val saveCount = communityRepo?.totalSaves(event.id) ?: 0
-            val tagOverride = if (showSaves && saveCount > 10) "$saveCount Saves" else null
-            val cardData = event.toCardData(showTag = showTags || tagOverride != null, tagOverride = tagOverride)
-            EventCard(
-                data = cardData,
-                onClick = { bounds ->
-                    onEventClick(event, CardTransitionInfo(bounds = bounds, imageUrl = cardData.imageUrl))
-                },
-                onFavorite = onFavorite?.let { { it(event) } },
-                isFavorited = event.id in favoriteIds,
+            // Restaurant Weeks and the "25 Must-Know" editorial rail both use a
+            // slim, image-less card (title / date range / city · distance) — the
+            // date span + place are what the user scans, not a hero photo.
+            if (slug == "restaurant-weeks" || slug == "must-know") {
+                SlimEventCard(event) { bounds ->
+                    onEventClick(event, CardTransitionInfo(bounds = bounds, imageUrl = null))
+                }
+            } else {
+                val saveCount = communityRepo?.totalSaves(event.id) ?: 0
+                val tagOverride = if (showSaves && saveCount > 10) "$saveCount Saves" else null
+                val cardData = event.toCardData(showTag = showTags || tagOverride != null, tagOverride = tagOverride)
+                EventCard(
+                    data = cardData,
+                    onClick = { bounds ->
+                        onEventClick(event, CardTransitionInfo(bounds = bounds, imageUrl = cardData.imageUrl))
+                    },
+                    onFavorite = onFavorite?.let { { it(event) } },
+                    isFavorited = event.id in favoriteIds,
+                )
+            }
+        }
+    }
+}
+
+// Slim, image-less card for the Restaurant Weeks and "25 Must-Know" rails. Same
+// press-scale + shadow + bounds-reporting (for the hero transition) as EventCard,
+// but a text-only body: title, date range, then "City · distance". Wider and
+// shorter than the standard 156×212 image card.
+@Composable
+private fun SlimEventCard(event: Event, onClick: (Rect) -> Unit) {
+    val scaleAnim = remember { Animatable(1f) }
+    val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+    var cardBounds by remember { mutableStateOf(Rect.Zero) }
+    val isPressed = scaleAnim.value < 0.99f
+
+    // Blinking "happening now" dot — only animates for currently-live events.
+    val liveAlpha by animateFloatAsState(
+        targetValue = if (event.happeningNow) 0.2f else 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(650, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse,
+        ),
+        label = "liveDot",
+    )
+
+    val city = event.venueCity.ifBlank { event.city }
+    val tertiary = listOf(city, event.distanceDisplay)
+        .filter { it.isNotBlank() }
+        .joinToString("  ·  ")
+
+    Box(
+        modifier = Modifier
+            .width(232.dp)
+            .onGloballyPositioned { coordinates -> cardBounds = coordinates.boundsInRoot() }
+            .graphicsLayer {
+                scaleX = scaleAnim.value
+                scaleY = scaleAnim.value
+            }
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onPress = {
+                        scope.launch { scaleAnim.animateTo(0.94f, tween(80)) }
+                        val released = tryAwaitRelease()
+                        scope.launch { scaleAnim.animateTo(1f, spring(dampingRatio = 0.4f, stiffness = 500f)) }
+                        if (released) {
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            onClick(cardBounds)
+                        }
+                    },
+                )
+            }
+            .testTag("home_restaurant_week_card"),
+    ) {
+        // Shadow
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .offset(y = if (!isPressed) 4.dp else 1.dp)
+                .background(AppColors.Pebble, AppShapes.CardMedium),
+        )
+
+        // Card body
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(AppColors.White, AppShapes.CardMedium)
+                .border(2.dp, AppColors.Pebble, AppShapes.CardMedium)
+                .clip(AppShapes.CardMedium)
+                .padding(horizontal = 14.dp, vertical = 13.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            // Fixed 3-line body so EVERY card is the same height regardless of
+            // which fields are populated: 2 lines reserved for the title, then
+            // one line each for the date and "City · distance". The date/place
+            // rows always render (even when blank) via minLines = 1, so a pick
+            // with no city/coords (e.g. America250) doesn't collapse shorter than
+            // a pick that has them.
+            // Title greys out when there's no confirmed upcoming date ("Dates TBD").
+            Text(
+                event.title.toTitleCase(),
+                style = if (event.dateTbd) AppType.EventCardTitle.copy(color = AppColors.Ink3) else AppType.EventCardTitle,
+                minLines = 2,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            // Date row — "Dates TBD" when unknown, else the range; a blinking
+            // coral dot + coral text when the event is happening right now.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                if (event.happeningNow) {
+                    Box(
+                        modifier = Modifier
+                            .size(7.dp)
+                            .graphicsLayer { alpha = liveAlpha }
+                            .background(AppColors.Coral, CircleShape),
+                    )
+                }
+                Text(
+                    if (event.dateTbd) "Dates TBD" else event.dateRangeDisplay,
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 12.sp,
+                        color = when {
+                            event.dateTbd -> AppColors.Ink3
+                            event.happeningNow -> AppColors.Coral
+                            else -> AppColors.Ink2
+                        },
+                    ),
+                    minLines = 1,
+                    maxLines = 1,
+                )
+            }
+            Text(
+                tertiary,
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.SemiBold,
+                    fontSize = 11.sp,
+                    color = AppColors.Ink3,
+                ),
+                minLines = 1,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }

@@ -79,6 +79,62 @@ data class Event(
             else -> "${distanceMiles.toInt()} mi"
         }
 
+    /** True when the event window straddles right now (start ≤ now ≤ end) —
+     *  drives the blinking "happening now" indicator. */
+    val happeningNow: Boolean
+        get() {
+            val s = startAt ?: return false
+            val e = endAt ?: return false
+            return try {
+                val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+                Instant.parse(s).toEpochMilliseconds() <= now && now <= Instant.parse(e).toEpochMilliseconds()
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+    /** True when there's no confirmed upcoming-or-current date: a null start, or
+     *  a window that has already ended. Drives the "Dates TBD" + greyed-title
+     *  treatment on the slim restaurant-week card. */
+    val dateTbd: Boolean
+        get() {
+            val s = startAt ?: return true
+            return try {
+                val now = kotlin.time.Clock.System.now().toEpochMilliseconds()
+                Instant.parse(endAt ?: s).toEpochMilliseconds() < now
+            } catch (_: Exception) {
+                false
+            }
+        }
+
+    // Compact start–end range for multi-day events (e.g. restaurant weeks):
+    // "May 27 – Jun 2", or "Aug 3 – 16" when both ends share a month, or just
+    // "Aug 3" for a single day. Falls back to [dateDisplay] if dates won't parse.
+    val dateRangeDisplay: String
+        get() {
+            val s = startAt ?: return dateDisplay
+            return try {
+                // UTC, not local: a multi-day range is a set of calendar dates, and
+                // reading them in the viewer's tz shifts a midnight-UTC start back a
+                // day ("Jan 1" → "Dec 31"). UTC matches the intended dates.
+                val tz = TimeZone.UTC
+                val months = arrayOf("Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec")
+                val start = Instant.parse(s).toLocalDateTime(tz).date
+                val startStr = "${months[start.monthNumber - 1]} ${start.dayOfMonth}"
+                val e = endAt ?: return startStr
+                val end = Instant.parse(e).toLocalDateTime(tz).date
+                if (end == start) return startStr
+                val endStr = if (end.monthNumber == start.monthNumber) {
+                    "${end.dayOfMonth}"
+                } else {
+                    "${months[end.monthNumber - 1]} ${end.dayOfMonth}"
+                }
+                "$startStr – $endStr"
+            } catch (_: Exception) {
+                dateDisplay
+            }
+        }
+
     val dateDisplay: String
         get() {
             val s = startAt ?: return ""

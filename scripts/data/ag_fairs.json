@@ -1,0 +1,245 @@
+[
+ {
+  "name": "Topsfield Fair",
+  "url": "http://www.topsfieldfair.org/",
+  "start_date": "2026-10-02",
+  "end_date": "2026-10-12",
+  "town": "Topsfield",
+  "lat": 42.6418168,
+  "lng": -70.9504706
+ },
+ {
+  "name": "Westport Fair",
+  "url": "http://westportfair.com/",
+  "start_date": "2026-07-15",
+  "end_date": "2026-07-19",
+  "town": "Westport",
+  "lat": 41.6755383,
+  "lng": -71.108758
+ },
+ {
+  "name": "Hampshire County 4H Fair",
+  "url": "https://www.facebook.com/p/Hampshire-County-4H-Fair-61556582015968/",
+  "start_date": "2026-07-18",
+  "end_date": "2026-07-18",
+  "town": "Cummington",
+  "lat": 42.459188,
+  "lng": -72.8913714
+ },
+ {
+  "name": "Barnstable Fair",
+  "url": "https://capecodfairgrounds.com/barnstable-county-fair/",
+  "start_date": "2026-07-20",
+  "end_date": "2026-07-26",
+  "town": "East Falmouth",
+  "lat": 41.5784425,
+  "lng": -70.55864009999999
+ },
+ {
+  "name": "Worcester County 4-H Fair",
+  "url": "https://www.facebook.com/WorcesterCounty4H/",
+  "start_date": "2026-07-24",
+  "end_date": "2026-07-26",
+  "town": "Spencer",
+  "lat": 42.2438416,
+  "lng": -71.99511559999999
+ },
+ {
+  "name": "Littleville Fair",
+  "url": "https://littlevillefair.com/",
+  "start_date": "2026-08-07",
+  "end_date": "2026-08-09",
+  "town": "Chester",
+  "lat": 42.2792551,
+  "lng": -72.978712
+ },
+ {
+  "name": "Martha’s Vineyard Fair",
+  "url": "https://marthasvineyardagriculturalsociety.org/the-fair",
+  "start_date": "2026-08-13",
+  "end_date": "2026-08-16",
+  "town": "West Tisbury",
+  "lat": 41.3829055,
+  "lng": -70.673982
+ },
+ {
+  "name": "Bolton Fair",
+  "url": "https://www.boltonfair.org/",
+  "start_date": "2026-08-14",
+  "end_date": "2026-08-16",
+  "town": "Lancaster",
+  "lat": 42.4534026,
+  "lng": -71.67345379999999
+ },
+ {
+  "name": "Middlefield Fair",
+  "url": "https://middlefieldfair.org/",
+  "start_date": "2026-08-08",
+  "end_date": "2026-08-10",
+  "town": "Middlefield",
+  "lat": 42.3484207,
+  "lng": -73.01510110000001
+ },
+ {
+  "name": "Hardwick Fair",
+  "url": "https://www.hardwickfair.com/",
+  "start_date": "2026-08-14",
+  "end_date": "2026-08-15",
+  "town": "Hardwick",
+  "lat": 42.3492,
+  "lng": -72.1991623
+ },
+ {
+  "name": "Heath Fair",
+  "url": "https://www.massgrange.org/granges/rochester-grange",
+  "start_date": "2026-08-21",
+  "end_date": "2026-08-23",
+  "town": "Heath",
+  "lat": 42.673417,
+  "lng": -72.82176179999999
+ },
+ {
+  "name": "Westfield Fair",
+  "url": "https://www.thewestfieldfair.com/",
+  "start_date": "2026-08-21",
+  "end_date": "2026-08-23",
+  "town": "Westfield",
+  "lat": 42.1250929,
+  "lng": -72.749538
+ },
+ {
+  "name": "Marshfield Fair",
+  "url": "https://marshfieldfair.org/",
+  "start_date": "2026-08-21",
+  "end_date": "2026-08-30",
+  "town": "Marshfield",
+  "lat": 42.0919178,
+  "lng": -70.7102896
+ },
+ {
+  "name": "S.Middleboro Grange Fair",
+  "url": "https://www.massgrange.org/granges/south-middleboro-grange",
+  "start_date": "2026-08-22",
+  "end_date": "2026-08-22",
+  "town": "Middleboro",
+  "lat": 41.8924447,
+  "lng": -70.9090921
+ },
+ {
+  "name": "Cummington Fair",
+  "url": "https://cummingtonfair.com/",
+  "start_date": "2026-08-27",
+  "end_date": "2026-08-30",
+  "town": "Cummington",
+  "lat": 42.459188,
+  "lng": -72.8913714
+ },
+ {
+  "name": "Ware Grange Fair",
+  "url": "https://www.waregrange.org/ware-grange-fair",
+  "start_date": "2026-08-28",
+  "end_date": "2026-08-29",
+  "town": "Ware",
+  "lat": 42.2606211,
+  "lng": -72.2426091
+ },
+ {
+  "name": "Middlesex 4-H Fair",
+  "url": "https://www.4hmiddlesexfair.org/",
+  "start_date": "2026-08-28",
+  "end_date": "2026-08-30",
+  "town": "Westford",
+  "lat": 42.5811425,
+  "lng": -71.4395267
+ },
+ {
+  "name": "Shelburne Grange Fair",
+  "url": "http://www.shelburnegrange.org/shelburne-grange-fair.html",
+  "start_date": "2026-08-29",
+  "end_date": "2026-08-29",
+  "town": "Shelburne",
+  "lat": 42.5911701,
+  "lng": -72.68652689999999
+ },
+ {
+  "name": "Blandford Fair",
+  "url": "https://www.theblandfordfair.com/",
+  "start_date": "2026-09-04",
+  "end_date": "2026-09-07",
+  "town": "Blandford",
+  "lat": 42.1806463,
+  "lng": -72.9273224
+ },
+ {
+  "name": "Spencer Fair",
+  "url": "https://www.spencerfair.org/",
+  "start_date": "2026-09-04",
+  "end_date": "2026-09-07",
+  "town": "Spencer",
+  "lat": 42.2438416,
+  "lng": -71.99511559999999
+ },
+ {
+  "name": "Three County Fair",
+  "url": "https://www.3countyfair.com/",
+  "start_date": "2026-09-04",
+  "end_date": "2026-09-07",
+  "town": "Northampton",
+  "lat": 42.3250896,
+  "lng": -72.64120129999999
+ },
+ {
+  "name": "East Middleboro 4-H Fair",
+  "url": "https://www.em4h.org/",
+  "start_date": "2026-09-05",
+  "end_date": "2026-09-06",
+  "town": "Middleborough",
+  "lat": 41.8924447,
+  "lng": -70.9090921
+ },
+ {
+  "name": "Franklin County Fair",
+  "url": "https://fcas.com/",
+  "start_date": "2026-09-10",
+  "end_date": "2026-09-13",
+  "town": "Greenfield",
+  "lat": 42.587915,
+  "lng": -72.5994104
+ },
+ {
+  "name": "Sterling Fair",
+  "url": "https://sterlingfair.org/",
+  "start_date": "2026-09-11",
+  "end_date": "2026-09-13",
+  "town": "Sterling",
+  "lat": 42.4380275,
+  "lng": -71.75945349999999
+ },
+ {
+  "name": "Sheffield Fair",
+  "url": "https://www.sheffieldfair.com/",
+  "start_date": "2026-09-12",
+  "end_date": "2026-09-12",
+  "town": "Sheffield",
+  "lat": 42.1099885,
+  "lng": -73.35514359999999
+ },
+ {
+  "name": "Williamsburg Grange Fair",
+  "url": "https://www.facebook.com/williamsburg.grange/",
+  "start_date": "2026-09-12",
+  "end_date": "2026-09-12",
+  "town": "Williamsburg",
+  "lat": 42.3928305,
+  "lng": -72.7300929
+ },
+ {
+  "name": "Belchertown Fair",
+  "url": "https://www.btownfair.com/",
+  "start_date": "2026-09-25",
+  "end_date": "2026-09-27",
+  "town": "Belchertown",
+  "lat": 42.2800443,
+  "lng": -72.40348469999999
+ }
+]

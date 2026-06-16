@@ -122,3 +122,65 @@ jobs:
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
         run: node monthly_reverify_bo_web.js
+
+  # Porchfests are annual one-day festivals — monthly is plenty (the original
+  # ask). Independent job. SELECTIVE by default: it only drills directory
+  # entries we DON'T already have as an active future event, so steady-state
+  # runs are cheap (a handful of Scrapfly + web-search lookups). The web-search
+  # fallback recovers fests whose own site is dead/stale. Keys (Scrapfly /
+  # Anthropic / Google) are read from the secrets table via SUPABASE_SERVICE_KEY.
+  sync-porchfests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Sync Porchfests (directory + per-site date drill)
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node sync_porchfests.js
+
+  # MA agricultural fairs — annual multi-day events; monthly cadence, selective
+  # (skips fairs already stored as an active future event). Scrapfly-renders the
+  # mass.gov directory (Akamai 403s a plain fetch), web-searches each fair's date
+  # RANGE + town, geocodes, upserts multi-day `upcoming` events. Keys from the
+  # secrets table via SUPABASE_SERVICE_KEY.
+  sync-ag-fairs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Sync MA Agricultural Fairs (mass.gov directory + web-search drill)
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node sync_ag_fairs.js
+
+  # Restaurant weeks are announced months ahead and their dates shift slowly, so
+  # monthly is plenty (no need to re-scrape weekly). Independent job. A
+  # deterministic scrape of findrestaurantweeks.com's per-state pages writes
+  # fully-classified rows (category=food, subcategory=restaurant-week) straight
+  # to `events` with a date-free dedupe_hash, so each run overwrites a promo's
+  # row as its dates change. Geocodes city→centroid (needs Google key) and
+  # scrapes og:image from each organizer link. Small pool (~50 events), runs in
+  # under a minute. Supersedes the old Claude-web-search refresh_restaurant_weeks.js.
+  sync-restaurant-weeks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Sync Restaurant Weeks (findrestaurantweeks.com)
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+        run: node sync_restaurant_weeks.js
