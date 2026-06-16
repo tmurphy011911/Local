@@ -38,7 +38,7 @@ final class CitySearchModel: NSObject, ObservableObject, MKLocalSearchCompleterD
                 done(nil); return
             }
             let name = item.placemark.locality ?? completion.title
-            done((name, loc.coordinate.latitude, loc.coordinate.longitude))
+            done((name: name, lat: loc.coordinate.latitude, lng: loc.coordinate.longitude))
         }
     }
 }

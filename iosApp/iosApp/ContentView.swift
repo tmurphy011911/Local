@@ -118,8 +118,9 @@ struct ComposeView: UIViewControllerRepresentable {
                 weak var weakVC: UIHostingController<HomeCityEditView>?
                 let view = HomeCityEditView(
                     onConfirm: { name, lat, lng, completion in
-                        HomeCityEditBridge.shared.onConfirm?(name, lat, lng, nil) { ok, rateLimited, nextAllowedAt in
+                        HomeCityEditBridge.shared.onConfirm?(name, KotlinDouble(value: lat), KotlinDouble(value: lng), nil) { ok, rateLimited, nextAllowedAt in
                             completion(ok.boolValue, rateLimited.boolValue, nextAllowedAt)
+                            return KotlinUnit()
                         }
                     },
                     onDismiss: { weakVC?.dismiss(animated: true) }
