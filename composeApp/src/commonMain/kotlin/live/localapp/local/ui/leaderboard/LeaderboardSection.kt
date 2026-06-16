@@ -14,9 +14,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
@@ -204,76 +204,74 @@ private fun LeaderboardSheetContent(
     }
     val homeCity = state.byScope[LeaderboardScope.CITY]?.location
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(bottom = 28.dp),
+    val rows = current?.rows ?: emptyList()
+    val me = current?.me
+    val podium = rows.take(3)
+    val listRows = rows.drop(3) // ranks 4..100
+    val meInShown = rows.any { it.isMe }
+    // City scope: everyone shares the city, so show just the join date.
+    // State/Country: show the member's home city too.
+    val showCity = state.scope != LeaderboardScope.CITY
+
+    // LazyColumn (not a scrolling Column) so up to 100 rows render lazily —
+    // off-screen rows aren't composed.
+    LazyColumn(
+        modifier = Modifier.fillMaxWidth(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 28.dp),
     ) {
-        // Title
-        Column(Modifier.padding(start = 22.dp, end = 22.dp, top = 6.dp, bottom = 16.dp)) {
-            Text(
-                "$regionTitle Leaderboard",
-                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 30.sp, color = LbInk),
-            )
-            if (homeCity != null) {
-                Spacer(Modifier.height(6.dp))
-                Text("Your home city: $homeCity", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = LbSub))
+        item("title") {
+            Column(Modifier.padding(start = 22.dp, end = 22.dp, top = 6.dp, bottom = 16.dp)) {
+                Text(
+                    "$regionTitle Leaderboard",
+                    style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 30.sp, color = LbInk),
+                )
+                if (homeCity != null) {
+                    Spacer(Modifier.height(6.dp))
+                    Text("Your home city: $homeCity", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = LbSub))
+                }
             }
         }
-
-        // Region tabs (green active)
-        RegionTabs(
-            scope = state.scope,
-            cityLabel = state.byScope[LeaderboardScope.CITY]?.location ?: "City",
-            stateLabel = state.byScope[LeaderboardScope.STATE]?.location ?: "State",
-            countryLabel = "USA",
-            onSelect = onSelectScope,
-        )
-
-        Spacer(Modifier.height(4.dp))
+        item("tabs") {
+            RegionTabs(
+                scope = state.scope,
+                cityLabel = state.byScope[LeaderboardScope.CITY]?.location ?: "City",
+                stateLabel = state.byScope[LeaderboardScope.STATE]?.location ?: "State",
+                countryLabel = "USA",
+                onSelect = onSelectScope,
+            )
+            Spacer(Modifier.height(4.dp))
+        }
 
         when {
-            current == null && state.sheetLoading ->
+            current == null && state.sheetLoading -> item("loading") {
                 Box(Modifier.fillMaxWidth().padding(vertical = 48.dp), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = LbGreen)
                 }
-            current == null || current.rows.isEmpty() ->
+            }
+            current == null || rows.isEmpty() -> item("empty") {
                 Text(
                     "No rankings here yet — be the first to rack up FOMO.",
                     style = TextStyle(fontFamily = AppFonts.Body, fontSize = 14.sp, color = LbSub),
                     modifier = Modifier.padding(horizontal = 22.dp, vertical = 24.dp),
                 )
+            }
             else -> {
-                val rows = current.rows
-                val me = current.me
-                val byRank = rows.associateBy { it.rank }
-                val meInShown = rows.any { it.isMe }
-
-                // Always render 10 positions (top-3 podium + ranks 4–10) so the
-                // sheet is a constant height regardless of how many real users a
-                // scope has; unclaimed spots show dashes.
-                Podium(byRank[1], byRank[2], byRank[3])
-
-                // City scope: everyone shares the city, so show just the join date.
-                // State/Country: show the member's home city too.
-                val showCity = state.scope != LeaderboardScope.CITY
-
-                Spacer(Modifier.height(12.dp))
-                Column(Modifier.padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for (r in 4..10) {
-                        val e = byRank[r]
-                        if (e != null) ListRow(e, isYou = e.isMe, showCity = showCity)
-                        else PlaceholderRow(rank = r)
+                item("podium") {
+                    Podium(podium.getOrNull(0), podium.getOrNull(1), podium.getOrNull(2))
+                    Spacer(Modifier.height(12.dp))
+                }
+                items(listRows, key = { it.rank }) { e ->
+                    Box(Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) {
+                        ListRow(e, isYou = e.isMe, showCity = showCity)
                     }
                 }
-
-                // The pinned own-row the handoff omitted: when the caller is below
-                // the visible set, surface their spot at the bottom, clearly theirs.
+                // Pinned own-row when the caller is below the visible top 100.
                 if (me != null && !meInShown) {
-                    PinnedDivider()
-                    Column(Modifier.padding(horizontal = 18.dp)) {
-                        ListRow(me, isYou = true, showCity = showCity)
+                    item("pinned") {
+                        PinnedDivider()
+                        Box(Modifier.padding(horizontal = 18.dp)) {
+                            ListRow(me, isYou = true, showCity = showCity)
+                        }
                     }
                 }
             }
@@ -430,25 +428,6 @@ private fun ListRow(entry: LeaderboardEntryDto, isYou: Boolean, showCity: Boolea
 private fun PlaceholderAvatar(size: Dp) {
     Box(Modifier.size(size), contentAlignment = Alignment.Center) {
         Canvas(Modifier.size(size * 0.82f)) { drawCircle(Color(0xFFE3E0EA)) }
-    }
-}
-
-/** Filler row for ranks no one holds yet — keeps the list a constant 10 tall. */
-@Composable
-private fun PlaceholderRow(rank: Int) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(AppColors.White.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
-            .padding(horizontal = 16.dp, vertical = 11.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Text("$rank", modifier = Modifier.width(26.dp), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = LbSub.copy(alpha = 0.5f)))
-        PlaceholderAvatar(38.dp)
-        Spacer(Modifier.width(13.dp))
-        Text("—", modifier = Modifier.weight(1f), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = LbSub))
-        Text("—", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = LbSub))
     }
 }
 
