@@ -80,33 +80,81 @@ private val SheetBg = Color(0xFFF6F5F9)
  * the Ask Bo card and Saved Events. Hides itself until a rank is known and only
  * shows for users with FOMO > 0.
  */
+/** Lobby entry point — the shared card, hidden for 0-FOMO users. */
+@Composable
+fun LeaderboardHost(viewModel: LeaderboardViewModel, modifier: Modifier = Modifier) {
+    LeaderboardCard(viewModel, hideAtZeroFomo = true, modifier = modifier)
+}
+
+/** Account-page entry point — the same shared card, always shown. */
+@Composable
+fun LeaderboardAccountEntry(viewModel: LeaderboardViewModel, modifier: Modifier = Modifier) {
+    LeaderboardCard(viewModel, hideAtZeroFomo = false, modifier = modifier)
+}
+
+/**
+ * The single leaderboard entry CTA used on BOTH the lobby and the account page:
+ * podium icon + "leaderboard" wordmark + a cascading rank subtitle, opening the
+ * B1 podium sheet. [hideAtZeroFomo] is the only difference between placements.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LeaderboardHost(
+fun LeaderboardCard(
     viewModel: LeaderboardViewModel,
+    hideAtZeroFomo: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsState()
     var showSheet by remember { mutableStateOf(false) }
+    // Load all three scopes — the subtitle cascades country → state → city.
+    LaunchedEffect(Unit) { viewModel.prefetchAll() }
 
-    LaunchedEffect(Unit) { viewModel.loadCta() }
+    // FOMO is global, so any loaded scope's `me` carries it.
+    val anyMe = state.byScope[LeaderboardScope.COUNTRY]?.me
+        ?: state.byScope[LeaderboardScope.STATE]?.me
+        ?: state.byScope[LeaderboardScope.CITY]?.me
+    val visible = !hideAtZeroFomo || (anyMe != null && anyMe.fomoTotal > 0)
 
-    val cta = state.cta
-    val stateCode = state.stateCode
-    // Hide for users with no FOMO yet (overrides spec §5's "always show").
-    if (cta != null && stateCode != null && cta.fomoTotal > 0) {
-        LeaderboardCta(
-            rank = cta.rank,
-            fomo = cta.fomoTotal,
-            inTop100 = cta.inTop100,
-            stateCode = stateCode,
-            modifier = modifier,
-            onClick = {
-                viewModel.resetScopeToState()
-                viewModel.prefetchAll()
-                showSheet = true
-            },
-        )
+    if (visible) {
+        Row(
+            modifier = modifier
+                .padding(horizontal = 20.dp, vertical = 6.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(16.dp))
+                .background(AppColors.White, RoundedCornerShape(16.dp))
+                .border(1.5.dp, LbGreen, RoundedCornerShape(16.dp))
+                .pressable(onClick = {
+                    viewModel.resetScopeToState()
+                    showSheet = true
+                }, scale = 0.94f)
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(LbGreenSoft),
+                contentAlignment = Alignment.Center,
+            ) { IconPodium(size = 23.dp) }
+            Spacer(Modifier.width(13.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                // "leaderboard" in the wordmark font, green l.
+                Text(
+                    buildAnnotatedString {
+                        "leaderboard".forEach { ch ->
+                            if (ch == 'l') withStyle(SpanStyle(color = LbGreen)) { append(ch) } else append(ch)
+                        }
+                    },
+                    style = AppType.Logo.copy(fontSize = 20.sp, color = LbInk),
+                )
+                Text(
+                    leaderboardCtaSubtitle(state),
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = LbSub),
+                )
+            }
+            Spacer(Modifier.width(8.dp))
+            Text("›", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = LbGreen))
+        }
     }
 
     if (showSheet) {
@@ -114,7 +162,7 @@ fun LeaderboardHost(
         ModalBottomSheet(
             onDismissRequest = { showSheet = false },
             sheetState = sheetState,
-            containerColor = Color(0xFFF6F5F9),
+            containerColor = SheetBg,
             dragHandle = {
                 Box(
                     modifier = Modifier
@@ -130,68 +178,34 @@ fun LeaderboardHost(
     }
 }
 
-// ── A1 home entry card (single line, green, podium icon) ─────────────────────
+/**
+ * Cascading rank line: show the BROADEST scope the user is still top-100 in
+ * (country → state → city); "1st" drops the ordinal; outside top-100 everywhere
+ * falls back to FOMO total + city rank.
+ */
+private fun leaderboardCtaSubtitle(state: LeaderboardViewModel.UiState): String {
+    val country = state.byScope[LeaderboardScope.COUNTRY]?.me
+    val stateDto = state.byScope[LeaderboardScope.STATE]
+    val cityDto = state.byScope[LeaderboardScope.CITY]
+    val stateMe = stateDto?.me
+    val cityMe = cityDto?.me
+    val stateLabel = stateDto?.location
+    val cityLabel = cityDto?.location
 
-@Composable
-private fun LeaderboardCta(
-    rank: Int,
-    fomo: Int,
-    inTop100: Boolean,
-    stateCode: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier
-            .padding(horizontal = 18.dp)
-            .padding(top = 4.dp, bottom = 10.dp)
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(AppColors.White, RoundedCornerShape(18.dp))
-            .border(1.5.dp, LbGreen, RoundedCornerShape(18.dp))
-            .pressable(onClick = onClick, scale = 0.94f)
-            .padding(horizontal = 15.dp, vertical = 13.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier.size(34.dp).clip(RoundedCornerShape(11.dp)).background(LbGreenSoft),
-            contentAlignment = Alignment.Center,
-        ) { IconPodium(size = 21.dp) }
-        Spacer(Modifier.width(12.dp))
+    fun line(rank: Int, place: String) =
+        if (rank == 1) "You have the most FOMO in $place"
+        else "You have the ${ordinal(rank)} most FOMO in $place"
 
-        // Sentence with green emphasis on the rank/FOMO, single line w/ ellipsis.
-        val emphasis = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = LbGreenDeep)
-        val base = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = LbInk)
-        Row(
-            modifier = Modifier.weight(1f),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            when {
-                inTop100 && rank == 1 ->
-                    EllipsisLine(base, "You have ", emphasis to "the most", base to " FOMO in $stateCode.")
-                inTop100 ->
-                    EllipsisLine(base, "You have the ", emphasis to ordinal(rank), base to " most FOMO in $stateCode.")
-                else ->
-                    EllipsisLine(base, "", emphasis to groupThousands(fomo), base to " FOMO · ${ordinal(rank)} in $stateCode")
-            }
+    return when {
+        country?.inTop100 == true -> line(country.rank, "America")
+        stateMe?.inTop100 == true && !stateLabel.isNullOrBlank() -> line(stateMe.rank, stateLabel)
+        cityMe?.inTop100 == true && !cityLabel.isNullOrBlank() -> line(cityMe.rank, cityLabel)
+        else -> {
+            val fomo = country?.fomoTotal ?: stateMe?.fomoTotal ?: cityMe?.fomoTotal
+            if (fomo != null && cityMe != null && !cityLabel.isNullOrBlank())
+                "${groupThousands(fomo)}: ${ordinal(cityMe.rank)} in $cityLabel"
+            else "See where you rank"
         }
-        Spacer(Modifier.width(8.dp))
-        Text("›", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = LbGreen))
-    }
-}
-
-/** Builds a one-line sentence from a leading + an emphasized + a trailing span. */
-@Composable
-private fun EllipsisLine(
-    base: TextStyle,
-    leading: String,
-    emphasized: Pair<TextStyle, String>,
-    trailing: Pair<TextStyle, String>,
-) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        if (leading.isNotEmpty()) Text(leading, style = base, maxLines = 1)
-        Text(emphasized.second, style = emphasized.first, maxLines = 1)
-        Text(trailing.second, style = trailing.first, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -467,74 +481,6 @@ private fun PlaceholderRow(rank: Int) {
         Spacer(Modifier.width(13.dp))
         Text("—", modifier = Modifier.weight(1f), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = LbSub))
         Text("—", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = LbSub))
-    }
-}
-
-/**
- * Account-page entry point into the leaderboard. A tappable card (matches the
- * green leaderboard identity) that opens the same B1 podium sheet. Shares the
- * singleton [LeaderboardViewModel] with the home CTA. Caller gates on the flag.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun LeaderboardAccountEntry(
-    viewModel: LeaderboardViewModel,
-    modifier: Modifier = Modifier,
-) {
-    val state by viewModel.uiState.collectAsState()
-    var showSheet by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { viewModel.loadCta() }
-
-    val subtitle = state.cta?.let { c ->
-        state.stateCode?.let { sc -> "You're #${c.rank} in $sc" }
-    } ?: "See where you rank"
-
-    Row(
-        modifier = modifier
-            .padding(horizontal = 20.dp)
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(AppColors.White, RoundedCornerShape(16.dp))
-            .border(1.5.dp, LbGreen, RoundedCornerShape(16.dp))
-            .pressable(onClick = {
-                viewModel.resetScopeToState()
-                viewModel.prefetchAll()
-                showSheet = true
-            }, scale = 0.94f)
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(LbGreenSoft),
-            contentAlignment = Alignment.Center,
-        ) { IconPodium(size = 23.dp) }
-        Spacer(Modifier.width(13.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text("Leaderboard", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = LbInk))
-            Text(subtitle, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = LbSub))
-        }
-        Spacer(Modifier.width(8.dp))
-        Text("›", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = LbGreen))
-    }
-
-    if (showSheet) {
-        val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ModalBottomSheet(
-            onDismissRequest = { showSheet = false },
-            sheetState = sheetState,
-            containerColor = Color(0xFFF6F5F9),
-            dragHandle = {
-                Box(
-                    modifier = Modifier
-                        .padding(top = 12.dp, bottom = 2.dp)
-                        .width(46.dp)
-                        .height(5.dp)
-                        .background(Color(0xFFD2CFDA), RoundedCornerShape(999.dp)),
-                )
-            },
-        ) {
-            LeaderboardSheetContent(state = state, onSelectScope = viewModel::selectScope)
-        }
     }
 }
 
