@@ -76,6 +76,9 @@ struct EventDetailData {
     }
 
     var ctaLabel: String {
+        // Restaurant weeks and "25 Must-Know" picks link out to an info/organizer
+        // page, not a ticketing flow — "More Info".
+        if let sc = subcategory?.lowercased(), sc == "restaurant-week" || sc == "must-know" { return "More Info" }
         // Free events link out to the venue/market's own page, not a
         // ticketing/RSVP flow — "More Info" is the honest CTA. Only paid
         // events with a real ticket URL say "Get Tickets".

@@ -2861,6 +2861,12 @@ const STATE_ANCHORS: { code: string; lat: number; lng: number }[] = [
   { code: "NJ", lat: 40.2206, lng: -74.7597 }, // Trenton
   { code: "NJ", lat: 39.3643, lng: -74.4229 }, // Atlantic City
   { code: "NJ", lat: 40.9176, lng: -74.1718 }, // Paterson
+  { code: "CA", lat: 34.0522, lng: -118.2437 }, // Los Angeles
+  { code: "CA", lat: 37.7749, lng: -122.4194 }, // San Francisco
+  { code: "CA", lat: 32.7157, lng: -117.1611 }, // San Diego
+  { code: "CA", lat: 38.5816, lng: -121.4944 }, // Sacramento
+  { code: "CA", lat: 37.3382, lng: -121.8863 }, // San Jose
+  { code: "CA", lat: 36.7468, lng: -119.7726 }, // Fresno
 ];
 
 // User's state CODE by nearest anchor city. Returns null when the nearest anchor
