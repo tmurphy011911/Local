@@ -49,6 +49,7 @@ import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import live.localapp.local.data.remote.dto.LeaderboardDto
@@ -273,16 +274,20 @@ private fun LeaderboardSheetContent(
             else -> {
                 val rows = current.rows
                 val me = current.me
-                val podium = rows.take(3)
-                val listRows = rows.drop(3) // ranks 4..10
+                val byRank = rows.associateBy { it.rank }
                 val meInShown = rows.any { it.isMe }
 
-                Podium(podium)
+                // Always render 10 positions (top-3 podium + ranks 4–10) so the
+                // sheet is a constant height regardless of how many real users a
+                // scope has; unclaimed spots show dashes.
+                Podium(byRank[1], byRank[2], byRank[3])
 
-                if (listRows.isNotEmpty()) {
-                    Spacer(Modifier.height(12.dp))
-                    Column(Modifier.padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listRows.forEach { ListRow(it, isYou = it.isMe, animateOnAppear = false) }
+                Spacer(Modifier.height(12.dp))
+                Column(Modifier.padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    for (r in 4..10) {
+                        val e = byRank[r]
+                        if (e != null) ListRow(e, isYou = e.isMe, animateOnAppear = false)
+                        else PlaceholderRow(rank = r)
                     }
                 }
 
@@ -335,8 +340,7 @@ private fun Tab(label: String, on: Boolean, modifier: Modifier = Modifier, onCli
 }
 
 @Composable
-private fun Podium(podium: List<LeaderboardEntryDto>) {
-    val p1 = podium.getOrNull(0); val p2 = podium.getOrNull(1); val p3 = podium.getOrNull(2)
+private fun Podium(p1: LeaderboardEntryDto?, p2: LeaderboardEntryDto?, p3: LeaderboardEntryDto?) {
     Box(
         modifier = Modifier
             .padding(horizontal = 18.dp)
@@ -358,23 +362,25 @@ private fun Podium(podium: List<LeaderboardEntryDto>) {
 private fun PodiumColumn(
     p: LeaderboardEntryDto?,
     place: Int,
-    blockHeight: androidx.compose.ui.unit.Dp,
-    boSize: androidx.compose.ui.unit.Dp,
+    blockHeight: Dp,
+    boSize: Dp,
     face: Color,
     edge: Color,
     modifier: Modifier = Modifier,
 ) {
-    if (p == null) { Spacer(modifier); return }
-    val isYou = p.isMe
-    val level = statusTierForPoints(p.fomoTotal).boLevel.coerceIn(0, 8)
+    val empty = p == null
+    val isYou = p?.isMe == true
+    val level = if (p != null) statusTierForPoints(p.fomoTotal).boLevel.coerceIn(0, 8) else 0
+    val blockBrush = if (empty) Brush.verticalGradient(listOf(Color(0xFFE3E0EA), Color(0xFFC8C3D4)))
+                     else Brush.verticalGradient(listOf(face, edge))
     Column(modifier = modifier, horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Bottom) {
-        // Every podium Bo is shown at its owner's real loyalty level — no crown,
-        // halo, or other alteration. Rank is conveyed by the podium block, not Bo.
-        Bo(size = boSize, level = level, showShadow = false, showSparkles = false)
+        // Bo shown at its owner's real loyalty level — no crown/halo. Unclaimed
+        // spots show a muted placeholder so the podium keeps a constant shape.
+        if (empty) PlaceholderAvatar(boSize) else Bo(size = boSize, level = level, showShadow = false, showSparkles = false)
         Text(
-            if (isYou) "You" else (p.username ?: "Anonymous"),
+            if (empty) "—" else if (isYou) "You" else (p!!.username ?: "Anonymous"),
             maxLines = 1, overflow = TextOverflow.Ellipsis,
-            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = LbInk),
+            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = if (empty) LbSub else LbInk),
         )
         Spacer(Modifier.height(2.dp))
         // Block
@@ -383,7 +389,7 @@ private fun PodiumColumn(
                 .fillMaxWidth()
                 .height(blockHeight)
                 .clip(RoundedCornerShape(topStart = 10.dp, topEnd = 10.dp))
-                .background(Brush.verticalGradient(listOf(face, edge))),
+                .background(blockBrush),
             contentAlignment = Alignment.TopCenter,
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.padding(top = 8.dp)) {
@@ -392,7 +398,7 @@ private fun PodiumColumn(
                 Box(
                     Modifier.clip(RoundedCornerShape(999.dp)).background(AppColors.White.copy(alpha = 0.92f)).padding(horizontal = 9.dp, vertical = 2.dp),
                 ) {
-                    Text(groupThousands(p.fomoTotal), style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 12.sp, color = edge))
+                    Text(if (empty) "—" else groupThousands(p!!.fomoTotal), style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 12.sp, color = if (empty) LbSub else edge))
                 }
             }
         }
@@ -431,6 +437,33 @@ private fun ListRow(entry: LeaderboardEntryDto, isYou: Boolean, animateOnAppear:
         Text(groupThousands(animFomo), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = LbGreenDeep))
         Spacer(Modifier.width(4.dp))
         Text("FOMO", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = LbSub))
+    }
+}
+
+/** Muted circle that stands in for a Bo on unclaimed leaderboard spots. */
+@Composable
+private fun PlaceholderAvatar(size: Dp) {
+    Box(Modifier.size(size), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.size(size * 0.82f)) { drawCircle(Color(0xFFE3E0EA)) }
+    }
+}
+
+/** Filler row for ranks no one holds yet — keeps the list a constant 10 tall. */
+@Composable
+private fun PlaceholderRow(rank: Int) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(AppColors.White.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+            .padding(horizontal = 16.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("$rank", modifier = Modifier.width(26.dp), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = LbSub.copy(alpha = 0.5f)))
+        PlaceholderAvatar(38.dp)
+        Spacer(Modifier.width(13.dp))
+        Text("—", modifier = Modifier.weight(1f), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = LbSub))
+        Text("—", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = LbSub))
     }
 }
 
