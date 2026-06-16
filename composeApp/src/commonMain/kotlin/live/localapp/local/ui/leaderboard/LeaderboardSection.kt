@@ -273,6 +273,17 @@ private fun LeaderboardSheetContent(
                         ListRow(e, isYou = e.isMe, showCity = showCity)
                     }
                 }
+                // Pad to a minimum of 10 visible spots so a small scope never looks
+                // empty below the podium. Real rows already grow up to 100.
+                val maxRank = rows.lastOrNull()?.rank ?: 0
+                val padStart = maxOf(4, maxRank + 1)
+                if (padStart <= 10) {
+                    items((padStart..10).toList(), key = { "ph$it" }) { r ->
+                        Box(Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) {
+                            PlaceholderRow(rank = r)
+                        }
+                    }
+                }
             }
         }
     }
@@ -427,6 +438,25 @@ private fun ListRow(entry: LeaderboardEntryDto, isYou: Boolean, showCity: Boolea
 private fun PlaceholderAvatar(size: Dp) {
     Box(Modifier.size(size), contentAlignment = Alignment.Center) {
         Canvas(Modifier.size(size * 0.82f)) { drawCircle(Color(0xFFE3E0EA)) }
+    }
+}
+
+/** Filler row for ranks no one holds yet — keeps the list at least 10 tall. */
+@Composable
+private fun PlaceholderRow(rank: Int) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(AppColors.White.copy(alpha = 0.55f), RoundedCornerShape(16.dp))
+            .padding(horizontal = 16.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text("$rank", modifier = Modifier.width(26.dp), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = LbSub.copy(alpha = 0.5f)))
+        PlaceholderAvatar(38.dp)
+        Spacer(Modifier.width(13.dp))
+        Text("—", modifier = Modifier.weight(1f), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = LbSub))
+        Text("—", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = LbSub))
     }
 }
 
