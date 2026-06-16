@@ -136,12 +136,13 @@ fun LeaderboardCard(
             ) { IconPodium(size = 23.dp) }
             Spacer(Modifier.width(13.dp))
             Column(modifier = Modifier.weight(1f)) {
-                // "leaderboard" in the wordmark font, green l.
+                // "local leaderboard" in the wordmark font, green l's on "local".
                 Text(
                     buildAnnotatedString {
-                        "leaderboard".forEach { ch ->
+                        "local".forEach { ch ->
                             if (ch == 'l') withStyle(SpanStyle(color = LbGreen)) { append(ch) } else append(ch)
                         }
+                        append(" leaderboard")
                     },
                     style = AppType.Logo.copy(fontSize = 20.sp, color = LbInk),
                 )
