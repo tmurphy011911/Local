@@ -387,6 +387,17 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                     )
                 }
 
+                // Local Leaderboard — FOMO rank CTA + sheet. Build-time gated so a
+                // pre-readiness App Store build can drop it entirely (see Config).
+                if (live.localapp.local.Config.FEATURE_LEADERBOARD_ENABLED) {
+                    item(key = "leaderboard") {
+                        val leaderboardVm = remember {
+                            KoinPlatform.getKoin().get<live.localapp.local.ui.leaderboard.LeaderboardViewModel>()
+                        }
+                        live.localapp.local.ui.leaderboard.LeaderboardHost(leaderboardVm)
+                    }
+                }
+
                 // "Your Events This Week" album carousel
                 if (state.savedThisWeek.isNotEmpty()) {
                     item(key = "saved_events_album") {

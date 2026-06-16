@@ -79,11 +79,22 @@ object Config {
      * Flip to false to test the returning-user → Home fast path instead. Gated on
      * [testForceOnboardingActive] so it can never affect a release build.
      */
-    const val TEST_FORCE_ONBOARDING = false
+    const val TEST_FORCE_ONBOARDING = true
 
     /** Effective force-onboarding switch: only when the bypass itself is active. */
     val testForceOnboardingActive: Boolean
         get() = TEST_FORCE_ONBOARDING && testAuthBypassActive
+
+    /**
+     * Master switch for the Local Leaderboard (home CTA + leaderboard sheet).
+     * Build-time constant: flip to false before an App Store submission to hide
+     * the feature from the shipped binary while it's still being built out. With
+     * it false the home CTA item {} and the sheet route are dead code, so the
+     * release toolchain's elimination pass drops the leaderboard UI entirely.
+     * Unlike the auth bypasses above this is a real user feature — no isDebugBuild
+     * guard; once it's ready you just ship it true.
+     */
+    const val FEATURE_LEADERBOARD_ENABLED = true
 
     const val SUPABASE_URL = "https://blifubxslaucshmlphdc.supabase.co"
     const val SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJsaWZ1YnhzbGF1Y3NobWxwaGRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3MjgyNjEsImV4cCI6MjA4ODMwNDI2MX0.xx-iy7kKhHviAjtjfXdxNHp4pmKU-in3efr2SkvWTf0"

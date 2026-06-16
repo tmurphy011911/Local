@@ -57,6 +57,7 @@ val appModule = module {
     single<BadgeRepository> { BadgeRepositoryImpl(get()) }
     single<TasteRepository> { TasteRepositoryImpl(get()) }
     single<ExploreRepository> { HttpExploreRepository() }
+    single<live.localapp.local.domain.repository.LeaderboardRepository> { live.localapp.local.data.repository.LeaderboardRepositoryImpl(get(), get()) }
     single { BadgeService(get(), get()) }
     single { ClaudeApiService(get()) }
     single { live.localapp.local.domain.service.SplashGreetingService(get(), get(), get(), get()) }
@@ -82,6 +83,7 @@ val appModule = module {
     single { PlacesViewModel(get(), get(), get(), get(), get(), get()) }
     single { PlansViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
     single { ProgressViewModel(get(), get(), get(), get()) }
+    single { live.localapp.local.ui.leaderboard.LeaderboardViewModel(get()) }
     single { TasteProfileViewModel(get(), get()) }
     factory { OnboardingViewModel(get(), get(), get()) }
     factory { PhoneAuthViewModel(get(), get()) }
