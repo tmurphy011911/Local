@@ -10,15 +10,28 @@ import kotlinx.coroutines.launch
 import live.localapp.local.data.remote.dto.LeaderboardDto
 import live.localapp.local.domain.repository.LeaderboardRepository
 import live.localapp.local.domain.repository.LeaderboardScope
+import live.localapp.local.domain.service.BadgeService
 
 /**
  * Drives the leaderboard entry CTA + the sheet. Per-scope results are cached for
  * the session in [UiState.byScope] so the CTA's country→state→city cascade and
  * flipping the segmented control are instant after first load.
+ *
+ * Cached scopes are re-fetched whenever FOMO is earned: we observe
+ * [BadgeService.dataChanged] (emitted after the badge insert that fires the
+ * fomo_total trigger), so the board updates live instead of going stale until the
+ * app is relaunched.
  */
 class LeaderboardViewModel(
     private val repo: LeaderboardRepository,
+    badgeService: BadgeService,
 ) : ViewModel() {
+
+    init {
+        viewModelScope.launch {
+            badgeService.dataChanged.collect { refresh() }
+        }
+    }
 
     data class UiState(
         val scope: LeaderboardScope = LeaderboardScope.STATE,
@@ -34,9 +47,8 @@ class LeaderboardViewModel(
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    /** Fetch a scope once if we haven't already; never re-fetches a cached scope. */
-    private fun ensure(scope: LeaderboardScope) {
-        if (scope in _uiState.value.attempted) return
+    /** Fetch a scope and store the result (force — overwrites any cached value). */
+    private fun fetch(scope: LeaderboardScope) {
         viewModelScope.launch {
             val dto = repo.getLeaderboard(scope)
             _uiState.update { s ->
@@ -46,6 +58,17 @@ class LeaderboardViewModel(
                 )
             }
         }
+    }
+
+    /** Fetch a scope once if we haven't already; never re-fetches a cached scope. */
+    private fun ensure(scope: LeaderboardScope) {
+        if (scope in _uiState.value.attempted) return
+        fetch(scope)
+    }
+
+    /** Re-fetch every already-loaded scope (e.g. after FOMO is earned). */
+    private fun refresh() {
+        _uiState.value.attempted.forEach { fetch(it) }
     }
 
     /** Switch the visible scope (serves cache immediately, fetches if cold). */

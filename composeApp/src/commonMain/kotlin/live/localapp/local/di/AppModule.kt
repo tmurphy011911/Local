@@ -83,7 +83,7 @@ val appModule = module {
     single { PlacesViewModel(get(), get(), get(), get(), get(), get()) }
     single { PlansViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
     single { ProgressViewModel(get(), get(), get(), get()) }
-    single { live.localapp.local.ui.leaderboard.LeaderboardViewModel(get()) }
+    single { live.localapp.local.ui.leaderboard.LeaderboardViewModel(get(), get()) }
     single { TasteProfileViewModel(get(), get()) }
     factory { OnboardingViewModel(get(), get(), get()) }
     factory { PhoneAuthViewModel(get(), get()) }
