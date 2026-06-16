@@ -19,10 +19,16 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -58,6 +64,7 @@ import live.localapp.local.data.remote.dto.LeaderboardEntryDto
 import live.localapp.local.domain.model.boLevel
 import live.localapp.local.domain.model.statusTierForPoints
 import live.localapp.local.domain.repository.LeaderboardScope
+import live.localapp.local.domain.repository.UsernameUpdateResult
 import live.localapp.local.ui.character.Bo
 import live.localapp.local.ui.common.pressable
 import live.localapp.local.ui.theme.AppColors
@@ -180,7 +187,7 @@ fun LeaderboardCard(
                 )
             },
         ) {
-            LeaderboardSheetContent(state = state, onSelectScope = viewModel::selectScope)
+            LeaderboardSheetContent(viewModel)
         }
     }
 }
@@ -220,10 +227,10 @@ private fun leaderboardCtaSubtitle(state: LeaderboardViewModel.UiState): String 
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun LeaderboardSheetContent(
-    state: LeaderboardViewModel.UiState,
-    onSelectScope: (LeaderboardScope) -> Unit,
-) {
+private fun LeaderboardSheetContent(viewModel: LeaderboardViewModel) {
+    val state by viewModel.uiState.collectAsState()
+    val onSelectScope = viewModel::selectScope
+    var showUsernameDialog by remember { mutableStateOf(false) }
     val current = state.current
     val rows = current?.rows ?: emptyList()
     val me = current?.me
@@ -260,7 +267,7 @@ private fun LeaderboardSheetContent(
             Column(Modifier.fillMaxWidth().background(SheetBg)) {
                 // Wordmark next to a bigger version of the card's podium icon.
                 Row(
-                    modifier = Modifier.padding(start = 22.dp, end = 22.dp, top = 4.dp, bottom = 12.dp),
+                    modifier = Modifier.padding(start = 22.dp, end = 22.dp, top = 4.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(
@@ -279,6 +286,14 @@ private fun LeaderboardSheetContent(
                         style = AppType.Logo.copy(fontSize = 26.sp, color = LbInk),
                     )
                 }
+                // Home city (display). Editing is a v2 lift — see below.
+                state.homeCity?.let { hc ->
+                    Text(
+                        "Home city: $hc",
+                        modifier = Modifier.padding(start = 22.dp, end = 22.dp, bottom = 12.dp),
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = LbSub),
+                    )
+                }
                 RegionTabs(
                     scope = state.scope,
                     cityLabel = state.byScope[LeaderboardScope.CITY]?.location ?: "City",
@@ -287,10 +302,14 @@ private fun LeaderboardSheetContent(
                     onSelect = onSelectScope,
                 )
                 Spacer(Modifier.height(8.dp))
-                // The caller's own row, pinned with the header.
+                // The caller's own row, pinned with the header. Shows the actual
+                // username; a pencil to set a custom one appears until they have.
                 if (me != null) {
                     Box(Modifier.padding(start = 18.dp, end = 18.dp, bottom = 10.dp)) {
-                        ListRow(me, isYou = true, showCity = showCity)
+                        ListRow(
+                            me, isYou = true, showCity = showCity,
+                            onEditUsername = if (!state.usernameIsCustom) ({ showUsernameDialog = true }) else null,
+                        )
                     }
                 }
             }
@@ -332,6 +351,14 @@ private fun LeaderboardSheetContent(
                 }
             }
         }
+    }
+
+    if (showUsernameDialog) {
+        UsernameDialog(
+            initial = me?.username ?: state.username ?: "",
+            onSave = viewModel::saveUsername,
+            onDismiss = { showUsernameDialog = false },
+        )
     }
 }
 
@@ -437,7 +464,12 @@ private fun PodiumColumn(
 }
 
 @Composable
-private fun ListRow(entry: LeaderboardEntryDto, isYou: Boolean, showCity: Boolean) {
+private fun ListRow(
+    entry: LeaderboardEntryDto,
+    isYou: Boolean,
+    showCity: Boolean,
+    onEditUsername: (() -> Unit)? = null,
+) {
     val level = statusTierForPoints(entry.fomoTotal).boLevel.coerceIn(0, 8)
     val joined = joinedShort(entry.joinedAt)
     val subtext = when {
@@ -460,12 +492,21 @@ private fun ListRow(entry: LeaderboardEntryDto, isYou: Boolean, showCity: Boolea
         Spacer(Modifier.width(13.dp))
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(if (isYou) "You" else (entry.username ?: "Anonymous"), maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = LbInk))
+                Text(entry.username ?: (if (isYou) "You" else "Anonymous"), maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = LbInk))
                 if (isYou) {
                     Spacer(Modifier.width(7.dp))
                     Box(Modifier.clip(RoundedCornerShape(999.dp)).background(LbGreen).padding(horizontal = 7.dp, vertical = 1.dp)) {
                         Text("YOU", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 9.sp, color = AppColors.White))
                     }
+                }
+                if (onEditUsername != null) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        Icons.Outlined.Edit,
+                        contentDescription = "Edit username",
+                        tint = LbGreen,
+                        modifier = Modifier.size(15.dp).pressable(onClick = onEditUsername, scale = 0.85f),
+                    )
                 }
             }
             if (subtext != null) {
@@ -504,6 +545,54 @@ private fun PlaceholderRow(rank: Int) {
         Text("—", modifier = Modifier.weight(1f), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = LbSub))
         Text("—", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = LbSub))
     }
+}
+
+/** Dialog to set a custom username, used from the pencil on the own row. */
+@Composable
+private fun UsernameDialog(
+    initial: String,
+    onSave: (String, (UsernameUpdateResult) -> Unit) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(initial) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = AppColors.White,
+        title = { Text("Choose a username", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = LbInk)) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it; error = null },
+                    singleLine = true,
+                    placeholder = { Text("username") },
+                )
+                error?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(it, style = TextStyle(fontFamily = AppFonts.Body, fontSize = 12.sp, color = AppColors.Coral))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !saving && text.trim().length >= 2,
+                onClick = {
+                    saving = true; error = null
+                    onSave(text) { res ->
+                        saving = false
+                        when (res) {
+                            UsernameUpdateResult.Success -> onDismiss()
+                            UsernameUpdateResult.Taken -> error = "That username's taken — try another"
+                            UsernameUpdateResult.Error -> error = "Couldn't save — try again"
+                        }
+                    }
+                },
+            ) { Text("Save", color = LbGreenDeep) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = LbSub) } },
+    )
 }
 
 // ── Iconography (faithful to sprites.jsx IconPodium) ─────────────────────────

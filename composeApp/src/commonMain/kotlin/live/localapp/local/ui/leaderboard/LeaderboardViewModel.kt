@@ -10,6 +10,8 @@ import kotlinx.coroutines.launch
 import live.localapp.local.data.remote.dto.LeaderboardDto
 import live.localapp.local.domain.repository.LeaderboardRepository
 import live.localapp.local.domain.repository.LeaderboardScope
+import live.localapp.local.domain.repository.UserPreferencesRepository
+import live.localapp.local.domain.repository.UsernameUpdateResult
 import live.localapp.local.domain.service.BadgeService
 
 /**
@@ -25,11 +27,13 @@ import live.localapp.local.domain.service.BadgeService
 class LeaderboardViewModel(
     private val repo: LeaderboardRepository,
     badgeService: BadgeService,
+    private val userPrefsRepo: UserPreferencesRepository,
 ) : ViewModel() {
 
     init {
+        loadProfile()
         viewModelScope.launch {
-            badgeService.dataChanged.collect { refresh() }
+            badgeService.dataChanged.collect { refresh(); loadProfile() }
         }
     }
 
@@ -39,6 +43,10 @@ class LeaderboardViewModel(
         // Scopes we've finished a fetch for (success or failure) — lets the UI
         // tell "still loading" apart from "loaded, genuinely empty".
         val attempted: Set<LeaderboardScope> = emptySet(),
+        // Current user's profile bits used by the own-row + header.
+        val username: String? = null,
+        val usernameIsCustom: Boolean = false,
+        val homeCity: String? = null,
     ) {
         val current: LeaderboardDto? get() = byScope[scope]
         val sheetLoading: Boolean get() = scope !in attempted
@@ -46,6 +54,27 @@ class LeaderboardViewModel(
 
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
+
+    private fun loadProfile() {
+        viewModelScope.launch {
+            val uid = userPrefsRepo.getLocalUserId() ?: return@launch
+            val p = userPrefsRepo.loadPreferences(uid) ?: return@launch
+            _uiState.update {
+                it.copy(username = p.username, usernameIsCustom = p.usernameIsCustom, homeCity = p.hometownName)
+            }
+        }
+    }
+
+    /** Set a custom username; on success reloads the profile + leaderboard so the own row updates. */
+    fun saveUsername(name: String, onResult: (UsernameUpdateResult) -> Unit) {
+        viewModelScope.launch {
+            val uid = userPrefsRepo.getLocalUserId()
+            if (uid == null) { onResult(UsernameUpdateResult.Error); return@launch }
+            val res = userPrefsRepo.updateUsername(uid, name.trim())
+            if (res == UsernameUpdateResult.Success) { loadProfile(); refresh() }
+            onResult(res)
+        }
+    }
 
     /** Fetch a scope and store the result (force — overwrites any cached value). */
     private fun fetch(scope: LeaderboardScope) {
