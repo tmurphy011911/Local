@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -40,6 +41,8 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -47,6 +50,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import live.localapp.local.data.remote.dto.LeaderboardDto
@@ -229,10 +233,25 @@ private fun LeaderboardSheetContent(
     // State/Country: show the member's home city too.
     val showCity = state.scope != LeaderboardScope.CITY
 
+    // Swallow leftover downward fling once the list hits the top, so flicking the
+    // list back to the top doesn't carry through and dismiss the whole sheet — the
+    // user must start a fresh gesture to dismiss.
+    val listState = rememberLazyListState()
+    val keepSheetAtTop = remember(listState) {
+        object : NestedScrollConnection {
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity =
+                if (available.y > 0f &&
+                    listState.firstVisibleItemIndex == 0 &&
+                    listState.firstVisibleItemScrollOffset == 0
+                ) available else Velocity.Zero
+        }
+    }
+
     // LazyColumn (not a scrolling Column) so up to 100 rows render lazily —
     // off-screen rows aren't composed.
     LazyColumn(
-        modifier = Modifier.fillMaxWidth(),
+        state = listState,
+        modifier = Modifier.fillMaxWidth().nestedScroll(keepSheetAtTop),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 28.dp),
     ) {
         // Sticky cluster: wordmark header + scope tabs + the caller's own row stay
