@@ -39,9 +39,12 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -54,6 +57,7 @@ import live.localapp.local.ui.character.Bo
 import live.localapp.local.ui.common.pressable
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
+import live.localapp.local.ui.theme.AppType
 
 // ── Leaderboard palette (Option A "Podium" handoff) ──────────────────────────
 // Green == leaderboard. Podium ranks use the app's brand family (same accents as
@@ -197,11 +201,6 @@ private fun LeaderboardSheetContent(
     onSelectScope: (LeaderboardScope) -> Unit,
 ) {
     val current = state.current
-    val regionTitle = current?.location ?: when (state.scope) {
-        LeaderboardScope.CITY -> "City"; LeaderboardScope.STATE -> "State"; LeaderboardScope.COUNTRY -> "United States"
-    }
-    val homeCity = state.byScope[LeaderboardScope.CITY]?.location
-
     val rows = current?.rows ?: emptyList()
     val me = current?.me
     val podium = rows.take(3)
@@ -217,15 +216,23 @@ private fun LeaderboardSheetContent(
         contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 28.dp),
     ) {
         item("title") {
-            Column(Modifier.padding(start = 22.dp, end = 22.dp, top = 6.dp, bottom = 16.dp)) {
+            Column(Modifier.padding(start = 22.dp, end = 22.dp, top = 4.dp, bottom = 16.dp)) {
+                // Bigger version of the card's podium icon.
+                Box(
+                    modifier = Modifier.size(54.dp).clip(RoundedCornerShape(16.dp)).background(LbGreenSoft),
+                    contentAlignment = Alignment.Center,
+                ) { IconPodium(size = 33.dp) }
+                Spacer(Modifier.height(12.dp))
+                // "local leaderboard" in the wordmark font, with green l's on "local".
                 Text(
-                    "$regionTitle Leaderboard",
-                    style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 30.sp, color = LbInk),
+                    buildAnnotatedString {
+                        "local".forEach { ch ->
+                            if (ch == 'l') withStyle(SpanStyle(color = LbGreen)) { append(ch) } else append(ch)
+                        }
+                        append(" leaderboard")
+                    },
+                    style = AppType.Logo.copy(fontSize = 30.sp, color = LbInk),
                 )
-                if (homeCity != null) {
-                    Spacer(Modifier.height(6.dp))
-                    Text("Your home city: $homeCity", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = LbSub))
-                }
             }
         }
         item("tabs") {
