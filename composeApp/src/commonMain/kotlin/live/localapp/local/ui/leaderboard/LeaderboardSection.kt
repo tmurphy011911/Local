@@ -1,9 +1,5 @@
 package live.localapp.local.ui.leaderboard
 
-import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.animateIntAsState
-import androidx.compose.animation.core.spring
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -43,9 +39,6 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.hapticfeedback.HapticFeedbackType
-import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -144,26 +137,6 @@ private fun LeaderboardCta(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val haptic = LocalHapticFeedback.current
-
-    // Count-up: seed with current so first paint is static; only a later change
-    // (FOMO earned) animates + pulses + buzzes.
-    var shownFomo by remember { mutableStateOf(fomo) }
-    var shownRank by remember { mutableStateOf(rank) }
-    LaunchedEffect(fomo, rank) { shownFomo = fomo; shownRank = rank }
-    val animFomo by animateIntAsState(shownFomo, tween(420))
-    val animRank by animateIntAsState(shownRank, tween(420))
-
-    val pulse = remember { Animatable(1f) }
-    var prevFomo by remember { mutableStateOf(fomo) }
-    LaunchedEffect(fomo) {
-        if (fomo != prevFomo) {
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            pulse.animateTo(1.07f, tween(130)); pulse.animateTo(1f, spring())
-        }
-        prevFomo = fomo
-    }
-
     Row(
         modifier = modifier
             .padding(horizontal = 18.dp)
@@ -186,16 +159,16 @@ private fun LeaderboardCta(
         val emphasis = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = LbGreenDeep)
         val base = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = LbInk)
         Row(
-            modifier = Modifier.weight(1f).graphicsLayer { scaleX = pulse.value; scaleY = pulse.value },
+            modifier = Modifier.weight(1f),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             when {
                 inTop100 && rank == 1 ->
                     EllipsisLine(base, "You have ", emphasis to "the most", base to " FOMO in $stateCode.")
                 inTop100 ->
-                    EllipsisLine(base, "You have the ", emphasis to ordinal(animRank), base to " most FOMO in $stateCode.")
+                    EllipsisLine(base, "You have the ", emphasis to ordinal(rank), base to " most FOMO in $stateCode.")
                 else ->
-                    EllipsisLine(base, "", emphasis to groupThousands(animFomo), base to " FOMO · ${ordinal(animRank)} in $stateCode")
+                    EllipsisLine(base, "", emphasis to groupThousands(fomo), base to " FOMO · ${ordinal(rank)} in $stateCode")
             }
         }
         Spacer(Modifier.width(8.dp))
@@ -286,7 +259,7 @@ private fun LeaderboardSheetContent(
                 Column(Modifier.padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     for (r in 4..10) {
                         val e = byRank[r]
-                        if (e != null) ListRow(e, isYou = e.isMe, animateOnAppear = false)
+                        if (e != null) ListRow(e, isYou = e.isMe)
                         else PlaceholderRow(rank = r)
                     }
                 }
@@ -296,7 +269,7 @@ private fun LeaderboardSheetContent(
                 if (me != null && !meInShown) {
                     PinnedDivider()
                     Column(Modifier.padding(horizontal = 18.dp)) {
-                        ListRow(me, isYou = true, animateOnAppear = true)
+                        ListRow(me, isYou = true)
                     }
                 }
             }
@@ -406,11 +379,8 @@ private fun PodiumColumn(
 }
 
 @Composable
-private fun ListRow(entry: LeaderboardEntryDto, isYou: Boolean, animateOnAppear: Boolean) {
+private fun ListRow(entry: LeaderboardEntryDto, isYou: Boolean) {
     val level = statusTierForPoints(entry.fomoTotal).boLevel.coerceIn(0, 8)
-    var shown by remember { mutableStateOf(if (animateOnAppear) 0 else entry.fomoTotal) }
-    LaunchedEffect(entry.fomoTotal) { shown = entry.fomoTotal }
-    val animFomo by animateIntAsState(shown, tween(600))
 
     Row(
         modifier = Modifier
@@ -434,7 +404,7 @@ private fun ListRow(entry: LeaderboardEntryDto, isYou: Boolean, animateOnAppear:
             }
         }
         Spacer(Modifier.width(8.dp))
-        Text(groupThousands(animFomo), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = LbGreenDeep))
+        Text(groupThousands(entry.fomoTotal), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = LbGreenDeep))
         Spacer(Modifier.width(4.dp))
         Text("FOMO", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 10.sp, color = LbSub))
     }
