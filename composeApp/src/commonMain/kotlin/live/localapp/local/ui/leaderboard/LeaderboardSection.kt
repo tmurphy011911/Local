@@ -120,13 +120,15 @@ fun LeaderboardCard(
             modifier = modifier
                 .padding(horizontal = 20.dp, vertical = 6.dp)
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(16.dp))
-                .background(AppColors.White, RoundedCornerShape(16.dp))
-                .border(1.5.dp, LbGreen, RoundedCornerShape(16.dp))
+                // pressable BEFORE clip/background/border so its scale layer wraps
+                // the whole card box, not just the inner content.
                 .pressable(onClick = {
                     viewModel.resetScopeToState()
                     showSheet = true
                 }, scale = 0.94f)
+                .clip(RoundedCornerShape(16.dp))
+                .background(AppColors.White, RoundedCornerShape(16.dp))
+                .border(1.5.dp, LbGreen, RoundedCornerShape(16.dp))
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -336,9 +338,9 @@ private fun RegionTabs(
 private fun Tab(label: String, on: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Box(
         modifier = modifier
+            .pressable(onClick = onClick, scale = 0.96f)
             .clip(RoundedCornerShape(16.dp))
             .background(if (on) LbGreen else AppColors.White, RoundedCornerShape(16.dp))
-            .pressable(onClick = onClick, scale = 0.96f)
             .padding(vertical = 14.dp, horizontal = 4.dp),
         contentAlignment = Alignment.Center,
     ) {
