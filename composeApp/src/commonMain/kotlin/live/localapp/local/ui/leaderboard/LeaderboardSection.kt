@@ -1,6 +1,7 @@
 package live.localapp.local.ui.leaderboard
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -69,6 +70,7 @@ private val LbGreenTint = Color(0xFFF1FBF6)
 private val LbGreenLine = Color(0xFFBFE9D2)
 private val LbInk = Color(0xFF15201B)
 private val LbSub = Color(0xFF9A96A2)
+private val SheetBg = Color(0xFFF6F5F9)
 
 // ── Public host ──────────────────────────────────────────────────────────────
 
@@ -195,6 +197,7 @@ private fun EllipsisLine(
 
 // ── B1 Podium sheet ──────────────────────────────────────────────────────────
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun LeaderboardSheetContent(
     state: LeaderboardViewModel.UiState,
@@ -215,35 +218,46 @@ private fun LeaderboardSheetContent(
         modifier = Modifier.fillMaxWidth(),
         contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 28.dp),
     ) {
-        item("title") {
-            Column(Modifier.padding(start = 22.dp, end = 22.dp, top = 4.dp, bottom = 16.dp)) {
-                // Bigger version of the card's podium icon.
-                Box(
-                    modifier = Modifier.size(54.dp).clip(RoundedCornerShape(16.dp)).background(LbGreenSoft),
-                    contentAlignment = Alignment.Center,
-                ) { IconPodium(size = 33.dp) }
-                Spacer(Modifier.height(12.dp))
-                // "local leaderboard" in the wordmark font, with green l's on "local".
-                Text(
-                    buildAnnotatedString {
-                        "local".forEach { ch ->
-                            if (ch == 'l') withStyle(SpanStyle(color = LbGreen)) { append(ch) } else append(ch)
-                        }
-                        append(" leaderboard")
-                    },
-                    style = AppType.Logo.copy(fontSize = 30.sp, color = LbInk),
+        // Sticky cluster: wordmark header + scope tabs + the caller's own row stay
+        // pinned to the top while the rankings scroll underneath.
+        stickyHeader("header") {
+            Column(Modifier.fillMaxWidth().background(SheetBg)) {
+                // Wordmark next to a bigger version of the card's podium icon.
+                Row(
+                    modifier = Modifier.padding(start = 22.dp, end = 22.dp, top = 4.dp, bottom = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier.size(48.dp).clip(RoundedCornerShape(15.dp)).background(LbGreenSoft),
+                        contentAlignment = Alignment.Center,
+                    ) { IconPodium(size = 29.dp) }
+                    Spacer(Modifier.width(13.dp))
+                    Text(
+                        buildAnnotatedString {
+                            "local".forEach { ch ->
+                                if (ch == 'l') withStyle(SpanStyle(color = LbGreen)) { append(ch) } else append(ch)
+                            }
+                            append(" leaderboard")
+                        },
+                        modifier = Modifier.weight(1f),
+                        style = AppType.Logo.copy(fontSize = 26.sp, color = LbInk),
+                    )
+                }
+                RegionTabs(
+                    scope = state.scope,
+                    cityLabel = state.byScope[LeaderboardScope.CITY]?.location ?: "City",
+                    stateLabel = state.byScope[LeaderboardScope.STATE]?.location ?: "State",
+                    countryLabel = "USA",
+                    onSelect = onSelectScope,
                 )
+                Spacer(Modifier.height(8.dp))
+                // The caller's own row, pinned with the header.
+                if (me != null) {
+                    Box(Modifier.padding(start = 18.dp, end = 18.dp, bottom = 10.dp)) {
+                        ListRow(me, isYou = true, showCity = showCity)
+                    }
+                }
             }
-        }
-        item("tabs") {
-            RegionTabs(
-                scope = state.scope,
-                cityLabel = state.byScope[LeaderboardScope.CITY]?.location ?: "City",
-                stateLabel = state.byScope[LeaderboardScope.STATE]?.location ?: "State",
-                countryLabel = "USA",
-                onSelect = onSelectScope,
-            )
-            Spacer(Modifier.height(4.dp))
         }
 
         when {
@@ -260,17 +274,6 @@ private fun LeaderboardSheetContent(
                 )
             }
             else -> {
-                // The caller's own row always sits at the top, above the podium —
-                // like any other row. If they're in the top 100 they also appear
-                // in their natural slot below (podium or list); that duplicate is
-                // intentional. No dynamic bottom-pinning.
-                if (me != null) {
-                    item("me") {
-                        Box(Modifier.padding(start = 18.dp, end = 18.dp, bottom = 10.dp)) {
-                            ListRow(me, isYou = true, showCity = showCity)
-                        }
-                    }
-                }
                 item("podium") {
                     Podium(podium.getOrNull(0), podium.getOrNull(1), podium.getOrNull(2))
                     Spacer(Modifier.height(12.dp))
