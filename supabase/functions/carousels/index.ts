@@ -1654,19 +1654,47 @@ function buildCarousels(
   const restaurantWeekSection: CarouselSection = (() => {
     const events = rwUserState == null ? [] : (() => {
       const seen = new Set(allEvents.map(e => e.id));
-      return [...allEvents, ...restaurantWeekEvents.filter(e => !seen.has(e.id))]
+      const pool = [...allEvents, ...restaurantWeekEvents.filter(e => !seen.has(e.id))]
         .filter(e => (e.subcategory ?? "").toLowerCase() === "restaurant-week")
         .filter(e => (e.venue_state ?? "").toUpperCase() === rwUserState)
-        .filter(e => !e.end_at || e.end_at >= nowIsoRw)
         .map(e => withDistance(e, userLat, userLng))
-        .filter(e => (e.distance_miles ?? 999) <= rwRadiusMiles)
-        .sort((a, b) => {
-          const da = a.distance_miles ?? 999999;
-          const db = b.distance_miles ?? 999999;
-          if (da !== db) return da - db;
-          return (a.start_at ?? "").localeCompare(b.start_at ?? "");
-        })
-        .slice(0, 50);
+        .filter(e => (e.distance_miles ?? 0) <= rwRadiusMiles);
+
+      // "Live" = has a confirmed upcoming-or-current window (end_at in the
+      // future). Anything else (a window that ended, or an undated "Check back"
+      // promo with no start) is shown but labelled "Dates TBD" by the client.
+      const isLive = (e: ProcessedEvent) => !!e.end_at && e.end_at >= nowIsoRw;
+
+      // One card per promo (keyed by title): prefer the SOONEST live edition;
+      // if a promo has no live edition, keep a single TBD representative
+      // (undated row if present, else the most recent past one). This stops a
+      // twice-a-year promo from showing both its upcoming and its past edition.
+      const byPromo = new Map<string, ProcessedEvent>();
+      for (const e of pool) {
+        const key = (e.title ?? "").toLowerCase().trim();
+        const cur = byPromo.get(key);
+        if (!cur) { byPromo.set(key, e); continue; }
+        const eLive = isLive(e), curLive = isLive(cur);
+        if (eLive && !curLive) byPromo.set(key, e);
+        else if (eLive && curLive) {
+          if ((e.start_at ?? "") < (cur.start_at ?? "")) byPromo.set(key, e);
+        } else if (!eLive && !curLive) {
+          // Both TBD: prefer the undated row, else the most recent past start.
+          if (!e.start_at && cur.start_at) byPromo.set(key, e);
+          else if (!e.start_at === !cur.start_at && (e.start_at ?? "") > (cur.start_at ?? "")) byPromo.set(key, e);
+        }
+      }
+      const byDistThenDate = (a: ProcessedEvent, b: ProcessedEvent) => {
+        const da = a.distance_miles ?? 999999, db = b.distance_miles ?? 999999;
+        if (da !== db) return da - db;
+        return (a.start_at ?? "").localeCompare(b.start_at ?? "");
+      };
+      const deduped = [...byPromo.values()];
+      // Live weeks first (nearest, then soonest); TBD/past weeks after (nearest).
+      const live = deduped.filter(isLive).sort(byDistThenDate);
+      const tbd = deduped.filter(e => !isLive(e))
+        .sort((a, b) => (a.distance_miles ?? 999999) - (b.distance_miles ?? 999999));
+      return [...live, ...tbd].slice(0, 50);
     })();
     return {
       slug: "restaurant-weeks",
@@ -1678,9 +1706,10 @@ function buildCarousels(
   })();
 
   // "25 Must-Know" rail — dated, regionally-iconic editorial picks for the user's
-  // state (curated_events table). State-scoped like Restaurant Weeks, but NOT
-  // distance-capped: a must-know event is iconic statewide, and many rows have no
-  // coords anyway, so it sorts soonest-first by date. Empty outside the footprint.
+  // state (curated_events table). The refresh keeps ~50 per state; here we pick
+  // the 25 CLOSEST to the user (so a Philly user gets the Philly-area icons, not
+  // 25 spread to Pittsburgh), then display those 25 chronologically. Rows with no
+  // coords sort last in the proximity pass. Empty outside the footprint.
   const todayDateIso = nowIsoRw.slice(0, 10);
   const mustKnowSection: CarouselSection = (() => {
     const events = rwUserState == null ? [] : curatedEvents
@@ -1692,8 +1721,11 @@ function buildCarousels(
       // America250) — which carry a real future end_at — stay.
       .filter(e => e.end_at ? e.end_at >= nowIsoRw : (e.start_at ?? "") >= todayDateIso)
       .map(e => withDistance(e, userLat, userLng))
-      .sort((a, b) => (a.start_at ?? "").localeCompare(b.start_at ?? ""))
-      .slice(0, 25);
+      // Select the 25 nearest…
+      .sort((a, b) => (a.distance_miles ?? 999999) - (b.distance_miles ?? 999999))
+      .slice(0, 25)
+      // …then present them chronologically.
+      .sort((a, b) => (a.start_at ?? "").localeCompare(b.start_at ?? ""));
     const stateName = (rwUserState && STATE_CODE_NAMES[rwUserState]) || "Your State";
     return {
       slug: "must-know",

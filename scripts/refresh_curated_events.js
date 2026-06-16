@@ -20,13 +20,32 @@ const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
 
 const MODEL = "claude-sonnet-4-6"; // Sonnet: better editorial judgment than Haiku for "must-know"
 const API_BASE = "https://api.anthropic.com/v1";
-const TARGET_COUNT = parseInt(process.env.TARGET_COUNT || "25", 10);
+// Keep ~50 per state; the Must-Know rail then displays the 25 closest to the user.
+const TARGET_COUNT = parseInt(process.env.TARGET_COUNT || "50", 10);
 // Leave REGION unset to iterate every live state in the `states` table.
 // Set REGION=MA for a single-region manual run (useful for debugging).
 const REGION_OVERRIDE = process.env.REGION || null;
 const DRY_RUN = process.env.DRY_RUN === "1";
 
-let ANTHROPIC_API_KEY, SUPABASE_SERVICE_KEY;
+let ANTHROPIC_API_KEY, SUPABASE_SERVICE_KEY, GOOGLE_PLACES_API_KEY;
+
+// Geocode a "City, ST" to a centroid so the Must-Know rail can distance-sort.
+// Claude usually returns null coords; this backfills them. Country-level hits
+// are rejected; a city/region centroid is good enough for "closest to me".
+async function geocodeCity(city, region) {
+  if (!GOOGLE_PLACES_API_KEY || !city) return null;
+  try {
+    const r = await fetch(
+      `https://maps.googleapis.com/maps/api/geocode/json?address=${encodeURIComponent(`${city}, ${region}`)}&key=${GOOGLE_PLACES_API_KEY}`,
+    );
+    const d = await r.json();
+    if (d.status !== "OK" || !d.results?.[0]) return null;
+    if ((d.results[0].types || []).includes("country")) return null;
+    return d.results[0].geometry.location; // { lat, lng }
+  } catch (_) {
+    return null;
+  }
+}
 
 // ── Supabase helpers ──────────────────────────────────────────────────
 
@@ -467,6 +486,13 @@ async function refreshForRegion(region) {
     proposals.map(async (p) => {
       const { url: img, reason } = await resolveImage(p.image_url, p.source_url, p.title, region);
       console.log(`[curated][${region}] image ${img ? "OK" : "NONE"} (${reason}): ${p.title}`);
+      // Backfill coords (Claude usually returns null) so the rail can distance-sort.
+      let lat = typeof p.venue_lat === "number" ? p.venue_lat : null;
+      let lng = typeof p.venue_lng === "number" ? p.venue_lng : null;
+      if ((lat == null || lng == null) && p.venue_city) {
+        const c = await geocodeCity(p.venue_city, region);
+        if (c) { lat = c.lat; lng = c.lng; }
+      }
       return {
         region,
         title: (p.title || "").trim(),
@@ -477,8 +503,8 @@ async function refreshForRegion(region) {
         venue_address: p.venue_address || null,
         venue_city: p.venue_city || null,
         venue_state: p.venue_state || region,
-        venue_lat: typeof p.venue_lat === "number" ? p.venue_lat : null,
-        venue_lng: typeof p.venue_lng === "number" ? p.venue_lng : null,
+        venue_lat: lat,
+        venue_lng: lng,
         image_url: img,
         source_url: p.source_url || null,
         curation_batch_id: batchId,
@@ -523,7 +549,8 @@ async function refreshForRegion(region) {
 }
 
 async function main() {
-  const secrets = await getSecrets(["ANTHROPIC_API_KEY"]);
+  const secrets = await getSecrets(["ANTHROPIC_API_KEY", "GOOGLE_PLACES_API_KEY"]);
+  GOOGLE_PLACES_API_KEY = secrets.GOOGLE_PLACES_API_KEY;
   SUPABASE_SERVICE_KEY = secrets.SUPABASE_SERVICE_KEY;
   ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
 

@@ -246,6 +246,7 @@ async function scrapeState(code) {
   // text follows the </a> as the date string (tags stripped, leading dash
   // removed) and let parseDateRanges handle one-or-more editions.
   const out = [];
+  const todayYmd = new Date().toISOString().slice(0, 10);
   const blocks = html.match(/<p[^>]*>[\s\S]*?<\/p>/gi) || [];
   for (const block of blocks) {
     const a = block.match(/<a\s+[^>]*?href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/i);
@@ -259,8 +260,16 @@ async function scrapeState(code) {
       .replace(/^\s*(?:&#8211;|&ndash;|[–—-])\s*/, "")
       .trim();
     const ranges = parseDateRanges(dateText); // 0+ editions per listing
-    for (const dates of ranges) {
-      out.push({ name, sourceUrl, dateText, ...dates });
+    const upcoming = ranges.filter((r) => r.end >= todayYmd);
+    if (upcoming.length > 0) {
+      // Confirmed upcoming edition(s) → dated rows (multi-edition promos keep one
+      // per upcoming edition). Past editions of the same promo are ignored.
+      for (const dates of upcoming) out.push({ name, sourceUrl, dateText, ...dates });
+    } else {
+      // No upcoming edition (all past) OR undated "Check back" → one TBD card
+      // with null dates. Null start survives the deactivate-past-events sweep,
+      // so the week stays visible (labelled "Dates TBD") until a date is posted.
+      out.push({ name, sourceUrl, dateText, start: null, end: null });
     }
   }
   return out;
@@ -270,19 +279,21 @@ async function scrapeState(code) {
 
 function buildEvent(promo, code, coords, imageUrl) {
   const stateFull = STATES[code];
-  const startAt = `${promo.start}T12:00:00.000Z`;
-  const endAt = `${promo.end}T23:59:59.000Z`;
+  // Undated ("Check back") promos carry null dates → a TBD card.
+  const startAt = promo.start ? `${promo.start}T12:00:00.000Z` : null;
+  const endAt = promo.end ? `${promo.end}T23:59:59.000Z` : null;
   const slug = deriveCity(promo.name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "rw";
   // Edition discriminator (YYYY-MM of start) so a promo that runs multiple
   // times a year — Wildwoods (Jun/Aug/Nov), Manayunk (Mar/Sep), Dine Out Boston
   // (Mar/Aug) — keeps a distinct row per edition instead of collapsing to one
   // on the date-free upsert. A small date shift within the same month still
   // hits the same hash, so re-runs refresh dates as intended.
-  const edition = promo.start.slice(0, 7);
+  const edition = promo.start ? promo.start.slice(0, 7) : "tbd";
   const city = deriveCity(promo.name);
+  const runLine = promo.start ? ` Running ${promo.dateText}.` : " Dates to be announced.";
   const desc =
     `${promo.name}: a multi-day dining celebration where participating ${city || stateFull} ` +
-    `restaurants serve special prix-fixe and discounted menus. Running ${promo.dateText}.`;
+    `restaurants serve special prix-fixe and discounted menus.${runLine}`;
 
   return {
     title: promo.name,
@@ -403,9 +414,9 @@ async function main() {
     scanned += promos.length;
 
     // Resolve geo + og:image concurrently (small pool — be polite).
+    // NOTE: past + undated promos are KEPT (shown as "Dates TBD" by the rail),
+    // so there's no past-date drop here anymore.
     const built = await pool(promos, 5, async (p) => {
-      // Drop promos whose window already ended (stale listings).
-      if (p.end < todayIso) { droppedPast++; return null; }
       const city = deriveCity(p.name);
       if (!city || VAGUE_CITY.test(city)) { droppedCity++; return null; }
       const coords = await geocode(city, STATES[code]);
@@ -421,16 +432,18 @@ async function main() {
     console.log(`  [${code}] ${promos.length} listed → ${kept} events`);
   }
 
+  const tbdCount = rows.filter((r) => !r.start_at).length;
   console.log(
     `Total: ${rows.length} events from ${scanned} listings ` +
-    `(${droppedPast} past, ${droppedDate} undated, ${droppedCity} no-city, ${droppedGeo} no-geo).`,
+    `(${tbdCount} TBD/undated, ${droppedCity} no-city, ${droppedGeo} no-geo).`,
   );
 
   if (DRY_RUN) {
     console.log("\nSample:");
-    for (const r of rows.slice(0, 30)) {
+    for (const r of rows.slice(0, 40)) {
+      const when = r.start_at ? `${r.start_at.slice(0, 10)}→${r.end_at.slice(0, 10)}` : "Dates TBD";
       console.log(
-        `  • ${r.title} — ${r.start_at.slice(0, 10)}→${r.end_at.slice(0, 10)} — ` +
+        `  • ${r.title} — ${when} — ` +
         `${r.venue_city},${r.venue_state} (${r.venue_lat?.toFixed(3)},${r.venue_lng?.toFixed(3)}) ` +
         `${r.image_url ? "[img]" : "[no-img]"}`,
       );
@@ -438,9 +451,9 @@ async function main() {
     return;
   }
 
-  const deact = await deactivateExpired();
-  console.log(`Deactivated ${deact} expired findrestaurantweeks rows.`);
-
+  // No deactivate-expired pass here: a promo with no upcoming edition is ingested
+  // as a null-date TBD row (which the global deactivate-past-events sweep leaves
+  // alone, since it only touches rows with a non-null past start_at).
   const { ok, errors } = await upsert(rows);
   console.log(`Upserted ${ok} rows (${errors} errors).`);
 }
