@@ -183,7 +183,20 @@ fun LeaderboardCard(
                         Icons.Outlined.Edit,
                         contentDescription = "Edit home city",
                         tint = LbGreen,
-                        modifier = Modifier.size(14.dp).pressable(onClick = { showHomeCityEditor = true }, scale = 0.85f),
+                        modifier = Modifier.size(14.dp).pressable(onClick = {
+                            // iOS presents the native SwiftUI editor; Android (or if
+                            // the native presenter isn't wired) falls back to Compose.
+                            val presented = live.localapp.local.platform.presentNativeHomeCityEditor { name, lat, lng, pid, done ->
+                                viewModel.changeHomeCity(name, lat, lng, pid) { res ->
+                                    when (res) {
+                                        is live.localapp.local.domain.repository.ChangeHomeCityResult.Success -> done(true, false, res.nextAllowedAt)
+                                        is live.localapp.local.domain.repository.ChangeHomeCityResult.RateLimited -> done(false, true, res.nextAllowedAt)
+                                        live.localapp.local.domain.repository.ChangeHomeCityResult.Error -> done(false, false, null)
+                                    }
+                                }
+                            }
+                            if (!presented) showHomeCityEditor = true
+                        }, scale = 0.85f),
                     )
                 }
             }

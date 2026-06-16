@@ -30,6 +30,9 @@ struct ComposeView: UIViewControllerRepresentable {
         // Wire the Kotlin ↔ Swift native venue detail bridge
         setupVenueDetailBridge(composeVC: vc)
 
+        // Wire the Kotlin ↔ Swift native home-city editor (leaderboard)
+        setupHomeCityEditBridge(composeVC: vc)
+
         // Wire chat sheet background animation
         setupChatSheetBridge(composeVC: vc)
 
@@ -102,6 +105,36 @@ struct ComposeView: UIViewControllerRepresentable {
     }
 
     // MARK: - Native Event Detail Wiring
+
+    private func setupHomeCityEditBridge(composeVC: UIViewController) {
+        HomeCityEditBridge.shared.present = {
+            DispatchQueue.main.async {
+                guard let window = composeVC.view.window ?? UIApplication.shared.connectedScenes
+                    .compactMap({ $0 as? UIWindowScene })
+                    .flatMap({ $0.windows })
+                    .first(where: { $0.isKeyWindow })
+                else { return }
+
+                weak var weakVC: UIHostingController<HomeCityEditView>?
+                let view = HomeCityEditView(
+                    onConfirm: { name, lat, lng, completion in
+                        HomeCityEditBridge.shared.onConfirm?(name, lat, lng, nil) { ok, rateLimited, nextAllowedAt in
+                            completion(ok.boolValue, rateLimited.boolValue, nextAllowedAt)
+                        }
+                    },
+                    onDismiss: { weakVC?.dismiss(animated: true) }
+                )
+                let hostingVC = UIHostingController(rootView: view)
+                weakVC = hostingVC
+                hostingVC.modalPresentationStyle = .pageSheet
+                if let sheet = hostingVC.sheetPresentationController {
+                    sheet.detents = [.large()]
+                    sheet.prefersGrabberVisible = true
+                }
+                topPresentedViewController(in: window)?.present(hostingVC, animated: true)
+            }
+        }
+    }
 
     private func setupEventDetailBridge(composeVC: UIViewController) {
         let detailBridge = EventDetailBridge.shared
