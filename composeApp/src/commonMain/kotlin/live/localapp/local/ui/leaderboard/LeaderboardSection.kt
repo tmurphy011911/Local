@@ -91,16 +91,16 @@ private val SheetBg = Color(0xFFF6F5F9)
  * the Ask Bo card and Saved Events. Hides itself until a rank is known and only
  * shows for users with FOMO > 0.
  */
-/** Lobby entry point — the shared card, hidden for 0-FOMO users. */
+/** Lobby entry point — the shared card, hidden for 0-FOMO users. No home-city row. */
 @Composable
 fun LeaderboardHost(viewModel: LeaderboardViewModel, modifier: Modifier = Modifier) {
-    LeaderboardCard(viewModel, hideAtZeroFomo = true, modifier = modifier)
+    LeaderboardCard(viewModel, hideAtZeroFomo = true, showHomeCity = false, modifier = modifier)
 }
 
-/** Account-page entry point — the same shared card, always shown. */
+/** Account-page entry point — the same card, always shown, with the home-city row. */
 @Composable
 fun LeaderboardAccountEntry(viewModel: LeaderboardViewModel, modifier: Modifier = Modifier) {
-    LeaderboardCard(viewModel, hideAtZeroFomo = false, modifier = modifier)
+    LeaderboardCard(viewModel, hideAtZeroFomo = false, showHomeCity = true, modifier = modifier)
 }
 
 /**
@@ -113,6 +113,7 @@ fun LeaderboardAccountEntry(viewModel: LeaderboardViewModel, modifier: Modifier 
 fun LeaderboardCard(
     viewModel: LeaderboardViewModel,
     hideAtZeroFomo: Boolean,
+    showHomeCity: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsState()
@@ -171,8 +172,8 @@ fun LeaderboardCard(
                 Spacer(Modifier.width(8.dp))
                 Text("›", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = LbGreen))
             }
-            // Home city + edit pencil, BENEATH the card.
-            state.homeCity?.let { hc ->
+            // Home city + edit pencil, BENEATH the card (account page only).
+            state.homeCity?.takeIf { showHomeCity }?.let { hc ->
                 Row(
                     modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 2.dp, bottom = 4.dp),
                     verticalAlignment = Alignment.CenterVertically,
