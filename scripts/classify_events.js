@@ -500,7 +500,12 @@ async function main() {
   ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
   SUPABASE_SERVICE_KEY = secrets.SUPABASE_SERVICE_KEY;
 
-  if (!REVERT_MODE && !ANTHROPIC_API_KEY) { console.error("Missing ANTHROPIC_API_KEY"); process.exit(1); }
+  // Anthropic is only needed when we're actually calling Claude. REVERT_MODE
+  // and PREFILTER_ONLY (pattern-based prefilter) don't touch the model and
+  // shouldn't fail when the key is unavailable — important when Supabase's
+  // secrets table is briefly unreachable (Cloudflare 520s, etc.) and we'd
+  // otherwise lose the daily prefilter pass.
+  if (!REVERT_MODE && !PREFILTER_ONLY && !ANTHROPIC_API_KEY) { console.error("Missing ANTHROPIC_API_KEY"); process.exit(1); }
   if (!SUPABASE_SERVICE_KEY) { console.error("Missing SUPABASE_SERVICE_KEY"); process.exit(1); }
 
   if (REVERT_MODE) return await revertClassifications();
