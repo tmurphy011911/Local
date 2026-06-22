@@ -157,7 +157,11 @@ async function fetchVenuesNeedingFix() {
   if (!RECHECK_ALL) {
     baseUrl += "&is_active=eq.true";
   }
-  baseUrl += "&order=name.asc";
+  // Process highest-public-interest venues first so a bounded budget never
+  // starves flagship venues in favor of low-rank ones. Newly-discovered
+  // venues (rank=null) get pushed to the end — they'll be ranked next month
+  // and processed properly on the following pass.
+  baseUrl += "&order=public_interest_rank.desc.nullslast,name.asc";
 
   const allVenues = [];
   let offset = 0;
