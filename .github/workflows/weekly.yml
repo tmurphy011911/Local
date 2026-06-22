@@ -13,6 +13,10 @@ on:
         description: 'Crawl ALL live states this run instead of just today''s shard'
         required: false
         default: 'false'
+      states_override:
+        description: 'Comma-separated state codes (e.g. "MA,NJ,NY,PA,RI"). When set, bypasses both the is_live=true filter AND the day-shard — useful for one-off catch-up runs that need to crawl states regardless of their DB live status.'
+        required: false
+        default: ''
 
 # Forward-compat: opt into Node 24 for JS-based actions before the
 # June 2 2026 forced-cutoff. Removes deprecation warnings on every job.
@@ -42,8 +46,21 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           VENUE_FILTER: ${{ github.event.inputs.venue_filter }}
           ALL_STATES: ${{ github.event.inputs.all_states }}
+          STATES_OVERRIDE: ${{ github.event.inputs.states_override }}
         run: |
           DOW=$(date -u +%w)   # 0=Sun .. 6=Sat
+          # states_override (manual dispatch input) skips the is_live filter
+          # entirely — useful when we want to crawl a state regardless of its
+          # DB live status (e.g. a catch-up run before flipping is_live=true).
+          if [ -n "$STATES_OVERRIDE" ]; then
+            STATES=$(echo "$STATES_OVERRIDE" | jq -Rc 'split(",") | map(ascii_upcase | gsub("\\s"; ""))')
+            ALL="$STATES"
+            RUN_HEAVY=true
+            echo "Using states_override: $STATES (bypassing is_live + day-shard)"
+            echo "states=$STATES" >> "$GITHUB_OUTPUT"
+            echo "run_heavy=$RUN_HEAVY" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           ALL=$(curl -sf \
             "https://blifubxslaucshmlphdc.supabase.co/rest/v1/states?is_live=eq.true&select=code&order=code.asc" \
             -H "apikey: $SUPABASE_SERVICE_KEY" \
