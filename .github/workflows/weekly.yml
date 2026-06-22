@@ -93,6 +93,11 @@ jobs:
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # run_crawls falls back to Claude HTML extraction for venues that
+          # don't expose a structured API — needs Anthropic. Same outage
+          # resilience reason as classify_events: env-var fallback when the
+          # secrets table is unreachable.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           VENUE_NAME: ${{ github.event.inputs.venue_filter }}
           STATE: ${{ matrix.state }}
           CRAWL_MAX_MINUTES: '240'
@@ -135,6 +140,11 @@ jobs:
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # Fallback for when the Supabase secrets table is unreachable
+          # (Cloudflare 520, brief Supabase outage). Without this, every weekly
+          # classify run fails when the DB-secrets fetch fails — even though
+          # the env var is the documented fallback in lib/secrets.js.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: node classify_events.js
 
   extract-venues:
