@@ -463,8 +463,17 @@ async function fetchPage(url, { stealth = false } = {}) {
     }
   }
 
+  // Direct fetch. On Cloudflare/WAF-shaped failures (403/429/503/520) or
+  // network-level resets (ECONNRESET, fetch failed), retry via Scrapfly with
+  // asp=true before giving up — same anti-bot bypass fix_venue_urls.js uses
+  // for URL discovery. Without this, manually-added flagship venues (JFK
+  // Presidential Library, Museum of Science, dozens of museums + theaters
+  // behind Cloudflare) all returned HTTP 403 on the actual crawl despite the
+  // URL being correct.
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
+  let directErr = null;
+  let directStatus = 0;
   try {
     const res = await fetch(url, {
       headers: FETCH_HEADERS,
@@ -472,12 +481,31 @@ async function fetchPage(url, { stealth = false } = {}) {
       redirect: "follow",
     });
     clearTimeout(timeout);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.text();
+    if (res.ok) return await res.text();
+    directStatus = res.status;
+    directErr = new Error(`HTTP ${res.status}`);
   } catch (err) {
     clearTimeout(timeout);
-    throw err;
+    directErr = err;
   }
+
+  const isWafShape = directStatus && [403, 429, 503, 520, 1020].includes(directStatus);
+  const isNetworkReset = directErr && /ECONNRESET|ETIMEDOUT|fetch failed|aborted/i.test(
+    String(directErr.message || directErr.cause?.code || directErr)
+  );
+  if (SCRAPFLY_API_KEY && (isWafShape || isNetworkReset) && !stealth) {
+    try {
+      const { html } = await scrapflyFetchHtml(url, {
+        scrapflyKey: SCRAPFLY_API_KEY,
+        renderJs: false,  // 403 venues usually only need ASP bypass; JS render is expensive and we don't need it
+        timeoutMs: 45_000,
+      });
+      return html;
+    } catch (_) {
+      // fall through to throw the original error so caller sees the real reason
+    }
+  }
+  throw directErr;
 }
 
 function stripHtml(html) {
