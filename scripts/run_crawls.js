@@ -494,11 +494,28 @@ async function fetchPage(url, { stealth = false } = {}) {
     String(directErr.message || directErr.cause?.code || directErr)
   );
   if (SCRAPFLY_API_KEY && (isWafShape || isNetworkReset) && !stealth) {
+    // Tier 1: asp=true alone. Bypasses common Cloudflare/Datadome rule sets
+    // without paying the JS-render tax (~10–15s per venue).
     try {
       const { html } = await scrapflyFetchHtml(url, {
         scrapflyKey: SCRAPFLY_API_KEY,
-        renderJs: false,  // 403 venues usually only need ASP bypass; JS render is expensive and we don't need it
+        renderJs: false,
         timeoutMs: 45_000,
+      });
+      return html;
+    } catch (_) { /* fall through to tier 2 */ }
+
+    // Tier 2: asp=true + render_js. Some sites (JFK Library, Harvard museums,
+    // boston.gov/mass.gov parks, theatre & college sites with JS-rendered
+    // challenge pages) need the headless browser to actually execute the
+    // Cloudflare interstitial JS before serving content. Paying the latency
+    // is justified here — these are flagship venues that otherwise stay empty.
+    try {
+      const { html } = await scrapflyFetchHtml(url, {
+        scrapflyKey: SCRAPFLY_API_KEY,
+        renderJs: true,
+        timeoutMs: 60_000,
+        renderingWait: 4000,
       });
       return html;
     } catch (_) {
