@@ -185,12 +185,17 @@ jobs:
 
   discover-municipal-feeds:
     runs-on: ubuntu-latest
-    # The script self-limits via DISCOVER_MAX_MINUTES (default 22m) and exits
-    # 0 gracefully, resuming uncovered cities next run. This job timeout is the
-    # hard backstop only — kept comfortably above the script budget so the job
-    # finishes green instead of being killed mid-probe (which used to skip the
-    # downstream sync).
-    timeout-minutes: 30
+    # The script self-limits via DISCOVER_MAX_MINUTES and exits 0 gracefully,
+    # resuming uncovered cities next run. This job timeout is the hard backstop
+    # only — kept comfortably above the script budget so the job finishes green
+    # instead of being killed mid-probe (which used to skip the downstream sync).
+    #
+    # Bumped from 30→60: high-WAF tourism domains routed through Scrapfly
+    # (asp+render_js) routinely sit at 30–35s per probe; one slow probe
+    # straddling the 22m budget check pushed wall-clock past 30m before the
+    # script could exit cleanly. 60m cap + DISCOVER_MAX_MINUTES=50 gives ~10m
+    # of safety while letting many more candidates probe per run.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -200,6 +205,7 @@ jobs:
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DISCOVER_MAX_MINUTES: '50'
         run: node discover_municipal_feeds.js
 
   sync-municipal-feeds:
