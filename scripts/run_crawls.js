@@ -1921,22 +1921,17 @@ async function detectAndCrawlPlatform(venue) {
     return await crawlNPS(venue, url);
   }
 
-  // 2. Localist (university calendars)
-  const localistDomains = ["calendar.mit.edu", "calendar.northeastern.edu", "events.bc.edu",
-    "calendar.uri.edu", "events.uconn.edu",
-    "events.wellesley.edu", "calendar.emerson.edu"];
-
-  // LiveWhale domains (Brown, Tufts, etc.)
-  const liveWhaleDomains = ["events.brown.edu", "events.tufts.edu"];
+  // 2. Localist (university calendars on Localist's hosted instance — *.localist.com)
+  // White-labeled Localist deployments (calendar.mit.edu, events.williams.edu,
+  // calendar.harvard.edu, etc.) used to require a hardcoded domain list, which
+  // baked in a heavy MA/RI/CT tilt — every other-state university calendar fell
+  // through to slow Claude-HTML. Now they're caught by HTML-marker detection in
+  // the post-fetch chain (see crawlVenue below), so the curated list is gone and
+  // detection generalizes across every state automatically.
   try {
     const hostname = new URL(url).hostname;
-    if (localistDomains.some((d) => hostname.includes(d)) || url.includes("localist.com")) {
+    if (url.includes("localist.com")) {
       return await crawlLocalist(venue, url);
-    }
-
-    // 3b. LiveWhale
-    if (liveWhaleDomains.some((d) => hostname.includes(d))) {
-      return await crawlLiveWhale(venue, url);
     }
 
     // 3c. Art Center Canvas (class-registration SPA, e.g. New Art Center).
@@ -2017,6 +2012,21 @@ async function crawlVenue(venue) {
     if (htmlLc.includes("drupal") || htmlLc.includes("jsonapi") || htmlLc.includes("drupal.settings")) {
       const drupalResult = await crawlDrupal(venue, venue.events_url);
       if (drupalResult) return drupalResult;
+    }
+
+    // Localist detection — covers every white-labeled Localist deployment
+    // (calendar.<university>.edu, events.<college>.edu) without requiring a
+    // hardcoded domain list. Replaces the MA/RI/CT-biased curated list that
+    // was missing Williams, Harvard, Amherst, Smith, UMass, BU, and every
+    // out-of-state university. Multiple markers because Localist re-themes
+    // heavily per-customer; any one hit is sufficient.
+    if (htmlLc.includes("localist.com") ||
+        htmlLc.includes("lcl-cdn") ||
+        htmlLc.includes("localist-events") ||
+        htmlLc.includes('content="localist"') ||
+        htmlLc.includes("/api/2/events")) {
+      const localistResult = await crawlLocalist(venue, venue.events_url);
+      if (localistResult) return localistResult;
     }
 
     // LiveWhale detection
