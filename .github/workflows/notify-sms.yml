@@ -30,10 +30,17 @@ permissions:
 jobs:
   text:
     runs-on: ubuntu-latest
-    # Texts on EVERY run (success + failure).
-    # To switch to failures-only later, replace the line below with:
-    #   if: ${{ github.event.workflow_run.conclusion != 'success' }}
-    if: ${{ always() }}
+    # Notify policy:
+    #   - Every workflow texts on FAILURE (any non-success conclusion).
+    #   - On SUCCESS, the high-frequency Hourly/Daily jobs are silenced
+    #     (they'd be 25+ texts/day); all other workflows still text on success.
+    # To make a workflow success-silent, add its `name:` to the && chain below.
+    # To go back to texting every run, replace the whole expression with:
+    #   if: ${{ always() }}
+    if: >-
+      ${{ github.event.workflow_run.conclusion != 'success' ||
+          (github.event.workflow_run.name != 'Hourly — Deactivate Past Events' &&
+           github.event.workflow_run.name != 'Daily — Event Sync, Dedupe & Pattern Prefilter') }}
     steps:
       - name: Build message
         id: msg
