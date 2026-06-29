@@ -1,0 +1,119 @@
+name: Onboard — backfill photos, find events URLs, crawl (per state)
+
+# Dispatch-only workflow that runs the three onboarding steps in sequence
+# scoped to a single state. Use this after manually adding a batch of new
+# venues for a state (e.g. county-wide INSERTs) to backfill photos, discover
+# events URLs, and crawl events without triggering the full monthly + weekly
+# pipelines on every other state.
+#
+# Each step uses the existing scripts with their state-filter env vars, so
+# the only thing this workflow does is chain them with sane defaults for
+# onboarding (low MIN_RANK, SKIP_URL_CHECK=1, NO_DEACTIVATE=1).
+
+on:
+  workflow_dispatch:
+    inputs:
+      state:
+        description: 'State code (e.g. PA, MA, NJ, NY, CA)'
+        required: true
+        default: 'PA'
+      min_rank:
+        description: 'Minimum public_interest_rank to process (default: 30)'
+        required: false
+        default: '30'
+      max_photos:
+        description: 'Max venues to backfill photos for (default: 500)'
+        required: false
+        default: '500'
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  backfill-photos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Backfill venue photos (${{ github.event.inputs.state }})
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
+          STATE: ${{ github.event.inputs.state }}
+          MIN_RANK: ${{ github.event.inputs.min_rank }}
+          MAX_VENUES: ${{ github.event.inputs.max_photos }}
+        run: node backfill_venue_photos.js
+
+  fix-venue-urls:
+    runs-on: ubuntu-latest
+    needs: backfill-photos
+    # !cancelled() so a partial-photos failure doesn't skip URL discovery.
+    # Both scripts are idempotent and scoped to "missing data" rows, so any
+    # progress made in photos persists, and URL discovery can run regardless.
+    if: ${{ !cancelled() }}
+    # Long timeout: fix_venue_urls.js fetches each venue's homepage, asks
+    # Claude to find the events link, then verifies the discovered URL. For
+    # a freshly-onboarded state with 100+ no-URL venues, that's an hour-plus.
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Discover events URLs (${{ github.event.inputs.state }})
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          STATE: ${{ github.event.inputs.state }}
+          # Skip the slow serial HTTP pre-check on venues that already have
+          # an events_url; only process venues with NULL events_url. For a
+          # newly-onboarded state that's almost everything.
+          SKIP_URL_CHECK: '1'
+          # Don't auto-deactivate venues where Claude can't find an events
+          # page. Freshly-onboarded venues (wineries, breweries, libraries)
+          # legitimately lack an events calendar; we want to keep them
+          # active for search/carousels even if no events ever crawl.
+          NO_DEACTIVATE: '1'
+        run: node fix_venue_urls.js
+
+  crawl:
+    runs-on: ubuntu-latest
+    needs: fix-venue-urls
+    if: ${{ !cancelled() }}
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Crawl new venues' events (${{ github.event.inputs.state }})
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          STATE: ${{ github.event.inputs.state }}
+          CRAWL_MAX_MINUTES: '240'
+          NPS_API_KEY: ${{ secrets.NPS_API_KEY }}
+        run: node run_crawls.js
+
+  classify-events:
+    runs-on: ubuntu-latest
+    needs: crawl
+    if: ${{ !cancelled() }}
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Classify newly-crawled events
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node classify_events.js
