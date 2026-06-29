@@ -80,16 +80,24 @@ jobs:
 
       - name: Send SMS via Twilio
         env:
-          SID:   ${{ secrets.TWILIO_ACCOUNT_SID }}
-          TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
-          FROM:  ${{ secrets.TWILIO_FROM }}
-          TO:    ${{ secrets.TWILIO_TO }}
-          BODY:  ${{ steps.msg.outputs.body }}
+          SID:     ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TOKEN:   ${{ secrets.TWILIO_AUTH_TOKEN }}
+          # Sender: set EITHER a Messaging Service SID (reuses your OTP sender)
+          # OR a plain From number. Messaging Service takes precedence if both set.
+          MSG_SVC: ${{ secrets.TWILIO_MESSAGING_SERVICE_SID }}
+          FROM:    ${{ secrets.TWILIO_FROM }}
+          TO:      ${{ secrets.TWILIO_TO }}
+          BODY:    ${{ steps.msg.outputs.body }}
         run: |
           set -euo pipefail
+          if [ -n "${MSG_SVC:-}" ]; then
+            SENDER=(--data-urlencode "MessagingServiceSid=$MSG_SVC")
+          else
+            SENDER=(--data-urlencode "From=$FROM")
+          fi
           curl -fsS -X POST \
             "https://api.twilio.com/2010-04-01/Accounts/$SID/Messages.json" \
-            --data-urlencode "From=$FROM" \
+            "${SENDER[@]}" \
             --data-urlencode "To=$TO" \
             --data-urlencode "Body=$BODY" \
             -u "$SID:$TOKEN" > /dev/null

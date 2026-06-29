@@ -209,10 +209,11 @@ jobs:
         if: ${{ always() }}
         working-directory: scripts
         env:
-          SID:   ${{ secrets.TWILIO_ACCOUNT_SID }}
-          TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
-          FROM:  ${{ secrets.TWILIO_FROM }}
-          TO:    ${{ secrets.TWILIO_TO }}
+          SID:     ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TOKEN:   ${{ secrets.TWILIO_AUTH_TOKEN }}
+          MSG_SVC: ${{ secrets.TWILIO_MESSAGING_SERVICE_SID }}
+          FROM:    ${{ secrets.TWILIO_FROM }}
+          TO:      ${{ secrets.TWILIO_TO }}
         run: |
           set -euo pipefail
           if [ -z "${SID:-}" ]; then
@@ -223,9 +224,14 @@ jobs:
             echo "No digest produced (script failed before writing); skipping SMS."
             exit 0
           fi
+          if [ -n "${MSG_SVC:-}" ]; then
+            SENDER=(--data-urlencode "MessagingServiceSid=$MSG_SVC")
+          else
+            SENDER=(--data-urlencode "From=$FROM")
+          fi
           curl -fsS -X POST \
             "https://api.twilio.com/2010-04-01/Accounts/$SID/Messages.json" \
-            --data-urlencode "From=$FROM" \
+            "${SENDER[@]}" \
             --data-urlencode "To=$TO" \
             --data-urlencode "Body@sotu_sms.txt" \
             -u "$SID:$TOKEN" > /dev/null
