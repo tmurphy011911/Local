@@ -1,9 +1,12 @@
 package live.localapp.local.ui.home
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -18,6 +21,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
@@ -28,20 +32,32 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import live.localapp.local.ui.character.Bo
+import live.localapp.local.ui.character.BoMotion
 import live.localapp.local.ui.icons.LocalIcon
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
@@ -50,6 +66,9 @@ private data class HomeTutorialStep(
     val headline: String,
     val styledWord: String,
     val subtext: String,
+    // When true, headline + styledWord render on a single line ("Meet Bo")
+    // instead of the default two stacked lines. Only used for short pairs.
+    val inlineWord: Boolean = false,
 )
 
 private fun buildSteps(cityForCopy: String): List<HomeTutorialStep> = listOf(
@@ -61,7 +80,8 @@ private fun buildSteps(cityForCopy: String): List<HomeTutorialStep> = listOf(
     HomeTutorialStep(
         headline = "Meet",
         styledWord = "Bo",
-        subtext = "Like a generic AI chatbot, except Bo actually knows your city. Bo works from Local's own events and venues \u2014 not the internet's stale top-10 lists.",
+        subtext = "Your local sidekick (and new best friend) who actually knows your city. Bo reads from Local's own top events and venues \u2014 not the internet's stale top 10 lists.",
+        inlineWord = true,
     ),
     HomeTutorialStep(
         headline = "Plans without",
@@ -70,8 +90,9 @@ private fun buildSteps(cityForCopy: String): List<HomeTutorialStep> = listOf(
     ),
     HomeTutorialStep(
         headline = "Built for",
-        styledWord = "you, by you",
+        styledWord = "you",
         subtext = "The more you save, plan, and show up, the smarter Local gets. Almost suspicious.",
+        inlineWord = true,
     ),
     HomeTutorialStep(
         headline = "Show up,",
@@ -81,22 +102,123 @@ private fun buildSteps(cityForCopy: String): List<HomeTutorialStep> = listOf(
 )
 
 @Composable
-private fun StepIcon(page: Int, trigger: Int) {
-    val size = 140.dp
+private fun StepIcon(page: Int, trigger: Int, size: Dp) {
     val mod = Modifier.size(size)
     when (page) {
         0 -> LocalIcon.ForYou(size = size, trigger = trigger, modifier = mod)
-        // Page 1 is "Meet Bo" — render the actual Bo character.
+        // Page 1 is "Meet Bo" — render the actual Bo character. Pass level = null
+        // so Bo draws the plain mascot (no level prop / flower pot) on this intro
+        // screen only; size is bumped up by the caller.
         1 -> live.localapp.local.ui.character.Bo(
             size = size,
-            level = live.localapp.local.ui.character.cachedBoLevel(),
+            level = null,
             trigger = trigger,
             modifier = mod,
         )
         2 -> LocalIcon.Events(size = size, trigger = trigger, modifier = mod)
         3 -> LocalIcon.Other(size = size, trigger = trigger, modifier = mod)
-        4 -> LocalIcon.Sports(size = size, trigger = trigger, modifier = mod)
+        // Page 4 ("Show up, level up") is handled separately via BoLevelUpAnimation.
         else -> LocalIcon.ForYou(size = size, trigger = trigger, modifier = mod)
+    }
+}
+
+/**
+ * "Level up" animation for the onboarding tutorial: Bo pops through every loyalty
+ * level (0..9, New in Town → Mayor), gaining a new prop each step, behind a soft
+ * glow + a ring that pulses on each level-up, with a 10-segment progress track
+ * below and a haptic tap on every transition. Holds on the final (Mayor) level,
+ * then loops. [restartKey] restarts the cycle whenever the page is (re)entered.
+ */
+@Composable
+private fun BoLevelUpAnimation(boSize: Dp, restartKey: Int, modifier: Modifier = Modifier) {
+    val haptic = LocalHapticFeedback.current
+    var level by remember { mutableStateOf(0) }
+    var popTrigger by remember { mutableStateOf(0) }
+    val maxLevel = 9          // 0..9 → 10 levels (New in Town … Mayor)
+    val totalLevels = maxLevel + 1
+
+    LaunchedEffect(restartKey) {
+        // Run once through every level, then hold on the finale (Mayor) — no loop.
+        for (i in 0..maxLevel) {
+            level = i
+            popTrigger++
+            // Haptic on each level-up transition.
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            if (i < maxLevel) delay(720L)
+        }
+    }
+
+    // Ring expands + fades on each level-up pop.
+    val ringPulse = remember { Animatable(0f) }
+    LaunchedEffect(popTrigger) {
+        if (popTrigger > 0) {
+            ringPulse.snapTo(0f)
+            ringPulse.animateTo(1f, tween(durationMillis = 620, easing = LinearEasing))
+        }
+    }
+
+    Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = modifier) {
+        Box(
+            modifier = Modifier.size(boSize * 1.4f),
+            contentAlignment = Alignment.Center,
+        ) {
+            // Soft radial glow (coral → sun → transparent), always on.
+            Box(
+                modifier = Modifier
+                    .size(boSize * 1.4f)
+                    .background(
+                        Brush.radialGradient(
+                            colors = listOf(
+                                AppColors.Coral.copy(alpha = 0.22f),
+                                AppColors.Sun.copy(alpha = 0.08f),
+                                Color.Transparent,
+                            ),
+                        ),
+                        CircleShape,
+                    ),
+            )
+            // Pulsing ring on each level-up.
+            Box(
+                modifier = Modifier
+                    .size(boSize)
+                    .graphicsLayer {
+                        val s = 0.6f + ringPulse.value * 1.1f
+                        scaleX = s
+                        scaleY = s
+                        alpha = (1f - ringPulse.value) * 0.7f
+                    }
+                    .border(3.dp, AppColors.Coral, CircleShape),
+            )
+            Bo(
+                size = boSize,
+                level = level,
+                motion = BoMotion.PopIn,
+                trigger = popTrigger,
+            )
+        }
+
+        Spacer(Modifier.height(20.dp))
+
+        // 10-segment progress track: filled levels coral, current level taller + sun.
+        Row(
+            modifier = Modifier.width(188.dp),
+            horizontalArrangement = Arrangement.spacedBy(5.dp),
+        ) {
+            repeat(totalLevels) { i ->
+                val color = when {
+                    i < level -> AppColors.Coral
+                    i == level -> AppColors.Sun
+                    else -> AppColors.Pebble
+                }
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .height(if (i == level) 9.dp else 6.dp)
+                        .clip(CircleShape)
+                        .background(color),
+                )
+            }
+        }
     }
 }
 
@@ -137,39 +259,74 @@ fun HomeTutorial(cityName: String = "", onComplete: () -> Unit) {
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
-                    Box(
-                        modifier = Modifier.size(140.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        StepIcon(page = page, trigger = triggers[page])
+                    // Bo ("Meet Bo", page 1) renders larger than the other icons.
+                    val iconSize: Dp = if (page == 1) 190.dp else 140.dp
+                    if (page == 4) {
+                        // "Show up, level up" — full level-up animation (Bo + glow
+                        // ring + progress track) in place of the static trophy.
+                        BoLevelUpAnimation(boSize = 150.dp, restartKey = triggers[page])
+                    } else {
+                        Box(
+                            modifier = Modifier.size(iconSize),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            StepIcon(page = page, trigger = triggers[page], size = iconSize)
+                        }
                     }
 
                     Spacer(Modifier.height(40.dp))
 
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        Text(
-                            step.headline,
-                            style = TextStyle(
-                                fontFamily = AppFonts.Heading,
-                                fontWeight = FontWeight.Black,
-                                fontSize = 32.sp,
-                                color = AppColors.Ink,
-                                textAlign = TextAlign.Center,
-                                lineHeight = 38.sp,
-                            ),
-                        )
-                        Text(
-                            step.styledWord,
-                            style = TextStyle(
-                                fontFamily = AppFonts.Heading,
-                                fontWeight = FontWeight.Black,
-                                fontSize = 32.sp,
-                                fontStyle = FontStyle.Italic,
-                                color = AppColors.Coral,
-                                textAlign = TextAlign.Center,
-                                lineHeight = 38.sp,
-                            ),
-                        )
+                        if (step.inlineWord) {
+                            // Short pairs ("Meet Bo") render on one line, with the
+                            // styled word kept italic + coral via a span.
+                            Text(
+                                buildAnnotatedString {
+                                    append(step.headline)
+                                    append(" ")
+                                    withStyle(
+                                        SpanStyle(
+                                            fontStyle = FontStyle.Italic,
+                                            color = AppColors.Coral,
+                                        ),
+                                    ) {
+                                        append(step.styledWord)
+                                    }
+                                },
+                                style = TextStyle(
+                                    fontFamily = AppFonts.Heading,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 32.sp,
+                                    color = AppColors.Ink,
+                                    textAlign = TextAlign.Center,
+                                    lineHeight = 38.sp,
+                                ),
+                            )
+                        } else {
+                            Text(
+                                step.headline,
+                                style = TextStyle(
+                                    fontFamily = AppFonts.Heading,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 32.sp,
+                                    color = AppColors.Ink,
+                                    textAlign = TextAlign.Center,
+                                    lineHeight = 38.sp,
+                                ),
+                            )
+                            Text(
+                                step.styledWord,
+                                style = TextStyle(
+                                    fontFamily = AppFonts.Heading,
+                                    fontWeight = FontWeight.Black,
+                                    fontSize = 32.sp,
+                                    fontStyle = FontStyle.Italic,
+                                    color = AppColors.Coral,
+                                    textAlign = TextAlign.Center,
+                                    lineHeight = 38.sp,
+                                ),
+                            )
+                        }
                     }
 
                     Spacer(Modifier.height(16.dp))

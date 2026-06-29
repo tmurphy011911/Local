@@ -31,6 +31,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import live.localapp.local.snakeToTitleCase
 import live.localapp.local.ui.common.CircleShape
 import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -1915,7 +1916,7 @@ private fun isRestaurantSlot(slot: PlanSlot): Boolean {
 
 private fun slotKind(slot: PlanSlot): String {
     if (isRestaurantSlot(slot)) return inferMealType(slot.time).ifBlank { "Dining" }
-    if (slot.venueCategory != null) return slot.venueCategory.replaceFirstChar { it.uppercase() }
+    if (slot.venueCategory != null) return slot.venueCategory.snakeToTitleCase()
     return ""
 }
 

@@ -12,6 +12,9 @@ expect val hasNativeHeroTransition: Boolean
 /** Whether the platform uses a native tab bar (hide Compose tab bar). */
 expect val hasNativeTabBar: Boolean
 
+/** Whether the app is running on iOS. */
+expect val isIOS: Boolean
+
 /** Notify native side of tab change. */
 expect fun notifyTabChanged(tabIndex: Int)
 

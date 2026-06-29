@@ -385,13 +385,14 @@ fun App() {
                             appState = AppState.HOME
                         }
                     },
-                    // The X-close affordance on PhoneAuthScreen would otherwise
-                    // let an unauthenticated user reach HOME with authUserId=""
-                    // and silently RLS-fail every query. We only expose it under
-                    // the test-bypass flag so the bypass is impossible in prod.
-                    onSkip = if (live.localapp.local.Config.testAuthBypassActive) {
-                        { appState = AppState.HOME }
-                    } else null,
+                    // Guest mode: dismissing the auth screen drops the user on HOME
+                    // unauthenticated (authUserId=""). Browsing is anon-safe (the
+                    // carousel feed runs anon), and authed surfaces are protected —
+                    // plans/progress refreshes are isLoggedIn-guarded and every gated
+                    // action routes the guest back to sign-in (showPaywallGate in
+                    // AppNavigation). So a guest never silently RLS-fails into a
+                    // broken authed query; they're sent to sign-in the moment they act.
+                    onSkip = { appState = AppState.HOME },
                 )
             }
 

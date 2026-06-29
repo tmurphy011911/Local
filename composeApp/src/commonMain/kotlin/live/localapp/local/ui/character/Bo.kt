@@ -158,7 +158,7 @@ fun Bo(
         } else {
             // ── Level mode — extended viewBox (-20,-26 .. 120,104) so crown,
             // suitcase, beret etc. have headroom and never clip. ──
-            val lvl = level.coerceIn(0, 8)
+            val lvl = level.coerceIn(0, 9)
             val s = this.size.minDimension / 140f
             val offX = (this.size.width - 140f * s) / 2f
             // The viewBox reserves headroom above the body for crowns/hats, so a
@@ -176,7 +176,7 @@ fun Bo(
                                 size = Size(52f, 6f),
                             )
                         }
-                        if (lvl == 8) drawLegendHalo(haloSpin)
+                        if (lvl == 8 || lvl == 9) drawLegendHalo(haloSpin)
                         if (showSparkles) drawSparkles(sparkleProgress)
                         translate(left = tx.dx, top = tx.dy) {
                             rotate(degrees = tx.rotationDeg, pivot = Offset(50f, 50f)) {
@@ -194,6 +194,7 @@ fun Bo(
                                     if (lvl == 0) drawSuitcase()
                                     if (lvl == 7) drawBeret()
                                     if (lvl == 8) drawCrown()
+                                    if (lvl == 9) drawTopHat()
                                 }
                             }
                         }
@@ -462,14 +463,14 @@ internal fun DrawScope.drawLevelEyesScaled(level: Int, openFraction: Float) {
 
 internal fun DrawScope.drawLevelMouth(level: Int) {
     // emotion per level: 0 uncertain, 1 curious, 2 cozy, 3 happy, 4 proud,
-    //                    5 cool, 6 cozy, 7 charming, 8 radiant
+    //                    5 cool, 6 cozy, 7 charming, 8 radiant, 9 cozy
     val ink = BoColors.ink
     fun stroke(p: Path) = drawPath(p, ink, style = Stroke(width = 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round))
     when (level) {
         0 -> stroke(Path().apply { // uncertain
             moveTo(44f, 65f); quadraticBezierTo(47f, 62f, 50f, 65f); quadraticBezierTo(53f, 68f, 56f, 65f)
         })
-        1, 2, 6 -> stroke(Path().apply { // curious / cozy
+        1, 2, 6, 9 -> stroke(Path().apply { // curious / cozy
             moveTo(45f, 64f); quadraticBezierTo(50f, 67f, 55f, 64f)
         })
         4 -> stroke(Path().apply { // proud
@@ -648,6 +649,16 @@ internal fun DrawScope.drawCrown() {
     drawCircle(BoColors.sage, 1.8f, Offset(40f, 18f))
     drawCircle(BoColors.coralDeep, 1.8f, Offset(50f, 18f))
     drawCircle(BoColors.sage, 1.8f, Offset(60f, 18f))
+}
+
+// Level 9 — Mayor's top hat (ported from bo-sprites.jsx mayor sprite)
+internal fun DrawScope.drawTopHat() {
+    rotate(degrees = -6f, pivot = Offset(50f, 12f)) {
+        svgRect(36f, -9f, 28f, 30f, 3f, BoColors.ink)               // crown
+        svgEllipse(50f, 20f, 26f, 5.5f, BoColors.ink)               // brim
+        svgRect(36f, 11f, 28f, 7f, 0f, BoColors.coral)              // band
+        svgRect(46f, 11f, 8f, 7f, 0f, BoColors.sun, BoColors.ink, 1.2f) // buckle
+    }
 }
 
 // Level 8 — halo of 12 rays + soft glow, slow spin

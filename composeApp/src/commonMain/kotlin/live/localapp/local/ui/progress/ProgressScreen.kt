@@ -2082,6 +2082,11 @@ private fun SupportSection(onRateApp: () -> Unit, onNotifications: () -> Unit) {
         SupportRow("Terms of Service") { uriHandler.openUri("https://localapp.live/terms") }
         Spacer(Modifier.height(10.dp))
         SupportRow("Privacy Policy") { uriHandler.openUri("https://localapp.live/privacy-policy") }
+        // Apple requires an in-app account-deletion path; we route to contact-support. iOS only.
+        if (live.localapp.local.platform.isIOS) {
+            Spacer(Modifier.height(10.dp))
+            SupportRow("Delete Account") { uriHandler.openUri("https://www.localapp.live/contact-support") }
+        }
         Spacer(Modifier.height(10.dp))
 
         Text(

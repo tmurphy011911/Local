@@ -63,7 +63,7 @@ struct EventDetailData {
         // Genres the generic title-caser can't render correctly (acronyms, "&", etc.).
         let overrides = ["r&b": "R&B"]
         if let override = overrides[raw.lowercased()] { return override }
-        return raw.split(separator: "_").map { word in
+        return raw.split(whereSeparator: { $0 == "_" || $0 == "-" }).map { word in
             word.prefix(1).uppercased() + word.dropFirst().lowercased()
         }.joined(separator: " ")
     }

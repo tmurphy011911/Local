@@ -16,6 +16,7 @@ import live.localapp.local.domain.repository.VenueWithMeta
 
 actual val hasNativeHeroTransition: Boolean = true
 actual val hasNativeTabBar: Boolean = true
+actual val isIOS: Boolean = true
 
 actual fun notifyTabChanged(tabIndex: Int) {
     TabBarBridge.onTabChanged?.invoke(tabIndex)

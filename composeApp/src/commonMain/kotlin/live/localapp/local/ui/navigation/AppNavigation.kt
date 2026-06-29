@@ -149,6 +149,12 @@ enum class Tab(val label: String, val icon: ImageVector) {
     PROFILE("Profile", Icons.Outlined.Person),
 }
 
+// Set when a guest taps a premium-gated action and is routed to sign-in; read
+// once on the post-auth replay to re-fire the gate (→ paywall) now that they're
+// authed. A raw Settings key so it survives onLogout's clearLocal (which only
+// removes its own user-pref keys).
+private const val KEY_PENDING_PAYWALL_AFTER_AUTH = "pending_paywall_after_auth"
+
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: () -> Unit = {}, showUpdateBanner: Boolean = false, onDismissUpdateBanner: () -> Unit = {}, showTutorial: Boolean = false) {
@@ -191,7 +197,20 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     // on iOS, Compose dialog on Android) — same surface as the "Upgrade" button.
     val premiumGate = remember { live.localapp.local.ui.chat.PremiumGate() }
     val showPaywallGate: () -> Unit = {
-        if (hasNativeTabBar) {
+        // A logged-out user must never see the paywall — send them to sign-in
+        // instead. Read the session fresh at tap time rather than closing over
+        // the composition-time `isLoggedIn` val, which can be stale on the very
+        // recomposition where auth flips (see feedback_compose_remember_stale_param).
+        if (userPrefsRepo.getLocalUserId() == null) {
+            // Post-auth intent: remember that a guest tapped a premium-gated action
+            // so the gate re-fires once they're signed in. Since the whole gated set
+            // is premium-only, re-running it as a signed-in free user surfaces the
+            // real paywall — the natural guest → sign-in → paywall → subscribe funnel.
+            // Survives onLogout (clearLocal only wipes its own keys), so the flag is
+            // still present when the fresh AppNavigation re-mounts at HOME.
+            com.russhwolf.settings.Settings().putBoolean(KEY_PENDING_PAYWALL_AFTER_AUTH, true)
+            onLogout()
+        } else if (hasNativeTabBar) {
             live.localapp.local.platform.presentNativePaywall { _ -> }
         } else {
             showAccountPaywall = true
@@ -407,6 +426,16 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             selectedTab = Tab.PLACES
             return@LaunchedEffect
         }
+
+        // Pending premium gate: a guest tapped a premium-only action and was sent
+        // to sign-in. Now authed, re-run the gate — still free, so they see the
+        // real paywall (showPaywallGate's logged-in branch). Cleared so it fires
+        // once. Skipped if they upgraded in the meantime (isPremium already true).
+        if (settings.getBoolean(KEY_PENDING_PAYWALL_AFTER_AUTH, false)) {
+            settings.remove(KEY_PENDING_PAYWALL_AFTER_AUTH)
+            if (!premiumGate.isPremium) showPaywallGate()
+            return@LaunchedEffect
+        }
     }
 
     val openChatOrLogin: () -> Unit = {
@@ -587,11 +616,9 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                 // Same path as the account-page "Upgrade": iOS shows the
                                 // native SwiftUI paywall; Android shows the Compose paywall
                                 // dialog (dismiss returns to Home, not a Bo chat).
-                                if (hasNativeTabBar) {
-                                    live.localapp.local.platform.presentNativePaywall { _ -> }
-                                } else {
-                                    showAccountPaywall = true
-                                }
+                                // Funnels through showPaywallGate so a logged-out user is
+                                // routed to sign-in rather than shown the paywall.
+                                showPaywallGate()
                             },
                             onSeeAllVenue = { venueName, _ ->
                                 if (!premiumGate.isPremium) { showPaywallGate(); return@HomeScreen }
@@ -733,15 +760,9 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             onNameChanged = { name -> homeVm.setUserName(name) },
                             onLocationClick = { showLocationSheet = true },
                             onUpgrade = {
-                                // On iOS, show the native SwiftUI paywall directly — no need
-                                // to route through the chat sheet just to upgrade. On Android,
-                                // keep the existing path (open chat with pendingShowPaywall)
-                                // since the Compose PremiumPaywall lives inside that sheet.
-                                if (hasNativeTabBar) {
-                                    live.localapp.local.platform.presentNativePaywall { _ -> }
-                                } else {
-                                    showAccountPaywall = true
-                                }
+                                // iOS native paywall / Android Compose paywall, via the shared
+                                // chokepoint so a logged-out user goes to sign-in, not the paywall.
+                                showPaywallGate()
                             },
                             isLoggedIn = isLoggedIn,
                             locationName = homeState.locationName,

@@ -66,6 +66,7 @@ import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -302,6 +303,8 @@ fun PlacesScreen(
                                         viewModel.toggleVenueFavorite(venue.venue.id, venue.primaryCategory)
                                     }
                                 },
+                                searchQuery = state.searchQuery,
+                                onClearSearch = { viewModel.setSearchQuery("") },
                                 scrollResetKey = state.placeSort,
                             )
                         }
@@ -341,6 +344,8 @@ fun PlacesScreen(
                                         viewModel.toggleEventFavorite(event.id, event.subcategory ?: event.category)
                                     }
                                 },
+                                searchQuery = state.searchQuery,
+                                onClearSearch = { viewModel.setSearchQuery("") },
                                 scrollResetKey = Triple(state.dateFilter, state.customStart, state.customEnd),
                             )
                         }
@@ -552,6 +557,58 @@ private fun ExploreEmptyState(
         onCta = onRetry,
         rotationKey = hasError,
     )
+}
+
+/**
+ * Inline "no matches" state shown *inside* the grid, beneath the Saved
+ * section. The full-screen [ExploreEmptyState] only fires when there's
+ * nothing at all (no results AND no saved items); but a search like
+ * "porch" that matches nothing still falls through to the grid because
+ * saved events/places always render. Without this, the area under the
+ * Saved carousel is silently blank. Lives in the LazyColumn so it scrolls
+ * with the saved section above it.
+ */
+@Composable
+private fun InlineSearchEmpty(
+    query: String,
+    noun: String,
+    onClear: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(top = 56.dp, bottom = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            Icons.Outlined.Search,
+            contentDescription = null,
+            modifier = Modifier.size(34.dp),
+            tint = AppColors.Ink3,
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            if (query.isNotBlank()) "No $noun match “$query”" else "No $noun for these filters",
+            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = AppColors.Ink),
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (query.isNotBlank()) "Try a different spelling or a broader search." else "Try widening your filters.",
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Medium, fontSize = 14.sp, color = AppColors.Ink3),
+            textAlign = TextAlign.Center,
+        )
+        if (query.isNotBlank()) {
+            Spacer(Modifier.height(18.dp))
+            Text(
+                "Clear search",
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.White),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(AppColors.Coral)
+                    .clickable { onClear() }
+                    .padding(horizontal = 22.dp, vertical = 10.dp),
+            )
+        }
+    }
 }
 
 @Composable
@@ -978,6 +1035,8 @@ private fun VenueGrid(
     onLoadMore: () -> Unit = {},
     onVenueClick: (VenueWithMeta, Rect) -> Unit,
     onFavoriteToggle: (VenueWithMeta) -> Unit,
+    searchQuery: String,
+    onClearSearch: () -> Unit,
     /** When this changes, the list jumps to the top — pass the sort enum so
      *  switching sort doesn't strand the user mid-list. */
     scrollResetKey: Any? = null,
@@ -1000,6 +1059,14 @@ private fun VenueGrid(
                     onVenueClick = onVenueClick,
                     onFavoriteToggle = onFavoriteToggle,
                 )
+            }
+        }
+
+        // Saved places rendered above, but the live search matched nothing —
+        // show an inline empty state instead of blank space.
+        if (venues.isEmpty()) {
+            item {
+                InlineSearchEmpty(query = searchQuery, noun = "places", onClear = onClearSearch)
             }
         }
 
@@ -1581,7 +1648,7 @@ fun VenueDetailPage(
                     if (rating != null && rating > 0) {
                         val ratingText = listOfNotNull(
                             (kotlin.math.round(rating * 10) / 10.0).toString(),
-                            venueWithMeta.primaryCategory?.replaceFirstChar { it.uppercaseChar() },
+                            venueWithMeta.primaryCategory?.snakeToTitleCase(),
                         ).joinToString(" \u00B7 ")
                         VenueInfoChip(icon = Icons.Filled.Star, iconTint = AppColors.Sun, text = ratingText)
                         Spacer(Modifier.height(10.dp))
@@ -1897,7 +1964,7 @@ fun VenueDetailSheet(
                 )
                 Spacer(Modifier.height(4.dp))
                 val parts = buildList {
-                    venueWithMeta.primaryCategory?.let { add(it.replaceFirstChar { c -> c.uppercaseChar() }) }
+                    venueWithMeta.primaryCategory?.let { add(it.snakeToTitleCase()) }
                     add(v.city)
                     venueWithMeta.distanceMiles?.let { add(formatDistance(it)) }
                 }
@@ -2018,7 +2085,7 @@ private fun VenueEventListRow(event: Event, onClick: () -> Unit) {
                     style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
                 )
                 val rawCat = event.subcategory ?: event.category
-                val displayCat = if (rawCat.lowercase() == "always_on") "Event" else rawCat.replaceFirstChar { it.uppercaseChar() }
+                val displayCat = if (rawCat.lowercase() == "always_on") "Event" else rawCat.snakeToTitleCase()
                 Text(
                     displayCat,
                     style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Ink2),
@@ -2144,6 +2211,8 @@ private fun EventGrid(
     onLoadMore: () -> Unit,
     onEventClick: (live.localapp.local.domain.model.Event, Rect) -> Unit,
     onFavoriteToggle: (live.localapp.local.domain.model.Event) -> Unit,
+    searchQuery: String,
+    onClearSearch: () -> Unit,
     /** When this changes, the list jumps to the top — pass the date filter
      *  so switching filters doesn't strand the user mid-list. */
     scrollResetKey: Any? = null,
@@ -2183,6 +2252,13 @@ private fun EventGrid(
                     onEventClick = onEventClick,
                     onFavoriteToggle = onFavoriteToggle,
                 )
+            }
+        }
+        // Saved events rendered above, but the live search/filter matched
+        // nothing — show an inline empty state instead of blank space.
+        if (events.isEmpty()) {
+            item {
+                InlineSearchEmpty(query = searchQuery, noun = "events", onClear = onClearSearch)
             }
         }
         items(events.size, key = { events[it].id }) { i ->
