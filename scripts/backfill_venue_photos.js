@@ -5,10 +5,12 @@
  *   SUPABASE_SERVICE_KEY=ey... node scripts/backfill_venue_photos.js
  *
  * Options:
- *   MIN_RANK=70    Only backfill venues with rank >= this (default: 50)
- *   MAX_VENUES=50  Limit number of venues to process (default: 100)
- *   STATE=PA       Only backfill venues in this state (default: all states)
- *   DRY_RUN=1      Don't update DB, just show what would change
+ *   MIN_RANK=70             Only backfill venues with rank >= this (default: 50)
+ *   MAX_VENUES=50           Limit number of venues to process (default: 100)
+ *   STATE=PA                Only backfill venues in this state (default: all states)
+ *   CITIES="Doylestown,New Hope"  Comma-separated city list (default: all cities in state)
+ *   CREATED_AFTER=2026-06-25      Only venues created on/after this date (ISO) (default: all)
+ *   DRY_RUN=1               Don't update DB, just show what would change
  */
 
 const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
@@ -17,6 +19,8 @@ let GOOGLE_PLACES_API_KEY, SUPABASE_SERVICE_KEY;
 const MIN_RANK = parseInt(process.env.MIN_RANK || "50", 10);
 const MAX_VENUES = parseInt(process.env.MAX_VENUES || "100", 10);
 const STATE = (process.env.STATE || "").trim().toUpperCase() || null;
+const CITIES = (process.env.CITIES || "").split(",").map((c) => c.trim()).filter(Boolean);
+const CREATED_AFTER = (process.env.CREATED_AFTER || "").trim() || null;
 const DRY_RUN = process.env.DRY_RUN === "1";
 
 async function main() {
@@ -29,7 +33,7 @@ async function main() {
     process.exit(1);
   }
 
-  console.log(`Backfilling venue photos (min rank: ${MIN_RANK}, max: ${MAX_VENUES}, state: ${STATE || "ALL"}, dry run: ${DRY_RUN})\n`);
+  console.log(`Backfilling venue photos (min rank: ${MIN_RANK}, max: ${MAX_VENUES}, state: ${STATE || "ALL"}, cities: ${CITIES.length || "ALL"}, created_after: ${CREATED_AFTER || "any"}, dry run: ${DRY_RUN})\n`);
 
   // Fetch venues without photos. Pull city+state so the textQuery can scope
   // by location for venues that lack lat/lng — without that scoping, "Hope
@@ -37,6 +41,12 @@ async function main() {
   // photo_url with wrong venues.
   let url = `${SUPABASE_URL}/rest/v1/venues?is_active=eq.true&photo_url=is.null&public_interest_rank=gte.${MIN_RANK}&select=id,name,lat,lng,city,state,public_interest_rank&order=public_interest_rank.desc&limit=${MAX_VENUES}`;
   if (STATE) url += `&state=eq.${STATE}`;
+  if (CITIES.length) {
+    // PostgREST in.() value list: quote each city to preserve spaces/commas
+    const quoted = CITIES.map((c) => `"${c.replace(/"/g, '\\"')}"`).join(",");
+    url += `&city=in.(${encodeURIComponent(quoted)})`;
+  }
+  if (CREATED_AFTER) url += `&created_at=gte.${encodeURIComponent(CREATED_AFTER)}`;
   const res = await fetch(url, {
     headers: {
       apikey: SUPABASE_SERVICE_KEY,

@@ -29,6 +29,12 @@ const VENUE_NAME = process.env.VENUE_NAME || null;
 // hitting the 6h GitHub Actions max). Comma-separated list e.g. "MA" or
 // "MA,RI". Null/empty = all states.
 const STATE_FILTER = (process.env.STATE || "").trim() || null;
+// Comma-separated city list to scope within STATE_FILTER (or globally).
+// Empty = all cities. For onboarding runs that should crawl only a freshly-
+// inserted subset, not the full state's venues.
+const CITIES_FILTER = (process.env.CITIES || "").split(",").map((c) => c.trim()).filter(Boolean);
+// ISO timestamp — only crawl venues whose row was created on/after.
+const CREATED_AFTER = (process.env.CREATED_AFTER || "").trim() || null;
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || "3", 10);
 const MAX_VENUES = parseInt(process.env.MAX_VENUES || "0", 10);
 // Wall-clock budget in minutes. When set, the crawl stops pulling NEW venues
@@ -387,6 +393,11 @@ async function fetchVenues() {
       ? `&state=eq.${states[0]}`
       : `&state=in.(${states.join(",")})`;
   }
+  if (CITIES_FILTER.length) {
+    const quoted = CITIES_FILTER.map((c) => `"${c.replace(/"/g, '\\"')}"`).join(",");
+    baseUrl += `&city=in.(${encodeURIComponent(quoted)})`;
+  }
+  if (CREATED_AFTER) baseUrl += `&created_at=gte.${encodeURIComponent(CREATED_AFTER)}`;
   // Stalest-first: among crawlable venues (events_url present), crawl the ones
   // not touched in the longest time — never-crawled (null) first. Paired with
   // the CRAWL_MAX_MINUTES budget this gives a rolling crawl that always makes
