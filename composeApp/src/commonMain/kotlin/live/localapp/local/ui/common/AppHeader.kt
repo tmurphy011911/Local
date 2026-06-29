@@ -24,7 +24,12 @@ import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import live.localapp.local.Config
+import live.localapp.local.platform.isDebugBuild
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -70,6 +75,13 @@ fun AppHeader(
     bottomPadding: Boolean = true,
     extraContent: @Composable (() -> Unit)? = null,
 ) {
+    // Debug-only backend switcher, opened by tapping the logo. Never shown in a
+    // release build (isDebugBuild folds to false → dead code).
+    var showDebugMenu by remember { mutableStateOf(false) }
+    if (isDebugBuild && showDebugMenu) {
+        DebugMenuSheet(onDismiss = { showDebugMenu = false })
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -106,9 +118,31 @@ fun AppHeader(
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                        onClick = onLogoClick,
+                        onClick = {
+                            // In debug, the logo opens the backend switcher. Release
+                            // keeps the existing (currently no-op) onLogoClick.
+                            if (isDebugBuild) showDebugMenu = true else onLogoClick()
+                        },
                     ),
             )
+
+            // DEV backend badge — debug builds pointed at dev only. Makes it
+            // impossible to confuse which backend a debug build is talking to.
+            if (isDebugBuild && Config.backendEnv == Config.BackendEnv.DEV) {
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    "DEV",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 9.sp,
+                        color = AppColors.White,
+                    ),
+                    modifier = Modifier
+                        .background(AppColors.Coral, AppShapes.Pill)
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
 
             // Push pill + streak + avatar to the right edge — pill now lives next
             // to the avatar so users always know where the location lives.

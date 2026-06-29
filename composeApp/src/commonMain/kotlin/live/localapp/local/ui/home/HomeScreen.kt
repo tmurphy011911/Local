@@ -652,7 +652,9 @@ private fun CarouselSectionView(section: CarouselSection, onEventClick: (Event, 
 
 // ── Category Row ──
 
-private const val ICON_BASE = "${Config.SUPABASE_URL}/storage/v1/object/public/category-icons"
+// `val` (not `const`) because Config.SUPABASE_URL is now a runtime getter
+// (dev/prod backend switch). Resolved per-access.
+private val ICON_BASE get() = "${Config.SUPABASE_URL}/storage/v1/object/public/category-icons"
 
 private val forYouTile = CategoryInfo(
     id = "foryou",
@@ -1012,7 +1014,7 @@ private fun SeeAllEventRow(
                     style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
                 )
                 val rawCat = event.subcategory ?: event.category
-                val displayCat = if (rawCat.lowercase() == "always_on") "Event" else rawCat.replaceFirstChar { it.uppercaseChar() }
+                val displayCat = if (rawCat.lowercase() == "always_on") "Event" else formatSubcategoryDisplay(rawCat)
                 Text(
                     displayCat,
                     style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Ink2),

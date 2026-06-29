@@ -72,8 +72,8 @@ class PhoneAuthViewModel(
             return
         }
 
-        if (live.localapp.local.Config.testAuthBypassActive) {
-            // Test mode: skip SMS, go straight to OTP entry
+        if (live.localapp.local.Config.devAuthActive || live.localapp.local.Config.testAuthBypassActive) {
+            // Dev-auth / test mode: no real SMS, go straight to OTP entry.
             _state.update { it.copy(step = AuthStep.OTP) }
             return
         }
@@ -102,6 +102,39 @@ class PhoneAuthViewModel(
         val s = _state.value
         if (s.otpCode.length < 6) {
             _state.update { it.copy(error = "Please enter the full 6-digit code") }
+            return
+        }
+
+        if (live.localapp.local.Config.devAuthActive) {
+            // Dev-auth (debug + dev backend): any 6-digit code works. Each phone
+            // number maps to its own persisted dev account, signed-in if it exists
+            // or signed-up on first use. We then reuse the SAME profile-check +
+            // routing as the real OTP path, so a brand-new phone runs onboarding
+            // (and is recognized as existing next time), while a pre-seeded number
+            // (Config.DEV_EXISTING_USER_PHONE) goes straight to home.
+            viewModelScope.launch {
+                _state.update { it.copy(isLoading = true, error = null) }
+                try {
+                    devAuthSignInOrSignUp()
+                    val userId = supabaseClient.auth.currentSessionOrNull()?.user?.id
+                        ?: throw IllegalStateException("No session after dev-auth sign-in")
+                    val hasProfile = userPreferencesRepository.profileExistsForAuthId(userId)
+                    Analytics.identify(userId = userId)
+                    if (hasProfile) {
+                        userPreferencesRepository.recoverProfileByAuthId(userId)
+                        _state.update {
+                            it.copy(isLoading = false, isExistingUser = true, authComplete = true, authUserId = userId)
+                        }
+                    } else {
+                        _state.update {
+                            it.copy(isLoading = false, step = AuthStep.EMAIL, authUserId = userId)
+                        }
+                    }
+                } catch (e: Exception) {
+                    println("DEBUG: dev-auth sign-in failed: ${e::class.simpleName}: ${e.message}")
+                    _state.update { it.copy(isLoading = false, error = "Dev sign-in failed: ${e.message}") }
+                }
+            }
             return
         }
 
@@ -217,6 +250,38 @@ class PhoneAuthViewModel(
      * — any failure (account missing/unconfirmed, wrong password) propagates to
      * the caller as a clean error instead of looping into a dead sign-up path.
      */
+    /**
+     * Dev-auth account resolution (debug + dev backend only). Maps the entered
+     * phone to `dev+<digits>@localapp.live` and signs in; if no such account
+     * exists yet, signs up (first use of that number). The dev project has email
+     * auto-confirm ON, so the sign-up returns an active session immediately —
+     * giving each phone its own persisted user that onboarding then completes.
+     */
+    private suspend fun devAuthSignInOrSignUp() {
+        val email = live.localapp.local.Config.devAuthEmailFor(_state.value.phone)
+        val password = live.localapp.local.Config.TEST_AUTH_PASSWORD
+        try {
+            supabaseClient.auth.signInWith(Email) {
+                this.email = email
+                this.password = password
+            }
+        } catch (e: Exception) {
+            // No account for this phone yet → create it (first onboarding run).
+            supabaseClient.auth.signUpWith(Email) {
+                this.email = email
+                this.password = password
+            }
+            // Some supabase-kt paths don't leave an active session after sign-up;
+            // ensure one exists (auto-confirm makes this immediate on dev).
+            if (supabaseClient.auth.currentSessionOrNull() == null) {
+                supabaseClient.auth.signInWith(Email) {
+                    this.email = email
+                    this.password = password
+                }
+            }
+        }
+    }
+
     private suspend fun signInTestUser() {
         // Multi-account bypass keyed on the PHONE number — the only field entered
         // before OTP, which is when this sign-in fires (email is now collected on

@@ -96,8 +96,80 @@ object Config {
      */
     const val FEATURE_LEADERBOARD_ENABLED = true
 
-    const val SUPABASE_URL = "https://blifubxslaucshmlphdc.supabase.co"
-    const val SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJsaWZ1YnhzbGF1Y3NobWxwaGRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3MjgyNjEsImV4cCI6MjA4ODMwNDI2MX0.xx-iy7kKhHviAjtjfXdxNHp4pmKU-in3efr2SkvWTf0"
+    // --- Backend environment (prod vs dev) -------------------------------------
+    //
+    // A RELEASE build (App Store / TestFlight / Play) ALWAYS talks to prod — the
+    // [SUPABASE_URL]/[SUPABASE_ANON_KEY] getters return the prod values whenever
+    // [isDebugBuild] is false, so a shipped binary can never be pointed at the dev
+    // project (which has no real user data). There is no override for this.
+    //
+    // A DEBUG build defaults to dev and can be switched at runtime via the in-app
+    // debug menu (tap the "Local" logo, debug builds only). The choice is
+    // persisted across launches; switching takes effect on the next launch because
+    // the Supabase client + repositories are built once at startup.
+    //
+    // Anon keys are public (they ship in the binary) — not secrets.
+    private const val PROD_SUPABASE_URL = "https://blifubxslaucshmlphdc.supabase.co"
+    private const val PROD_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJsaWZ1YnhzbGF1Y3NobWxwaGRjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3MjgyNjEsImV4cCI6MjA4ODMwNDI2MX0.xx-iy7kKhHviAjtjfXdxNHp4pmKU-in3efr2SkvWTf0"
+    private const val DEV_SUPABASE_URL = "https://xbyqwekcanrzovytxmdv.supabase.co"
+    private const val DEV_SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InhieXF3ZWtjYW5yem92eXR4bWR2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzI3MzY5ODksImV4cCI6MjA4ODMxMjk4OX0.iFNwDPHgHtyfhsXhRNoEIBsAtLr3is3GdYY_b3GRxlc"
+
+    enum class BackendEnv { PROD, DEV }
+
+    private const val BACKEND_ENV_KEY = "debug_backend_env"
+
+    // Cached selection, resolved once from persisted settings on first read.
+    private var cachedBackendEnv: BackendEnv? = null
+
+    /**
+     * The active backend. Always [BackendEnv.PROD] in a release build. In a debug
+     * build, reads the persisted choice (default [BackendEnv.DEV]).
+     */
+    val backendEnv: BackendEnv
+        get() {
+            if (!live.localapp.local.platform.isDebugBuild) return BackendEnv.PROD
+            cachedBackendEnv?.let { return it }
+            val stored = com.russhwolf.settings.Settings().getStringOrNull(BACKEND_ENV_KEY)
+            val env = if (stored == BackendEnv.PROD.name) BackendEnv.PROD else BackendEnv.DEV
+            cachedBackendEnv = env
+            return env
+        }
+
+    /** Persist a backend choice (debug builds only — release is always prod). */
+    fun setBackendEnv(env: BackendEnv) {
+        if (!live.localapp.local.platform.isDebugBuild) return
+        cachedBackendEnv = env
+        com.russhwolf.settings.Settings().putString(BACKEND_ENV_KEY, env.name)
+    }
+
+    val SUPABASE_URL: String
+        get() = if (backendEnv == BackendEnv.DEV) DEV_SUPABASE_URL else PROD_SUPABASE_URL
+
+    val SUPABASE_ANON_KEY: String
+        get() = if (backendEnv == BackendEnv.DEV) DEV_SUPABASE_ANON_KEY else PROD_SUPABASE_ANON_KEY
+
+    // --- Dev auth (debug build + dev backend only) -----------------------------
+    //
+    // When a DEBUG build is pointed at DEV, auth is fully self-serve for testing:
+    //   1. Any 6-digit OTP is accepted (the code is ignored).
+    //   2. Each phone number maps to its OWN persisted dev account
+    //      (sign-in-or-sign-up on `dev+<digits>@localapp.live`), so onboarding can
+    //      be exercised end-to-end and a returning phone is recognized as existing.
+    //   3. [DEV_EXISTING_USER_PHONE] is pre-seeded with a completed profile on dev,
+    //      so it always lands in the existing-user (skip-onboarding) flow.
+    //
+    // Requires the DEV project to have email auto-confirm ON so client sign-ups
+    // yield an active session immediately. NEVER active in a release build
+    // ([isDebugBuild]) or against prod ([backendEnv]).
+    val devAuthActive: Boolean
+        get() = live.localapp.local.platform.isDebugBuild && backendEnv == BackendEnv.DEV
+
+    /** Reserved dev phone pre-seeded as an existing user (skips onboarding). */
+    const val DEV_EXISTING_USER_PHONE = "5555550100"
+
+    /** The dev account email a phone number maps to (one persisted user per number). */
+    fun devAuthEmailFor(phone: String): String = "dev+${phone.filter { it.isDigit() }}@localapp.live"
+
     // Ticketmaster sync runs server-side (daily GitHub Action); the key lives in
     // CI secrets, never the client. Do not re-add it here — it ships in the binary.
 }
