@@ -116,8 +116,12 @@ android {
         applicationId = "live.localapp.local"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 7
-        versionName = "1.0.2"
+        // Aligned with the iOS build number scheme so the two platforms don't
+        // drift. Play requires versionCode to strictly increase per upload.
+        // 102 = clean rebuild after pulling 101 (deep-link ANR fix + native
+        // debug symbols).
+        versionCode = 102
+        versionName = "1.0.0"
         // Used by AndroidManifest's <meta-data android:value="${MAPS_API_KEY}" />
         // and read at runtime by the Directions API client.
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
@@ -134,6 +138,11 @@ android {
     buildTypes {
         getByName("release") {
             isMinifyEnabled = false
+            // NOTE: Play warns about missing native debug symbols for the .so
+            // libs (Sentry's libsentry.so etc.). We don't set ndk.debugSymbolLevel
+            // because that requires the NDK to be installed and would fail the
+            // build. Those native libs are Sentry's, symbolicated via Sentry's
+            // own pipeline — so Play's symbol warning is safe to ignore.
         }
     }
     compileOptions {

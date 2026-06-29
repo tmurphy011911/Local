@@ -307,7 +307,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = live.localapp.local;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
 		};
@@ -395,7 +395,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = live.localapp.local;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -450,10 +450,10 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		5E0B24DF2FD3409300162445 /* Sentry */ = {
+		5E0B24DF2FD3409300162445 /* Sentry-Dynamic */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 5E84B1892FBEA9F200B1A75B /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
-			productName = Sentry;
+			productName = "Sentry-Dynamic";
 		};
 		5E1C2C132F88028A0057E9F9 /* RevenueCat */ = {
 			isa = XCSwiftPackageProductDependency;
