@@ -184,6 +184,21 @@ If you archive from uncommitted changes, there is no commit that equals your liv
 app — and you cannot cleanly branch a hotfix from it. (This happened with 1.0.0:
 build 102 was archived from an uncommitted tree, so no commit reproduces it.)
 
+### Release schedule — the bi-weekly train
+Submit a new build **every other Wednesday**; each scheduled release is a **minor**
+bump (`vX.Y.0`). Anchor: `v1.1.0` = **Wed 2026-07-08**, then +14 days / +0.1.0:
+
+| Version | Submit (Wed) |
+|---------|--------------|
+| v1.1.0  | 2026-07-08   |
+| v1.2.0  | 2026-07-22   |
+| v1.3.0  | 2026-08-05   |
+| v1.4.0  | 2026-08-19   |
+| …       | +14 days each |
+
+Each cycle ≈ 2 weeks on `develop`. Hotfixes (`vX.Y.Z` patch) ship off-schedule,
+any day, off the live tag.
+
 ### Releasing the next version (feature release)
 `develop` → finish + test → bump build number → commit → `git tag vX.Y.0` →
 merge to `main` → Archive from `main` → upload. Promote any backend changes per
