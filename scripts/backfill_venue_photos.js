@@ -1,11 +1,16 @@
 /**
- * Backfill venue photos AND websites from Google Places API.
+ * Backfill venue photos, websites AND coordinates from Google Places API.
  *
- * One Places Text Search per venue returns both the photo and the authoritative
- * websiteUri, so we fill whichever of photo_url / website the venue is missing.
- * The website is what fix_venue_urls.js scrapes to discover an events_url, so a
- * venue with no website is invisible to URL discovery and never crawls — keep
- * this in sync with that dependency.
+ * One Places Text Search per venue returns the photo, the authoritative
+ * websiteUri, and the location (lat/lng), so we fill whichever of
+ * photo_url / website / lat+lng the venue is missing.
+ *  - website is what fix_venue_urls.js scrapes to discover an events_url, so a
+ *    venue with no website is invisible to URL discovery and never crawls.
+ *  - lat/lng is REQUIRED for the app: carousels, search, and the Places feed
+ *    are all geo-radius (bounding-box) queries, and run_crawls.js snapshots the
+ *    venue coords onto every event it creates — so a venue with NULL lat/lng is
+ *    invisible in the app AND produces events that are equally invisible.
+ *    Re-crawl after this fills the coords so existing events pick them up.
  *
  * Usage:
  *   SUPABASE_SERVICE_KEY=ey... node scripts/backfill_venue_photos.js
@@ -45,7 +50,7 @@ async function main() {
   // by location for venues that lack lat/lng — without that scoping, "Hope
   // Lodge" or "The Mill" matches arbitrary places globally and pollutes
   // photo_url with wrong venues.
-  let url = `${SUPABASE_URL}/rest/v1/venues?is_active=eq.true&or=(photo_url.is.null,website.is.null)&public_interest_rank=gte.${MIN_RANK}&select=id,name,lat,lng,city,state,public_interest_rank,photo_url,website&order=public_interest_rank.desc&limit=${MAX_VENUES}`;
+  let url = `${SUPABASE_URL}/rest/v1/venues?is_active=eq.true&or=(photo_url.is.null,website.is.null,lat.is.null,lng.is.null)&public_interest_rank=gte.${MIN_RANK}&select=id,name,lat,lng,city,state,public_interest_rank,photo_url,website&order=public_interest_rank.desc&limit=${MAX_VENUES}`;
   if (STATE) url += `&state=eq.${STATE}`;
   if (CITIES.length) {
     // PostgREST in.() value list: quote each city to preserve spaces/commas
@@ -74,6 +79,10 @@ async function main() {
       const patch = {};
       if (!venue.photo_url && details?.photoUrl) patch.photo_url = details.photoUrl;
       if (!venue.website && details?.website) patch.website = details.website;
+      if ((!venue.lat || !venue.lng) && details?.lat != null && details?.lng != null) {
+        patch.lat = details.lat;
+        patch.lng = details.lng;
+      }
 
       if (Object.keys(patch).length) {
         if (!DRY_RUN) await updateVenueFields(venue.id, patch);
@@ -114,7 +123,7 @@ async function fetchPlaceDetails(name, lat, lng, city, state) {
     headers: {
       "Content-Type": "application/json",
       "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-      "X-Goog-FieldMask": "places.photos,places.websiteUri",
+      "X-Goog-FieldMask": "places.photos,places.websiteUri,places.location",
     },
     body: JSON.stringify(body),
   });
@@ -128,7 +137,12 @@ async function fetchPlaceDetails(name, lat, lng, city, state) {
   const photoUrl = place.photos?.length
     ? `https://places.googleapis.com/v1/${place.photos[0].name}/media?maxHeightPx=800&maxWidthPx=800&key=${GOOGLE_PLACES_API_KEY}`
     : null;
-  return { photoUrl, website: place.websiteUri || null };
+  return {
+    photoUrl,
+    website: place.websiteUri || null,
+    lat: place.location?.latitude ?? null,
+    lng: place.location?.longitude ?? null,
+  };
 }
 
 async function updateVenueFields(venueId, patch) {
