@@ -122,16 +122,23 @@ object Config {
     private var cachedBackendEnv: BackendEnv? = null
 
     /**
+     * Whether the build is allowed to switch backends at runtime (debug menu).
+     * True for DEBUG and STAGING (the `.dev` test app). False for a plain RELEASE
+     * — the real store app is hard-locked to prod and has no switch at all.
+     */
+    val backendSwitchable: Boolean
+        get() = live.localapp.local.platform.isDebugBuild || live.localapp.local.platform.isStagingBuild
+
+    /**
      * The active backend, resolved by build type:
-     *  - STAGING build (the `.dev` app for side-by-side / TestFlight / Play
-     *    internal testing) → always DEV. Locked, even though it's release-signed.
-     *  - plain RELEASE build (the real store app) → always PROD. Locked.
-     *  - DEBUG build → switchable via the debug menu; defaults to DEV.
+     *  - plain RELEASE build (the real store app) → always PROD. Locked, no switch.
+     *  - DEBUG and STAGING builds → switchable via the debug menu; default DEV.
+     *    (Staging is the `.dev` side-by-side app; pointing it at prod lets testers
+     *    hit live data, still as a separate app from the real one.)
      */
     val backendEnv: BackendEnv
         get() {
-            if (live.localapp.local.platform.isStagingBuild) return BackendEnv.DEV
-            if (!live.localapp.local.platform.isDebugBuild) return BackendEnv.PROD
+            if (!backendSwitchable) return BackendEnv.PROD
             cachedBackendEnv?.let { return it }
             val stored = com.russhwolf.settings.Settings().getStringOrNull(BACKEND_ENV_KEY)
             val env = if (stored == BackendEnv.PROD.name) BackendEnv.PROD else BackendEnv.DEV
@@ -140,11 +147,11 @@ object Config {
         }
 
     /**
-     * Persist a backend choice. Only effective in a DEBUG build — staging is
-     * locked to dev and a plain release is locked to prod (both ignore this).
+     * Persist a backend choice. Effective in DEBUG and STAGING builds; a no-op in
+     * a plain release (the real store app is locked to prod).
      */
     fun setBackendEnv(env: BackendEnv) {
-        if (!live.localapp.local.platform.isDebugBuild) return
+        if (!backendSwitchable) return
         cachedBackendEnv = env
         com.russhwolf.settings.Settings().putString(BACKEND_ENV_KEY, env.name)
     }

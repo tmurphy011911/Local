@@ -229,10 +229,13 @@ Run this once you're on the release commit (`main` for a feature release, or the
 ## Staging build — the side-by-side "Local (Dev)" app
 
 A separate app (`live.localapp.local.dev`, labeled "Local (Dev)") that installs
-ALONGSIDE the real app and is **locked to the dev backend**. Use it to run an
-in-progress branch next to the live app, and to distribute dev builds to testers
-via TestFlight / Play internal testing. It can never touch prod (backend is forced
-to dev by `IS_STAGING`), and dev-auth is on (any OTP, phone→dev account).
+ALONGSIDE the real app. Use it to run an in-progress branch next to the live app,
+and to distribute test builds via TestFlight / Play internal testing. Its backend
+is **switchable** at runtime (tap the logo → Dev/Prod), defaulting to **dev** —
+so you can point the `.dev` app at dev for safe testing, or at prod to validate
+against live data, all without touching the real app. When it's on dev, dev-auth
+is on (any OTP, phone→dev account); on prod it uses real auth. Only the plain
+`release` build of the real app is hard-locked to prod.
 
 ### Android — ready now
 - **Local side-by-side:** `./gradlew :composeApp:installStaging` → installs "Local (Dev)" next to "Local". (Debug-signed, so no keystore needed.)
@@ -251,9 +254,12 @@ In Xcode:
 - **Apple:** register bundle id `live.localapp.local.dev`; create its App Store Connect app record; let Xcode make the provisioning profile. Archive the "Local Dev" scheme → upload → TestFlight.
 - **Google:** create the `.dev` app (or just an internal-testing track) in Play Console; upload the signed staging AAB.
 
-### Backend mapping (how the lock works)
+### Backend mapping
 ```
-Android: staging build type → BuildConfig.IS_STAGING=true → Config.backendEnv=DEV
-iOS:     Staging config xcconfig → Info.plist IS_STAGING=YES → same
-debug build → DEV (switchable via the Local-logo menu)   release → PROD (locked)
+debug build    → switchable (Local-logo menu), default DEV
+staging build  → switchable (Local-logo menu), default DEV   app id .dev
+release build  → PROD, hard-locked, no switch                the real store app
 ```
+`isStagingBuild` (Android `BuildConfig.IS_STAGING`, iOS Info.plist `IS_STAGING=YES`)
++ `isDebugBuild` define `Config.backendSwitchable`; only a plain release is locked.
+A DEV/PROD badge by the logo shows the live choice on any switchable build.

@@ -52,7 +52,7 @@ fun DebugMenuSheet(onDismiss: () -> Unit) {
             Text("Debug menu", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = AppColors.Ink)
             Spacer(Modifier.height(4.dp))
             Text(
-                "Backend (debug builds only — release always uses prod)",
+                "Backend (debug + staging builds — the real release app is always prod)",
                 fontSize = 13.sp,
                 color = AppColors.Pebble,
             )

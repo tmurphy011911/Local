@@ -29,7 +29,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import live.localapp.local.Config
-import live.localapp.local.platform.isDebugBuild
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -75,10 +74,10 @@ fun AppHeader(
     bottomPadding: Boolean = true,
     extraContent: @Composable (() -> Unit)? = null,
 ) {
-    // Debug-only backend switcher, opened by tapping the logo. Never shown in a
-    // release build (isDebugBuild folds to false → dead code).
+    // Backend switcher, opened by tapping the logo. Available on switchable
+    // builds (debug + staging); never on a plain release (the real store app).
     var showDebugMenu by remember { mutableStateOf(false) }
-    if (isDebugBuild && showDebugMenu) {
+    if (Config.backendSwitchable && showDebugMenu) {
         DebugMenuSheet(onDismiss = { showDebugMenu = false })
     }
 
@@ -119,19 +118,22 @@ fun AppHeader(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
                         onClick = {
-                            // In debug, the logo opens the backend switcher. Release
-                            // keeps the existing (currently no-op) onLogoClick.
-                            if (isDebugBuild) showDebugMenu = true else onLogoClick()
+                            // On switchable builds (debug + staging) the logo opens
+                            // the backend switcher. Plain release keeps the existing
+                            // (no-op) onLogoClick — no switcher on the real app.
+                            if (Config.backendSwitchable) showDebugMenu = true else onLogoClick()
                         },
                     ),
             )
 
-            // DEV backend badge — debug builds pointed at dev only. Makes it
-            // impossible to confuse which backend a debug build is talking to.
-            if (isDebugBuild && Config.backendEnv == Config.BackendEnv.DEV) {
+            // Backend badge on switchable builds — DEV (coral) or PROD (plum) — so
+            // it's never ambiguous which backend this build is talking to. The real
+            // release app is not switchable, so it shows no badge.
+            if (Config.backendSwitchable) {
+                val onDev = Config.backendEnv == Config.BackendEnv.DEV
                 Spacer(Modifier.width(6.dp))
                 Text(
-                    "DEV",
+                    if (onDev) "DEV" else "PROD",
                     style = TextStyle(
                         fontFamily = AppFonts.Body,
                         fontWeight = FontWeight.ExtraBold,
@@ -139,7 +141,7 @@ fun AppHeader(
                         color = AppColors.White,
                     ),
                     modifier = Modifier
-                        .background(AppColors.Coral, AppShapes.Pill)
+                        .background(if (onDev) AppColors.Coral else AppColors.Plum, AppShapes.Pill)
                         .padding(horizontal = 6.dp, vertical = 2.dp),
                 )
             }
