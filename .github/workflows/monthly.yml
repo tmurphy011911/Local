@@ -184,3 +184,49 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
         run: node sync_restaurant_weeks.js
+
+  # Venue health snapshot — runs AFTER the discover/fix/rank chain so it reflects
+  # this month's mutations. `if: always()` so it still reports the current DB
+  # state even if an upstream venue job failed. Writes a full Markdown breakdown
+  # to the run summary and texts a compact digest (state % split + per-state
+  # event-coverage + events_url content gap) via Twilio.
+  venue-state-of-the-union:
+    runs-on: ubuntu-latest
+    needs: rank-venues
+    if: ${{ always() }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build Venue State of the Union
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node venue_state_of_the_union.js
+      - name: Text the digest (Twilio)
+        if: ${{ always() }}
+        working-directory: scripts
+        env:
+          SID:   ${{ secrets.TWILIO_ACCOUNT_SID }}
+          TOKEN: ${{ secrets.TWILIO_AUTH_TOKEN }}
+          FROM:  ${{ secrets.TWILIO_FROM }}
+          TO:    ${{ secrets.TWILIO_TO }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SID:-}" ]; then
+            echo "Twilio secrets not set; skipping SMS (full report is in the run summary)."
+            exit 0
+          fi
+          if [ ! -f sotu_sms.txt ]; then
+            echo "No digest produced (script failed before writing); skipping SMS."
+            exit 0
+          fi
+          curl -fsS -X POST \
+            "https://api.twilio.com/2010-04-01/Accounts/$SID/Messages.json" \
+            --data-urlencode "From=$FROM" \
+            --data-urlencode "To=$TO" \
+            --data-urlencode "Body@sotu_sms.txt" \
+            -u "$SID:$TOKEN" > /dev/null
+          echo "Venue State of the Union SMS sent."
