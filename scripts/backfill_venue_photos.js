@@ -1,5 +1,11 @@
 /**
- * Backfill venue photos from Google Places API
+ * Backfill venue photos AND websites from Google Places API.
+ *
+ * One Places Text Search per venue returns both the photo and the authoritative
+ * websiteUri, so we fill whichever of photo_url / website the venue is missing.
+ * The website is what fix_venue_urls.js scrapes to discover an events_url, so a
+ * venue with no website is invisible to URL discovery and never crawls — keep
+ * this in sync with that dependency.
  *
  * Usage:
  *   SUPABASE_SERVICE_KEY=ey... node scripts/backfill_venue_photos.js
@@ -39,7 +45,7 @@ async function main() {
   // by location for venues that lack lat/lng — without that scoping, "Hope
   // Lodge" or "The Mill" matches arbitrary places globally and pollutes
   // photo_url with wrong venues.
-  let url = `${SUPABASE_URL}/rest/v1/venues?is_active=eq.true&photo_url=is.null&public_interest_rank=gte.${MIN_RANK}&select=id,name,lat,lng,city,state,public_interest_rank&order=public_interest_rank.desc&limit=${MAX_VENUES}`;
+  let url = `${SUPABASE_URL}/rest/v1/venues?is_active=eq.true&or=(photo_url.is.null,website.is.null)&public_interest_rank=gte.${MIN_RANK}&select=id,name,lat,lng,city,state,public_interest_rank,photo_url,website&order=public_interest_rank.desc&limit=${MAX_VENUES}`;
   if (STATE) url += `&state=eq.${STATE}`;
   if (CITIES.length) {
     // PostgREST in.() value list: quote each city to preserve spaces/commas
@@ -54,22 +60,28 @@ async function main() {
     },
   });
   const venues = await res.json();
-  console.log(`Found ${venues.length} venues without photos\n`);
+  console.log(`Found ${venues.length} venues missing a photo or website\n`);
 
   let updated = 0;
   let failed = 0;
+  let noMatch = 0;
 
   for (const venue of venues) {
     try {
-      const photoUrl = await fetchPlacePhoto(venue.name, venue.lat, venue.lng, venue.city, venue.state);
-      if (photoUrl) {
-        if (!DRY_RUN) {
-          await updateVenuePhoto(venue.id, photoUrl);
-        }
-        console.log(`  ✓ ${venue.public_interest_rank} ${venue.name} → photo found`);
+      const details = await fetchPlaceDetails(venue.name, venue.lat, venue.lng, venue.city, venue.state);
+      // Only fill the fields the venue is actually missing; never overwrite an
+      // existing photo_url / website with a (possibly different) Places match.
+      const patch = {};
+      if (!venue.photo_url && details?.photoUrl) patch.photo_url = details.photoUrl;
+      if (!venue.website && details?.website) patch.website = details.website;
+
+      if (Object.keys(patch).length) {
+        if (!DRY_RUN) await updateVenueFields(venue.id, patch);
+        console.log(`  ✓ ${venue.public_interest_rank} ${venue.name} → ${Object.keys(patch).join(" + ")}`);
         updated++;
       } else {
-        console.log(`  - ${venue.public_interest_rank} ${venue.name} → no photo`);
+        console.log(`  - ${venue.public_interest_rank} ${venue.name} → no match`);
+        noMatch++;
       }
       // Rate limit: 10 requests/sec max for Places API
       await new Promise((r) => setTimeout(r, 150));
@@ -79,10 +91,10 @@ async function main() {
     }
   }
 
-  console.log(`\nDone: ${updated} updated, ${failed} failed, ${venues.length - updated - failed} no photo found`);
+  console.log(`\nDone: ${updated} updated, ${failed} failed, ${noMatch} no match`);
 }
 
-async function fetchPlacePhoto(name, lat, lng, city, state) {
+async function fetchPlaceDetails(name, lat, lng, city, state) {
   // When we have coords, lat/lng + plain name is the most accurate combo
   // (5km circle filters out distant same-name venues). When we don't, fall
   // back to scoping the text query with city + state so "Hope Lodge" or
@@ -102,7 +114,7 @@ async function fetchPlacePhoto(name, lat, lng, city, state) {
     headers: {
       "Content-Type": "application/json",
       "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
-      "X-Goog-FieldMask": "places.photos",
+      "X-Goog-FieldMask": "places.photos,places.websiteUri",
     },
     body: JSON.stringify(body),
   });
@@ -111,13 +123,15 @@ async function fetchPlacePhoto(name, lat, lng, city, state) {
 
   const data = await res.json();
   const place = data.places?.[0];
-  if (!place?.photos?.length) return null;
+  if (!place) return null;
 
-  const photoRef = place.photos[0].name;
-  return `https://places.googleapis.com/v1/${photoRef}/media?maxHeightPx=800&maxWidthPx=800&key=${GOOGLE_PLACES_API_KEY}`;
+  const photoUrl = place.photos?.length
+    ? `https://places.googleapis.com/v1/${place.photos[0].name}/media?maxHeightPx=800&maxWidthPx=800&key=${GOOGLE_PLACES_API_KEY}`
+    : null;
+  return { photoUrl, website: place.websiteUri || null };
 }
 
-async function updateVenuePhoto(venueId, photoUrl) {
+async function updateVenueFields(venueId, patch) {
   const url = `${SUPABASE_URL}/rest/v1/venues?id=eq.${venueId}`;
   await fetch(url, {
     method: "PATCH",
@@ -127,7 +141,7 @@ async function updateVenuePhoto(venueId, photoUrl) {
       "Content-Type": "application/json",
       Prefer: "return=minimal",
     },
-    body: JSON.stringify({ photo_url: photoUrl }),
+    body: JSON.stringify(patch),
   });
 }
 
