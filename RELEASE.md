@@ -143,3 +143,52 @@ supabase migration list          # re-run until Local and Remote agree
 Run the reconcile against **prod first** (it's the source of truth for what's
 live), then **dev**. Treat the prod reconcile as a gated DB op — dry-run / review
 each unapplied migration before pushing it. See `/db-op`.
+
+---
+
+## App releases & branching (hotfix safety)
+
+The client (iOS/Android) ships on a branch model so an urgent fix to the LIVE
+app never drags in unfinished work.
+
+```
+main      = EXACTLY what's live in the stores. Tagged at every release.
+develop   = the next release in progress. Feature branches merge here.
+feature/* = one in-progress feature, branched off develop.
+hotfix/*  = branched off the LIVE tag (main) when prod is on fire.
+```
+
+### THE iron rule: never archive from a dirty tree
+A store build must be reproducible from git. Before you Archive (Xcode) or build
+a release AAB:
+1. Commit everything. `git status` is clean.
+2. Bump the build number (`CURRENT_PROJECT_VERSION` in `iosApp/Configuration/Config.xcconfig`; Android `versionCode`).
+3. `git tag vX.Y.Z` and note the iOS build number in the tag message.
+4. THEN Archive / build the release.
+
+If you archive from uncommitted changes, there is no commit that equals your live
+app — and you cannot cleanly branch a hotfix from it. (This happened with 1.0.0:
+build 102 was archived from an uncommitted tree, so no commit reproduces it.)
+
+### Releasing the next version (feature release)
+`develop` → finish + test → bump build number → commit → `git tag vX.Y.0` →
+merge to `main` → Archive from `main` → upload. Promote any backend changes per
+the dev→prod steps above (additive-only).
+
+### Hotfix to the live app (the "prod is on fire while mid-feature" case)
+```bash
+git checkout vX.Y.Z                 # the live tag — NOT develop
+git checkout -b hotfix/X.Y.(Z+1)
+# fix ONLY the bug; bump the build number
+git commit -am "Fix <bug>"
+git tag vX.Y.(Z+1)
+# Archive from this branch → upload to App Store / Play  (carries ZERO develop WIP)
+git checkout main    && git merge hotfix/X.Y.(Z+1)   # main = new live
+git checkout develop && git merge hotfix/X.Y.(Z+1)   # develop gets the fix too
+```
+Your in-progress features live on `develop` and are never part of the hotfix
+build — that isolation is the whole point.
+
+> Backend note: a hotfix's backend must stay additive/back-compatible with the
+> live clients (same rule as any prod promotion). A client-only hotfix needs no
+> migration.
