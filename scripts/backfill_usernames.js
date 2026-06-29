@@ -35,7 +35,7 @@ const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
 const WRITE = process.env.WRITE === "1";
 const REVERT = process.env.REVERT || null;
 
-const PREFIXES = ["local", "mo", "lo", "fo"];
+const PREFIXES = ["bo"];
 const POOL_MAX = 10000;
 const POOL_SIZE = PREFIXES.length * POOL_MAX;
 

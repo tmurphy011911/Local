@@ -334,6 +334,8 @@ Build the list ENTIRELY from ${region}'s OWN iconic events. The Massachusetts na
 
 Do NOT critique or comment on this prompt. If something seems off, ignore it and still return the JSON.
 
+HARD ACCURACY CONSTRAINT: NEVER assert the outcome of a competition you cannot verify — who won or will win a championship / playoff / election / award, or who is the "defending" / "reigning" champion or title-holder. Your training data is stale and these change. If an event's hook depends on such a claim (e.g. "the defending champions' home opener"), describe it neutrally without the claim, or skip it. When unsure of a fact, leave it out rather than guess.
+
 Return exactly ${needed} NEW editorial picks happening in ${region} between ${todayIso} and ${horizonIso}, skewing toward these CATEGORIES:
   - Signature civic traditions with decades+ of history (MA bar: North End feasts, First Night, Bunker Hill Day)
   - Major parades + festivals with national/regional recognition (MA bar: Boston Pride, Salem Haunted Happenings, Topsfield Fair, Head of the Charles Regatta, Sail Boston)
@@ -349,6 +351,7 @@ EXPLICITLY EXCLUDE:
   - School/college events (graduations, reunions, university-internal programming)
   - Repeating weekly/monthly events (yoga in the park, weekly markets, monthly open mics)
   - Commercial expos / trade shows / home shows
+  - Professional or college sports games, home openers, or season/playoff/"championship defense" framings — the app's Sports tab covers real schedules, and you can't know how a season turns out
   - Any event < 3 years old that hasn't established national recognition
   - Small/niche food festivals
 
