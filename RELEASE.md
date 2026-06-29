@@ -158,6 +158,20 @@ feature/* = one in-progress feature, branched off develop.
 hotfix/*  = branched off the LIVE tag (main) when prod is on fire.
 ```
 
+> **Two independent dials — don't conflate them.**
+> - **Which code** (features, version, your change) = the **git branch**. A change
+>   lives only on the branch you commit it to. This is what isolates 1.1.0 work
+>   from the live 1.0.0 line.
+> - **Which backend + separate install** = the **build type** (debug / staging
+>   "Local Dev" / release). All three compile the *same* source from the current
+>   branch; they only differ in which DB they hit and that staging installs as a
+>   separate `.dev` app.
+>
+> So a code change shows up in **every** build type built from that branch — build
+> type does NOT hide code. Switch **branches** to compare code with/without a
+> change; switch the **backend menu** to compare dev vs prod data with the same
+> code.
+
 ### THE iron rule: never archive from a dirty tree
 A store build must be reproducible from git. Before you Archive (Xcode) or build
 a release AAB:
