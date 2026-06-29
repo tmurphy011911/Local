@@ -2,6 +2,9 @@ TEAM_ID=2BGU22C396
 
 PRODUCT_NAME=Local
 PRODUCT_BUNDLE_IDENTIFIER=live.localapp.local
+// Home-screen name. Overridden to "Local Dev" by the Staging config so the dev
+// app is distinguishable from the real one. (CFBundleDisplayName in Info.plist.)
+BUNDLE_DISPLAY_NAME=Local
 
 // Internal build number — integer scheme (was decimal 3.7). Must strictly increase
 // per marketing version on App Store Connect. Jumped to 100 to clear the messy
