@@ -1,0 +1,39 @@
+# CHAOS — tab + chat-sheet churn. Hammers the nav graph and the chat
+# ModalBottomSheet open/close far faster than a human would, hundreds of times.
+#
+# Targets, specifically, the failure modes already in this app's crash history:
+#   - heavy carousel / explore reload on EVERY tab swap running on
+#     Dispatchers.Main -> Fatal App Hang (feedback_kmp_heavy_work_on_main_dispatcher)
+#   - retained ViewModels / leaked coroutines accumulating across swaps
+#   - sheet lifecycle races (open while a prior close animation is mid-flight)
+#
+# TOLERANT BY DESIGN: every interaction is `optional: true`, so a missed tap is
+# a no-op, not a step failure. We are hunting PROCESS DEATH and HANGS, not
+# assertions — the verdict comes from chaos.sh scraping the device log, never
+# from this flow's pass/fail (a flaky Maestro tap is explicitly not a finding).
+#
+# Fixed inner repeat; chaos.sh scales total intensity by re-running the flow
+# (outer passes) — Maestro 2.6's flow `env:` default wins over CLI `-e`, so an
+# interpolated count can't be overridden from the runner. Outer-loop instead.
+appId: live.localapp.local
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+- repeat:
+    times: 40
+    commands:
+      # Slam through every tab back-to-back — each swap kicks a feed/explore
+      # reload; doing it faster than the reload settles is the whole point.
+      - tapOn: { text: "Explore", optional: true }
+      - tapOn: { text: "Plans",   optional: true }
+      - tapOn: { text: "Profile", optional: true }
+      - tapOn: { text: "Home",    optional: true }
+      - tapOn: { text: "Explore", optional: true }
+      - tapOn: { text: "Home",    optional: true }
+      # Pop the chat sheet open, then immediately swap tabs / tap through it
+      # without waiting for it to settle.
+      - tapOn: { id: "home_concierge_input", optional: true }
+      - tapOn: { id: "home_concierge_send",  optional: true }
+      - tapOn: { text: "Plans",   optional: true }
+      - tapOn: { text: "Home",    optional: true }
+      - tapOn: { point: "50%,50%", optional: true }

@@ -1,0 +1,37 @@
+# CHAOS — pseudo-random taps + swipes ("monkey" for iOS). Android gets the real
+# `adb shell monkey` from chaos.sh; the iOS simulator has no monkey equivalent,
+# so this approximates it: a spread of taps across the whole screen — corners,
+# edges, the nav bar, mid-content — plus diagonal/horizontal swipes, repeated
+# fast. It pokes into detail screens, sheets, and edge hit-targets that no
+# scripted flow deliberately visits.
+#
+# Maestro has no RNG, so "random" here means a fixed but well-distributed point
+# set hit out of any sensible order at speed. Combined with lifecycle_churn's
+# backgrounding, it's a decent client-side fuzzer for the iOS path.
+#
+# Every tap is optional (never hard-fails on an empty hit target). Swipes can't
+# be marked optional but never fail. chaos.sh owns the verdict.
+# Fixed inner repeat; chaos.sh scales intensity via outer passes (see nav_churn).
+appId: live.localapp.local
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+- repeat:
+    times: 25
+    commands:
+      - tapOn: { point: "12%,18%", optional: true }
+      - tapOn: { point: "83%,27%", optional: true }
+      - tapOn: { point: "47%,63%", optional: true }
+      - tapOn: { point: "9%,91%",  optional: true }
+      - tapOn: { point: "68%,8%",  optional: true }
+      - tapOn: { point: "31%,44%", optional: true }
+      - tapOn: { point: "95%,55%", optional: true }
+      - tapOn: { point: "4%,5%",   optional: true }
+      - tapOn: { point: "50%,96%", optional: true }
+      - tapOn: { point: "75%,72%", optional: true }
+      - swipe: { start: "20%,80%", end: "80%,20%" }
+      - swipe: { start: "80%,50%", end: "20%,50%" }
+      - swipe: { start: "50%,30%", end: "50%,85%" }
+      # A long-press lands on whatever is under it — exercises context menus /
+      # press-state handlers that taps skip.
+      - longPressOn: { point: "50%,55%", optional: true }
