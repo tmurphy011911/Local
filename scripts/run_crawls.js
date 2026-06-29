@@ -669,8 +669,13 @@ ${html}`;
  */
 function tagEasternTime(isoDate) {
   if (!isoDate) return null;
-  // Already has timezone offset or Z — leave it alone
-  if (/[Zz]$/.test(isoDate) || /[+-]\d{2}:\d{2}$/.test(isoDate)) return isoDate;
+  // Already has timezone offset or Z — leave it alone. Accept both the
+  // colon form (-04:00) and the colon-less form (-0400) that some sources
+  // emit; without the colon-less check we'd append a second offset and
+  // produce the Postgres-rejected "2026-08-08T19:00:00-0400-05:00".
+  // Note: only match a 4-digit offset, never a bare ±HH — a date-only
+  // "2026-08-08" ends in "-08" and would otherwise false-match.
+  if (/[Zz]$/.test(isoDate) || /[+-]\d{2}:?\d{2}$/.test(isoDate)) return isoDate;
   // Date-only values (YYYY-MM-DD) need a time component before we can tack on
   // the offset, otherwise Postgres rejects "2026-07-10-04:00" as invalid.
   const normalized = /^\d{4}-\d{2}-\d{2}$/.test(isoDate) ? isoDate + "T00:00:00" : isoDate;
