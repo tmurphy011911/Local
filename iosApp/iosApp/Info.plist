@@ -4,6 +4,8 @@
 <dict>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
+	<key>IS_STAGING</key>
+	<string>$(IS_STAGING)</string>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>Local uses your location to show nearby events, restaurants and experiences.</string>
 	<key>UIAppFonts</key>

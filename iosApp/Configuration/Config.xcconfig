@@ -9,3 +9,8 @@ PRODUCT_BUNDLE_IDENTIFIER=live.localapp.local
 CURRENT_PROJECT_VERSION=102
 MARKETING_VERSION=1.0.0
 
+// Default = real app. The Staging configuration (Config-Staging.xcconfig)
+// overrides this to YES; surfaced into Info.plist (IS_STAGING) and read by
+// the KMP isStagingBuild actual to lock the build to the dev backend.
+IS_STAGING=NO
+

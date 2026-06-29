@@ -192,3 +192,68 @@ build — that isolation is the whole point.
 > Backend note: a hotfix's backend must stay additive/back-compatible with the
 > live clients (same rule as any prod promotion). A client-only hotfix needs no
 > migration.
+
+---
+
+## Submitting to the App Store & Play
+
+Run this once you're on the release commit (`main` for a feature release, or the
+`hotfix/*` branch) — committed clean and `git tag`-ged.
+
+### Pre-submit checklist (both platforms)
+- [ ] Working tree clean and tagged `vX.Y.Z` (never archive dirty).
+- [ ] **Build numbers bumped and STRICTLY INCREASING** — iOS `CURRENT_PROJECT_VERSION` and Android `versionCode` (both in lockstep, currently 102). App Store Connect and Play both reject a build number ≤ the last uploaded one for the same marketing version.
+- [ ] Marketing version set — iOS `MARKETING_VERSION`, Android `versionName` (`iosApp/Configuration/Config.xcconfig`, `composeApp/build.gradle.kts`).
+- [ ] `Config.TEST_AUTH_BYPASS = false` and `REVIEW_BUILD_BYPASS = false` (the latter only `true` for a closed review track, never a prod submission).
+- [ ] `Config.FEATURE_*` flags set as intended for this release.
+- [ ] Sanity: a release build resolves to **prod** (no DEV badge). It's structural, but eyeball it.
+
+### iOS → App Store Connect / TestFlight
+1. **Quit the iOS Simulator first.** The K/N Release link runs in the Gradle daemon at 8g; daemon + Xcode + Simulator oversubscribes a 16GB Mac and OOMs. Cold link is ~11 min.
+2. Xcode: destination **Any iOS Device (arm64)** → **Product → Archive**.
+3. Organizer → **Distribute App → App Store Connect → Upload**. Team `2BGU22C396`.
+4. The **"Upload Symbols Failed — no dSYM for Sentry.framework"** warning is **NOT a blocker** — your own code symbolicates via `Local.app.dSYM`; ship it.
+5. App Store Connect (build appears after ~5–15 min processing): add it to a **TestFlight** group for testers, or attach it to the App Store version and **Submit for Review**.
+
+### Android → Play Console
+1. Build a **signed release AAB**: Android Studio → **Build → Generate Signed Bundle/APK → Android App Bundle**, using your upload keystore. (No gradle `signingConfig`, so this is the GUI path; Play App Signing re-signs server-side.)
+2. Play Console → app → **Testing** (internal/closed) for testers, or **Production** → create release → upload the AAB → roll out (consider a staged % rollout for prod).
+3. The **"missing native debug symbols"** warning (Sentry's `.so`) is **safe to ignore** — documented in `composeApp/build.gradle.kts`; Sentry symbolicates via its own pipeline.
+
+### After both are live
+- Confirm `main` points at the tagged release commit; `git push origin main --tags`.
+- If this was a hotfix, you've already merged it back into `develop`.
+
+---
+
+## Staging build — the side-by-side "Local (Dev)" app
+
+A separate app (`live.localapp.local.dev`, labeled "Local (Dev)") that installs
+ALONGSIDE the real app and is **locked to the dev backend**. Use it to run an
+in-progress branch next to the live app, and to distribute dev builds to testers
+via TestFlight / Play internal testing. It can never touch prod (backend is forced
+to dev by `IS_STAGING`), and dev-auth is on (any OTP, phone→dev account).
+
+### Android — ready now
+- **Local side-by-side:** `./gradlew :composeApp:installStaging` → installs "Local (Dev)" next to "Local". (Debug-signed, so no keystore needed.)
+- **Distribute via Play:** Android Studio → Build → Generate Signed Bundle (AAB), select the **staging** build type, sign with your upload key → upload to the `.dev` app's internal-testing track in Play Console.
+
+### iOS — one-time Xcode wiring (GUI; the files are already in place)
+Files committed: `Config-Staging.xcconfig` (bundle id `.dev` + `IS_STAGING=YES`),
+`IS_STAGING` key in `Info.plist`, `IS_STAGING=NO` default in `Config.xcconfig`.
+In Xcode:
+1. Project → **Info** tab → **Configurations** → duplicate **Release** → name it **Staging**.
+2. For the **Staging** row, set the project's config file to **Config-Staging.xcconfig** (Set "Based on Configuration File" for the iosApp target/project → Config-Staging).
+3. **Product → Scheme → Manage Schemes** → duplicate the `iosApp` scheme → name it **"Local Dev"**. Edit it so **Run** and **Archive** use the **Staging** configuration.
+4. Run/Archive the **Local Dev** scheme → installs/archives the `.dev` app pointed at dev.
+
+### Accounts (only when distributing to others)
+- **Apple:** register bundle id `live.localapp.local.dev`; create its App Store Connect app record; let Xcode make the provisioning profile. Archive the "Local Dev" scheme → upload → TestFlight.
+- **Google:** create the `.dev` app (or just an internal-testing track) in Play Console; upload the signed staging AAB.
+
+### Backend mapping (how the lock works)
+```
+Android: staging build type → BuildConfig.IS_STAGING=true → Config.backendEnv=DEV
+iOS:     Staging config xcconfig → Info.plist IS_STAGING=YES → same
+debug build → DEV (switchable via the Local-logo menu)   release → PROD (locked)
+```

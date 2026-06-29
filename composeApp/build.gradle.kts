@@ -126,6 +126,11 @@ android {
         // and read at runtime by the Directions API client.
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
         buildConfigField("String", "MAPS_API_KEY", "\"$mapsApiKey\"")
+        // App display name — overridden by the staging build type so the dev app
+        // reads "Local (Dev)" next to the real "Local".
+        manifestPlaceholders["appLabel"] = "Local"
+        // Default: not the staging (.dev) build. Overridden in the staging type.
+        buildConfigField("boolean", "IS_STAGING", "false")
     }
     buildFeatures {
         buildConfig = true
@@ -143,6 +148,21 @@ android {
             // because that requires the NDK to be installed and would fail the
             // build. Those native libs are Sentry's, symbolicated via Sentry's
             // own pipeline — so Play's symbol warning is safe to ignore.
+        }
+        // Staging: the side-by-side dev app. Release-like, but its own app id
+        // (live.localapp.local.dev) so it installs ALONGSIDE the real app, and
+        // locked to the dev backend (IS_STAGING=true → Config.backendEnv=DEV).
+        // Debug-signed so `installStaging` works on a device without the upload
+        // keystore; for Play internal-testing, generate a signed bundle via the
+        // Android Studio GUI selecting this build type.
+        create("staging") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            manifestPlaceholders["appLabel"] = "Local (Dev)"
+            buildConfigField("boolean", "IS_STAGING", "true")
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
         }
     }
     compileOptions {

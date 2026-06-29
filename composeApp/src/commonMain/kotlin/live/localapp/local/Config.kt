@@ -122,11 +122,15 @@ object Config {
     private var cachedBackendEnv: BackendEnv? = null
 
     /**
-     * The active backend. Always [BackendEnv.PROD] in a release build. In a debug
-     * build, reads the persisted choice (default [BackendEnv.DEV]).
+     * The active backend, resolved by build type:
+     *  - STAGING build (the `.dev` app for side-by-side / TestFlight / Play
+     *    internal testing) → always DEV. Locked, even though it's release-signed.
+     *  - plain RELEASE build (the real store app) → always PROD. Locked.
+     *  - DEBUG build → switchable via the debug menu; defaults to DEV.
      */
     val backendEnv: BackendEnv
         get() {
+            if (live.localapp.local.platform.isStagingBuild) return BackendEnv.DEV
             if (!live.localapp.local.platform.isDebugBuild) return BackendEnv.PROD
             cachedBackendEnv?.let { return it }
             val stored = com.russhwolf.settings.Settings().getStringOrNull(BACKEND_ENV_KEY)
@@ -135,7 +139,10 @@ object Config {
             return env
         }
 
-    /** Persist a backend choice (debug builds only — release is always prod). */
+    /**
+     * Persist a backend choice. Only effective in a DEBUG build — staging is
+     * locked to dev and a plain release is locked to prod (both ignore this).
+     */
     fun setBackendEnv(env: BackendEnv) {
         if (!live.localapp.local.platform.isDebugBuild) return
         cachedBackendEnv = env
@@ -159,10 +166,11 @@ object Config {
     //      so it always lands in the existing-user (skip-onboarding) flow.
     //
     // Requires the DEV project to have email auto-confirm ON so client sign-ups
-    // yield an active session immediately. NEVER active in a release build
-    // ([isDebugBuild]) or against prod ([backendEnv]).
+    // yield an active session immediately. Keyed purely on the resolved backend,
+    // so it's also on for a STAGING build (the .dev app testers install) — and can
+    // NEVER be true on the real prod app, whose backend is always PROD.
     val devAuthActive: Boolean
-        get() = live.localapp.local.platform.isDebugBuild && backendEnv == BackendEnv.DEV
+        get() = backendEnv == BackendEnv.DEV
 
     /** Reserved dev phone pre-seeded as an existing user (skips onboarding). */
     const val DEV_EXISTING_USER_PHONE = "5555550100"
