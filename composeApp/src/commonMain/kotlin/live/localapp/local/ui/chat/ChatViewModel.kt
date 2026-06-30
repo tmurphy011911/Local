@@ -213,6 +213,14 @@ data class ChatUiState(
      */
     val draftTrayChips: List<live.localapp.local.domain.model.DraftTrayChip> = emptyList(),
     /**
+     * The goal the user picked from the intent sheet on open (Find events /
+     * Create a plan / Just browsing). Null until they choose — that null is
+     * what tells the UI to present the sheet. Cleared on chat reset so a fresh
+     * session re-asks. Drives Bo's framing copy + whether saving auto-drafts a
+     * plan (CREATE_PLAN) vs. waits for an explicit ask (FIND_EVENTS/BROWSING).
+     */
+    val boIntent: BoIntent? = null,
+    /**
      * Set while the client-side "Create plan" confirmation dialog is open.
      * Null when no handoff is in flight. Populated when the user taps the
      * iOS Build CTA; cleared when they pick a final chip ("No, create",
@@ -3461,7 +3469,27 @@ class ChatViewModel(
         val keyword = input["keyword"]?.jsonPrimitive?.contentOrNull
         val limit = input["limit"]?.jsonPrimitive?.intOrNull ?: 10000
 
-        val venues = venueRepo.searchVenues(location, category, keyword, limit)
+        // Honor the chat search scope (the "Where should Bo search?" pill) exactly
+        // like searchEvents does: prefer the scope coords, fall back to the user's
+        // profile location. Previously venue searches ignored the scope entirely
+        // (city-name match only) — so Bo recommended places in the wrong place.
+        val state = _uiState.value
+        val prefs = state.userPreferences
+        val prefsLat = prefs?.let { if (it.locationMode == "manual") it.manualLat ?: it.userLat else it.userLat }
+        val prefsLng = prefs?.let { if (it.locationMode == "manual") it.manualLng ?: it.userLng else it.userLng }
+        val scopeLat = state.currentLat ?: prefsLat
+        val scopeLng = state.currentLng ?: prefsLng
+        val haveCoords = scopeLat != null && scopeLng != null
+
+        val venues = venueRepo.searchVenues(
+            location = location,
+            category = category,
+            keyword = keyword,
+            limit = limit,
+            userLat = scopeLat,
+            userLng = scopeLng,
+            radiusMiles = if (haveCoords) state.searchRadiusMiles else null,
+        )
 
         return venues.joinToString("\n") { v ->
             val cat = v.category ?: v.placeType ?: ""
@@ -4435,6 +4463,77 @@ class ChatViewModel(
         _uiState.update { it.copy(draftTray = emptyList(), draftTrayChips = emptyList()) }
     }
 
+    /**
+     * Record the goal the user picked from the intent sheet on open and have Bo
+     * reply with an acknowledgment + qualifying questions. buildSystemPrompt()
+     * reads [ChatUiState.boIntent] each turn to steer Bo's framing + planning
+     * behavior. Once set the intent sheet stops showing (boIntent is non-null)
+     * until the chat is reset.
+     */
+    fun setBoIntent(intent: BoIntent) {
+        if (_uiState.value.boIntent == intent) return
+        _uiState.update { it.copy(boIntent = intent) }
+        respondToIntent(intent)
+    }
+
+    /** Stream Bo's "Great! …" reply to an intent pick. Reuses [welcomeJob] and
+     *  joins the prior greeting first so two streams don't clash in
+     *  streamingText. Tools are disabled — this is a conversational prompt for
+     *  details, not a search. */
+    private fun respondToIntent(intent: BoIntent) {
+        val prior = welcomeJob
+        welcomeJob = viewModelScope.launch {
+            // Let the greeting finish first. join() doesn't rethrow the prior
+            // job's outcome — it only throws if THIS coroutine is cancelled
+            // (e.g. resetChat), which should propagate. Joining also keeps the
+            // ordering correct: greeting bubble → user's pick → Bo's "Great!".
+            prior?.join()
+            // Echo the pick as the user's own bubble, the way it'd read if they
+            // had typed it.
+            addUserMessage(userIntentMessage(intent))
+            _uiState.update { it.copy(isTyping = true, quickReplies = emptyList()) }
+            try {
+                val systemPrompt = buildSystemPrompt()
+                conversationHistory.add(ClaudeMessage.text("user", intentReplyPrompt(intent)))
+                val response = sendStreaming(
+                    systemPrompt, null, isToolRound = false,
+                    model = live.localapp.local.data.remote.ClaudeApiService.MODEL_CHAT,
+                )
+                val text = claudeApi.extractText(response) ?: defaultIntentReply(intent)
+                conversationHistory.removeLastOrNull()
+                addAiMessage(text)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                addAiMessage(defaultIntentReply(intent))
+            }
+            _uiState.update { it.copy(isTyping = false, inputEnabled = true) }
+        }
+    }
+
+    /** The user-facing bubble text for an intent pick — phrased as if the user
+     *  said it themselves. */
+    private fun userIntentMessage(intent: BoIntent): String = when (intent) {
+        BoIntent.FIND_EVENTS -> "I am looking for events"
+        BoIntent.CREATE_PLAN -> "I'd like to create a plan that I can reference in my plans"
+        BoIntent.BROWSING -> "I'm just browsing"
+    }
+
+    private fun intentReplyPrompt(intent: BoIntent): String = when (intent) {
+        BoIntent.FIND_EVENTS ->
+            "[System: The user just chose 'Find events'. Reply warmly, opening with 'Great!' (or similar), and ask 1-2 brief qualifying questions to narrow down what they want — e.g. what kind of events they're into (music, food, comedy, etc.) and roughly when. Keep it to 1-2 short sentences. Do NOT use tools. NO emoji. Plain text only.]"
+        BoIntent.CREATE_PLAN ->
+            "[System: The user just chose 'Create a plan'. Reply warmly, opening with 'Great!', and ask 1-2 brief qualifying questions to start the plan — e.g. the occasion or vibe, and what day. Keep it to 1-2 short sentences. Do NOT use tools. NO emoji. Plain text only.]"
+        BoIntent.BROWSING ->
+            "[System: The user just chose 'I'm just browsing'. Reply warmly, opening with 'Great!', and lightly ask what they're in the mood for, or offer to show what's happening this week. Keep it short and low-pressure, 1-2 short sentences. Do NOT use tools. NO emoji. Plain text only.]"
+    }
+
+    private fun defaultIntentReply(intent: BoIntent): String = when (intent) {
+        BoIntent.FIND_EVENTS -> "Great! What kind of events are you into — music, food, comedy? And when are you thinking?"
+        BoIntent.CREATE_PLAN -> "Great! What's the occasion, and what day works? I'll start pulling things together."
+        BoIntent.BROWSING -> "Great! Want me to show you what's happening this week, or are you after something specific?"
+    }
+
     /** Tap a chip / footer action — treat as a structured user message to Bo. */
     fun sendDraftTrayChip(intent: String) {
         if (intent.isBlank()) return
@@ -5140,6 +5239,25 @@ Approved: ${state.approvedDayCount}/${state.days.size}
             """.trimIndent()
         } else ""
 
+        // Session-goal steer from the intent sheet the user picked on open.
+        // Shapes the framing copy + whether saving an event auto-drafts a plan
+        // (CREATE_PLAN) or waits for the user to ask (FIND_EVENTS / BROWSING).
+        val intentContext = when (state.boIntent) {
+            BoIntent.FIND_EVENTS -> """
+SESSION GOAL — FIND EVENTS:
+The user opened Bo to find events, not (yet) to build a plan. When you present results, your intro should land like: "Here are the events you're looking for. If you'd like, I can create a plan for you to easily reference later and share with friends — just say the word!" Do NOT start drafting a plan on your own. Only build a plan if the user explicitly asks; when they do, first confirm which of the events they saved should go in.
+            """.trimIndent()
+            BoIntent.CREATE_PLAN -> """
+SESSION GOAL — CREATE A PLAN:
+The user opened Bo to build a plan. When you present results, frame it like: "Here are the events you're looking for. I'll start drafting a plan that includes any of the events you save." Treat saved events as picks for the plan you're actively assembling and proceed with your normal planning flow.
+            """.trimIndent()
+            BoIntent.BROWSING -> """
+SESSION GOAL — JUST BROWSING:
+The user is just browsing. Keep it light — present results with a simple intro like "Here are the events you're looking for." Do NOT push plan creation or offer it unprompted. Only build a plan if the user explicitly asks; when they do, confirm which saved events to include first.
+            """.trimIndent()
+            null -> ""
+        }
+
         val prefsContext = _uiState.value.userPreferences?.let { prefs ->
             val cats = prefs.selectedCategories.joinToString(", ")
             val venues = prefs.selectedVenues.joinToString(", ")
@@ -5336,6 +5454,8 @@ ${live.localapp.local.data.remote.ClaudeApiService.SYSTEM_PROMPT_CACHE_BREAK}
 INTENT: ${detectIntent(lastUserMessage)}
 - info: user is asking quick questions / browsing options. Stay short, list 2-3 specific picks, do NOT proactively offer a plan unless asked. Tools are search-only.
 - plan: user wants a buildable itinerary. Call present_plan immediately — the user sets group size from the plan detail screen, not in chat. Don't narrate the plan in prose.
+
+$intentContext
 
 $prefsContext
 

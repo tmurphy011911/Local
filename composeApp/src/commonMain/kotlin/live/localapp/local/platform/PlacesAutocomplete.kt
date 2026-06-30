@@ -13,6 +13,10 @@ data class PlaceDetails(
     val formattedAddress: String,
     val lat: Double?,
     val lng: Double?,
+    /** City/town component (e.g. "Perkasie"), when the place resolver provides
+     *  it. Use this for hometown/home-city display — `name` is often the full
+     *  street address for a precise pick. */
+    val locality: String? = null,
 )
 
 interface PlacesAutocompleteController {

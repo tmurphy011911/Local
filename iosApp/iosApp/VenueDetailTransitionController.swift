@@ -79,6 +79,9 @@ class VenueDetailTransitionController {
         window.addSubview(hosting.view)
         self.hostingController = hosting
 
+        // Left-edge swipe-back (no UINavigationController hosts this view).
+        EdgeSwipeBackGesture.install(on: hosting.view) { [weak self] in self?.dismiss() }
+
         // Fade in quickly, then spring to fullscreen
         UIView.animate(withDuration: 0.1) {
             hosting.view.alpha = 1

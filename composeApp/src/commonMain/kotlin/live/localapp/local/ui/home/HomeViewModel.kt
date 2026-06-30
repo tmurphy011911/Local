@@ -62,6 +62,12 @@ data class HomeUiState(
     val manualLocationName: String = "",
     val manualLat: Double? = null,
     val manualLng: Double? = null,
+    // GPS coords from the live location fix (written ONLY by setUserLocation). Kept
+    // separate from userLat/userLng — which a manual selection overwrites — so
+    // flipping back to Current Location restores the real GPS fix, not a stale
+    // manual one. This was the "GPS shows my last manual location" bug.
+    val gpsLat: Double? = null,
+    val gpsLng: Double? = null,
     val hasLocationPermission: Boolean = true,
     val isUnsupportedState: Boolean = false,
     // City name reverse-geocoded from GPS lat/lng. Separate from locationName so
@@ -393,7 +399,7 @@ class HomeViewModel(
             val locName = if (current.locationName.isBlank() && prefs != null) {
                 prefs.city.replaceFirstChar { c -> c.uppercase() }
             } else current.locationName
-            _uiState.update { it.copy(userLat = lat, userLng = lng, locationName = locName, isUnsupportedState = !isLocationInSupportedState(lat, lng)) }
+            _uiState.update { it.copy(userLat = lat, userLng = lng, gpsLat = lat, gpsLng = lng, locationName = locName, isUnsupportedState = !isLocationInSupportedState(lat, lng)) }
             reloadCarouselsForLocationChange()
             fetchYocalPromptsIfNeeded(lat, lng)
             fetchWeatherIfNeeded(lat, lng)
@@ -473,9 +479,12 @@ class HomeViewModel(
                 if (current.gpsLocationName.isNotBlank()) {
                     _uiState.update { it.copy(locationName = current.gpsLocationName) }
                 }
-                val prefs = current.userPreferences
-                val gpsLat = prefs?.userLat
-                val gpsLng = prefs?.userLng
+                // Use the dedicated GPS fix, NOT userPreferences.userLat/userLng —
+                // that field is overwritten by manual selection, so reading it here
+                // restored the stale manual location. If we have no live GPS fix yet,
+                // fall through to the skeleton + let RequestLocationEffect fetch one.
+                val gpsLat = current.gpsLat
+                val gpsLng = current.gpsLng
                 if (gpsLat != null && gpsLng != null) {
                     _uiState.update {
                         it.copy(userLat = gpsLat, userLng = gpsLng,
@@ -538,6 +547,12 @@ class HomeViewModel(
                 manualLat = state.manualLat,
                 manualLng = state.manualLng,
             )
+            // Reflect the new mode in the in-memory prefs too. The Home GPS effect
+            // (AppNavigation.RequestLocationEffect) is gated on
+            // userPreferences.locationMode != "manual"; without this update the
+            // gate stayed closed after switching to Current Location, so fresh GPS
+            // never re-fired and carousels kept the old manual market.
+            _uiState.update { it.copy(userPreferences = updated) }
             val userId = userPreferencesRepository.getLocalUserId() ?: return@launch
             try { userPreferencesRepository.savePreferencesWithId(userId, updated) } catch (_: Exception) {}
         }

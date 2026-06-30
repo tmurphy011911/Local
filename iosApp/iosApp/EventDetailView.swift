@@ -827,8 +827,9 @@ struct EventDetailView: View {
             // Primary CTA
             if event.ctaUrl != nil {
                 primaryButton(label: event.ctaLabel, isPrimary: event.ticketUrl != nil) {
-                    if let urlStr = event.ctaUrl, let url = URL(string: urlStr) {
-                        UIApplication.shared.open(url)
+                    if let urlStr = event.ctaUrl {
+                        // In-app webview (tickets / More Info) — stays in Local.
+                        InAppBrowserBridgeSetup.open(urlStr)
                     }
                 }
             }

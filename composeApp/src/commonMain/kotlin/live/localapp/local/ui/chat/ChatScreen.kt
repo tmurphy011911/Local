@@ -114,7 +114,10 @@ import local.composeapp.generated.resources.Res
 import local.composeapp.generated.resources.bo_tiny
 import org.jetbrains.compose.resources.painterResource
 import live.localapp.local.platform.MapHeroStop
+import live.localapp.local.platform.PlaceSuggestion
 import live.localapp.local.platform.PlanMapHero
+import live.localapp.local.platform.rememberInAppBrowser
+import live.localapp.local.platform.rememberPlacesAutocomplete
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 import live.localapp.local.ui.theme.AppShapes
@@ -481,8 +484,10 @@ fun ChatScreen(
                 currentLng = state.currentLng,
                 currentRadiusMiles = state.searchRadiusMiles,
                 onDismiss = { locationEditorOpen = false },
-                onConfirm = { name, radius ->
-                    viewModel.setChatSearchScope(name, radius)
+                onConfirm = { name, lat, lng, radius ->
+                    // Picked a Places suggestion → real coords; free-typed → NaN
+                    // so the VM falls back to its in-memory geocoder.
+                    viewModel.setChatSearchScopeWithCoords(name, lat ?: Double.NaN, lng ?: Double.NaN, radius)
                     locationEditorOpen = false
                 },
             )
@@ -859,10 +864,28 @@ private fun LocationEditorSheet(
     currentLng: Double?,
     currentRadiusMiles: Double,
     onDismiss: () -> Unit,
-    onConfirm: (String, Double) -> Unit,
+    onConfirm: (name: String, lat: Double?, lng: Double?, radius: Double) -> Unit,
 ) {
+    val places = rememberPlacesAutocomplete()
+    val scope = rememberCoroutineScope()
     var text by remember(current) { mutableStateOf(current) }
     var radius by remember(currentRadiusMiles) { mutableStateOf(currentRadiusMiles.toFloat().coerceIn(1f, 50f)) }
+    // Coords for the chosen scope: seeded from the current scope, replaced when the
+    // user picks a Places suggestion, cleared to null when they free-type (so the VM
+    // falls back to its geocoder). This is the fix for Android, where there was no
+    // autocomplete and the in-memory geocoder couldn't resolve most towns.
+    var pickedLat by remember(current) { mutableStateOf(currentLat) }
+    var pickedLng by remember(current) { mutableStateOf(currentLng) }
+    var suggestions by remember { mutableStateOf<List<PlaceSuggestion>>(emptyList()) }
+    var justPicked by remember { mutableStateOf(false) }
+
+    LaunchedEffect(text) {
+        if (justPicked) { justPicked = false; suggestions = emptyList(); return@LaunchedEffect }
+        // Don't surface suggestions for the unchanged prefilled value.
+        if (text == current || text.trim().length < 2) { suggestions = emptyList(); return@LaunchedEffect }
+        delay(250)
+        suggestions = runCatching { places.query(text.trim(), currentLat, currentLng) }.getOrDefault(emptyList())
+    }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -887,7 +910,7 @@ private fun LocationEditorSheet(
             Spacer(Modifier.height(20.dp))
             TextField(
                 value = text,
-                onValueChange = { text = it },
+                onValueChange = { text = it; pickedLat = null; pickedLng = null },
                 placeholder = { Text("e.g. Brookline, Cambridge, Hyannis") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
@@ -900,8 +923,47 @@ private fun LocationEditorSheet(
                 textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = AppColors.Ink),
             )
 
-            // Live map preview of the current scope center.
-            if (currentLat != null && currentLng != null) {
+            // Google Places autocomplete suggestions.
+            if (suggestions.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 220.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(AppColors.White),
+                ) {
+                    items(suggestions, key = { it.id }) { s ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    scope.launch {
+                                        val d = runCatching { places.resolve(s) }.getOrNull()
+                                        justPicked = true
+                                        text = s.primaryText
+                                        pickedLat = d?.lat
+                                        pickedLng = d?.lng
+                                        suggestions = emptyList()
+                                    }
+                                }
+                                .padding(horizontal = 14.dp, vertical = 11.dp),
+                        ) {
+                            Column {
+                                Text(s.primaryText, style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Ink))
+                                if (s.secondaryText.isNotBlank()) {
+                                    Text(s.secondaryText, style = TextStyle(fontFamily = AppFonts.Body, fontSize = 12.sp, color = AppColors.Ink3))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Live map preview of the chosen scope center.
+            val previewLat = pickedLat ?: currentLat
+            val previewLng = pickedLng ?: currentLng
+            if (previewLat != null && previewLng != null) {
                 Spacer(Modifier.height(16.dp))
                 Box(
                     modifier = Modifier
@@ -910,7 +972,7 @@ private fun LocationEditorSheet(
                         .clip(RoundedCornerShape(16.dp)),
                 ) {
                     PlanMapHero(
-                        stops = listOf(MapHeroStop(currentLat, currentLng, current)),
+                        stops = listOf(MapHeroStop(previewLat, previewLng, text.ifBlank { current })),
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -951,7 +1013,7 @@ private fun LocationEditorSheet(
                     .clip(RoundedCornerShape(50))
                     .background(AppColors.Coral)
                     .graphicsLayer { alpha = if (canSet) 1f else 0.3f }
-                    .then(if (canSet) Modifier.clickable { onConfirm(text.trim(), radius.toDouble()) } else Modifier),
+                    .then(if (canSet) Modifier.clickable { onConfirm(text.trim(), pickedLat, pickedLng, radius.toDouble()) } else Modifier),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
@@ -1834,7 +1896,7 @@ private fun SlotCard(
     dateLabel: String = "",
     onEventClick: () -> Unit = {},
 ) {
-    val uriHandler = LocalUriHandler.current
+    val inAppBrowser = rememberInAppBrowser()
     val hasImage = slot.imageUrl != null
     val cardShape = RoundedCornerShape(13.dp)
 
@@ -1925,7 +1987,7 @@ private fun SlotCard(
                     Text(
                         "Reserve",
                         modifier = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
-                            uriHandler.openUri(slot.venueWebsite?.takeIf { it.isNotBlank() } ?: slot.reservationUrl)
+                            inAppBrowser.open(slot.venueWebsite?.takeIf { it.isNotBlank() } ?: slot.reservationUrl)
                         },
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = if (hasImage) AppColors.White else AppColors.Coral),
                     )

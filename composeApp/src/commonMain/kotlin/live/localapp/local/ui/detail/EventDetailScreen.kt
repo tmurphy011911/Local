@@ -54,6 +54,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import live.localapp.local.platform.AppBackHandler
+import live.localapp.local.platform.rememberInAppBrowser
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -136,7 +138,11 @@ fun EventDetailScreen(
      */
     showDirections: Boolean = false,
 ) {
+    // Android predictive-back / system-back → dismiss (matches the swipe-back
+    // gesture). Inert on iOS, where the native detail view handles edge-swipe.
+    AppBackHandler(enabled = true, onBack = onBack)
     val uriHandler = LocalUriHandler.current
+    val inAppBrowser = rememberInAppBrowser()
     val clipboardManager = LocalClipboardManager.current
 
     // Upcoming-event count for the host venue, shown on the venue card. Events
@@ -408,7 +414,7 @@ fun EventDetailScreen(
             mapsExpanded = mapsExpanded,
             rideExpanded = rideExpanded,
             shareCopied = shareCopied,
-            onCtaClick = { if (ctaUrl != null) uriHandler.openUri(ctaUrl) },
+            onCtaClick = { if (ctaUrl != null) inAppBrowser.open(ctaUrl) },
             onToggleMaps = {
                 mapsExpanded = !mapsExpanded
                 if (mapsExpanded) rideExpanded = false

@@ -56,6 +56,7 @@ struct ComposeView: UIViewControllerRepresentable {
         NativeTimePickerBridgeSetup.register()
         PlacesAutocompleteBridgeSetup.register()
         NativeDateRangePickerBridgeSetup.register()
+        InAppBrowserBridgeSetup.register()
 
         return vc
     }

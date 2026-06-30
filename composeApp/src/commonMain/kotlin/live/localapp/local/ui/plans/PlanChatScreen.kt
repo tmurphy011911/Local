@@ -50,7 +50,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalUriHandler
+import live.localapp.local.platform.rememberInAppBrowser
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -88,7 +88,7 @@ private fun RichBoText(
     linkColor: Color = AppColors.Coral,
     modifier: Modifier = Modifier,
 ) {
-    val uriHandler = LocalUriHandler.current
+    val inAppBrowser = rememberInAppBrowser()
     val annotated = remember(text) {
         buildAnnotatedString {
             var cursor = 0
@@ -131,7 +131,7 @@ private fun RichBoText(
         ),
         onClick = { offset ->
             annotated.getStringAnnotations(tag = "URL", start = offset, end = offset)
-                .firstOrNull()?.let { uriHandler.openUri(it.item) }
+                .firstOrNull()?.let { inAppBrowser.open(it.item) }
         },
     )
 }

@@ -115,7 +115,7 @@ private fun formatPhoneDisplay(raw: String): String = "+1 ${formatPhone(raw)}"
 @Composable
 fun PhoneAuthScreen(
     viewModel: PhoneAuthViewModel,
-    onAuthComplete: (isNewUser: Boolean, firstName: String, lastName: String, phone: String, email: String, authUserId: String) -> Unit,
+    onAuthComplete: (isNewUser: Boolean, firstName: String, lastName: String, phone: String, authUserId: String) -> Unit,
     onSkip: (() -> Unit)? = null,
 ) {
     val state by viewModel.state.collectAsState()
@@ -130,9 +130,9 @@ fun PhoneAuthScreen(
     if (state.authComplete) {
         val userId = state.authUserId ?: ""
         if (state.isExistingUser) {
-            onAuthComplete(false, "", "", state.phone, "", userId)
+            onAuthComplete(false, "", "", state.phone, userId)
         } else {
-            onAuthComplete(true, state.firstName, state.lastName, state.phone, state.email, userId)
+            onAuthComplete(true, state.firstName, state.lastName, state.phone, userId)
         }
         return
     }
@@ -171,13 +171,6 @@ fun PhoneAuthScreen(
                     onVerify = viewModel::verifyOtp,
                     onResend = viewModel::resendOtp,
                     onBack = viewModel::goBackToPhone,
-                )
-                AuthStep.EMAIL -> EmailInputContent(
-                    email = state.email,
-                    isLoading = state.isLoading,
-                    error = state.error,
-                    onEmailChange = viewModel::updateEmail,
-                    onContinue = viewModel::submitEmail,
                 )
             }
         }
@@ -598,133 +591,6 @@ private fun OtpVerificationContent(
                 enabled = otpCode.length == 6 && !isLoading,
                 isLoading = isLoading,
                 onClick = onVerify,
-            )
-        }
-    }
-}
-
-@Composable
-private fun EmailInputContent(
-    email: String,
-    isLoading: Boolean,
-    error: String?,
-    onEmailChange: (String) -> Unit,
-    onContinue: () -> Unit,
-) {
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .windowInsetsPadding(WindowInsets.statusBars)
-            .imePadding()
-            .padding(top = 20.dp),
-    ) {
-        Column(
-            modifier = Modifier
-                .weight(1f)
-                .verticalScroll(rememberScrollState())
-                .padding(horizontal = 28.dp),
-        ) {
-            Spacer(Modifier.height(48.dp))
-
-            Text(
-                buildAnnotatedString {
-                    append("What\u2019s your ")
-                    withStyle(SpanStyle(fontStyle = FontStyle.Italic, color = AppColors.Coral)) {
-                        append("email?")
-                    }
-                },
-                style = TextStyle(
-                    fontFamily = AppFonts.Heading,
-                    fontWeight = FontWeight.Black,
-                    fontSize = 28.sp,
-                    color = AppColors.Ink,
-                ),
-            )
-
-            Spacer(Modifier.height(10.dp))
-
-            Text(
-                "We\u2019ll use it to keep your account safe and send you the occasional update.",
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.SemiBold,
-                    fontSize = 14.sp,
-                    color = AppColors.Ink2,
-                    lineHeight = 22.sp,
-                ),
-            )
-
-            Spacer(Modifier.height(28.dp))
-
-            // Email input
-            BasicTextField(
-                value = email,
-                onValueChange = onEmailChange,
-                textStyle = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 16.sp,
-                    color = AppColors.Ink,
-                ),
-                cursorBrush = SolidColor(AppColors.Coral),
-                keyboardOptions = KeyboardOptions(
-                    keyboardType = KeyboardType.Email,
-                    capitalization = androidx.compose.ui.text.input.KeyboardCapitalization.None,
-                    autoCorrect = false,
-                ),
-                singleLine = true,
-                enabled = !isLoading,
-                decorationBox = { innerTextField ->
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(56.dp)
-                            .background(AppColors.White, RoundedCornerShape(16.dp))
-                            .border(2.5.dp, if (error != null) AppColors.Coral else AppColors.Pebble, RoundedCornerShape(16.dp))
-                            .padding(horizontal = 14.dp),
-                        contentAlignment = Alignment.CenterStart,
-                    ) {
-                        if (email.isEmpty()) {
-                            Text(
-                                "you@email.com",
-                                style = TextStyle(
-                                    fontFamily = AppFonts.Body,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    fontSize = 16.sp,
-                                    color = AppColors.Pebble,
-                                ),
-                            )
-                        }
-                        innerTextField()
-                    }
-                },
-                modifier = Modifier.fillMaxWidth().testTag("auth_email_field"),
-            )
-
-            // Error
-            if (error != null) {
-                Spacer(Modifier.height(8.dp))
-                Text(
-                    error,
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        color = AppColors.Coral,
-                    ),
-                )
-            }
-        }
-
-        // Bottom button
-        Column(
-            modifier = Modifier.padding(horizontal = 28.dp, vertical = 28.dp),
-        ) {
-            AuthButton(
-                text = "Continue \u2192",
-                enabled = isValidEmail(email) && !isLoading,
-                isLoading = isLoading,
-                onClick = onContinue,
             )
         }
     }

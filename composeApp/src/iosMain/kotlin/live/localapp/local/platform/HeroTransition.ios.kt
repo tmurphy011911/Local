@@ -68,6 +68,9 @@ actual fun openChatSheet(onReady: () -> Unit) {
     }
     ChatBridge.sendMessage = { msg -> chatVm.sendMessage(msg) }
     ChatBridge.resetChat = { chatVm.resetChat() }
+    ChatBridge.setBoIntent = { wire ->
+        live.localapp.local.ui.chat.BoIntent.fromWire(wire)?.let { chatVm.setBoIntent(it) }
+    }
     ChatBridge.buildPlanFromSelections = { ids -> chatVm.buildPlanFromSelections(ids) }
     ChatBridge.setLocationByName = { name -> chatVm.setChatSearchLocationByName(name) }
     ChatBridge.setSearchScope = { name, radius -> chatVm.setChatSearchScope(name, radius) }

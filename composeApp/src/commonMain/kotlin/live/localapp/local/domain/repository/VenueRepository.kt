@@ -58,6 +58,13 @@ interface VenueRepository {
         category: String? = null,
         keyword: String? = null,
         limit: Int = 20,
+        // When coords + radius are supplied (e.g. Bo's chat search scope), filter
+        // by a geo bounding box instead of the city-name substring — so the scope
+        // the user set in chat is actually honored. Falls back to `location` ILIKE
+        // when coords are absent.
+        userLat: Double? = null,
+        userLng: Double? = null,
+        radiusMiles: Double? = null,
     ): List<Venue>
     suspend fun findVenueByNameAndCity(name: String, city: String): Venue?
     suspend fun getVenuesByIds(ids: List<String>): List<Venue>

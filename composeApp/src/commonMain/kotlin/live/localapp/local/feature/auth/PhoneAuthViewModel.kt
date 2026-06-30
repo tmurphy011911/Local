@@ -15,21 +15,10 @@ import live.localapp.local.domain.repository.UserPreferencesRepository
 import live.localapp.local.observability.Analytics
 import live.localapp.local.observability.AnalyticsEvent
 
-enum class AuthStep { PHONE, OTP, EMAIL }
-
-/** Minimal RFC-pragmatic email check: non-empty local part, "@", domain with a dot. */
-fun isValidEmail(value: String): Boolean {
-    val trimmed = value.trim()
-    val at = trimmed.indexOf('@')
-    if (at <= 0 || at != trimmed.lastIndexOf('@')) return false
-    val domain = trimmed.substring(at + 1)
-    return domain.contains('.') && !domain.startsWith('.') && !domain.endsWith('.') &&
-        !trimmed.contains(' ')
-}
+enum class AuthStep { PHONE, OTP }
 
 data class PhoneAuthUiState(
     val phone: String = "",
-    val email: String = "",
     val otpCode: String = "",
     val firstName: String = "",
     val lastName: String = "",
@@ -53,10 +42,6 @@ class PhoneAuthViewModel(
         // Only keep digits, max 10
         val digits = value.filter { it.isDigit() }.take(10)
         _state.update { it.copy(phone = digits, error = null) }
-    }
-
-    fun updateEmail(value: String) {
-        _state.update { it.copy(email = value, error = null) }
     }
 
     fun updateOtpCode(value: String) {
@@ -127,7 +112,7 @@ class PhoneAuthViewModel(
                         }
                     } else {
                         _state.update {
-                            it.copy(isLoading = false, step = AuthStep.EMAIL, authUserId = userId)
+                            it.copy(isLoading = false, authComplete = true, authUserId = userId)
                         }
                     }
                 } catch (e: Exception) {
@@ -165,7 +150,7 @@ class PhoneAuthViewModel(
                         }
                     } else {
                         _state.update {
-                            it.copy(isLoading = false, step = AuthStep.EMAIL, authUserId = userId)
+                            it.copy(isLoading = false, authComplete = true, authUserId = userId)
                         }
                     }
                 } catch (e: Exception) {
@@ -209,12 +194,12 @@ class PhoneAuthViewModel(
                         )
                     }
                 } else {
-                    // New user: collect email before onboarding
+                    // New user: straight to onboarding (email step removed)
                     Analytics.track(AnalyticsEvent.signedUp(method = "phone_otp", entryPoint = "organic"))
                     _state.update {
                         it.copy(
                             isLoading = false,
-                            step = AuthStep.EMAIL,
+                            authComplete = true,
                             authUserId = userId,
                         )
                     }
@@ -305,16 +290,6 @@ class PhoneAuthViewModel(
     fun resendOtp() {
         _state.update { it.copy(otpCode = "", error = null) }
         sendOtp()
-    }
-
-    fun submitEmail() {
-        val s = _state.value
-        if (!isValidEmail(s.email)) {
-            _state.update { it.copy(error = "Please enter a valid email address") }
-            return
-        }
-        // Email captured — signal ready for onboarding
-        _state.update { it.copy(authComplete = true) }
     }
 
     fun goBackToPhone() {

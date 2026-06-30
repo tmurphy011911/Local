@@ -139,7 +139,6 @@ fun App() {
         var authFirstName by remember { mutableStateOf("") }
         var authLastName by remember { mutableStateOf("") }
         var authPhone by remember { mutableStateOf("") }
-        var authEmail by remember { mutableStateOf("") }
         var authUserId by remember { mutableStateOf("") }
 
         // If a deep link resolves while the user is logged out (on splash or the
@@ -373,13 +372,12 @@ fun App() {
                 }
                 PhoneAuthScreen(
                     viewModel = viewModel,
-                    onAuthComplete = { isNewUser, firstName, lastName, phone, email, userId ->
+                    onAuthComplete = { isNewUser, firstName, lastName, phone, userId ->
                         authUserId = userId
                         if (isNewUser) {
                             authFirstName = firstName
                             authLastName = lastName
                             authPhone = phone
-                            authEmail = email
                             appState = AppState.ONBOARDING
                         } else {
                             appState = AppState.HOME
@@ -402,7 +400,6 @@ fun App() {
                         if (authFirstName.isNotEmpty()) vm.updateFirstName(authFirstName)
                         if (authLastName.isNotEmpty()) vm.updateLastName(authLastName)
                         if (authPhone.isNotEmpty()) vm.updatePhoneNumber(authPhone)
-                        if (authEmail.isNotEmpty()) vm.updateEmail(authEmail)
                         if (authUserId.isNotEmpty()) vm.setAuthUserId(authUserId)
                     }
                 }

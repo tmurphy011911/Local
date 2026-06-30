@@ -4,6 +4,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -122,6 +124,18 @@ fun PremiumPaywall(
                 )
             }
 
+            // Scrollable middle (accessibility): at large system font sizes the
+            // branding + comparison matrix grow past the screen and used to push
+            // the pricing + CTA off the bottom with no way to reach them. Scroll
+            // this section; the purchase controls below stay pinned + visible.
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+
             Spacer(Modifier.height(16.dp))
 
             // Wordmark — coral "l"s, white "oca", straight on the dark page.
@@ -160,9 +174,10 @@ fun PremiumPaywall(
             // Free vs Pro comparison matrix
             ComparisonMatrix()
 
-            Spacer(Modifier.weight(1f))
+            Spacer(Modifier.height(16.dp))
+            } // end scrollable middle
 
-            // Pricing toggle
+            // Pricing toggle (pinned — always visible)
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),

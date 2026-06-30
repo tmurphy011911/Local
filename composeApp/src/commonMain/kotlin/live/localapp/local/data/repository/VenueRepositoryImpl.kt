@@ -146,7 +146,15 @@ class VenueRepositoryImpl(
         category: String?,
         keyword: String?,
         limit: Int,
+        userLat: Double?,
+        userLng: Double?,
+        radiusMiles: Double?,
     ): List<Venue> {
+        val useGeo = userLat != null && userLng != null && radiusMiles != null
+        // Bounding box (same constants as OnboardingRepositoryImpl): ~69 mi per
+        // degree latitude, ~50 mi per degree longitude at mid-US latitudes.
+        val latDelta = if (useGeo) radiusMiles!! / 69.0 else 0.0
+        val lngDelta = if (useGeo) radiusMiles!! / 50.0 else 0.0
         return supabaseClient.from("venues")
             .select {
                 filter {
@@ -155,7 +163,15 @@ class VenueRepositoryImpl(
                     // (community centers, K-12 fields, junk listings) from
                     // every discovery surface including Yocal chat results.
                     gt("public_interest_rank", 10)
-                    if (!location.isNullOrBlank()) {
+                    if (useGeo) {
+                        // Honor the chat search scope: filter to the radius, NOT
+                        // the city name (a venue in-radius may have a different
+                        // city field than the scope's name).
+                        gte("lat", userLat!! - latDelta)
+                        lte("lat", userLat!! + latDelta)
+                        gte("lng", userLng!! - lngDelta)
+                        lte("lng", userLng!! + lngDelta)
+                    } else if (!location.isNullOrBlank()) {
                         ilike("city", "%${location}%")
                     }
                     if (!category.isNullOrBlank()) {

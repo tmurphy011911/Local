@@ -13,3 +13,12 @@
 PRODUCT_BUNDLE_IDENTIFIER=live.localapp.local.dev
 IS_STAGING=YES
 BUNDLE_DISPLAY_NAME=Local Dev
+
+// The KMP `embedAndSignAppleFrameworkForXcode` task only auto-detects the
+// Kotlin framework build type for the stock Debug/Release configurations. This
+// is a custom "Staging" config (a duplicate of Release), so it MUST be set
+// explicitly or the build fails with "Unable to detect Kotlin framework build
+// type for CONFIGURATION=Staging". Debug for the simulator (fast dev loop);
+// release for device/archive (optimized for TestFlight/Play internal).
+KOTLIN_FRAMEWORK_BUILD_TYPE = release
+KOTLIN_FRAMEWORK_BUILD_TYPE[sdk=iphonesimulator*] = debug

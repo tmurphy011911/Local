@@ -63,6 +63,10 @@ object ChatBridge {
     var sendMessage: ((String) -> Unit)? = null
     var resetChat: (() -> Unit)? = null
     var onBack: (() -> Unit)? = null
+    /** Intent sheet on open — Swift sends the picked goal's wire token
+     *  ("find_events" / "create_plan" / "browsing"). The VM records it and
+     *  steers Bo's framing + planning behavior for the rest of the session. */
+    var setBoIntent: ((String) -> Unit)? = null
     // Quick reply: pass both label (display text) and action (command token)
     // so the VM can route specials like "reset" / "save_plan" correctly.
     var onQuickReply: ((String, String) -> Unit)? = null
@@ -196,6 +200,7 @@ object ChatBridge {
             hasLocationCoords = state.currentLat != null && state.currentLng != null,
             searchRadiusMiles = state.searchRadiusMiles,
             scopeEditorPlaceholder = live.localapp.local.ui.home.scopeEditorPlaceholder(state.currentLat, state.currentLng),
+            boIntent = state.boIntent?.wireName ?: "",
         )
 
         lastSnapshot = snapshot
@@ -251,6 +256,10 @@ data class ChatStateSnapshot(
      *  MA users see MA towns, PA users see PA towns, etc. Computed in
      *  Kotlin so the city list lives in one place. */
     val scopeEditorPlaceholder: String = "e.g. a city or neighborhood",
+    /** The goal the user picked from the intent sheet ("find_events" /
+     *  "create_plan" / "browsing"), or "" when not yet chosen. Empty = Swift
+     *  presents the intent sheet on open. */
+    val boIntent: String = "",
 )
 
 data class WeatherSnapshot(

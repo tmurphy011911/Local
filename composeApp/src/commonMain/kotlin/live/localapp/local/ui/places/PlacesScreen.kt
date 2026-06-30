@@ -85,6 +85,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import live.localapp.local.platform.AppBackHandler
+import live.localapp.local.platform.rememberInAppBrowser
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Rect
@@ -1488,7 +1490,12 @@ fun VenueDetailPage(
     val datePicker = rememberNativeDateRangePicker()
     val communityInterestRepo = remember { KoinPlatform.getKoin().get<CommunityInterestRepository>() }
     val uriHandler = LocalUriHandler.current
+    val inAppBrowser = rememberInAppBrowser()
     val v = venueWithMeta.venue
+    // Android predictive-back / system-back → dismiss the venue page (matches the
+    // swipe-back gesture). Disabled while the inner event dialog is open — that
+    // Dialog handles its own back. Inert on iOS (native detail handles edge-swipe).
+    AppBackHandler(enabled = selectedEvent == null, onBack = onBack)
 
     // Enter animation — approximates the iOS card-to-fullscreen morph
     // (EventDetailTransitionController.swift). Scale 0.92 -> 1, alpha 0 -> 1,
@@ -1799,7 +1806,7 @@ fun VenueDetailPage(
                                 .height(50.dp)
                                 .background(AppColors.Coral, RoundedCornerShape(14.dp))
                                 .clip(RoundedCornerShape(14.dp))
-                                .clickable { uriHandler.openUri(v.website) }
+                                .clickable { inAppBrowser.open(v.website) }
                                 .padding(horizontal = 16.dp),
                             horizontalArrangement = Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically,

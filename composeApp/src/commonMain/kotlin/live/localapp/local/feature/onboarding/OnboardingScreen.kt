@@ -47,6 +47,10 @@ fun OnboardingScreen(
 ) {
     val state by viewModel.state.collectAsState()
     var requestingLocation by remember { mutableStateOf(false) }
+    // One-shot: auto-skip the LOCATION ask only on first arrival when permission
+    // is already granted. Without this, pressing Back to LOCATION (from the
+    // shortened flow's NOTIFICATIONS step) would instantly re-skip forward.
+    var pregrantSkipped by remember { mutableStateOf(false) }
     var showSettingsAlert by remember { mutableStateOf(false) }
     var previousStepIndex by remember { mutableStateOf(0) }
 
@@ -77,13 +81,16 @@ fun OnboardingScreen(
     )
 
     // If system-level location permission is already granted (e.g. a prior install
-    // on this device), skip the ask screen — transition to SUCCESS so the user sees
-    // the loader, then kick off the GPS fetch. Coords arrive via onAllowLocation.
+    // on this device), skip the ask screen — advance to NOTIFICATIONS (shortened
+    // flow) and kick off the GPS fetch. RequestLocationEffect above stays mounted
+    // across steps, so coords still arrive via onAllowLocation on the next screen.
     LaunchedEffect(state.currentStep) {
         if (state.currentStep == OnboardingStep.LOCATION &&
             !requestingLocation &&
+            !pregrantSkipped &&
             checkLocationPermissionGranted()
         ) {
+            pregrantSkipped = true
             viewModel.onLocationPregranted()
             requestingLocation = true
         }

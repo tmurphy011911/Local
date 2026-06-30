@@ -62,6 +62,9 @@ class ChatState: ObservableObject {
     @Published var searchRadiusMiles: Double = 20.0
     /// Region-aware placeholder text for the scope-editor's city field.
     @Published var scopeEditorPlaceholder: String = "e.g. a city or neighborhood"
+    // The goal picked from the intent sheet ("find_events"/"create_plan"/
+    // "browsing"), or "" when not yet chosen. Empty drives the intent sheet.
+    @Published var boIntent: String = ""
 
     func update(from snapshot: ChatStateSnapshot) {
         DispatchQueue.main.async { [weak self] in
@@ -85,6 +88,7 @@ class ChatState: ObservableObject {
                 : nil
             self?.searchRadiusMiles = snapshot.searchRadiusMiles
             self?.scopeEditorPlaceholder = snapshot.scopeEditorPlaceholder
+            self?.boIntent = snapshot.boIntent
         }
     }
 }
@@ -213,6 +217,9 @@ struct ChatView: View {
     /// snapshot (idempotent — same set already submitted). It reappears the
     /// instant the user adds or removes any card. Cleared on Start over.
     @State private var lastSubmittedSelection: Set<String> = []
+    /// Events the user dismissed (✕) from the results. View-only filter across
+    /// all suggestion trays this session; cleared on Start over.
+    @State private var dismissedEventIds: Set<String> = []
     /// Per-(messageId, groupKey) loading flags for the Find-more tile. Set
     /// when the user taps Find more, cleared when ChatBridge.onLoadMoreFinished
     /// fires for that key.
@@ -229,6 +236,11 @@ struct ChatView: View {
     /// change the search scope. The chip value is the canonical scope Bo
     /// uses on every search.
     @State private var showLocationEditor: Bool = false
+
+    /// Gates the on-open intent sheet until just after this view (itself a
+    /// presented sheet) finishes appearing — presenting a nested sheet during
+    /// the parent's present animation can silently no-op on first open.
+    @State private var intentReady: Bool = false
 
     /// Live measurement of the "content height below the latest user bubble's
     /// top edge" inside the chat ScrollView — i.e. the latest user bubble's
@@ -612,6 +624,16 @@ struct ChatView: View {
                         ChatBridge.shared.sharePlan?()
                     },
                     onViewPlans: {
+                        // CRITICAL: drop the Bo input focus / collapse the keyboard
+                        // BEFORE tearing down the chat and presenting the native plan
+                        // detail. If the chat TextField stays first responder through
+                        // the tab-switch + sheet-dismiss + plan-detail present, SwiftUI
+                        // keeps recomputing its focused caret rect / intrinsic size
+                        // mid-transition and spins the main thread in TextField layout
+                        // until the watchdog kills the app (0x8BADF00D "View Plan crash").
+                        inputFocused = false
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+
                         // First: switch to Plans tab and dismiss chat. Second:
                         // open the just-saved plan's detail sheet so the user
                         // lands directly on it rather than the list. The
@@ -652,6 +674,11 @@ struct ChatView: View {
             // recreation. The store survives the view, so previously-typed
             // messages render statically immediately.
             typedMessageIds = TypewriterCompletionStore.shared.completed
+            // Let the parent sheet's present animation settle before the
+            // intent sheet tries to present on top.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                intentReady = true
+            }
         }
         .sheet(isPresented: $showLocationEditor) {
             SearchScopeEditorSheet(
@@ -674,6 +701,20 @@ struct ChatView: View {
                     showLocationEditor = false
                 }
             )
+        }
+        // Intent sheet on open — driven reactively by the shared state. Shows
+        // while boIntent is unset; picking a goal round-trips through the
+        // bridge, boIntent becomes non-empty, and the sheet auto-dismisses.
+        .sheet(isPresented: Binding(
+            get: { intentReady && state.boIntent.isEmpty },
+            set: { _ in }
+        )) {
+            BoIntentSheet { wire in
+                ChatBridge.shared.setBoIntent?(wire)
+            }
+            .presentationDetents([.height(420)])
+            .presentationDragIndicator(.hidden)
+            .interactiveDismissDisabled(true)
         }
     }
 
@@ -709,6 +750,7 @@ struct ChatView: View {
                 Button(action: {
                     selectedEventIds.removeAll()
                     lastSubmittedSelection.removeAll()
+                    dismissedEventIds.removeAll()
                     typedMessageIds.removeAll()
                     // Clear the app-lifetime store too — without this,
                     // post-reset messages with reused IDs (if any) would
@@ -952,6 +994,15 @@ struct ChatView: View {
                     }
                 }
             },
+            isDismissed: { dismissedEventIds.contains($0) },
+            onDismiss: { eventId in
+                withAnimation(.easeOut(duration: 0.18)) {
+                    dismissedEventIds.insert(eventId)
+                    // If they dismiss something they'd saved, drop it from the
+                    // saved set too so the Build CTA count stays honest.
+                    selectedEventIds.remove(eventId)
+                }
+            },
             onOpenEvent: { ev in
                 // Drop the Bo input focus so the keyboard collapses before the
                 // native event detail is presented over the chat.
@@ -1018,7 +1069,9 @@ struct ChatView: View {
                     }
                     Text(addingToPlan
                          ? "Add \(count) event\(count == 1 ? "" : "s") to my plan"
-                         : "Create plan from \(count) event\(count == 1 ? "" : "s")")
+                         : (state.boIntent == "create_plan"
+                            ? "Create plan from \(count) event\(count == 1 ? "" : "s")"
+                            : "Build a plan with my \(count) saved event\(count == 1 ? "" : "s")"))
                         .font(F.body(15, .black))
                 }
                 .foregroundColor(.white)
@@ -2081,6 +2134,8 @@ struct SuggestionTrayView: View {
     let suggestions: SuggestionsSnapshot
     let isSelected: (String) -> Bool
     let onToggleSelected: (String) -> Void
+    let isDismissed: (String) -> Bool
+    let onDismiss: (String) -> Void
     let onOpenEvent: (SuggestionEventSnapshot) -> Void
     let onFooterAction: (String) -> Void
     let isGroupLoading: (String) -> Bool
@@ -2107,6 +2162,11 @@ struct SuggestionTrayView: View {
                     .padding(.horizontal, 14)
             } else {
                 ForEach(Array(suggestions.groups.enumerated()), id: \.offset) { _, group in
+                    // Hide events the user dismissed (✕). If a group empties
+                    // out, drop its header + carousel entirely.
+                    let visible = group.events.filter { !isDismissed($0.eventId) }
+                    let groupKey = group.dayKey ?? group.categoryKey ?? ""
+                    if !visible.isEmpty {
                     Spacer().frame(height: 12)
                     if !group.label.isEmpty {
                         Text(group.label)
@@ -2120,16 +2180,15 @@ struct SuggestionTrayView: View {
                     // card. View-aligned snapping makes paging feel decisive.
                     // Content margins push the first card 14pt off the edge
                     // so it lines up with the headline above.
-                    let groupKey = group.dayKey ?? group.categoryKey ?? ""
-                    let canFindMore = !groupKey.isEmpty && !isGroupExhausted(groupKey)
                     ScrollView(.horizontal, showsIndicators: false) {
                         LazyHStack(spacing: 10) {
-                            ForEach(Array(group.events.enumerated()), id: \.offset) { _, ev in
+                            ForEach(Array(visible.enumerated()), id: \.offset) { _, ev in
                                 SuggestionCardView(
                                     event: ev,
                                     isSelected: isSelected(ev.eventId),
                                     onTap: { onOpenEvent(ev) },
-                                    onToggleSelected: { onToggleSelected(ev.eventId) }
+                                    onToggleSelected: { onToggleSelected(ev.eventId) },
+                                    onDismiss: { onDismiss(ev.eventId) }
                                 )
                                 .frame(width: cardWidth)
                             }
@@ -2147,6 +2206,7 @@ struct SuggestionTrayView: View {
                     }
                     .scrollTargetBehavior(.viewAligned)
                     .contentMargins(.horizontal, 14, for: .scrollContent)
+                    } // end if !visible.isEmpty
                 }
             }
             // NOTE: the footer action chips ("Search wider", "Different day",
@@ -2174,6 +2234,9 @@ private struct SuggestionCardView: View {
     let isSelected: Bool
     let onTap: () -> Void
     let onToggleSelected: () -> Void
+    /// ✕ — remove this event from the results (not interested). View-only;
+    /// drops it from the visible tray, doesn't touch the saved set.
+    let onDismiss: () -> Void
 
     /// Fixed card height — every card in a tray is the same height so the
     /// row reads as a clean uniform strip. Two lines (title + metadata),
@@ -2182,41 +2245,64 @@ private struct SuggestionCardView: View {
 
     var body: some View {
         Button(action: onTap) {
-            HStack(alignment: .center, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    // Line 1 — title. Always 1 line, truncates if it
-                    // approaches the + button.
-                    Text(event.title)
-                        .font(STF.display(15, .bold))
-                        .foregroundColor(STC.ink)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    // Line 2 — Time · Distance · Place. Always 1 line,
-                    // truncates if too long.
-                    Text(metaLine)
-                        .font(STF.body(12, .semibold))
-                        .foregroundColor(STC.ink3)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Button(action: onToggleSelected) {
-                    Image(systemName: isSelected ? "checkmark" : "plus")
-                        .font(.system(size: 11, weight: .black))
-                        .foregroundColor(.white)
-                        .frame(width: 22, height: 22)
-                        .background(isSelected ? STC.sage : STC.coral)
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isSelected ? "Remove from plan selection" : "Add to plan selection")
+            VStack(alignment: .leading, spacing: 4) {
+                // Line 1 — title. Always 1 line, truncates before the controls.
+                Text(event.title)
+                    .font(STF.display(15, .bold))
+                    .foregroundColor(STC.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                // Line 2 — Time · Distance · Place. Always 1 line.
+                Text(metaLine)
+                    .font(STF.body(12, .semibold))
+                    .foregroundColor(STC.ink3)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
-            .padding(.horizontal, 12)
+            // Inset so the corner controls (❤️ top-right, ✕ bottom-left)
+            // never overlap the text.
+            .padding(.leading, 30)
+            .padding(.trailing, 32)
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: Self.cardHeight)
             .background(STC.skyLt.opacity(0.35))
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).stroke(STC.pebble, lineWidth: 1))
+            // ❤️ save — top-right.
+            .overlay(alignment: .topTrailing) {
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    onToggleSelected()
+                }) {
+                    Image(systemName: isSelected ? "heart.fill" : "heart")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(isSelected ? .white : STC.coral)
+                        .frame(width: 26, height: 26)
+                        .background(isSelected ? STC.coral : STC.coral.opacity(0.12))
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(8)
+                .accessibilityLabel(isSelected ? "Saved" : "Save")
+            }
+            // ✕ dismiss — bottom-left.
+            .overlay(alignment: .bottomLeading) {
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    onDismiss()
+                }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .black))
+                        .foregroundColor(STC.ink3)
+                        .frame(width: 20, height: 20)
+                        .background(.white)
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(STC.pebble, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .padding(8)
+                .accessibilityLabel("Not interested")
+            }
         }
         .buttonStyle(.plain)
     }
@@ -2304,6 +2390,94 @@ private struct FindMoreTile: View {
         if isLoading { return "Looking…" }
         if isExhausted { return "No more events" }
         return "Find more"
+    }
+}
+
+// MARK: - Intent Sheet (on open)
+
+/// The "what are you looking to do?" sheet that comes up when Bo opens. Three
+/// goals; picking one sends the wire token back through the bridge, which sets
+/// boIntent (auto-dismissing this sheet) and steers Bo's framing + planning
+/// behavior for the rest of the session.
+private struct BoIntentSheet: View {
+    let onPick: (String) -> Void
+
+    private struct Option {
+        let wire: String
+        let icon: String
+        let title: String
+        let subtitle: String
+    }
+
+    private let options: [Option] = [
+        Option(wire: "find_events", icon: "magnifyingglass",
+               title: "Find events", subtitle: "See what's happening near you"),
+        Option(wire: "create_plan", icon: "calendar.badge.plus",
+               title: "Create a plan", subtitle: "Build an itinerary to save & share"),
+        Option(wire: "browsing", icon: "binoculars.fill",
+               title: "I'm just browsing", subtitle: "Just looking around for now"),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("What are you looking to do?")
+                .font(F.display(24, .black))
+                .foregroundColor(C.ink)
+                .padding(.top, 30)
+                .padding(.horizontal, 22)
+            Text("Tell me where to point you and I'll take it from there.")
+                .font(F.body(14, .medium))
+                .foregroundColor(C.ink3)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 6)
+                .padding(.horizontal, 22)
+
+            VStack(spacing: 12) {
+                ForEach(options, id: \.wire) { opt in
+                    Button(action: { onPick(opt.wire) }) {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                Circle()
+                                    .fill(C.coralLt)
+                                    .frame(width: 46, height: 46)
+                                Image(systemName: opt.icon)
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundColor(C.coral)
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(opt.title)
+                                    .font(F.body(17, .bold))
+                                    .foregroundColor(C.ink)
+                                Text(opt.subtitle)
+                                    .font(F.body(13, .medium))
+                                    .foregroundColor(C.ink3)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(C.ink3)
+                        }
+                        .padding(.vertical, 12)
+                        .padding(.horizontal, 16)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(C.snow)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .stroke(C.pebble, lineWidth: 1.5)
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.top, 22)
+            .padding(.horizontal, 18)
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.ignoresSafeArea())
     }
 }
 

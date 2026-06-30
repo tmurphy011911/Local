@@ -1325,7 +1325,12 @@ struct PlanDetailView: View {
                 if day.slots.isEmpty {
                     emptyDayCard(dayIdx: dayIdx)
                 } else {
-                    ForEach(Array(day.slots.enumerated()), id: \.element.id) { i, slot in
+                    // Key by positional offset, NOT slot.id: a slot's id is
+                    // `eventId ?: venueName ?: ""` (ChatViewModel), so a plan
+                    // with two non-event stops (e.g. "Dinner" + "Drinks") has
+                    // two slots with id="" — duplicate ForEach IDs hard-crash
+                    // SwiftUI. This was the iOS-only "View Plan" crash.
+                    ForEach(Array(day.slots.enumerated()), id: \.offset) { i, slot in
                         let isLast = i == day.slots.count - 1
                         HStack(alignment: .top, spacing: 10) {
                             // Timeline column — TIME label + dot + line

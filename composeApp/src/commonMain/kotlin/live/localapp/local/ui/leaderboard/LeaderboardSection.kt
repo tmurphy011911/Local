@@ -522,12 +522,8 @@ private fun ListRow(
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(entry.username ?: (if (isYou) "You" else "Anonymous"), maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = LbInk))
-                if (isYou) {
-                    Spacer(Modifier.width(7.dp))
-                    Box(Modifier.clip(RoundedCornerShape(999.dp)).background(LbGreen).padding(horizontal = 7.dp, vertical = 1.dp)) {
-                        Text("YOU", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 9.sp, color = AppColors.White))
-                    }
-                }
+                // (Removed the green "YOU" pill here — the row is already green-
+                // bordered with a green rank number, so the badge was redundant.)
                 if (onEditUsername != null) {
                     Spacer(Modifier.width(6.dp))
                     Icon(

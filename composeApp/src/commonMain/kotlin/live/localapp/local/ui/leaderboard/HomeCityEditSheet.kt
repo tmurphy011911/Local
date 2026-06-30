@@ -132,8 +132,11 @@ fun HomeCityEditSheet(
                     }
                 } else {
                     val (s, d) = pick
+                    // Store/display the CITY, not the full street address the user
+                    // may have picked — the leaderboard scopes + labels by city.
+                    val cityName = d.locality?.takeIf { it.isNotBlank() } ?: d.name
                     Text(
-                        "Change your home address to ${d.name}?",
+                        "Change your home city to $cityName?",
                         style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AppColors.Ink),
                     )
                     Spacer(Modifier.height(8.dp))
@@ -154,7 +157,7 @@ fun HomeCityEditSheet(
                             colors = ButtonDefaults.buttonColors(containerColor = AppColors.Sage),
                             onClick = {
                                 saving = true; message = null
-                                viewModel.changeHomeCity(d.name, d.lat!!, d.lng!!, s.id) { res ->
+                                viewModel.changeHomeCity(cityName, d.lat!!, d.lng!!, s.id) { res ->
                                     saving = false
                                     when (res) {
                                         is ChangeHomeCityResult.Success -> onDismiss()

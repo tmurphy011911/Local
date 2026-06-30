@@ -65,6 +65,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import live.localapp.local.platform.rememberInAppBrowser
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -1387,27 +1388,27 @@ private fun TimelineView(
                             Spacer(Modifier.height(6.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 if (slot.reservationUrl != null) {
-                                    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                                    val inAppBrowser = rememberInAppBrowser()
                                     Text(
                                         "Reserve",
                                         modifier = Modifier
                                             .background(AppColors.CoralLt, RoundedCornerShape(6.dp))
                                             .border(1.dp, AppColors.Coral.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
                                             .clickable {
-                                                uriHandler.openUri(slot.venueWebsite?.takeIf { it.isNotBlank() } ?: slot.reservationUrl)
+                                                inAppBrowser.open(slot.venueWebsite?.takeIf { it.isNotBlank() } ?: slot.reservationUrl)
                                             }
                                             .padding(horizontal = 8.dp, vertical = 3.dp),
                                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Coral),
                                     )
                                 }
                                 if (slot.ticketUrl != null) {
-                                    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                                    val inAppBrowser = rememberInAppBrowser()
                                     Text(
                                         "Tickets",
                                         modifier = Modifier
                                             .background(AppColors.CoralLt, RoundedCornerShape(6.dp))
                                             .border(1.dp, AppColors.Coral.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
-                                            .clickable { uriHandler.openUri(slot.ticketUrl) }
+                                            .clickable { inAppBrowser.open(slot.ticketUrl) }
                                             .padding(horizontal = 8.dp, vertical = 3.dp),
                                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Coral),
                                     )
