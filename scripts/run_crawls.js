@@ -2036,16 +2036,25 @@ async function crawlVenue(venue) {
   const rawUrls = venue.events_url.split(",").map((u) => u.trim()).filter(Boolean);
   const urls = [...new Set(rawUrls.flatMap(expandDateTokens))];
   if (urls.length > 1) {
-    let totalEvents = 0;
+    const mergedRows = [];
     let anySuccess = false;
     for (const url of urls) {
       const subVenue = { ...venue, events_url: url };
       const result = await crawlVenue(subVenue);
       if (result.status?.startsWith("ok")) anySuccess = true;
-      totalEvents += result.events || 0;
+      // Collect the actual rows from each sub-URL — not just the count. Without
+      // this the caller's `results.flatMap(r => r.rows)` gets nothing for any
+      // multi-URL / date-token venue, so everything crawled here is silently
+      // dropped before the upsert (Brookline Booksmith extracted 59, saved 0).
+      if (result.rows?.length) mergedRows.push(...result.rows);
     }
     await updateVenueCrawlStatus(venue.id, anySuccess, venue.crawl_success_rate);
-    return { venue: venue.name, events: totalEvents, status: anySuccess ? "ok (multi-url)" : "error" };
+    return {
+      venue: venue.name,
+      events: mergedRows.length,
+      rows: mergedRows,
+      status: anySuccess ? "ok (multi-url)" : "error",
+    };
   }
 
   try {
