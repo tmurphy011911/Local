@@ -55,9 +55,17 @@ fun DraftPlanTray(
     onRemove: (String) -> Unit,
     onChipTap: (DraftTrayChip) -> Unit,
     onBuild: () -> Unit,
+    boIntent: BoIntent? = null,
     modifier: Modifier = Modifier,
 ) {
     if (tray.isEmpty()) return
+    // Under "create a plan" these are plan picks; under find/browse they're
+    // saved events the user can later turn into a plan.
+    val header = if (boIntent == BoIntent.CREATE_PLAN || boIntent == null) {
+        "In your plan (${tray.size})"
+    } else {
+        "Saved (${tray.size})"
+    }
 
     val buildPriority = chips.firstOrNull { it.category == ChipCategory.BUILD }?.priority ?: 5
 
@@ -72,7 +80,7 @@ fun DraftPlanTray(
         // Header row: count + Build button
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
-                "In your plan (${tray.size})",
+                header,
                 modifier = Modifier.weight(1f),
                 style = TextStyle(
                     fontFamily = AppFonts.Heading,

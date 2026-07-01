@@ -79,7 +79,7 @@ val appModule = module {
     single<live.localapp.local.domain.repository.YocalPromptsRepository> { live.localapp.local.data.repository.HttpYocalPromptsRepository() }
     single<live.localapp.local.domain.repository.BoChipsRepository> { live.localapp.local.data.repository.HttpBoChipsRepository() }
     single { HomeViewModel(get(), get(), get(), get(), get(), get(), get()) }
-    single { ChatViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get()) }
+    single { ChatViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
     single { PlacesViewModel(get(), get(), get(), get(), get(), get()) }
     single { PlansViewModel(get(), get(), get(), get(), get(), get(), get(), get()) }
     single { ProgressViewModel(get(), get(), get(), get()) }

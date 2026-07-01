@@ -147,6 +147,13 @@ fun ChatScreen(
     var selectedEvent by remember { mutableStateOf<live.localapp.local.domain.model.Event?>(null) }
     var selectedVenueName by remember { mutableStateOf<String?>(null) }
     var selectedVenue by remember { mutableStateOf<live.localapp.local.domain.model.Venue?>(null) }
+    // Events the user dismissed (✕) from results — view-only filter across all
+    // suggestion trays this session. Reset when the chat resets (state.messages
+    // empties on Start over).
+    var dismissedEventIds by remember { mutableStateOf(setOf<String>()) }
+    LaunchedEffect(state.messages.isEmpty()) {
+        if (state.messages.isEmpty()) dismissedEventIds = emptySet()
+    }
 
     // Inline "Find more" state for SuggestionTray carousels. Keyed by
     // "$messageId|$groupKey". A group is loading from the moment the user taps
@@ -433,6 +440,23 @@ fun ChatScreen(
         }
     }
 
+    // Intent picker on open — "What are you looking to do?" Shown until the
+    // user picks a goal (boIntent set), which steers Bo's framing + planning.
+    // confirmValueChange blocks swipe-to-dismiss so a goal must be chosen
+    // (mirrors the iOS interactiveDismissDisabled sheet).
+    if (state.boIntent == null) {
+        androidx.compose.material3.ModalBottomSheet(
+            onDismissRequest = { },
+            sheetState = androidx.compose.material3.rememberModalBottomSheetState(
+                skipPartiallyExpanded = true,
+                confirmValueChange = { it != androidx.compose.material3.SheetValue.Hidden },
+            ),
+            containerColor = Color.White,
+        ) {
+            BoIntentPicker(onPick = { viewModel.setBoIntent(it) })
+        }
+    }
+
     // Airbnb-style scale-in: on iOS the background view scales to 0.92 when
     // the chat sheet opens. We can't reach the host view from here, so we
     // approximate the depth cue by scaling the sheet's own content from
@@ -655,6 +679,11 @@ fun ChatScreen(
                                 viewModel.sendDraftTrayChip(footerActionToIntent(action))
                             },
                             onScopeChip = { intent -> viewModel.sendDraftTrayChip(intent) },
+                            isDismissed = { id -> id in dismissedEventIds },
+                            onDismiss = { id ->
+                                dismissedEventIds = dismissedEventIds + id
+                                viewModel.removeFromDraftTray(id)
+                            },
                             isGroupLoading = { groupKey -> loadingGroups["$structMsgId|$groupKey"] == true },
                             isGroupExhausted = { groupKey -> exhaustedGroups["$structMsgId|$groupKey"] == true },
                             onFindMore = { dayKey, categoryKey ->
@@ -693,6 +722,7 @@ fun ChatScreen(
                 onRemove = { id -> viewModel.removeFromDraftTray(id) },
                 onChipTap = { chip -> viewModel.sendDraftTrayChip(chip.intent) },
                 onBuild = { viewModel.buildFromDraftTray() },
+                boIntent = state.boIntent,
             )
         }
 
@@ -3012,6 +3042,8 @@ private fun StructuredResponseRenderer(
     onOpenEvent: (live.localapp.local.domain.model.Event) -> Unit,
     onFooterAction: (live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action) -> Unit,
     onScopeChip: (String) -> Unit,
+    isDismissed: (String) -> Boolean = { false },
+    onDismiss: (String) -> Unit = {},
     isGroupLoading: (String) -> Boolean = { false },
     isGroupExhausted: (String) -> Boolean = { false },
     onFindMore: (dayKey: String?, categoryKey: String?) -> Unit = { _, _ -> },
@@ -3027,6 +3059,8 @@ private fun StructuredResponseRenderer(
                 onOpenEvent = onOpenEvent,
                 onFooterAction = onFooterAction,
                 isInTray = { id -> id in trayIds },
+                isDismissed = isDismissed,
+                onDismiss = onDismiss,
                 isGroupLoading = isGroupLoading,
                 isGroupExhausted = isGroupExhausted,
                 onFindMore = onFindMore,

@@ -221,6 +221,13 @@ data class ChatUiState(
      */
     val boIntent: BoIntent? = null,
     /**
+     * Persistent saved-events set (favorites in community_interactions). The
+     * ❤️ on a result card toggles membership here AND records/removes the
+     * favorite server-side, so saves show up in the user's Saved Events and
+     * survive closing Bo. Loaded on open; drives the filled-heart state.
+     */
+    val favoriteEventIds: Set<String> = emptySet(),
+    /**
      * Set while the client-side "Create plan" confirmation dialog is open.
      * Null when no handoff is in flight. Populated when the user taps the
      * iOS Build CTA; cleared when they pick a final chip ("No, create",
@@ -272,6 +279,7 @@ class ChatViewModel(
     private val tasteRepo: TasteRepository,
     private val boTools: live.localapp.local.data.bo.BoTools,
     private val boChipsRepo: live.localapp.local.domain.repository.BoChipsRepository,
+    private val communityInterestRepository: live.localapp.local.domain.repository.CommunityInterestRepository,
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(ChatUiState())
@@ -405,6 +413,15 @@ class ChatViewModel(
      *  Rocky at TD Garden) into the Watertown day group. Cleared on resetChat. */
     private var lastSearchLocation: String? = null
     private var lastSearchStrictLocation: Boolean = false
+
+    /** The category/keyword + date window of the most recent search_events
+     *  call, so expandSuggestionsFromPool can run a radius-scoped
+     *  category-COMPLETE supplemental search (matching Explore) when the
+     *  stratified pool under-returns a single category. */
+    private var lastBrowseQuery: String? = null
+    private var lastSearchDateRange: String? = null
+    private var lastSearchStartDate: String? = null
+    private var lastSearchEndDate: String? = null
 
     /** Cached taste profile — loaded at init, refreshed after plan approvals. */
     private var tasteProfile: TasteProfile? = null
@@ -661,6 +678,11 @@ class ChatViewModel(
                 }
                 // Load taste profile for personalized recommendations
                 try { tasteProfile = tasteRepo.getTasteProfile(userId) } catch (_: Throwable) {}
+                // Load saved-events so already-favorited results show a filled ❤️.
+                try {
+                    val favs = communityInterestRepository.getFavoriteEventIds(userId).toSet()
+                    _uiState.update { it.copy(favoriteEventIds = favs) }
+                } catch (_: Throwable) {}
             }
             showWelcome()
         }
@@ -1825,6 +1847,10 @@ class ChatViewModel(
             lastSearchKeyword = null
             lastSearchLocation = null
             lastSearchStrictLocation = false
+            lastBrowseQuery = null
+            lastSearchDateRange = null
+            lastSearchStartDate = null
+            lastSearchEndDate = null
             boTools.resetCache()  // shared BoTools cache — both surfaces clear together
             // Bo scope is conversation-scoped — "Start over" ends the
             // conversation, so the chip dies with it. AppNavigation will
@@ -1838,8 +1864,15 @@ class ChatViewModel(
 
     // ── Core: Single unified message handler ──
 
+    /** Every event this turn's search_events call(s) returned (the full pool,
+     *  before the 80-row cap Bo reads). The results tray/map is filled from
+     *  this — not Bo's curated picks — so the map shows every match. Reset at
+     *  the start of each user turn. */
+    private val turnSearchPool = mutableListOf<live.localapp.local.domain.model.Event>()
+
     private fun handleMessage(text: String, historyText: String = text) {
         _uiState.update { it.copy(quickReplies = emptyList()) }
+        turnSearchPool.clear()
         // Cache previously cleared every message — caused Bo to "forget"
         // events it had just narrated, then contradict itself on the next
         // turn. Now we persist across messages within the same chat
@@ -3166,6 +3199,12 @@ class ChatViewModel(
         // overwrite with null — a follow-up search without a keyword (e.g.
         // Bo broadening) shouldn't erase the original filter.
         if (!keyword.isNullOrBlank()) lastSearchKeyword = keyword
+        // The effective single-topic query (keyword OR category) + date window,
+        // for the category-complete supplemental search in the expansion.
+        (keyword ?: category)?.takeIf { it.isNotBlank() }?.let { lastBrowseQuery = it }
+        lastSearchDateRange = dateRange
+        lastSearchStartDate = startDate
+        lastSearchEndDate = endDate
 
         // Remember the location + strictness too, so "Find more" re-applies the
         // SAME city constraint. A strict "in Watertown" search must not have its
@@ -3322,6 +3361,7 @@ class ChatViewModel(
         // get_event_details (delegated to BoTools) can answer without a
         // second round-trip.
         searchResultCache.addAll(events)
+        turnSearchPool.addAll(events)
         events.forEach { boTools.searchResultCache[it.id] = it }
 
         // Cap what Claude sees in the tool result. This is the single biggest
@@ -4262,6 +4302,15 @@ class ChatViewModel(
             return
         }
 
+        // Deterministic comprehensiveness: rebuild the suggestion tray from the
+        // FULL search pool this turn (bucketed by Bo's groupBy), so the map +
+        // carousel show EVERY matching event — not just the handful Bo curated
+        // from the 80-row tool cap. Bo still owns the structure (groupBy,
+        // headline, footer); the client fills the groups completely.
+        (structured as? live.localapp.local.domain.model.BoStructuredResponse.Suggestions)?.let { sug ->
+            expandSuggestionsFromPool(sug)?.let { structured = it }
+        }
+
         // Hydrate event_ids referenced by the response so the UI can show
         // titles/venues/times without an additional fetch on render.
         // Cache-first: the events Bo just referenced almost always came from
@@ -4319,6 +4368,206 @@ class ChatViewModel(
             )
         )
         finishTurn(emptyList())
+    }
+
+    /**
+     * Rebuild a [BoStructuredResponse.Suggestions] from the full [turnSearchPool]
+     * (every event this turn's search returned), bucketed by Bo's groupBy, so
+     * the tray/map is comprehensive instead of Bo's 80-cap-curated handful.
+     *
+     * Scoping: we read the categories of Bo's OWN picks to learn what the user
+     * is after, then fill those categories completely from the pool. Returns
+     * null (keep Bo's original) for NONE grouping or when the pool is too thin
+     * to improve on.
+     */
+    private suspend fun expandSuggestionsFromPool(
+        sug: live.localapp.local.domain.model.BoStructuredResponse.Suggestions,
+    ): live.localapp.local.domain.model.BoStructuredResponse.Suggestions? {
+        val groupBy = sug.groupBy
+        val pool = turnSearchPool.distinctBy { it.id }
+
+        // Resolve Bo's picks to learn which categories the user wants, so we
+        // fill those completely rather than dumping every category in the pool.
+        val boIds = sug.groups.flatMap { it.events }.map { it.eventId }.toSet()
+        val boEvents = boIds.mapNotNull { id -> searchResultCache.find { it.id == id } }
+        val boCategories = boEvents.map { computeEventCategoryKey(it).first }.toSet()
+        val tz = kotlinx.datetime.TimeZone.currentSystemDefault()
+        // Days Bo actually grouped/picked — the authoritative intent for a
+        // multi-day query. A per-day "next weekend" search (Bo calls
+        // search_events once per calendar day) leaves lastSearchStartDate at
+        // only the LAST day, so use Bo's picks' full span for BOTH the
+        // complete-search window and the day filter below.
+        val boDays = boEvents.map { computeEventDayKey(it, tz).first }
+            .filterNot { it == "__tbd" }.toSet()
+        val query = lastBrowseQuery?.trim()?.takeIf { it.isNotBlank() }
+        val kw = query?.lowercase()
+
+        // Radius-scoped CATEGORY-COMPLETE supplemental search. Bo's stratified
+        // pool balances across categories, so a single-category query ("arts")
+        // under-returns vs Explore. For a single-topic query, re-search that
+        // category the way Explore does (ilike), with a high limit, then keep
+        // only venues within the user's radius. This is the fix for "Explore
+        // finds more than Bo".
+        val lat = _uiState.value.currentLat
+        val lng = _uiState.value.currentLng
+        val radius = _uiState.value.searchRadiusMiles
+        // Run for ANY dated query — a single category ("arts") OR a no-category
+        // date browse (where the stratified pool over-returns popular categories
+        // like music and under-returns arts/comedy). category=null pulls every
+        // category in the bbox; we then bucket by category so each is complete.
+        // Date window for the category-complete search: cover ALL of Bo's
+        // intended days (span of `boDays`), not just lastSearchStartDate — else
+        // a multi-day "next weekend" only category-completes the last day.
+        val winStart = boDays.minOrNull() ?: lastSearchStartDate?.take(10)
+        val winEnd = boDays.maxOrNull() ?: lastSearchEndDate?.take(10)
+        val hasDateWindow = winStart != null || lastSearchDateRange != null
+        val complete: List<live.localapp.local.domain.model.Event> =
+            if ((query != null || hasDateWindow) && lat != null && lng != null) {
+                try {
+                    val useCustom = winStart != null
+                    val dr = if (useCustom) "custom" else lastSearchDateRange
+                    eventRepo.searchEvents(
+                        location = null, category = query, dateRange = dr, keyword = null,
+                        limit = 1500,
+                        startDate = if (useCustom) winStart else lastSearchStartDate,
+                        endDate = if (useCustom) winEnd else lastSearchEndDate,
+                        userLat = lat, userLng = lng, radiusMiles = radius,
+                        useRadiusBbox = true,
+                    ).filter { ev ->
+                        val vlat = ev.venueLat ?: ev.eventLat
+                        val vlng = ev.venueLng ?: ev.eventLng
+                        vlat != null && vlng != null &&
+                            live.localapp.local.domain.model.distanceMiles(lat, lng, vlat, vlng) <= radius
+                    }.also { found ->
+                        searchResultCache.addAll(found)
+                        found.forEach { boTools.searchResultCache[it.id] = it }
+                        println("expandSuggestions: category-complete '${query ?: "<all>"}' -> ${found.size} within ${radius.toInt()}mi")
+                    }
+                } catch (_: Throwable) { emptyList() }
+            } else emptyList()
+
+        // Pool fallback (browse / when the complete search yields nothing):
+        // keep events matching Bo's categories or the search keyword.
+        val scoped = pool.filter { ev ->
+            (boCategories.isNotEmpty() && computeEventCategoryKey(ev).first in boCategories) ||
+                (kw != null && (
+                    ev.category?.contains(kw, true) == true ||
+                    ev.subcategory?.contains(kw, true) == true ||
+                    ev.title.contains(kw, true) ||
+                    ev.venueName?.contains(kw, true) == true))
+        }
+        val rawUniverse = if (complete.isNotEmpty()) {
+            (complete + scoped + boEvents).distinctBy { it.id }
+        } else {
+            // No supplemental results — fall back to the pool. Empty scope (pure
+            // date browse) means "show everything that day".
+            (scoped.ifEmpty { pool } + boEvents).distinctBy { it.id }
+        }
+        // HARD RADIUS GUARD: this is a radius-scoped MAP search ("Within N
+        // miles"), so only surface events we can actually place within the
+        // radius. Two failure modes this closes:
+        //   1. Coord-bearing events beyond the radius — the stratified RPC's
+        //      breadth/niche lanes leak far high-rank rows (Great Barrington in
+        //      a 20mi Waltham search).
+        //   2. Events with NO usable coordinate — empirically these are
+        //      far-flung recurring/regional rows whose "venue" is an org with
+        //      no lat/lng (e.g. a Plymouth "First Fridays" or a Pittsfield
+        //      "First Fridays at Five" surfacing in a 20mi Waltham search).
+        //      They also can't be pinned or centered on the map (tapping their
+        //      card left the map frozen), so dropping them fixes that too.
+        // Applies even to Bo's own picks. 1.1× buffer for rounding. When we
+        // have no user location at all, keep everything (can't filter).
+        val maxMi = radius * 1.1
+        val universeGeo = rawUniverse.filter { ev ->
+            // Never surface no-public-interest events (matches Explore/Places).
+            if (ev.subcategory == "no-public-interest") return@filter false
+            if (lat == null || lng == null) return@filter true
+            val vlat = ev.venueLat ?: ev.eventLat
+            val vlng = ev.venueLng ?: ev.eventLng
+            vlat != null && vlng != null &&
+                live.localapp.local.domain.model.distanceMiles(lat, lng, vlat, vlng) <= maxMi
+        }
+        // CATEGORY-SCOPE GUARD: when the query named a specific category
+        // ("arts"), constrain the WHOLE universe to that tab — Bo's own picks
+        // (boEvents) and the scoped pool can inject off-category rows (e.g. a
+        // July-4th parade Bo curated under an "arts this weekend" search shows
+        // in the Arts result). The DAY/NONE bucketing otherwise never re-filters
+        // by category, so the day tabs leaked every category. Uses the same
+        // bucketer as the tabs. Skipped for generic date browses (query names
+        // no category → intentCategoryKey null → show everything).
+        val intentCategoryKey = query?.let { categoryKeyForQuery(it) }
+        val universe = if (intentCategoryKey != null) {
+            universeGeo.filter { computeEventCategoryKey(it).first == intentCategoryKey }
+        } else universeGeo
+        // Rebuild whenever we have anything to show — the radius guard above
+        // must run even when the count didn't grow (to drop Bo's far picks).
+        if (universe.isEmpty()) return null
+
+        // DAY/DATE SCOPE GUARD (all groupings): constrain to exactly the day(s)
+        // Bo intended. For DAY grouping = the days Bo grouped, so "next weekend
+        // (Jul 10-12)" shows ONLY Jul 10-12 — not a tab for every day from now
+        // through the weekend (the stratified pool spans ~90 days and DAY
+        // grouping previously had no date bound). For CATEGORY/NONE = the
+        // implied day(s) of Bo's picks, so a recurring Sunday event can't sit
+        // under a "Friday" header. Primary = Bo's picks' days (`boDays`); if Bo
+        // had no resolvable picks, fall back to the raw search window.
+        val dayScoped: List<live.localapp.local.domain.model.Event> = when {
+            boDays.isNotEmpty() ->
+                universe.filter { computeEventDayKey(it, tz).first in boDays }
+            lastSearchStartDate != null -> {
+                val s = lastSearchStartDate!!.take(10)
+                val e = (lastSearchEndDate ?: lastSearchStartDate)!!.take(10)
+                universe.filter {
+                    val k = computeEventDayKey(it, tz).first
+                    k != "__tbd" && k in s..e
+                }
+            }
+            else -> universe
+        }
+        if (dayScoped.isEmpty()) return null
+
+        // NONE grouping (single flat tray — common for "arts this Friday"):
+        // one group with every matching event, chronological.
+        if (groupBy == live.localapp.local.domain.model.BoStructuredResponse.Suggestions.GroupBy.NONE) {
+            return sug.copy(groups = listOf(
+                live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Group(
+                    label = sug.groups.firstOrNull()?.label ?: "",
+                    events = dayScoped.sortedBy { it.startAt ?: "" }.map { ev ->
+                        live.localapp.local.domain.model.BoStructuredResponse.Suggestions.EventRef(ev.id, null)
+                    },
+                )
+            ))
+        }
+
+        data class Bucket(val sort: Long, val label: String, val events: MutableList<live.localapp.local.domain.model.Event>)
+        val buckets = LinkedHashMap<String, Bucket>()
+        val byDay = groupBy == live.localapp.local.domain.model.BoStructuredResponse.Suggestions.GroupBy.DAY
+        for (ev in dayScoped) {
+            val key: String; val sort: Long; val label: String
+            if (byDay) {
+                val (k, s, l) = computeEventDayKey(ev, tz); key = k; sort = s; label = l
+            } else {
+                val (k, p, l) = computeEventCategoryKey(ev); key = k; sort = p.toLong(); label = l
+            }
+            buckets.getOrPut(key) { Bucket(sort, label, mutableListOf()) }.events += ev
+        }
+
+        val newGroups = buckets.values
+            .sortedBy { it.sort }
+            .map { b ->
+                val sortedEvents = b.events.sortedBy { it.startAt ?: "" }
+                live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Group(
+                    label = b.label,
+                    events = sortedEvents.map { ev ->
+                        live.localapp.local.domain.model.BoStructuredResponse.Suggestions.EventRef(
+                            eventId = ev.id,
+                            rationale = null,
+                        )
+                    },
+                )
+            }
+        if (newGroups.isEmpty()) return null
+        return sug.copy(groups = newGroups)
     }
 
     /** True when prose alongside a structured terminal tool is short and
@@ -4419,8 +4668,36 @@ class ChatViewModel(
         is live.localapp.local.domain.model.BoStructuredResponse.ScopeRedirect -> emptySet()
     }
 
-    /** Add an event to the draft tray. Idempotent (no-op if already present). */
+    /**
+     * ❤️ on a result card. Toggles the saved-event (favorite) in state AND
+     * server-side (community_interactions) so it lands in the user's Saved
+     * Events and survives closing Bo — same store the Home/Places hearts use.
+     * Also mirrors the event into the in-chat draft tray so the "build a plan"
+     * flow still sees it. Resolving the Event (cache → repo) supplies the
+     * category + tray data; the favorite still toggles if resolution fails.
+     */
+    fun saveEventIfNew(eventId: String) {
+        if (eventId.isBlank() || eventId in _uiState.value.favoriteEventIds) return
+        _uiState.update { it.copy(favoriteEventIds = it.favoriteEventIds + eventId) }
+        viewModelScope.launch {
+            val event = searchResultCache.find { it.id == eventId }
+                ?: try { eventRepo.getEvent(eventId) } catch (_: Throwable) { null }
+            communityInterestRepository.recordFavorite(
+                eventId, live.localapp.local.domain.repository.InteractionType.EVENT, event?.category,
+            )
+            live.localapp.local.observability.Analytics.track(
+                live.localapp.local.observability.AnalyticsEvent.eventSaved(eventId = eventId, source = "bo_card"),
+            )
+        }
+    }
+
+    /**
+     * Add an event to the draft tray. Idempotent (no-op if already present).
+     * Tapping + also saves the event to Saved Events the first time (no-op if
+     * already saved) — the only new behavior over the pre-existing tray add.
+     */
     fun addToDraftTray(event: live.localapp.local.domain.model.Event) {
+        saveEventIfNew(event.id)
         val current = _uiState.value.draftTray
         if (current.any { it.eventId == event.id }) return
         val draft = live.localapp.local.domain.model.DraftTrayEvent(
@@ -5300,7 +5577,7 @@ ABSOLUTE RULES (highest priority — these override every other rule and example
 4. NEVER MISCATEGORIZE. An "outdoor events" group must contain only outdoor events; an "arts" group must contain only arts; etc. Before submitting present_suggestions, check every event in every group against its label and DROP any event whose `category`/`subcategory` doesn't fit. If that empties a group, drop the group. Better to return fewer accurate picks than to pad with unrelated events. The client also re-buckets by actual category/day, but mismatches in your JSON are a bug — fix it on your side too.
 5. AFTER A SUCCESSFUL SEARCH, PRESENT — NEVER ASK A CLARIFYING QUESTION. If search_events (or search_venues) returned ≥ 3 results, your VERY NEXT response MUST be a structured tool call: present_suggestions for browse intents, present_event_brief / present_venue_brief / present_quick_fact for narrow factual ones. NEVER respond with `type: chat` and a vibe/category clarifier ("what kind of music?", "live or theatre?", "concert or comedy?") after a search returned results — the user picks by tapping the tray, not by answering you. The ONLY chat-with-question response permitted after a successful search is when the search returned 0-2 results AND you have already attempted ONE broadened retry that also returned < 3.
 6. NEVER USE "Other" OR "Upcoming" AS A present_suggestions GROUP LABEL. The DB's `category="other"` and `category="upcoming"` are classifier residue, not real domains — the events inside are book talks, jazz nights, exhibits, lectures, drop-ins, community classes that just weren't classified. When you'd otherwise label a group "Other"/"Upcoming", instead inspect the events' subcategory/title and pick a concrete label: Music, Comedy, Theatre, Arts, Sports, Food, Outdoors, Family, Lectures & Book Talks, Exhibits, Community, Drop-ins, Tours, Workshops. If a bucket is genuinely heterogeneous, split it into 2-3 narrower groups by subcategory or DROP it entirely. Better 3 sharp groups than 4 with an "Other" filler.
-7. PRESENT_SUGGESTIONS QUANTITY (hard rule, applies whenever you call present_suggestions). For BROWSING-BROADLY queries — a date with no narrow filter ("things to do May 15", "what's happening Friday"), a vibe ("fun things tonight"), or any open-ended discovery — pack each group with 6-12 events and use 4-8 groups total. Aim for ≥30 events in the tray. If search_events returned 30+ rows, you have enough material; do NOT cherry-pick 2-3 per group. Show density, let the user scroll. For NARROW queries (specific category like "jazz this week", specific venue, single subcategory), 3-5 events per group is fine. When in doubt, lean toward MORE events, not fewer — the user explicitly asked to browse.
+7. PRESENT_SUGGESTIONS QUANTITY (hard rule, applies whenever you call present_suggestions). DEFAULT TO COMPREHENSIVENESS — the results render on a MAP where every event is a pin, so the user expects to see essentially ALL matching events, not a curated handful. For BROWSING-BROADLY queries — a date with no narrow filter ("things to do May 15", "what's happening Friday"), a vibe ("fun things tonight"), or any open-ended discovery — pack each group as densely as the results allow (10+ events per group is good) and use 4-8 groups total. For CATEGORY queries ("music this week", "comedy", "sports", "food & drink", "what concerts are happening") — INCLUDE EVERY matching event search_events returned for that category, grouped by day. Do NOT cap a category at 3-5 per day; if the DB has 25 music events tomorrow, the tray must show all 25. The user asked for that whole category and wants to see the full picture on the map. NEVER cherry-pick 2-3 per group when more exist. The ONLY time a small count (3-5) is acceptable is a genuinely NARROW ask — a single named venue ("what's at the Sinclair") or one specific artist/team. When in doubt, lean toward MORE events, not fewer.
 
 BREVITY (hard rule, mobile chat):
 - Non-plan responses: 1-3 sentences max. No multi-paragraph essays. No bullet lists in chat — surface choices via plan cards, not prose.
@@ -5474,6 +5751,25 @@ $currentPlanContext
     private fun handleAiError(e: Exception) {
         println("ChatViewModel AI error: ${e::class.simpleName}: ${e.message}")
         val errorMsg = e.message.orEmpty()
+
+        // Entitlement rejection (free trial ended + not subscribed). Bo is a
+        // Local Pro feature once the trial lapses, so present the paywall — the
+        // same hook the plan-save gate uses — instead of a confusing generic
+        // "something went wrong". Checked first so we never auto-retry a 402.
+        if (e is live.localapp.local.data.remote.BoEntitlementRequiredException ||
+            errorMsg.contains("Local Pro required", true)) {
+            println("ChatVM: entitlement required — presenting paywall")
+            onPlanBlocked?.invoke()
+            // Fallback if the paywall hook isn't wired in this context, so the
+            // user still learns why Bo stopped instead of seeing nothing.
+            if (onPlanBlocked == null) {
+                addAiMessage("Planning with Bo is a Local Pro feature. Upgrade to keep going!")
+            }
+            _uiState.update {
+                it.copy(isBusy = false, isTyping = false, isSearching = false, inputEnabled = true)
+            }
+            return
+        }
 
         // Auto-retry once for transient errors (timeout, 500, 502, network)
         val now = kotlin.time.Clock.System.now().toEpochMilliseconds()

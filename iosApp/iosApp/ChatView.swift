@@ -65,6 +65,8 @@ class ChatState: ObservableObject {
     // The goal picked from the intent sheet ("find_events"/"create_plan"/
     // "browsing"), or "" when not yet chosen. Empty drives the intent sheet.
     @Published var boIntent: String = ""
+    // Saved (favorited) event ids — drives the filled ❤️ and the build CTA.
+    @Published var favoriteEventIds: Set<String> = []
 
     func update(from snapshot: ChatStateSnapshot) {
         DispatchQueue.main.async { [weak self] in
@@ -89,6 +91,7 @@ class ChatState: ObservableObject {
             self?.searchRadiusMiles = snapshot.searchRadiusMiles
             self?.scopeEditorPlaceholder = snapshot.scopeEditorPlaceholder
             self?.boIntent = snapshot.boIntent
+            self?.favoriteEventIds = Set(snapshot.favoriteEventIds.map { $0 as String })
         }
     }
 }
@@ -207,10 +210,9 @@ struct ChatView: View {
     @StateObject private var state = ChatState()
     @State private var inputText = ""
     @FocusState private var inputFocused: Bool
-    /// Event IDs the user has tapped [+] on inside any SuggestionTray on this
-    /// chat session. While non-empty, a "Create plan" CTA appears above the
-    /// input bar — tap fires the canonical Build message back to Bo and
-    /// clears the selection. Cleared whenever messages reset (Start over).
+    /// Event IDs the user has tapped [+] on this session — drives the build CTA.
+    /// Tapping + also saves the event to Saved Events the first time (handled
+    /// by the bridge). Cleared on Start over.
     @State private var selectedEventIds: Set<String> = []
     /// Snapshot of `selectedEventIds` at the moment the user last tapped the
     /// Build CTA. The CTA hides whenever the current selection equals this
@@ -981,16 +983,18 @@ struct ChatView: View {
     /// event cards. Matches the Compose `SuggestionTray` styling so the
     /// iOS and Android trays look the same.
     private func suggestionTrayRow(messageId: String, suggestions: SuggestionsSnapshot) -> some View {
-        SuggestionTrayView(
-            messageId: messageId,
+        BoResultsMapView(
             suggestions: suggestions,
-            isSelected: { selectedEventIds.contains($0) },
-            onToggleSelected: { eventId in
+            // + adds to this session's plan selection AND saves the event to
+            // Saved Events the first time (the bridge no-ops if already saved).
+            isSaved: { selectedEventIds.contains($0) },
+            onToggleSave: { eventId in
                 withAnimation(.easeOut(duration: 0.18)) {
                     if selectedEventIds.contains(eventId) {
                         selectedEventIds.remove(eventId)
                     } else {
                         selectedEventIds.insert(eventId)
+                        ChatBridge.shared.saveFavorite?(eventId)
                     }
                 }
             },
@@ -998,8 +1002,6 @@ struct ChatView: View {
             onDismiss: { eventId in
                 withAnimation(.easeOut(duration: 0.18)) {
                     dismissedEventIds.insert(eventId)
-                    // If they dismiss something they'd saved, drop it from the
-                    // saved set too so the Build CTA count stays honest.
                     selectedEventIds.remove(eventId)
                 }
             },
@@ -1008,26 +1010,8 @@ struct ChatView: View {
                 // native event detail is presented over the chat.
                 inputFocused = false
                 ChatBridge.shared.onEventTap?(ev.eventId, ev.imageUrl)
-            },
-            onFooterAction: { intent in
-                ChatBridge.shared.sendMessage?(intent)
-            },
-            isGroupLoading: { groupKey in
-                loadingGroupKeys.contains(loadKey(messageId: messageId, groupKey: groupKey))
-            },
-            isGroupExhausted: { groupKey in
-                exhaustedGroupKeys.contains(loadKey(messageId: messageId, groupKey: groupKey))
-            },
-            onFindMore: { dayKey, categoryKey in
-                let groupKey = dayKey ?? categoryKey ?? ""
-                guard !groupKey.isEmpty else { return }
-                let key = loadKey(messageId: messageId, groupKey: groupKey)
-                guard !loadingGroupKeys.contains(key), !exhaustedGroupKeys.contains(key) else { return }
-                loadingGroupKeys.insert(key)
-                ChatBridge.shared.loadMoreSuggestions?(messageId, dayKey, categoryKey)
             }
         )
-        .padding(.trailing, 40) // visual balance: keep tray off the right edge
     }
 
     /// Persistent "Create plan" CTA above the input bar, shown when the user
@@ -1054,10 +1038,9 @@ struct ChatView: View {
                 let ids = Array(selectedEventIds)
                 ChatBridge.shared.buildPlanFromSelections?(ids)
                 // Snapshot the selection so the CTA hides immediately. The
-                // green checkmarks on the SuggestionTray cards stay visible
-                // (selectedEventIds is intentionally NOT cleared). If the
-                // user adds or removes any card afterward, the snapshot no
-                // longer matches and the CTA returns. Cleared on Start over.
+                // checkmarks on the cards stay. If the user adds or removes any
+                // card afterward, the snapshot no longer matches and the CTA
+                // returns. Cleared on Start over.
                 withAnimation(.easeOut(duration: 0.18)) {
                     lastSubmittedSelection = selectedEventIds
                 }
@@ -2129,6 +2112,342 @@ private enum STF {
     }
 }
 
+// MARK: - Bo Results Map
+
+/// Map rendering of a `present_suggestions` result: day/category tabs → a
+/// MapKit map with a pin per event → a synced bottom carousel of cards. Tap a
+/// pin to focus its card; swipe the carousel to recenter the map on its pin.
+/// Replaces the stacked-carousel SuggestionTrayView for event results.
+private struct BoResultsMapView: View {
+    let suggestions: SuggestionsSnapshot
+    let isSaved: (String) -> Bool
+    let onToggleSave: (String) -> Void
+    let isDismissed: (String) -> Bool
+    let onDismiss: (String) -> Void
+    let onOpenEvent: (SuggestionEventSnapshot) -> Void
+
+    @State private var groupIndex: Int = 0
+    @State private var focusedId: String?
+    @State private var region: MKCoordinateRegion?
+
+    /// Groups that still have at least one non-dismissed event.
+    private var visibleGroups: [SuggestionGroupSnapshot] {
+        suggestions.groups.filter { g in g.events.contains { !isDismissed($0.eventId) } }
+    }
+    private var currentEvents: [SuggestionEventSnapshot] {
+        let groups = visibleGroups
+        guard groupIndex >= 0 && groupIndex < groups.count else { return [] }
+        return groups[groupIndex].events.filter { !isDismissed($0.eventId) }
+    }
+    private var pins: [SuggestionEventSnapshot] { currentEvents.filter { $0.hasCoords } }
+
+    /// One map pin per distinct venue — multiple events at the same place
+    /// collapse into a single pin (with a count badge) instead of stacking.
+    private struct PinGroup: Identifiable {
+        let id: String
+        let coordinate: CLLocationCoordinate2D
+        let eventIds: [String]
+    }
+    private var pinGroups: [PinGroup] {
+        var order: [String] = []
+        var byKey: [String: [SuggestionEventSnapshot]] = [:]
+        for ev in pins {
+            let key = String(format: "%.4f,%.4f", ev.venueLat, ev.venueLng)
+            if byKey[key] == nil { order.append(key) }
+            byKey[key, default: []].append(ev)
+        }
+        return order.map { key in
+            let evs = byKey[key]!
+            return PinGroup(
+                id: key,
+                coordinate: CLLocationCoordinate2D(latitude: evs[0].venueLat, longitude: evs[0].venueLng),
+                eventIds: evs.map { $0.eventId })
+        }
+    }
+    /// Advance focus + recenter the map when a card is dismissed (✕). Without
+    /// this, dismissing the focused event left `focusedId` pointing at a gone
+    /// card — its pin vanished and the map stayed put. Move to the next card
+    /// (or the previous if it was last) so the map follows the new top card.
+    private func handleDismiss(_ id: String) {
+        let list = currentEvents
+        let wasFocused = (focusedId == id)
+        var nextId: String? = focusedId
+        if wasFocused, let idx = list.firstIndex(where: { $0.eventId == id }) {
+            nextId = (idx + 1 < list.count) ? list[idx + 1].eventId
+                   : (idx - 1 >= 0 ? list[idx - 1].eventId : nil)
+        }
+        onDismiss(id)
+        if wasFocused { focusedId = nextId } // onChange(focusedId) recenters
+    }
+
+    var body: some View {
+        let groups = visibleGroups
+        VStack(alignment: .leading, spacing: 0) {
+            Text(suggestions.headline)
+                .font(STF.display(18, .black))
+                .foregroundColor(STC.ink)
+                .padding(.horizontal, 14)
+                .padding(.top, 14)
+
+            // Day / category tabs (only when there's more than one group).
+            if groups.count > 1 {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(groups.enumerated()), id: \.offset) { idx, g in
+                            let active = idx == groupIndex
+                            Button(action: { groupIndex = idx }) {
+                                Text(g.label.isEmpty ? "Results" : g.label)
+                                    .font(STF.body(13, .bold))
+                                    .foregroundColor(active ? .white : STC.ink)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 7)
+                                    .background(active ? STC.coral : STC.skyLt)
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.top, 10)
+                }
+            }
+
+            // Map with a pin per (coord-bearing) venue in the current group.
+            // Backed by MKMapView (not SwiftUI Map) so the focused pin can be
+            // forced above overlapping neighbors via displayPriority/zPriority —
+            // SwiftUI Map gives no reliable annotation z-order control.
+            BoMapView(
+                pins: pinGroups.map {
+                    BoMapView.Pin(id: $0.id,
+                                  lat: $0.coordinate.latitude,
+                                  lng: $0.coordinate.longitude,
+                                  eventIds: $0.eventIds)
+                },
+                focusedId: focusedId,
+                region: region,
+                onSelect: { eid in focusedId = eid }
+            )
+            .frame(height: 230)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .overlay(alignment: .topLeading) {
+                if let ev = currentEvents.first(where: { $0.eventId == focusedId }) {
+                    Text(ev.venueName.isEmpty ? ev.title : ev.venueName)
+                        .font(STF.body(12, .bold))
+                        .foregroundColor(STC.ink)
+                        .lineLimit(1)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.white)
+                        .clipShape(Capsule())
+                        .shadow(color: .black.opacity(0.1), radius: 3, y: 1)
+                        .padding(20)
+                }
+            }
+
+            // Bottom carousel, synced to the map via focusedId.
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 10) {
+                    ForEach(currentEvents, id: \.eventId) { ev in
+                        SuggestionCardView(
+                            event: ev,
+                            isSelected: isSaved(ev.eventId),
+                            onTap: { onOpenEvent(ev) },
+                            onToggleSelected: { onToggleSave(ev.eventId) },
+                            onDismiss: { handleDismiss(ev.eventId) }
+                        )
+                        .frame(width: 280)
+                    }
+                }
+                .scrollTargetLayout()
+                .padding(.horizontal, 14)
+            }
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: $focusedId)
+            .padding(.top, 10)
+            .padding(.bottom, 14)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(STC.pebble, lineWidth: 1.5))
+        .onAppear {
+            if focusedId == nil { focusedId = currentEvents.first?.eventId }
+            focusRegion(focusedId)
+        }
+        .onChange(of: groupIndex) { _, _ in
+            focusedId = currentEvents.first?.eventId
+        }
+        // Map follows the carousel: focusing an event (swipe or pin tap)
+        // zooms to its local neighborhood so dense clusters read clearly.
+        .onChange(of: focusedId) { _, newId in
+            focusRegion(newId)
+        }
+    }
+
+    /// Center on the focused event and zoom to fit its ~nearest neighbors, so a
+    /// dense downtown cluster spreads out enough to read relative distances,
+    /// while a sparse group still shows context. The map is interactive — pinch
+    /// out any time for the wider view.
+    private func focusRegion(_ id: String?) {
+        guard let id, let target = pinGroups.first(where: { $0.eventIds.contains(id) }) else { return }
+        let center = target.coordinate
+        // The ~6 nearest distinct venues to the focused one set the zoom.
+        let nearest = pinGroups
+            .map { ($0.coordinate, hypot($0.coordinate.latitude - center.latitude, $0.coordinate.longitude - center.longitude)) }
+            .sorted { $0.1 < $1.1 }
+            .prefix(6)
+            .map { $0.0 }
+        let maxDLat = nearest.map { abs($0.latitude - center.latitude) }.max() ?? 0
+        let maxDLng = nearest.map { abs($0.longitude - center.longitude) }.max() ?? 0
+        // Centered on the focused event, so the span needs ~2× the farthest
+        // neighbor's offset; clamp to a readable band (~1mi floor, ~12mi cap).
+        let span = MKCoordinateSpan(
+            latitudeDelta: min(max(maxDLat * 2.6, 0.015), 0.18),
+            longitudeDelta: min(max(maxDLng * 2.6, 0.02), 0.22))
+        region = MKCoordinateRegion(center: center, span: span)
+    }
+}
+
+// MARK: - MKMapView wrapper (reliable focused-pin z-order)
+
+/// UIKit map backing `BoResultsMapView`. SwiftUI's `Map` gives no dependable
+/// way to keep the focused annotation above overlapping neighbors; MKMapView
+/// does, via `displayPriority = .required` + `zPriority = .max` on the focused
+/// pin. Also owns camera moves (driven by the `region` the parent computes) and
+/// forwards pin taps back up as the tapped venue's first event id.
+private struct BoMapView: UIViewRepresentable {
+    struct Pin: Equatable {
+        let id: String
+        let lat: Double
+        let lng: Double
+        let eventIds: [String]
+    }
+    let pins: [Pin]
+    let focusedId: String?
+    let region: MKCoordinateRegion?
+    let onSelect: (String) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> MKMapView {
+        let map = MKMapView()
+        map.delegate = context.coordinator
+        map.showsUserLocation = false
+        map.isRotateEnabled = false
+        map.isPitchEnabled = false
+        map.register(MKAnnotationView.self, forAnnotationViewWithReuseIdentifier: PinAnnotation.reuseId)
+        return map
+    }
+
+    func updateUIView(_ map: MKMapView, context: Context) {
+        context.coordinator.parent = self
+
+        // Reconcile annotations against `pins` (by id).
+        let existing = map.annotations.compactMap { $0 as? PinAnnotation }
+        let desired = Set(pins.map { $0.id })
+        for a in existing where !desired.contains(a.pinId) { map.removeAnnotation(a) }
+        let have = Set(existing.map { $0.pinId })
+        for p in pins where !have.contains(p.id) {
+            map.addAnnotation(PinAnnotation(
+                pinId: p.id, eventIds: p.eventIds,
+                coordinate: CLLocationCoordinate2D(latitude: p.lat, longitude: p.lng)))
+        }
+
+        // Restyle every visible annotation for the current focus so the focused
+        // pin is enlarged AND forced on top.
+        for a in map.annotations.compactMap({ $0 as? PinAnnotation }) {
+            if let v = map.view(for: a) {
+                context.coordinator.style(v, focused: a.eventIds.contains(focusedId ?? "\u{0}"))
+            }
+        }
+
+        // Drive the camera from the parent's computed region (guarded so we
+        // don't fight the user's own panning/zoom on unrelated updates).
+        if let region, !context.coordinator.regionApproxEquals(map.region, region) {
+            map.setRegion(region, animated: true)
+        }
+    }
+
+    final class PinAnnotation: NSObject, MKAnnotation {
+        static let reuseId = "bo-pin"
+        let pinId: String
+        let eventIds: [String]
+        @objc dynamic var coordinate: CLLocationCoordinate2D
+        init(pinId: String, eventIds: [String], coordinate: CLLocationCoordinate2D) {
+            self.pinId = pinId
+            self.eventIds = eventIds
+            self.coordinate = coordinate
+        }
+    }
+
+    final class Coordinator: NSObject, MKMapViewDelegate {
+        var parent: BoMapView
+        init(_ p: BoMapView) { parent = p }
+
+        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            guard let pin = annotation as? PinAnnotation else { return nil }
+            let v = mapView.dequeueReusableAnnotationView(
+                withIdentifier: PinAnnotation.reuseId, for: annotation)
+            v.annotation = annotation
+            v.canShowCallout = false
+            style(v, focused: pin.eventIds.contains(parent.focusedId ?? "\u{0}"))
+            return v
+        }
+
+        func style(_ v: MKAnnotationView, focused: Bool) {
+            let size: CGFloat = focused ? 34 : 26
+            v.frame = CGRect(x: 0, y: 0, width: size, height: size)
+            v.centerOffset = .zero
+            v.image = Self.pinImage(focused: focused, size: size)
+            // The two levers SwiftUI Map lacks: never let the focused pin be
+            // decluttered away, and draw it above all others.
+            v.displayPriority = focused ? .required : .defaultLow
+            v.zPriority = focused ? .max : .defaultUnselected
+        }
+
+        func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
+            guard let pin = view.annotation as? PinAnnotation, let first = pin.eventIds.first
+            else { return }
+            // Deselect so the same pin can be tapped again later.
+            mapView.deselectAnnotation(view.annotation, animated: false)
+            parent.onSelect(first)
+        }
+
+        func regionApproxEquals(_ a: MKCoordinateRegion, _ b: MKCoordinateRegion) -> Bool {
+            abs(a.center.latitude - b.center.latitude) < 0.0008 &&
+            abs(a.center.longitude - b.center.longitude) < 0.0008 &&
+            abs(a.span.latitudeDelta - b.span.latitudeDelta) < 0.0015 &&
+            abs(a.span.longitudeDelta - b.span.longitudeDelta) < 0.0015
+        }
+
+        /// Render the coral map pin (focused = filled coral + white glyph;
+        /// unfocused = white fill + coral glyph). No count badge.
+        static func pinImage(focused: Bool, size: CGFloat) -> UIImage {
+            let coral = UIColor(STC.coral)
+            let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size))
+            return renderer.image { _ in
+                let rect = CGRect(x: 1.5, y: 1.5, width: size - 3, height: size - 3)
+                let circle = UIBezierPath(ovalIn: rect)
+                (focused ? coral : UIColor.white).setFill()
+                circle.fill()
+                coral.setStroke()
+                circle.lineWidth = 2
+                circle.stroke()
+                let cfg = UIImage.SymbolConfiguration(pointSize: focused ? 15 : 12, weight: .bold)
+                if let glyph = UIImage(systemName: "mappin", withConfiguration: cfg)?
+                    .withTintColor(focused ? .white : coral, renderingMode: .alwaysOriginal) {
+                    let gs = glyph.size
+                    glyph.draw(in: CGRect(
+                        x: (size - gs.width) / 2, y: (size - gs.height) / 2,
+                        width: gs.width, height: gs.height))
+                }
+            }
+        }
+    }
+}
+
 struct SuggestionTrayView: View {
     let messageId: String
     let suggestions: SuggestionsSnapshot
@@ -2261,32 +2580,32 @@ private struct SuggestionCardView: View {
             }
             // Inset so the corner controls (❤️ top-right, ✕ bottom-left)
             // never overlap the text.
-            .padding(.leading, 30)
-            .padding(.trailing, 32)
+            .padding(.leading, 14)
+            .padding(.trailing, 36)
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: Self.cardHeight)
             .background(STC.skyLt.opacity(0.35))
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).stroke(STC.pebble, lineWidth: 1))
-            // ❤️ save — top-right.
+            // + add to plan (also saves on first add) — top-right.
             .overlay(alignment: .topTrailing) {
                 Button(action: {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     onToggleSelected()
                 }) {
-                    Image(systemName: isSelected ? "heart.fill" : "heart")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(isSelected ? .white : STC.coral)
+                    Image(systemName: isSelected ? "checkmark" : "plus")
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundColor(.white)
                         .frame(width: 26, height: 26)
-                        .background(isSelected ? STC.coral : STC.coral.opacity(0.12))
+                        .background(isSelected ? STC.sage : STC.coral)
                         .clipShape(Circle())
                 }
                 .buttonStyle(.plain)
                 .padding(8)
-                .accessibilityLabel(isSelected ? "Saved" : "Save")
+                .accessibilityLabel(isSelected ? "Added" : "Add")
             }
-            // ✕ dismiss — bottom-left.
-            .overlay(alignment: .bottomLeading) {
+            // ✕ dismiss — bottom-right, directly beneath the + / ✓.
+            .overlay(alignment: .bottomTrailing) {
                 Button(action: {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
                     onDismiss()

@@ -26,6 +26,7 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -35,6 +36,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -69,6 +72,8 @@ fun SuggestionTray(
     onOpenEvent: (Event) -> Unit,
     onFooterAction: (BoStructuredResponse.Suggestions.Action) -> Unit,
     isInTray: (String) -> Boolean,
+    isDismissed: (String) -> Boolean = { false },
+    onDismiss: (String) -> Unit = {},
     isGroupLoading: (String) -> Boolean = { false },
     isGroupExhausted: (String) -> Boolean = { false },
     onFindMore: (dayKey: String?, categoryKey: String?) -> Unit = { _, _ -> },
@@ -112,6 +117,10 @@ fun SuggestionTray(
             )
         } else {
             suggestions.groups.forEach { group ->
+                // Hide events the user dismissed (✕); drop the group entirely
+                // if it empties out.
+                val visibleEvents = group.events.filter { !isDismissed(it.eventId) }
+                if (visibleEvents.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
                 if (group.label.isNotBlank()) {
                     Text(
@@ -133,7 +142,7 @@ fun SuggestionTray(
                 // the label; ungrouped (NONE) trays get no Find-more tile.
                 val (dayKey, categoryKey) = when (suggestions.groupBy) {
                     BoStructuredResponse.Suggestions.GroupBy.DAY ->
-                        localDateKey(group.events.firstOrNull()?.let { eventsById[it.eventId] }) to null
+                        localDateKey(visibleEvents.firstOrNull()?.let { eventsById[it.eventId] }) to null
                     BoStructuredResponse.Suggestions.GroupBy.CATEGORY ->
                         null to group.label.takeIf { it.isNotBlank() }
                     BoStructuredResponse.Suggestions.GroupBy.NONE ->
@@ -148,13 +157,14 @@ fun SuggestionTray(
                     horizontalArrangement = Arrangement.spacedBy(10.dp),
                     contentPadding = PaddingValues(horizontal = 14.dp),
                 ) {
-                    items(group.events) { eventRef ->
+                    items(visibleEvents) { eventRef ->
                         val ev = eventsById[eventRef.eventId]
                         if (ev != null) {
                             SuggestionCard(
                                 event = ev,
                                 isInTray = isInTray(eventRef.eventId),
                                 onAddToTray = { onAddToTray(ev) },
+                                onDismiss = { onDismiss(eventRef.eventId) },
                                 onOpenEvent = { onOpenEvent(ev) },
                                 modifier = Modifier.width(270.dp),
                             )
@@ -171,6 +181,7 @@ fun SuggestionTray(
                         }
                     }
                 }
+                } // end if visibleEvents.isNotEmpty()
             }
         }
 
@@ -227,10 +238,12 @@ private fun SuggestionCard(
     event: Event,
     isInTray: Boolean,
     onAddToTray: () -> Unit,
+    onDismiss: () -> Unit,
     onOpenEvent: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Row(
+    val haptics = LocalHapticFeedback.current
+    Box(
         modifier = modifier
             .height(72.dp)
             .clip(RoundedCornerShape(14.dp))
@@ -240,11 +253,16 @@ private fun SuggestionCard(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
                 onClick = onOpenEvent,
-            )
-            .padding(horizontal = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            ),
     ) {
-        Column(modifier = Modifier.weight(1f)) {
+        // Text — inset so the corner controls (❤️ top-right, ✕ bottom-left)
+        // never overlap it.
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(start = 14.dp, end = 36.dp),
+            verticalArrangement = Arrangement.Center,
+        ) {
             Text(
                 event.title,
                 style = TextStyle(
@@ -277,31 +295,56 @@ private fun SuggestionCard(
             }
         }
 
-        Spacer(Modifier.width(8.dp))
-        AddToTrayButton(isInTray = isInTray, onClick = onAddToTray)
-    }
-}
+        // ❤️ save — top-right.
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(6.dp)
+                .size(26.dp)
+                .clip(RoundedCornerShape(50))
+                .background(if (isInTray) AppColors.Sage else AppColors.Coral)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    if (!isInTray) onAddToTray()
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (isInTray) Icons.Outlined.Check else Icons.Outlined.Add,
+                contentDescription = if (isInTray) "Added" else "Add",
+                tint = Color.White,
+                modifier = Modifier.size(15.dp),
+            )
+        }
 
-@Composable
-private fun AddToTrayButton(isInTray: Boolean, onClick: () -> Unit) {
-    val bg = if (isInTray) AppColors.Sage else AppColors.Coral
-    Box(
-        modifier = Modifier
-            .size(22.dp)
-            .clip(RoundedCornerShape(50))
-            .background(bg)
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-            ) { if (!isInTray) onClick() },
-        contentAlignment = Alignment.Center,
-    ) {
-        Icon(
-            if (isInTray) Icons.Outlined.Check else Icons.Outlined.Add,
-            contentDescription = if (isInTray) "In plan selection" else "Add to plan selection",
-            tint = Color.White,
-            modifier = Modifier.size(14.dp),
-        )
+        // ✕ dismiss — bottom-right, directly beneath the + / ✓.
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(6.dp)
+                .size(20.dp)
+                .clip(RoundedCornerShape(50))
+                .background(Color.White)
+                .border(1.dp, AppColors.Pebble, RoundedCornerShape(50))
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onDismiss()
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Outlined.Close,
+                contentDescription = "Not interested",
+                tint = AppColors.Ink3,
+                modifier = Modifier.size(11.dp),
+            )
+        }
     }
 }
 

@@ -140,6 +140,7 @@ class EventRepositoryImpl(
         userLat: Double?,
         userLng: Double?,
         radiusMiles: Double?,
+        useRadiusBbox: Boolean,
     ): List<Event> {
         val now = kotlin.time.Clock.System.now()
         val nowIso = now.toString()
@@ -188,7 +189,16 @@ class EventRepositoryImpl(
                 DateWindow("${friday}T00:00:00Z", "${monday}T00:00:00Z")
             }
             "next_weekend" -> {
-                val nextFriday = todayLocal.date.plus(daysUntilFriday(), DateTimeUnit.DAY)
+                // The weekend AFTER this one. `daysUntilFriday()` gives *this*
+                // coming Friday for Mon-Thu (and already next Friday for
+                // Sat/Sun), so anchor on this weekend's Friday, then +7.
+                val thisWeekendFriday = when (todayDow) {
+                    DayOfWeek.FRIDAY -> todayLocal.date
+                    DayOfWeek.SATURDAY -> todayLocal.date.plus(-1, DateTimeUnit.DAY)
+                    DayOfWeek.SUNDAY -> todayLocal.date.plus(-2, DateTimeUnit.DAY)
+                    else -> todayLocal.date.plus(daysUntilFriday(), DateTimeUnit.DAY)
+                }
+                val nextFriday = thisWeekendFriday.plus(7, DateTimeUnit.DAY)
                 val nextMonday = nextFriday.plus(3, DateTimeUnit.DAY)
                 DateWindow("${nextFriday}T00:00:00Z", "${nextMonday}T00:00:00Z")
             }
@@ -230,6 +240,16 @@ class EventRepositoryImpl(
                     }
                     if (userLat == null && !location.isNullOrBlank()) {
                         ilike("venue_city", "%${location}%")
+                    }
+                    // Radius bbox (chat comprehensive fill) — keeps results local
+                    // so a high limit doesn't truncate to out-of-area rows.
+                    if (useRadiusBbox && userLat != null && userLng != null && radiusMiles != null) {
+                        val latD = radiusMiles / 69.0
+                        val lngD = radiusMiles / (69.0 * kotlin.math.cos(userLat * kotlin.math.PI / 180.0))
+                        gte("venue_lat", userLat - latD)
+                        lte("venue_lat", userLat + latD)
+                        gte("venue_lng", userLng - lngD)
+                        lte("venue_lng", userLng + lngD)
                     }
                     if (!category.isNullOrBlank()) {
                         or {

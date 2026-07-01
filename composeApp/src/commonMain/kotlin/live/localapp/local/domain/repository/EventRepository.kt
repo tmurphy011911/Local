@@ -19,6 +19,11 @@ interface EventRepository {
         userLat: Double? = null,
         userLng: Double? = null,
         radiusMiles: Double? = null,
+        // When true (and coords + radius are present), constrain results to a
+        // lat/lng bbox of that radius — a category-COMPLETE radius-scoped search
+        // (the chat's comprehensive tray fill). Default false keeps existing
+        // callers (AddEventSheet, ManualPlanSheet, PlanSwap) unchanged.
+        useRadiusBbox: Boolean = false,
     ): List<Event>
 
     /**

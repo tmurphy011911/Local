@@ -71,6 +71,7 @@ actual fun openChatSheet(onReady: () -> Unit) {
     ChatBridge.setBoIntent = { wire ->
         live.localapp.local.ui.chat.BoIntent.fromWire(wire)?.let { chatVm.setBoIntent(it) }
     }
+    ChatBridge.saveFavorite = { eventId -> chatVm.saveEventIfNew(eventId) }
     ChatBridge.buildPlanFromSelections = { ids -> chatVm.buildPlanFromSelections(ids) }
     ChatBridge.setLocationByName = { name -> chatVm.setChatSearchLocationByName(name) }
     ChatBridge.setSearchScope = { name, radius -> chatVm.setChatSearchScope(name, radius) }
