@@ -3349,11 +3349,13 @@ Deno.serve(async (req) => {
     // Trim heavy fields from events to reduce response size
     const trimmedCarousels = carouselSections.map(section => ({
       ...section,
-      // Truncate description to 200 chars (cards don't display it; iOS hero
-      // transition still gets a preview snippet for the detail screen until
-      // the full row is fetched). Strip venue_description entirely — it's a
-      // fallback only used when description is null, and the detail screen
-      // refetches the venue independently.
+      // Cap description at 2000 chars. The detail screen renders this text
+      // directly (it does NOT reliably refetch the full row), so a 200-char
+      // cap was cutting ~32% of descriptions mid-sentence on the detail view.
+      // 2000 covers every real description (p99 ~720, max seen ~1321) while
+      // still bounding a pathological row. Strip venue_description entirely —
+      // it's a fallback only used when description is null, and the detail
+      // screen refetches the venue independently.
       events: section.events.map((e: ProcessedEvent) => ({
         id: e.id,
         title: e.title,
@@ -3381,7 +3383,7 @@ Deno.serve(async (req) => {
         source: e.source,
         source_url: e.source_url,
         distance_miles: e.distance_miles,
-        description: e.description ? e.description.slice(0, 200) : null,
+        description: e.description ? e.description.slice(0, 2000) : null,
         time_known: e.time_known ?? true,
         venue_photo_url: e.venue_photo_url,
       })),
