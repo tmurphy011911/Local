@@ -1729,7 +1729,7 @@ function buildCarousels(
     const stateName = (rwUserState && STATE_CODE_NAMES[rwUserState]) || "Your State";
     return {
       slug: "must-know",
-      title: `25 Must Know in ${stateName}`,
+      title: `Must Know in ${stateName}`,
       subtitle: null,
       filter_type: "must_know",
       events,
