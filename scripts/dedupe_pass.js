@@ -168,13 +168,122 @@ function geoBucket(lat, lng, decimals) {
   return `${Math.round(lat * f) / f}|${Math.round(lng * f) / f}`;
 }
 
+// Generic recurring-event names that are NOT unique acts — must never collapse
+// across venues on headliner alone ("Trivia Night" at 5 bars is 5 events).
+const GENERIC_HEADLINERS = new Set([
+  "trivia night", "live music", "open mic", "dj night", "karaoke night",
+  "happy hour", "bingo night", "comedy night", "game night", "ladies night",
+  "open studios", "farmers market", "story time", "paint night", "date night",
+  "first friday", "final friday", "third thursday", "sunday service",
+  "live jazz", "jazz brunch", "drag brunch", "line dancing", "salsa night",
+]);
+
+// The headliner (leading act) of a concert title: everything before the first
+// subtitle / opener / ticket-product delimiter. "Noah Kahan: The Great Divide
+// Tour", "Noah Kahan w/ Gigi Perez", "Noah Kahan: ... - Make a Difference
+// Tickets" all → "noah kahan".
+const HEADLINER_DELIM = /\s(?:-|–|—|w\/|with|feat\.?|ft\.?|featuring|presents|·)\s|:/i;
+function headliner(title) {
+  let t = (title || "").toLowerCase().replace(/\(.*?\)/g, " ");
+  const m = t.match(HEADLINER_DELIM);
+  if (m) t = t.slice(0, m.index);
+  return t.replace(/[^a-z0-9 ]/g, " ").replace(/^(the|a|an)\s+/, "").replace(/\s+/g, " ").trim();
+}
+
 function eventSignature(e) {
+  // Ticketmaster exposes a single show as several sellable rows whose titles
+  // share only the ARTIST (main tour / "w/ opener" / charity tickets), so
+  // exact-title matching misses them. Group TICKETMASTER rows by headliner +
+  // hour + venue-geo. Restricted to source=ticketmaster (that's the only source
+  // with this multi-listing pattern — crawl/eventbrite workshops like "Resume
+  // Builder" run at many venues and must NOT collapse on a shared title).
+  // Guards: distinctive multi-word headliner (not a generic recurring name),
+  // an hour bucket (a genuine matinee+evening double won't merge), and a
+  // ~1km geo bucket (belt-and-suspenders against any cross-venue merge).
+  if (e.source === "ticketmaster") {
+    const h = headliner(e.title);
+    const hour = (e.start_at || "").slice(0, 13);
+    if (h && hour && h.includes(" ") && h.length >= 6 && !GENERIC_HEADLINERS.has(h)) {
+      return `hl|${hour}|${h}|${geoBucket(e.venue_lat, e.venue_lng, 2)}`;
+    }
+  }
   const title = normalizeTitle(e.title);
   if (!title) return null;
   // Hour bucket so 7:00pm and 7:05pm collapse, but 7pm and 9pm don't.
   const hour = (e.start_at || "").slice(0, 13);
   if (!hour) return null;
   return `${hour}|${title}|${geoBucket(e.venue_lat, e.venue_lng, 3)}`;
+}
+
+// ── Same-day title-variant clustering (recurring / crawl dups) ─────────────
+// The signature above needs an EXACT title, so it misses same-day variants of
+// one event: "First Friday" / "Open Studios: First Friday" / "Open Studios:
+// First Fridays" at SoWa Artists Guild on the same Friday. These match on a
+// SUBSET of significant title tokens, same venue-geo, same LOCAL DATE (never
+// across dates — a weekly event's Jul 3 / Jul 10 rows are separate occurrences,
+// NOT dups).
+const TITLE_STOP = new Set([
+  "the", "a", "an", "of", "at", "and", "for", "to", "in", "on", "with", "w",
+  "presents", "presented", "by", "from", "this", "your", "our", "you", "amp",
+  "featuring", "feat", "ft",
+]);
+function sigTokens(title) {
+  const t = (title || "").toLowerCase().replace(/\(.*?\)/g, " ").replace(/[^a-z0-9 ]/g, " ");
+  const out = new Set();
+  for (let w of t.split(/\s+/)) {
+    if (!w || TITLE_STOP.has(w) || /^\d+$/.test(w)) continue;
+    if (w.length > 3 && w.endsWith("s")) w = w.slice(0, -1); // crude plural stem
+    out.add(w);
+  }
+  return out;
+}
+function knownHour(e) {
+  const st = e.start_at || "";
+  if (!e.time_known || st.slice(11, 16) === "00:00") return null; // date-only / all-day
+  const h = parseInt(st.slice(11, 13), 10);
+  return isNaN(h) ? null : h;
+}
+function isSubset(a, b) { for (const x of a) if (!b.has(x)) return false; return true; }
+// Two same-venue same-date rows are the same event when one title's significant
+// tokens are a SUBSET of the other's (variant with extra descriptor) — NOT just
+// sharing a generic phrase ("Hoyt Lake Walking Tour" vs "Parkside Walking Tour"
+// aren't subsets, so they stay separate). Guards: >=2 significant tokens, and a
+// >3h known-time gap means genuine separate showings (matinee vs evening).
+function canMergeSameDay(a, b) {
+  const sa = sigTokens(a.title), sb = sigTokens(b.title);
+  if (sa.size < 2 || sb.size < 2) return false;
+  if (!(isSubset(sa, sb) || isSubset(sb, sa))) return false;
+  const ha = knownHour(a), hb = knownHour(b);
+  if (ha != null && hb != null && Math.abs(ha - hb) > 3) return false;
+  return true;
+}
+
+// How complete/useful an event row is — the merge KEEPS the richest sibling
+// within a source so we never drop the row with the real image/time for a
+// sparse duplicate. time_known is weighted heavily: a row with a real start
+// time must beat a date-only sibling (else the UI shows "12 AM").
+function eventCompleteness(e) {
+  return (
+    (e.image_url ? 2 : 0) +
+    (e.description ? 2 : 0) +
+    (e.ticket_url ? 1 : 0) +
+    (e.price_min != null ? 1 : 0) +
+    (e.time_known ? 3 : 0) +
+    (e.confidence_score ?? 0.5)
+  );
+}
+
+// Canonical selection shared by both event passes:
+//   1. highest source rank (ticketmaster > eventbrite > crawl > municipal) —
+//      the authoritative feed has the correct venue/time/ticket link;
+//   2. then most complete row (image, real time, description, tickets);
+//   3. then newest created_at (fewest schema gaps).
+function eventCanonicalCmp(a, b) {
+  const ar = eventSourceRank(a.source), br = eventSourceRank(b.source);
+  if (ar !== br) return br - ar;
+  const ac = eventCompleteness(a), bc = eventCompleteness(b);
+  if (ac !== bc) return bc - ac;
+  return (b.created_at || "").localeCompare(a.created_at || "");
 }
 
 function venueSignature(v) {
@@ -213,35 +322,68 @@ async function dedupeEvents() {
   const nowIso = new Date().toISOString();
   const events = await pagedSelect(
     "events",
-    `select=id,title,start_at,venue_lat,venue_lng,source,created_at&is_active=eq.true&start_at=gte.${nowIso}&order=created_at.asc`
+    `select=id,title,start_at,venue_lat,venue_lng,source,time_known,image_url,description,ticket_url,price_min,confidence_score,created_at&is_active=eq.true&start_at=gte.${nowIso}&order=created_at.asc`
   );
   console.log(`Loaded ${events.length} active future events`);
 
+  // Plan first (collect canonical + dup ids), gate-check the total, THEN write.
+  let dupGroups = 0, dupRows = 0, repointed = 0;
+  const plan = [];
+  const claimed = new Set();
+
+  // ── Pass 1: same venue-geo + same LOCAL DATE, subset-of-title clustering.
+  const byVenueDate = new Map();
+  for (const e of events) {
+    const g = geoBucket(e.venue_lat, e.venue_lng, 3);
+    if (g === "no_geo") continue;
+    const date = (e.start_at || "").slice(0, 10);
+    if (!date) continue;
+    const k = `${g}|${date}`;
+    if (!byVenueDate.has(k)) byVenueDate.set(k, []);
+    byVenueDate.get(k).push(e);
+  }
+  for (const rows of byVenueDate.values()) {
+    if (rows.length < 2) continue;
+    const usedLocal = new Array(rows.length).fill(false);
+    for (let i = 0; i < rows.length; i++) {
+      if (usedLocal[i]) continue;
+      const cluster = [rows[i]];
+      for (let j = i + 1; j < rows.length; j++) {
+        if (usedLocal[j]) continue;
+        if (cluster.some(c => canMergeSameDay(c, rows[j]))) { cluster.push(rows[j]); usedLocal[j] = true; }
+      }
+      usedLocal[i] = true;
+      if (cluster.length < 2) continue;
+      cluster.sort(eventCanonicalCmp);
+      const canonical = cluster[0], dups = cluster.slice(1);
+      dupGroups++; dupRows += dups.length;
+      canonical && claimed.add(canonical.id);
+      dups.forEach(d => claimed.add(d.id));
+      if (process.env.VERBOSE === "1") {
+        console.log(`  [sameday ${cluster.length}] "${canonical.title.slice(0, 50)}"; dropping ${dups.map(d => `"${d.title.slice(0,30)}"`).join(", ")}`);
+      }
+      plan.push({ canonicalId: canonical.id, dupIds: dups.map(d => d.id) });
+    }
+  }
+
+  // ── Pass 2: content signature (exact title+geo+hour, and Ticketmaster
+  // headliner) on rows Pass 1 didn't already claim.
   const groups = new Map();
   for (const e of events) {
+    if (claimed.has(e.id)) continue;
     const sig = eventSignature(e);
     if (!sig) continue;
     if (!groups.has(sig)) groups.set(sig, []);
     groups.get(sig).push(e);
   }
-
-  // Plan first (collect canonical + dup ids), gate-check the total, THEN write.
-  let dupGroups = 0, dupRows = 0, repointed = 0;
-  const plan = [];
-  for (const [sig, rows] of groups) {
+  for (const [, rows] of groups) {
     if (rows.length < 2) continue;
     dupGroups++;
-    rows.sort((a, b) => {
-      const ar = eventSourceRank(a.source), br = eventSourceRank(b.source);
-      if (ar !== br) return br - ar;
-      // Tie: newest created_at (hopefully fewer schema gaps)
-      return (b.created_at || "").localeCompare(a.created_at || "");
-    });
-    const canonical = rows[0];
-    const dups = rows.slice(1);
+    rows.sort(eventCanonicalCmp);
+    const canonical = rows[0], dups = rows.slice(1);
     dupRows += dups.length;
     if (process.env.VERBOSE === "1") {
-      console.log(`  [${rows.length}] "${canonical.title.slice(0, 50)}" canonical=${canonical.id.slice(0,8)} (${canonical.source}); dropping ${dups.map(d => d.source).join(",")}`);
+      console.log(`  [sig ${rows.length}] "${canonical.title.slice(0, 50)}" canonical=${canonical.id.slice(0,8)} (${canonical.source}); dropping ${dups.map(d => d.source).join(",")}`);
     }
     plan.push({ canonicalId: canonical.id, dupIds: dups.map(d => d.id) });
   }
