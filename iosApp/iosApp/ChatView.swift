@@ -2396,6 +2396,19 @@ private struct BoMapView: UIViewRepresentable {
             return v
         }
 
+        // Annotation views are created lazily (async, after the region settles),
+        // so the initial focus set in onAppear can land BEFORE any view exists —
+        // updateUIView's restyle loop then finds nothing to style and the
+        // focused pin never shows selected. Style each view when it's actually
+        // added, using the current focus.
+        func mapView(_ mapView: MKMapView, didAdd views: [MKAnnotationView]) {
+            let fid = parent.focusedId ?? "\u{0}"
+            for v in views {
+                guard let pin = v.annotation as? PinAnnotation else { continue }
+                style(v, focused: pin.eventIds.contains(fid))
+            }
+        }
+
         func style(_ v: MKAnnotationView, focused: Bool) {
             let size: CGFloat = focused ? 34 : 26
             v.frame = CGRect(x: 0, y: 0, width: size, height: size)

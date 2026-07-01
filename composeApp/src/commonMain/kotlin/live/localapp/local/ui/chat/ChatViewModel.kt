@@ -4380,6 +4380,45 @@ class ChatViewModel(
      * null (keep Bo's original) for NONE grouping or when the pool is too thin
      * to improve on.
      */
+    /**
+     * Interest score for ordering the Bo results tray (higher = show sooner).
+     * With no taste signal it ranks by "most prominent / likely-attended":
+     * venue `public_interest_rank` + real-happening signals (a real start time,
+     * one-time vs recurring venue-hours, has an image, is ticketed). A taste
+     * boost lifts the user's engaged categories once we have signal
+     * (interactionCount >= 3, the same floor the system prompt uses), and is
+     * scaled so a strong taste match can outweigh raw venue prominence.
+     */
+    private fun scoreForTray(
+        ev: live.localapp.local.domain.model.Event,
+        rankByName: Map<String, Int>,
+    ): Double {
+        var s = 0.0
+        // Venue prominence (0-98, higher = better). null = unranked (neutral);
+        // <=10 is the app's junk floor (community centers, K-12 fields, etc.).
+        val rank = rankByName[ev.venueName?.lowercase()?.trim()]
+        when {
+            rank == null -> {}
+            rank <= 10 -> s -= 120.0
+            else -> s += rank.toDouble()
+        }
+        // A real, time-specific happening beats all-day / venue-hours filler.
+        if (ev.timeKnown) s += 60.0 else s -= 40.0
+        if (ev.category.lowercase() != "always_on") s += 50.0
+        if (!ev.imageUrl.isNullOrBlank()) s += 25.0
+        if (!ev.ticketUrl.isNullOrBlank() || ev.priceMin != null || ev.priceMax != null) s += 20.0
+        // Taste boost — categories the user actually engages with rise.
+        val tp = tasteProfile
+        if (tp != null && tp.interactionCount >= 3) {
+            val catScore = tp.categoryScores[computeEventCategoryKey(ev).first]
+                ?: tp.categoryScores[ev.category.lowercase()]
+                ?: tp.categoryScores[(ev.subcategory ?: "").lowercase()]
+                ?: 0
+            s += catScore * 10.0
+        }
+        return s
+    }
+
     private suspend fun expandSuggestionsFromPool(
         sug: live.localapp.local.domain.model.BoStructuredResponse.Suggestions,
     ): live.localapp.local.domain.model.BoStructuredResponse.Suggestions? {
@@ -4526,13 +4565,32 @@ class ChatViewModel(
         }
         if (dayScoped.isEmpty()) return null
 
+        // RANKING: order each group by an interest score, not chronologically —
+        // otherwise whatever starts earliest leads (an all-day "Club Opens at
+        // 9 AM" was floating to the front while the evening headliners sank).
+        // Default ranks by prominence/likely-attendance (venue
+        // public_interest_rank + real-happening signals); a taste boost lifts
+        // the user's engaged categories when we have signal. One batch
+        // venue-rank query for just the shown set. Ties break chronologically.
+        val rankByName = try {
+            eventRepo.getVenueRanks(dayScoped.mapNotNull { it.venueName })
+        } catch (_: Throwable) { emptyMap() }
+        fun trayOrder(list: List<live.localapp.local.domain.model.Event>) =
+            list.sortedWith(
+                compareByDescending<live.localapp.local.domain.model.Event> { scoreForTray(it, rankByName) }
+                    .thenBy { it.startAt ?: "" }
+            )
+
         // NONE grouping (single flat tray — common for "arts this Friday"):
-        // one group with every matching event, chronological.
+        // one group with every matching event, best-first. (Dedup of the
+        // Ticketmaster ticket-product rows is handled at the DATA layer by
+        // dedup_events.js — losers are is_active=false, so they never reach
+        // here — not with a Bo-only heuristic.)
         if (groupBy == live.localapp.local.domain.model.BoStructuredResponse.Suggestions.GroupBy.NONE) {
             return sug.copy(groups = listOf(
                 live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Group(
                     label = sug.groups.firstOrNull()?.label ?: "",
-                    events = dayScoped.sortedBy { it.startAt ?: "" }.map { ev ->
+                    events = trayOrder(dayScoped).map { ev ->
                         live.localapp.local.domain.model.BoStructuredResponse.Suggestions.EventRef(ev.id, null)
                     },
                 )
@@ -4555,7 +4613,7 @@ class ChatViewModel(
         val newGroups = buckets.values
             .sortedBy { it.sort }
             .map { b ->
-                val sortedEvents = b.events.sortedBy { it.startAt ?: "" }
+                val sortedEvents = trayOrder(b.events)
                 live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Group(
                     label = b.label,
                     events = sortedEvents.map { ev ->

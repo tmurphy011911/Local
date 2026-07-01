@@ -129,6 +129,25 @@ class EventRepositoryImpl(
             .map { it.toDomain() }
     }
 
+    override suspend fun getVenueRanks(venueNames: List<String>): Map<String, Int> {
+        val names = venueNames.mapNotNull { it.trim().takeIf { n -> n.isNotBlank() } }.distinct()
+        if (names.isEmpty()) return emptyMap()
+        return try {
+            val out = mutableMapOf<String, Int>()
+            names.chunked(200).forEach { batch ->
+                val rows = supabaseClient.from("venues")
+                    .select(io.github.jan.supabase.postgrest.query.Columns.list("name", "public_interest_rank")) {
+                        filter { isIn("name", batch) }
+                    }
+                    .decodeList<VenueRankRow>()
+                for (r in rows) { r.rank?.let { out[r.name.lowercase().trim()] = it } }
+            }
+            out
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
     override suspend fun searchEvents(
         location: String?,
         category: String?,
@@ -552,4 +571,10 @@ private data class VenueCoordRow(
     val name: String,
     val latitude: Double? = null,
     val longitude: Double? = null,
+)
+
+@kotlinx.serialization.Serializable
+private data class VenueRankRow(
+    val name: String,
+    @kotlinx.serialization.SerialName("public_interest_rank") val rank: Int? = null,
 )
