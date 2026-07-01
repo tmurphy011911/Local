@@ -186,39 +186,54 @@ async function fetchEventsByVenue(
   const lngDelta = radiusMiles / 45;
   const nowIso = new Date().toISOString();
 
-  // Page through ALL future active events in the bbox. Deterministic
-  // start_at order so we keep the soonest events when capping per venue.
+  // Compute per-venue upcoming-event counts + inline events by scanning the
+  // future active events in the bbox. A dense metro bbox holds ~11k events, so
+  // the old SEQUENTIAL 12-page loop cost 3-9s — the "Places tab never loads"
+  // bug. Now: one cheap COUNT (indexed, ~0.3s) to learn the page count, then
+  // fetch every page in PARALLEL (wall-clock ≈ one page, not the sum).
   const pageSize = 1000;
-  let offset = 0;
-  const buckets: Record<string, VenueEvents> = {};
-  for (let page = 0; page < 20; page++) {
-    const { data } = await supabase
-      .from("events")
-      .select(
-        "id,title,description,category,subcategory,start_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,source_url",
-      )
-      .eq("is_active", true)
-      // Exclude events flagged "no-public-interest" BUT keep events with
-      // null subcategory. PostgREST `.neq(col, x)` translates to SQL
-      // `col <> x`, which evaluates to NULL (not TRUE) when col IS NULL —
-      // so it silently dropped every event without a subcategory. That's
-      // most crawler-sourced events, including all of Sellersville Theater,
-      // Brookline Booksmith, Gore Place, etc. Result: their venue cards
-      // showed 0 events even though the Events tab found dozens.
+  const MAX_PAGES = 20;
+
+  // Shared bbox filter. NOTE on `.or(...)`: exclude no-public-interest but KEEP
+  // null-subcategory rows — a bare `.neq` drops NULLs (they evaluate to NULL,
+  // not TRUE), which silently zeroed most crawler venues (Sellersville, Gore
+  // Place, etc.) on their cards even though the Events tab found dozens.
+  const applyBbox = (qb: any) =>
+    qb.eq("is_active", true)
       .or("subcategory.is.null,subcategory.neq.no-public-interest")
       .gte("start_at", nowIso)
       .gte("venue_lat", lat - latDelta)
       .lte("venue_lat", lat + latDelta)
       .gte("venue_lng", lng - lngDelta)
-      .lte("venue_lng", lng + lngDelta)
-      .order("start_at", { ascending: true })
-      .order("id", { ascending: true })
-      .range(offset, offset + pageSize - 1);
-    const rows: InlineEventRow[] = (data ?? []) as InlineEventRow[];
-    for (const row of rows) {
+      .lte("venue_lng", lng + lngDelta);
+
+  const { count } = await applyBbox(
+    supabase.from("events").select("id", { count: "exact", head: true }),
+  );
+  // If the count is unavailable, fall back to firing the full page budget.
+  const total = count == null ? pageSize * MAX_PAGES : Math.min(count, pageSize * MAX_PAGES);
+  const numPages = Math.max(1, Math.ceil(total / pageSize));
+
+  const pageResults = await Promise.all(
+    Array.from({ length: numPages }, (_, p) =>
+      applyBbox(
+        supabase.from("events").select(
+          "id,title,description,category,subcategory,start_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,source_url",
+        ),
+      )
+        .order("start_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(p * pageSize, p * pageSize + pageSize - 1),
+    ),
+  );
+
+  // Merge pages IN ORDER (page 0 = soonest) so the per-venue cap keeps the
+  // soonest events.
+  const buckets: Record<string, VenueEvents> = {};
+  for (const { data } of pageResults) {
+    for (const row of ((data ?? []) as InlineEventRow[])) {
       // Match normalized key — "The Brattle Theatre" and "Brattle Theatre"
-      // collapse to the same bucket so venue.name and event.venue_name
-      // reliably join.
+      // collapse to the same bucket so venue.name and event.venue_name join.
       const key = normalizeVenueName(row.venue_name ?? "");
       if (!key) continue;
       const bucket = buckets[key] ?? { count: 0, events: [] };
@@ -226,8 +241,6 @@ async function fetchEventsByVenue(
       if (bucket.events.length < MAX_EVENTS_PER_VENUE) bucket.events.push(row);
       buckets[key] = bucket;
     }
-    if (rows.length < pageSize) break;
-    offset += pageSize;
   }
   return buckets;
 }
