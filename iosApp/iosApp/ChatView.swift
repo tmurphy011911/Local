@@ -2231,7 +2231,6 @@ private struct BoResultsMapView: View {
     @State private var region: MKCoordinateRegion?
     private enum ResultsMode: Hashable { case list, map }
     @State private var resultsMode: ResultsMode = .map
-    @State private var cardDrag: CGSize = .zero
 
     /// Groups that still have at least one non-dismissed event.
     private var visibleGroups: [SuggestionGroupSnapshot] {
@@ -2300,78 +2299,6 @@ private struct BoResultsMapView: View {
         }
         .background(STC.skyLt)
         .clipShape(Capsule())
-    }
-
-    /// Map-mode card — one event at a time below the map. Swipe UP/DOWN to move
-    /// through events (map recenters via focusedId), swipe RIGHT to add to the
-    /// draft, swipe LEFT to dismiss. The card's own +/✕ buttons remain for a11y.
-    private var swipeCard: some View {
-        let events = currentEvents
-        let idx = events.firstIndex(where: { $0.eventId == focusedId }) ?? 0
-        return VStack(spacing: 8) {
-            ZStack(alignment: .top) {
-                // Peek of the next card — the affordance that there's more to
-                // browse. Non-interactive; dimmed + nudged down so it reads as
-                // "underneath". (Card only moves HORIZONTALLY on drag, so it can
-                // never slide up behind the native map.)
-                if events.indices.contains(idx + 1) {
-                    cardBody(events[idx + 1])
-                        .scaleEffect(0.95)
-                        .opacity(0.45)
-                        .offset(y: 24)
-                        .allowsHitTesting(false)
-                }
-                if events.indices.contains(idx) {
-                    let ev = events[idx]
-                    cardBody(ev, interactive: true)
-                        .offset(x: cardDrag.width)
-                        .rotationEffect(.degrees(Double(cardDrag.width / 30)))
-                        .highPriorityGesture(
-                            DragGesture(minimumDistance: 16)
-                                .onChanged { cardDrag = $0.translation }
-                                .onEnded { g in
-                                    let h = g.translation.width
-                                    let v = g.translation.height
-                                    if abs(h) > abs(v) && abs(h) > 80 {
-                                        if h > 0 {
-                                            if !isSaved(ev.eventId) { onToggleSave(ev.eventId) }
-                                        } else {
-                                            handleDismiss(ev.eventId)
-                                        }
-                                    } else if v < -50, idx + 1 < events.count {
-                                        focusedId = events[idx + 1].eventId
-                                    } else if v > 50, idx - 1 >= 0 {
-                                        focusedId = events[idx - 1].eventId
-                                    }
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                        cardDrag = .zero
-                                    }
-                                }
-                        )
-                }
-            }
-            .padding(.horizontal, 14)
-            .padding(.top, 10)
-
-            Text("\(idx + 1) of \(events.count) · swipe ↑↓ browse · → add · ← skip")
-                .font(STF.body(11, .medium))
-                .foregroundColor(STC.ink3)
-                .frame(maxWidth: .infinity)
-                .padding(.bottom, 12)
-        }
-    }
-
-    /// One event card for the map-mode swipe view. `interactive` gates the
-    /// buttons/tap so the peeked (next) card behind it is inert.
-    private func cardBody(_ ev: SuggestionEventSnapshot, interactive: Bool = false) -> some View {
-        SuggestionCardView(
-            event: ev,
-            isSelected: isSaved(ev.eventId),
-            onTap: { if interactive { onOpenEvent(ev) } },
-            onToggleSelected: { if interactive { onToggleSave(ev.eventId) } },
-            onDismiss: { if interactive { handleDismiss(ev.eventId) } }
-        )
-        .frame(maxWidth: .infinity)
     }
 
     /// Vertical, scrollable results list. Swipe RIGHT to add to the draft plan,
@@ -2566,9 +2493,28 @@ private struct BoResultsMapView: View {
                 }
             }
 
-            // One event card below the map: swipe up/down to move through
-            // events (map recenters), swipe right to add / left to dismiss.
-            swipeCard
+            // Horizontal carousel below the map: swipe left/right to browse
+            // (map recenters via focusedId); +/✕ on each card add/dismiss.
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 10) {
+                    ForEach(currentEvents, id: \.eventId) { ev in
+                        SuggestionCardView(
+                            event: ev,
+                            isSelected: isSaved(ev.eventId),
+                            onTap: { onOpenEvent(ev) },
+                            onToggleSelected: { onToggleSave(ev.eventId) },
+                            onDismiss: { handleDismiss(ev.eventId) }
+                        )
+                        .frame(width: 280)
+                    }
+                }
+                .scrollTargetLayout()
+                .padding(.horizontal, 14)
+            }
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: $focusedId)
+            .padding(.top, 10)
+            .padding(.bottom, 14)
             } // end map mode
         }
         .frame(maxWidth: .infinity, alignment: .leading)
