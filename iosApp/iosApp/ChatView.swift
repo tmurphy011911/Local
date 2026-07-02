@@ -1043,6 +1043,31 @@ struct ChatView: View {
     ///   • "Create Plan" — save the picks to Saved Events AND build a plan from
     ///     them (events added to a plan are always saved too).
     /// Replaces the old single "Build a plan with my N picks" CTA.
+    /// Chunky "Duolingo" button matching the event page CTA — a darker coral
+    /// shadow layer offset down 4pt behind a coral (or light) face with a
+    /// matching stroke, giving the pressed-depth look.
+    private func duoButton(_ title: String, primary: Bool, action: @escaping () -> Void) -> some View {
+        let dark = Color(hex2: 0xE85D5D)
+        return Button(action: action) {
+            ZStack(alignment: .bottom) {
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(primary ? dark : C.coral.opacity(0.30))
+                    .offset(y: 4)
+                ZStack {
+                    RoundedRectangle(cornerRadius: 14).fill(primary ? C.coral : C.coralLt)
+                    RoundedRectangle(cornerRadius: 14).stroke(primary ? dark : C.coral.opacity(0.30), lineWidth: 1.5)
+                    Text(title)
+                        .font(F.body(15, .black))
+                        .foregroundColor(primary ? .white : C.coral)
+                        .padding(.vertical, 13)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.bottom, 4) // room for the 3D lip
+        }
+        .buttonStyle(.plain)
+    }
+
     private var draftDrawer: some View {
         let picks = pickedSnapshots
         let count = picks.count
@@ -1122,27 +1147,19 @@ struct ChatView: View {
                         }
                     }
                 }
-                .frame(maxHeight: 120) // ~2.5 rows; scroll for the rest
+                // Fit the content (≤ ~2.5 rows) so 1-2 picks don't leave a tall
+                // empty gap above the buttons; scroll kicks in past 2.5.
+                .frame(height: min(CGFloat(max(visiblePicks.count, 1)) * 48, 116))
 
                 HStack(spacing: 10) {
-                    Button {
+                    duoButton("Save Events", primary: false) {
                         picks.forEach { ChatBridge.shared.saveFavorite?($0.eventId) }
                         withAnimation(.easeOut(duration: 0.18)) {
                             selectedEventIds.removeAll()
                             lastSubmittedSelection.removeAll()
                         }
-                    } label: {
-                        Text("Save Events")
-                            .font(F.body(15, .bold))
-                            .foregroundColor(C.coral)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 13)
-                            .background(C.coral.opacity(0.10))
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
-                    .buttonStyle(.plain)
-
-                    Button {
+                    duoButton(addingToPlan ? "Add to Plan" : "Create Plan", primary: true) {
                         let ids = picks.map { $0.eventId }
                         // Events added to a plan are also saved to Saved Events.
                         ids.forEach { ChatBridge.shared.saveFavorite?($0) }
@@ -1151,16 +1168,7 @@ struct ChatView: View {
                         withAnimation(.easeOut(duration: 0.18)) {
                             lastSubmittedSelection = selectedEventIds
                         }
-                    } label: {
-                        Text(addingToPlan ? "Add to Plan" : "Create Plan")
-                            .font(F.body(15, .black))
-                            .foregroundColor(.white)
-                            .frame(maxWidth: .infinity)
-                            .padding(.vertical, 13)
-                            .background(C.coral)
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
                     }
-                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, 14)
@@ -2285,7 +2293,7 @@ private struct BoResultsMapView: View {
     /// List ⇄ Map segmented toggle in the header.
     private var modeToggle: some View {
         HStack(spacing: 0) {
-            ForEach([ResultsMode.list, ResultsMode.map], id: \.self) { mode in
+            ForEach([ResultsMode.map, ResultsMode.list], id: \.self) { mode in
                 let active = resultsMode == mode
                 Button { resultsMode = mode } label: {
                     Image(systemName: mode == .list ? "list.bullet" : "map")
