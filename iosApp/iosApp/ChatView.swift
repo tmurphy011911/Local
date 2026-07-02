@@ -706,20 +706,9 @@ struct ChatView: View {
                 }
             )
         }
-        // Intent sheet on open — driven reactively by the shared state. Shows
-        // while boIntent is unset; picking a goal round-trips through the
-        // bridge, boIntent becomes non-empty, and the sheet auto-dismisses.
-        .sheet(isPresented: Binding(
-            get: { intentReady && state.boIntent.isEmpty },
-            set: { _ in }
-        )) {
-            BoIntentSheet { wire in
-                ChatBridge.shared.setBoIntent?(wire)
-            }
-            .presentationDetents([.height(420)])
-            .presentationDragIndicator(.hidden)
-            .interactiveDismissDisabled(true)
-        }
+        // (Intent sheet removed — Bo's opening greeting already asks the same
+        // "looking for something / planning / browsing?" question in prose, so
+        // the modal picker was redundant. `BoIntentSheet` retained but unused.)
     }
 
     /// Composite key for the loading/exhausted sets — same message can have
