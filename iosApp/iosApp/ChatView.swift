@@ -1048,22 +1048,18 @@ struct ChatView: View {
     /// matching stroke, giving the pressed-depth look.
     private func duoButton(_ title: String, primary: Bool, action: @escaping () -> Void) -> some View {
         let dark = Color(hex2: 0xE85D5D)
+        let face = primary ? C.coral : C.coralLt
+        let edge = primary ? dark : C.coral.opacity(0.30)
         return Button(action: action) {
-            ZStack(alignment: .bottom) {
-                RoundedRectangle(cornerRadius: 14)
-                    .fill(primary ? dark : C.coral.opacity(0.30))
-                    .offset(y: 4)
-                ZStack {
-                    RoundedRectangle(cornerRadius: 14).fill(primary ? C.coral : C.coralLt)
-                    RoundedRectangle(cornerRadius: 14).stroke(primary ? dark : C.coral.opacity(0.30), lineWidth: 1.5)
-                    Text(title)
-                        .font(F.body(15, .black))
-                        .foregroundColor(primary ? .white : C.coral)
-                        .padding(.vertical, 13)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .padding(.bottom, 4) // room for the 3D lip
+            Text(title)
+                .font(F.body(15, .black))
+                .foregroundColor(primary ? .white : C.coral)
+                .frame(maxWidth: .infinity)
+                .frame(height: 50)                                   // fixed height (was greedy → giant)
+                .background(RoundedRectangle(cornerRadius: 14).fill(face))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(edge, lineWidth: 1.5))
+                .background(RoundedRectangle(cornerRadius: 14).fill(edge).offset(y: 4)) // 3D lip
+                .padding(.bottom, 4)                                 // room for the lip
         }
         .buttonStyle(.plain)
     }
