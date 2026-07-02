@@ -1783,14 +1783,30 @@ class ChatViewModel(
     private suspend fun reconcileExpectedPicks(
         days: List<ItineraryDay>,
         expectedIds: List<String>,
+        pruneNonPicks: Boolean = false,
     ): List<ItineraryDay> {
         if (expectedIds.isEmpty()) return days
-        val present = days
+
+        // PRUNE (pure build-from-picks only): drop EVENT slots the user did not
+        // pick — Bo substitutes events it knows when it can't resolve the
+        // client-injected pick ids, producing a plan full of wrong events.
+        // Non-event slots (transit, meal/venue extras — no eventId) are kept.
+        val working = if (pruneNonPicks) {
+            val keep = expectedIds.distinct().toSet()
+            days.map { day ->
+                day.copy(slots = day.slots.filter { slot ->
+                    val id = slot.eventId?.removePrefix("evt:")
+                    id == null || id in keep
+                })
+            }.filter { it.slots.isNotEmpty() }
+        } else days
+
+        val present = working
             .flatMap { it.slots }
             .mapNotNull { it.eventId?.removePrefix("evt:") }
             .toSet()
         val missing = expectedIds.distinct().filter { it !in present }
-        if (missing.isEmpty()) return days
+        if (missing.isEmpty()) return working
 
         println("reconcileExpectedPicks: Bo omitted ${missing.size}/${expectedIds.size} picked event(s) from present_plan: $missing — re-injecting")
 
@@ -1812,10 +1828,10 @@ class ChatViewModel(
         val rebuilt = buildPlanFromRefs(synthParsed)
         if (rebuilt.isEmpty()) {
             println("reconcileExpectedPicks: could not resolve any omitted pick (DB/cache miss) — leaving plan as-is")
-            return days
+            return working
         }
 
-        val merged = days.toMutableList()
+        val merged = working.toMutableList()
         rebuilt.forEach { newDay ->
             val idx = merged.indexOfFirst { it.label == newDay.label }
             if (idx >= 0) {
@@ -4086,7 +4102,13 @@ class ChatViewModel(
                 // cleared so they never bleed into a later turn's plan.
                 val anchorId = _uiState.value.pendingAnchorEventId?.removePrefix("evt:")
                 val expectedIds = (pendingBuildExpectedIds + listOfNotNull(anchorId)).distinct()
-                val validatedDays = reconcileExpectedPicks(dedupedDays, expectedIds)
+                // Pure build-from-picks (no anchor) → the plan's EVENT slots must
+                // be EXACTLY the picks. Prune any event Bo substituted (it does
+                // this when the picks came from the client-injected tray and Bo
+                // couldn't resolve their ids). NOT for the anchor case, where Bo
+                // legitimately adds related events around the saved event.
+                val pruneNonPicks = pendingBuildExpectedIds.isNotEmpty() && anchorId == null
+                val validatedDays = reconcileExpectedPicks(dedupedDays, expectedIds, pruneNonPicks)
                 pendingBuildExpectedIds = emptyList()
                 // Clear the anchor only once a plan actually materialized — if
                 // Bo asked a clarifying question first (INFO turn), the anchor
