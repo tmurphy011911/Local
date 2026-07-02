@@ -1145,7 +1145,7 @@ struct ChatView: View {
                 }
                 // Fit the content (≤ ~2.5 rows) so 1-2 picks don't leave a tall
                 // empty gap above the buttons; scroll kicks in past 2.5.
-                .frame(height: min(CGFloat(max(visiblePicks.count, 1)) * 48, 116))
+                .frame(height: min(CGFloat(max(visiblePicks.count, 1)) * 46, 94)) // ~2 rows max, scroll for more
 
                 HStack(spacing: 10) {
                     duoButton("Save Events", primary: false) {
@@ -2241,13 +2241,17 @@ private struct BoResultsMapView: View {
     @State private var resultsMode: ResultsMode = .map
 
     /// Groups that still have at least one non-dismissed event.
+    // Events already picked (in the draft drawer) leave the results — they
+    // reappear if removed from the drawer. So "shown" = not dismissed AND not
+    // saved/picked.
+    private func isShown(_ id: String) -> Bool { !isDismissed(id) && !isSaved(id) }
     private var visibleGroups: [SuggestionGroupSnapshot] {
-        suggestions.groups.filter { g in g.events.contains { !isDismissed($0.eventId) } }
+        suggestions.groups.filter { g in g.events.contains { isShown($0.eventId) } }
     }
     private var currentEvents: [SuggestionEventSnapshot] {
         let groups = visibleGroups
         guard groupIndex >= 0 && groupIndex < groups.count else { return [] }
-        return groups[groupIndex].events.filter { !isDismissed($0.eventId) }
+        return groups[groupIndex].events.filter { isShown($0.eventId) }
     }
     private var pins: [SuggestionEventSnapshot] { currentEvents.filter { $0.hasCoords } }
 
@@ -2288,6 +2292,20 @@ private struct BoResultsMapView: View {
         }
         onDismiss(id)
         if wasFocused { focusedId = nextId } // onChange(focusedId) recenters
+    }
+
+    /// Pick (+) from the carousel: the event leaves `currentEvents` (it's now in
+    /// the drawer), so advance focus to the next card first — same as dismiss.
+    private func handleAdd(_ id: String) {
+        let list = currentEvents
+        let wasFocused = (focusedId == id)
+        var nextId: String? = focusedId
+        if wasFocused, let idx = list.firstIndex(where: { $0.eventId == id }) {
+            nextId = (idx + 1 < list.count) ? list[idx + 1].eventId
+                   : (idx - 1 >= 0 ? list[idx - 1].eventId : nil)
+        }
+        onToggleSave(id)
+        if wasFocused { focusedId = nextId }
     }
 
     /// List ⇄ Map segmented toggle in the header.
@@ -2512,7 +2530,7 @@ private struct BoResultsMapView: View {
                             event: ev,
                             isSelected: isSaved(ev.eventId),
                             onTap: { onOpenEvent(ev) },
-                            onToggleSelected: { onToggleSave(ev.eventId) },
+                            onToggleSelected: { handleAdd(ev.eventId) }, // + → moves to drawer, advance focus
                             onDismiss: { handleDismiss(ev.eventId) }
                         )
                         .frame(width: 280)
