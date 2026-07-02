@@ -1058,13 +1058,15 @@ struct ChatView: View {
         let picks = pickedSnapshots
         let count = picks.count
         let addingToPlan = hasActivePlan
-        // Day tabs when the picks span multiple days.
+        // Day tabs when the picks span multiple days. Group by dayLabel
+        // (day-only, e.g. "Friday, Jul 3") — NOT dateDisplay, which includes the
+        // time, so two same-day events would otherwise make two tabs.
         let dayKeys: [String] = picks.reduce(into: []) { acc, ev in
-            if !ev.dateDisplay.isEmpty && !acc.contains(ev.dateDisplay) { acc.append(ev.dateDisplay) }
+            if !ev.dayLabel.isEmpty && !acc.contains(ev.dayLabel) { acc.append(ev.dayLabel) }
         }
         let showDayTabs = dayKeys.count > 1
         let activeDay = dayKeys.indices.contains(draftDayIndex) ? dayKeys[draftDayIndex] : (dayKeys.first ?? "")
-        let visiblePicks = showDayTabs ? picks.filter { $0.dateDisplay == activeDay } : picks
+        let visiblePicks = showDayTabs ? picks.filter { $0.dayLabel == activeDay } : picks
         return VStack(spacing: 0) {
             Divider().background(C.pebble.opacity(0.5))
             VStack(alignment: .leading, spacing: 10) {
@@ -2317,54 +2319,70 @@ private struct BoResultsMapView: View {
     private var swipeCard: some View {
         let events = currentEvents
         let idx = events.firstIndex(where: { $0.eventId == focusedId }) ?? 0
-        return Group {
-            if events.indices.contains(idx) {
-                let ev = events[idx]
-                SuggestionCardView(
-                    event: ev,
-                    isSelected: isSaved(ev.eventId),
-                    onTap: { onOpenEvent(ev) },
-                    onToggleSelected: { onToggleSave(ev.eventId) },
-                    onDismiss: { handleDismiss(ev.eventId) }
-                )
-                .frame(maxWidth: .infinity)
-                .offset(x: cardDrag.width, y: cardDrag.height * 0.35)
-                .rotationEffect(.degrees(Double(cardDrag.width / 28)))
-                .gesture(
-                    DragGesture(minimumDistance: 14)
-                        .onChanged { cardDrag = $0.translation }
-                        .onEnded { g in
-                            let h = g.translation.width
-                            let v = g.translation.height
-                            if abs(h) > abs(v) && abs(h) > 90 {
-                                if h > 0 {
-                                    if !isSaved(ev.eventId) { onToggleSave(ev.eventId) }
-                                } else {
-                                    handleDismiss(ev.eventId)
+        return VStack(spacing: 8) {
+            ZStack(alignment: .top) {
+                // Peek of the next card — the affordance that there's more to
+                // browse. Non-interactive; dimmed + nudged down so it reads as
+                // "underneath". (Card only moves HORIZONTALLY on drag, so it can
+                // never slide up behind the native map.)
+                if events.indices.contains(idx + 1) {
+                    cardBody(events[idx + 1])
+                        .scaleEffect(0.95)
+                        .opacity(0.45)
+                        .offset(y: 24)
+                        .allowsHitTesting(false)
+                }
+                if events.indices.contains(idx) {
+                    let ev = events[idx]
+                    cardBody(ev, interactive: true)
+                        .offset(x: cardDrag.width)
+                        .rotationEffect(.degrees(Double(cardDrag.width / 30)))
+                        .highPriorityGesture(
+                            DragGesture(minimumDistance: 16)
+                                .onChanged { cardDrag = $0.translation }
+                                .onEnded { g in
+                                    let h = g.translation.width
+                                    let v = g.translation.height
+                                    if abs(h) > abs(v) && abs(h) > 80 {
+                                        if h > 0 {
+                                            if !isSaved(ev.eventId) { onToggleSave(ev.eventId) }
+                                        } else {
+                                            handleDismiss(ev.eventId)
+                                        }
+                                    } else if v < -50, idx + 1 < events.count {
+                                        focusedId = events[idx + 1].eventId
+                                    } else if v > 50, idx - 1 >= 0 {
+                                        focusedId = events[idx - 1].eventId
+                                    }
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                                        cardDrag = .zero
+                                    }
                                 }
-                            } else if abs(v) > 60 {
-                                if v < 0, idx + 1 < events.count {
-                                    focusedId = events[idx + 1].eventId
-                                } else if v > 0, idx - 1 >= 0 {
-                                    focusedId = events[idx - 1].eventId
-                                }
-                            }
-                            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
-                                cardDrag = .zero
-                            }
-                        }
-                )
-                .padding(.horizontal, 14)
-                .padding(.top, 10)
-                .padding(.bottom, 6)
-
-                Text("\(idx + 1) of \(events.count) · swipe ↑ ↓ to browse")
-                    .font(STF.body(11, .medium))
-                    .foregroundColor(STC.ink3)
-                    .frame(maxWidth: .infinity)
-                    .padding(.bottom, 12)
+                        )
+                }
             }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+
+            Text("\(idx + 1) of \(events.count) · swipe ↑↓ browse · → add · ← skip")
+                .font(STF.body(11, .medium))
+                .foregroundColor(STC.ink3)
+                .frame(maxWidth: .infinity)
+                .padding(.bottom, 12)
         }
+    }
+
+    /// One event card for the map-mode swipe view. `interactive` gates the
+    /// buttons/tap so the peeked (next) card behind it is inert.
+    private func cardBody(_ ev: SuggestionEventSnapshot, interactive: Bool = false) -> some View {
+        SuggestionCardView(
+            event: ev,
+            isSelected: isSaved(ev.eventId),
+            onTap: { if interactive { onOpenEvent(ev) } },
+            onToggleSelected: { if interactive { onToggleSave(ev.eventId) } },
+            onDismiss: { if interactive { handleDismiss(ev.eventId) } }
+        )
+        .frame(maxWidth: .infinity)
     }
 
     /// Vertical, scrollable results list. Swipe RIGHT to add to the draft plan,
