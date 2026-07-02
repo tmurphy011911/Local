@@ -1535,14 +1535,16 @@ private struct MultiDayPlanCardView: View {
             ChatBridge.shared.approvePlan?()
         } label: {
             Text("Save to My Plans")
-                .font(F.body(14, .heavy))
+                .font(F.body(15, .black))
                 .foregroundColor(.white)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(C.sage)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .frame(height: 52)
+                .background(RoundedRectangle(cornerRadius: 14).fill(C.sage))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(hex2: 0x3DB88E), lineWidth: 1.5))
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex2: 0x3DB88E)).offset(y: 4)) // 3D lip
         }
         .padding(12)
+        .padding(.bottom, 4)
     }
 }
 
@@ -1976,9 +1978,11 @@ private struct PlanCelebrationOverlay: View {
                                 .foregroundColor(C.coral)
                         }
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 15)
-                        .background(Color(hex2: 0xFFF8F2)) // warm cream — softer on coral than pure white
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .frame(height: 54)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex2: 0xFFF8F2))) // warm cream
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(hex2: 0xE8D9C8), lineWidth: 1.5))
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex2: 0xE8D9C8)).offset(y: 4)) // 3D lip
+                        .padding(.bottom, 4)
                     }
 
                     Button(action: onViewPlans) {
@@ -2395,11 +2399,13 @@ private struct BoResultsMapView: View {
 
                     HStack(spacing: 6) {
                         Button(action: onToggle) {
+                            // Match the map card: coral + when unselected,
+                            // GREEN check (sage) when added.
                             Image(systemName: isSelected ? "checkmark" : "plus")
                                 .font(.system(size: 13, weight: .bold))
-                                .foregroundColor(isSelected ? .white : STC.coral)
+                                .foregroundColor(.white)
                                 .frame(width: 30, height: 30)
-                                .background(isSelected ? STC.coral : STC.coral.opacity(0.12))
+                                .background(isSelected ? STC.sage : STC.coral)
                                 .clipShape(Circle())
                         }
                         .buttonStyle(.plain)
