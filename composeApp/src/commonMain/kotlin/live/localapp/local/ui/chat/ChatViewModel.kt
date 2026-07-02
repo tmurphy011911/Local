@@ -3380,6 +3380,46 @@ class ChatViewModel(
         turnSearchPool.addAll(events)
         events.forEach { boTools.searchResultCache[it.id] = it }
 
+        // Data-driven search narration — tell the user what we actually found
+        // ("Found 12 arts events", "Lots of music events") + the tailoring/sort
+        // steps, instead of generic "Searching nearby" filler. Counts are
+        // radius-scoped and drop no-public-interest so they match the tray.
+        run {
+            val nLat = _uiState.value.currentLat
+            val nLng = _uiState.value.currentLng
+            val nRadius = _uiState.value.searchRadiusMiles * 1.1
+            val inRadius = events.filter { ev ->
+                if (ev.subcategory == "no-public-interest") return@filter false
+                val vlat = ev.venueLat ?: ev.eventLat
+                val vlng = ev.venueLng ?: ev.eventLng
+                nLat == null || nLng == null || (vlat != null && vlng != null &&
+                    live.localapp.local.domain.model.distanceMiles(nLat, nLng, vlat, vlng) <= nRadius)
+            }
+            val byCat = inRadius
+                .groupingBy { computeEventCategoryKey(it).third }
+                .eachCount()
+                .entries.sortedByDescending { it.value }
+            val lines = mutableListOf<String>()
+            for ((label, n) in byCat.take(4)) {
+                if (n <= 0 || label == "Other") continue
+                val lc = label.lowercase()
+                lines += if (n >= 15) "Lots of $lc events" else "Found $n $lc event${if (n == 1) "" else "s"}"
+            }
+            if (tasteProfile != null && (tasteProfile?.interactionCount ?: 0) >= 3) {
+                lines += "Tailoring to your preferences"
+            }
+            lines += "Sorting by what's best"
+            lines += "Putting it on the map"
+            if (lines.isNotEmpty()) {
+                _uiState.update {
+                    it.copy(
+                        isSearching = true,
+                        searchingNarration = (it.searchingNarration + lines).distinct().takeLast(7),
+                    )
+                }
+            }
+        }
+
         // Cap what Claude sees in the tool result. This is the single biggest
         // latency lever on a browse/plan turn: each compact row is ~50 tokens,
         // and Claude must READ the entire tool_result before it can emit a tray
