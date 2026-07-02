@@ -592,7 +592,7 @@ struct ChatView: View {
             if !selectedEventIds.isEmpty
                 && selectedEventIds != lastSubmittedSelection
                 && !state.showPlanSuccess {
-                createPlanBar
+                draftDrawer
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
@@ -985,8 +985,9 @@ struct ChatView: View {
     private func suggestionTrayRow(messageId: String, suggestions: SuggestionsSnapshot) -> some View {
         BoResultsMapView(
             suggestions: suggestions,
-            // + adds to this session's plan selection AND saves the event to
-            // Saved Events the first time (the bridge no-ops if already saved).
+            // + STAGES the event into the draft drawer only — it does NOT save
+            // to Saved Events here. Saving happens when the user taps "Save
+            // Events" or "Create Plan" in the drawer (Create Plan also saves).
             isSaved: { selectedEventIds.contains($0) },
             onToggleSave: { eventId in
                 withAnimation(.easeOut(duration: 0.18)) {
@@ -994,7 +995,6 @@ struct ChatView: View {
                         selectedEventIds.remove(eventId)
                     } else {
                         selectedEventIds.insert(eventId)
-                        ChatBridge.shared.saveFavorite?(eventId)
                     }
                 }
             },
@@ -1029,43 +1029,123 @@ struct ChatView: View {
         state.messages.contains { $0.isPlanCard }
     }
 
-    private var createPlanBar: some View {
-        let count = selectedEventIds.count
+    /// The events the user has staged (tapped +) across every tray this chat,
+    /// in tray order, resolved to their snapshots for display in the drawer.
+    private var pickedSnapshots: [SuggestionEventSnapshot] {
+        var seen = Set<String>()
+        var out: [SuggestionEventSnapshot] = []
+        for m in state.messages {
+            guard let s = m.structured else { continue }
+            for g in s.groups {
+                for e in g.events where selectedEventIds.contains(e.eventId) && !seen.contains(e.eventId) {
+                    seen.insert(e.eventId)
+                    out.append(e)
+                }
+            }
+        }
+        return out
+    }
+
+    /// Draft drawer above the input bar — mirrors the Compose `DraftPlanTray`.
+    /// Shows the staged picks with a remove (✕) each, and two actions:
+    ///   • "Save Events" — save the picks to Saved Events, then clear.
+    ///   • "Create Plan" — save the picks to Saved Events AND build a plan from
+    ///     them (events added to a plan are always saved too).
+    /// Replaces the old single "Build a plan with my N picks" CTA.
+    private var draftDrawer: some View {
+        let picks = pickedSnapshots
+        let count = picks.count
         let addingToPlan = hasActivePlan
         return VStack(spacing: 0) {
             Divider().background(C.pebble.opacity(0.5))
-            Button {
-                let ids = Array(selectedEventIds)
-                ChatBridge.shared.buildPlanFromSelections?(ids)
-                // Snapshot the selection so the CTA hides immediately. The
-                // checkmarks on the cards stay. If the user adds or removes any
-                // card afterward, the snapshot no longer matches and the CTA
-                // returns. Cleared on Start over.
-                withAnimation(.easeOut(duration: 0.18)) {
-                    lastSubmittedSelection = selectedEventIds
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    if addingToPlan {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 14, weight: .bold))
+            VStack(alignment: .leading, spacing: 10) {
+                Text(addingToPlan ? "Add to your plan (\(count))" : "Your picks (\(count))")
+                    .font(F.body(12, .heavy))
+                    .foregroundColor(C.ink3)
+                    .tracking(0.4)
+
+                // Staged picks — scrolls once the list gets tall.
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 8) {
+                        ForEach(picks, id: \.eventId) { ev in
+                            HStack(spacing: 10) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(ev.title)
+                                        .font(F.body(14, .bold))
+                                        .foregroundColor(C.ink)
+                                        .lineLimit(1)
+                                    if !ev.venueName.isEmpty {
+                                        Text(ev.venueName)
+                                            .font(F.body(12, .medium))
+                                            .foregroundColor(C.ink3)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                Spacer(minLength: 8)
+                                Button {
+                                    withAnimation(.easeOut(duration: 0.18)) {
+                                        // `_ =` so the closure returns Void, not
+                                        // Set.remove's String? (Button wants Void).
+                                        _ = selectedEventIds.remove(ev.eventId)
+                                    }
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundColor(C.ink3)
+                                        .frame(width: 26, height: 26)
+                                        .background(C.snow)
+                                        .clipShape(Circle())
+                                        .overlay(Circle().stroke(C.pebble, lineWidth: 1))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
                     }
-                    Text(addingToPlan
-                         ? "Add \(count) event\(count == 1 ? "" : "s") to my plan"
-                         : (state.boIntent == "create_plan"
-                            ? "Create plan from \(count) event\(count == 1 ? "" : "s")"
-                            : "Build a plan with my \(count) saved event\(count == 1 ? "" : "s")"))
-                        .font(F.body(15, .black))
                 }
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(C.coral)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+                .frame(maxHeight: 168)
+
+                HStack(spacing: 10) {
+                    Button {
+                        picks.forEach { ChatBridge.shared.saveFavorite?($0.eventId) }
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            selectedEventIds.removeAll()
+                            lastSubmittedSelection.removeAll()
+                        }
+                    } label: {
+                        Text("Save Events")
+                            .font(F.body(15, .bold))
+                            .foregroundColor(C.coral)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 13)
+                            .background(C.coral.opacity(0.10))
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        let ids = picks.map { $0.eventId }
+                        // Events added to a plan are also saved to Saved Events.
+                        ids.forEach { ChatBridge.shared.saveFavorite?($0) }
+                        ChatBridge.shared.buildPlanFromSelections?(ids)
+                        // Snapshot so the drawer hides; checkmarks stay.
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            lastSubmittedSelection = selectedEventIds
+                        }
+                    } label: {
+                        Text(addingToPlan ? "Add to Plan" : "Create Plan")
+                            .font(F.body(15, .black))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 13)
+                            .background(C.coral)
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                    .buttonStyle(.plain)
+                }
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
         }
         .background(C.snow)
     }
