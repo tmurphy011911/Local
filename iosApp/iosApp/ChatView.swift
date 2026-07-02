@@ -214,6 +214,8 @@ struct ChatView: View {
     /// Tapping + also saves the event to Saved Events the first time (handled
     /// by the bridge). Cleared on Start over.
     @State private var selectedEventIds: Set<String> = []
+    /// Selected day tab in the draft drawer when picks span multiple days.
+    @State private var draftDayIndex: Int = 0
     /// Snapshot of `selectedEventIds` at the moment the user last tapped the
     /// Build CTA. The CTA hides whenever the current selection equals this
     /// snapshot (idempotent — same set already submitted). It reappears the
@@ -601,12 +603,12 @@ struct ChatView: View {
                 quickRepliesRow
             }
 
-            // Suggestion-card follow-up chips ("Search wider", "Different day",
-            // …), hoisted out of the card to sit above the input bar in the
-            // opener-chip style. Only shown for the latest suggestion card.
-            if latestSuggestionFooter != nil && !state.showPlanSuccess {
-                suggestionFooterRow
-            }
+            // Suggestion-card follow-up chips ("Search wider" / "Different day"
+            // / "Different category") intentionally removed from under results to
+            // save vertical space — chips now only appear on the first prompt
+            // (intent) and the create-plan confirmation (both via quickReplies).
+            // `suggestionFooterRow` / `latestSuggestionFooter` are retained but
+            // unused; the same actions remain reachable by typing.
 
             // Input bar (hidden during celebration)
             if !state.showPlanSuccess {
@@ -1056,6 +1058,13 @@ struct ChatView: View {
         let picks = pickedSnapshots
         let count = picks.count
         let addingToPlan = hasActivePlan
+        // Day tabs when the picks span multiple days.
+        let dayKeys: [String] = picks.reduce(into: []) { acc, ev in
+            if !ev.dateDisplay.isEmpty && !acc.contains(ev.dateDisplay) { acc.append(ev.dateDisplay) }
+        }
+        let showDayTabs = dayKeys.count > 1
+        let activeDay = dayKeys.indices.contains(draftDayIndex) ? dayKeys[draftDayIndex] : (dayKeys.first ?? "")
+        let visiblePicks = showDayTabs ? picks.filter { $0.dateDisplay == activeDay } : picks
         return VStack(spacing: 0) {
             Divider().background(C.pebble.opacity(0.5))
             VStack(alignment: .leading, spacing: 10) {
@@ -1064,10 +1073,30 @@ struct ChatView: View {
                     .foregroundColor(C.ink3)
                     .tracking(0.4)
 
-                // Staged picks — scrolls once the list gets tall.
+                if showDayTabs {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(Array(dayKeys.enumerated()), id: \.offset) { idx, day in
+                                let active = idx == draftDayIndex
+                                Button { draftDayIndex = idx } label: {
+                                    Text(day)
+                                        .font(F.body(12, .bold))
+                                        .foregroundColor(active ? .white : C.ink)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 5)
+                                        .background(active ? C.coral : C.coral.opacity(0.10))
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+
+                // Staged picks — shows ~2.5 rows, scrolls for the rest.
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 8) {
-                        ForEach(picks, id: \.eventId) { ev in
+                        ForEach(visiblePicks, id: \.eventId) { ev in
                             HStack(spacing: 10) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(ev.title)
@@ -1102,7 +1131,7 @@ struct ChatView: View {
                         }
                     }
                 }
-                .frame(maxHeight: 168)
+                .frame(maxHeight: 120) // ~2.5 rows; scroll for the rest
 
                 HStack(spacing: 10) {
                     Button {
@@ -2210,7 +2239,8 @@ private struct BoResultsMapView: View {
     @State private var focusedId: String?
     @State private var region: MKCoordinateRegion?
     private enum ResultsMode: Hashable { case list, map }
-    @State private var resultsMode: ResultsMode = .list
+    @State private var resultsMode: ResultsMode = .map
+    @State private var cardDrag: CGSize = .zero
 
     /// Groups that still have at least one non-dismissed event.
     private var visibleGroups: [SuggestionGroupSnapshot] {
@@ -2279,6 +2309,62 @@ private struct BoResultsMapView: View {
         }
         .background(STC.skyLt)
         .clipShape(Capsule())
+    }
+
+    /// Map-mode card — one event at a time below the map. Swipe UP/DOWN to move
+    /// through events (map recenters via focusedId), swipe RIGHT to add to the
+    /// draft, swipe LEFT to dismiss. The card's own +/✕ buttons remain for a11y.
+    private var swipeCard: some View {
+        let events = currentEvents
+        let idx = events.firstIndex(where: { $0.eventId == focusedId }) ?? 0
+        return Group {
+            if events.indices.contains(idx) {
+                let ev = events[idx]
+                SuggestionCardView(
+                    event: ev,
+                    isSelected: isSaved(ev.eventId),
+                    onTap: { onOpenEvent(ev) },
+                    onToggleSelected: { onToggleSave(ev.eventId) },
+                    onDismiss: { handleDismiss(ev.eventId) }
+                )
+                .frame(maxWidth: .infinity)
+                .offset(x: cardDrag.width, y: cardDrag.height * 0.35)
+                .rotationEffect(.degrees(Double(cardDrag.width / 28)))
+                .gesture(
+                    DragGesture(minimumDistance: 14)
+                        .onChanged { cardDrag = $0.translation }
+                        .onEnded { g in
+                            let h = g.translation.width
+                            let v = g.translation.height
+                            if abs(h) > abs(v) && abs(h) > 90 {
+                                if h > 0 {
+                                    if !isSaved(ev.eventId) { onToggleSave(ev.eventId) }
+                                } else {
+                                    handleDismiss(ev.eventId)
+                                }
+                            } else if abs(v) > 60 {
+                                if v < 0, idx + 1 < events.count {
+                                    focusedId = events[idx + 1].eventId
+                                } else if v > 0, idx - 1 >= 0 {
+                                    focusedId = events[idx - 1].eventId
+                                }
+                            }
+                            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                                cardDrag = .zero
+                            }
+                        }
+                )
+                .padding(.horizontal, 14)
+                .padding(.top, 10)
+                .padding(.bottom, 6)
+
+                Text("\(idx + 1) of \(events.count) · swipe ↑ ↓ to browse")
+                    .font(STF.body(11, .medium))
+                    .foregroundColor(STC.ink3)
+                    .frame(maxWidth: .infinity)
+                    .padding(.bottom, 12)
+            }
+        }
     }
 
     /// Vertical, scrollable results list. Swipe RIGHT to add to the draft plan,
@@ -2473,27 +2559,9 @@ private struct BoResultsMapView: View {
                 }
             }
 
-            // Bottom carousel, synced to the map via focusedId.
-            ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 10) {
-                    ForEach(currentEvents, id: \.eventId) { ev in
-                        SuggestionCardView(
-                            event: ev,
-                            isSelected: isSaved(ev.eventId),
-                            onTap: { onOpenEvent(ev) },
-                            onToggleSelected: { onToggleSave(ev.eventId) },
-                            onDismiss: { handleDismiss(ev.eventId) }
-                        )
-                        .frame(width: 280)
-                    }
-                }
-                .scrollTargetLayout()
-                .padding(.horizontal, 14)
-            }
-            .scrollTargetBehavior(.viewAligned)
-            .scrollPosition(id: $focusedId)
-            .padding(.top, 10)
-            .padding(.bottom, 14)
+            // One event card below the map: swipe up/down to move through
+            // events (map recenters), swipe right to add / left to dismiss.
+            swipeCard
             } // end map mode
         }
         .frame(maxWidth: .infinity, alignment: .leading)
