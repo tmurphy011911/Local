@@ -2209,6 +2209,8 @@ private struct BoResultsMapView: View {
     @State private var groupIndex: Int = 0
     @State private var focusedId: String?
     @State private var region: MKCoordinateRegion?
+    private enum ResultsMode: Hashable { case list, map }
+    @State private var resultsMode: ResultsMode = .list
 
     /// Groups that still have at least one non-dismissed event.
     private var visibleGroups: [SuggestionGroupSnapshot] {
@@ -2260,14 +2262,156 @@ private struct BoResultsMapView: View {
         if wasFocused { focusedId = nextId } // onChange(focusedId) recenters
     }
 
+    /// List ⇄ Map segmented toggle in the header.
+    private var modeToggle: some View {
+        HStack(spacing: 0) {
+            ForEach([ResultsMode.list, ResultsMode.map], id: \.self) { mode in
+                let active = resultsMode == mode
+                Button { resultsMode = mode } label: {
+                    Image(systemName: mode == .list ? "list.bullet" : "map")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(active ? .white : STC.ink3)
+                        .frame(width: 42, height: 26)
+                        .background(active ? STC.coral : Color.clear)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(STC.skyLt)
+        .clipShape(Capsule())
+    }
+
+    /// Vertical, scrollable results list. Swipe RIGHT to add to the draft plan,
+    /// swipe LEFT to dismiss — the +/✕ buttons stay for discoverability/a11y.
+    /// Bounded height with internal scroll (it's nested in the chat scroll).
+    private var swipeList: some View {
+        let events = currentEvents
+        let rowH: CGFloat = 92
+        let listH = min(CGFloat(max(events.count, 1)) * rowH, 460)
+        return List {
+            ForEach(events, id: \.eventId) { ev in
+                EventListRow(
+                    event: ev,
+                    isSelected: isSaved(ev.eventId),
+                    onTap: { onOpenEvent(ev) },
+                    onToggle: { onToggleSave(ev.eventId) },
+                    onDismiss: { handleDismiss(ev.eventId) }
+                )
+                .listRowInsets(EdgeInsets(top: 5, leading: 12, bottom: 5, trailing: 12))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                    Button {
+                        if !isSaved(ev.eventId) { onToggleSave(ev.eventId) }
+                    } label: {
+                        Label("Add", systemImage: "plus")
+                    }
+                    .tint(STC.coral)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        handleDismiss(ev.eventId)
+                    } label: {
+                        Label("Dismiss", systemImage: "xmark")
+                    }
+                }
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .frame(height: listH)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+    }
+
+    /// Compact result row for the swipe-list (thumb + text + +/✕).
+    private struct EventListRow: View {
+        let event: SuggestionEventSnapshot
+        let isSelected: Bool
+        let onTap: () -> Void
+        let onToggle: () -> Void
+        let onDismiss: () -> Void
+
+        var body: some View {
+            HStack(spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10).fill(STC.skyLt)
+                        if let url = event.imageUrl, let u = URL(string: url) {
+                            AsyncImage(url: u) { img in
+                                img.resizable().aspectRatio(contentMode: .fill)
+                            } placeholder: { Color.clear }
+                        }
+                    }
+                    .frame(width: 60, height: 60)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(event.title)
+                            .font(STF.body(15, .bold))
+                            .foregroundColor(STC.ink)
+                            .lineLimit(1)
+                        if !event.venueName.isEmpty {
+                            Text(event.venueName)
+                                .font(STF.body(12, .medium))
+                                .foregroundColor(STC.ink3)
+                                .lineLimit(1)
+                        }
+                        HStack(spacing: 5) {
+                            if !event.timeLabel.isEmpty { Text(event.timeLabel) }
+                            if event.distanceMiles >= 0 {
+                                Text("· \(Int(event.distanceMiles.rounded())) mi")
+                            }
+                        }
+                        .font(STF.body(11, .medium))
+                        .foregroundColor(STC.ink3)
+                        .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 6)
+
+                    HStack(spacing: 6) {
+                        Button(action: onToggle) {
+                            Image(systemName: isSelected ? "checkmark" : "plus")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(isSelected ? .white : STC.coral)
+                                .frame(width: 30, height: 30)
+                                .background(isSelected ? STC.coral : STC.coral.opacity(0.12))
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        Button(action: onDismiss) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(STC.ink3)
+                                .frame(width: 30, height: 30)
+                                .background(Color.white)
+                                .clipShape(Circle())
+                                .overlay(Circle().stroke(STC.pebble, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(8)
+                .background(Color.white)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(STC.pebble, lineWidth: 1))
+                .contentShape(Rectangle())
+                .onTapGesture { onTap() }
+        }
+    }
+
     var body: some View {
         let groups = visibleGroups
         VStack(alignment: .leading, spacing: 0) {
-            Text(suggestions.headline)
-                .font(STF.display(18, .black))
-                .foregroundColor(STC.ink)
-                .padding(.horizontal, 14)
-                .padding(.top, 14)
+            HStack(alignment: .firstTextBaseline) {
+                Text(suggestions.headline)
+                    .font(STF.display(18, .black))
+                    .foregroundColor(STC.ink)
+                Spacer(minLength: 8)
+                modeToggle
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 14)
 
             // Day / category tabs (only when there's more than one group).
             if groups.count > 1 {
@@ -2292,6 +2436,9 @@ private struct BoResultsMapView: View {
                 }
             }
 
+            if resultsMode == .list {
+                swipeList
+            } else {
             // Map with a pin per (coord-bearing) venue in the current group.
             // Backed by MKMapView (not SwiftUI Map) so the focused pin can be
             // forced above overlapping neighbors via displayPriority/zPriority —
@@ -2347,6 +2494,7 @@ private struct BoResultsMapView: View {
             .scrollPosition(id: $focusedId)
             .padding(.top, 10)
             .padding(.bottom, 14)
+            } // end map mode
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.white)
