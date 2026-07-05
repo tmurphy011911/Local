@@ -58,6 +58,31 @@ class BadgeService(
     private var totalPointsCache = 0
     private var initialized = false
 
+    /** Local, per-device watermark for creator-badge toasts. Multiplatform-
+     *  settings' no-arg factory points at the same shared store the prefs repo
+     *  uses, so this reads/writes the platform default store. */
+    private val settings = com.russhwolf.settings.Settings()
+
+    /** Action types the server (accept_plan_invite RPC) awards to the plan
+     *  creator. The client no longer awards these — it only surfaces the toast. */
+    private val creatorBadgeActions = setOf("invite_accepted", "group_5_confirmed", "group_10_confirmed")
+
+    private fun watermarkKey(userId: String) = "creator_badge_seen_through_$userId"
+
+    private fun creatorAction(actionType: String): BadgeAction? = when (actionType) {
+        "invite_accepted" -> BadgeAction.INVITE_ACCEPTED
+        "group_5_confirmed" -> BadgeAction.GROUP_5_CONFIRMED
+        "group_10_confirmed" -> BadgeAction.GROUP_10_CONFIRMED
+        else -> null
+    }
+
+    /** Parse a DB timestamptz string to an Instant. Never compare these ISO
+     *  strings lexicographically — variable fractional-second width makes that
+     *  unreliable (see project_gotchas). */
+    private fun parseTs(s: String?): kotlin.time.Instant? =
+        if (s.isNullOrBlank()) null
+        else try { kotlin.time.Instant.parse(s) } catch (_: Throwable) { null }
+
     /** Initialize cache from DB. Call once on app start or profile load. */
     fun initialize() {
         if (initialized) return
@@ -69,6 +94,17 @@ class BadgeService(
                 // Deduplicate milestones by action+milestone to avoid double-counting across states
                 val uniqueMilestones = milestones.distinctBy { "${it.actionType}_${it.milestone}" }
                 totalPointsCache = uniqueMilestones.sumOf { it.points }
+
+                // Baseline the creator-badge toast watermark on first run so the
+                // server's already-awarded historical badges don't retro-toast.
+                val wmKey = watermarkKey(userId)
+                if (settings.getStringOrNull(wmKey) == null) {
+                    val latest = milestones
+                        .filter { it.actionType in creatorBadgeActions }
+                        .maxByOrNull { parseTs(it.earnedAt) ?: kotlin.time.Instant.DISTANT_PAST }
+                        ?.earnedAt
+                    settings.putString(wmKey, latest ?: "")
+                }
                 initialized = true
             } catch (_: Throwable) {}
         }
@@ -178,47 +214,90 @@ class BadgeService(
     }
 
     /**
-     * Award any pending creator-side badges based on confirmed accepts across
-     * the user's owned plans. Call this when the creator opens a plan they own
-     * — the count of new accepts since the last open will typically push them
-     * across a milestone, surfacing a toast via the existing celebration flow.
+     * Surface a toast for any creator-side FOMO the server has awarded since we
+     * last looked. Call this when the creator opens a plan they own.
      *
-     * Reads a live snapshot from [BadgeRepository.getCreatorAcceptSnapshot]
-     * (queries `plan_attendees`) and ratchets the lifetime counters in
-     * `user_action_counts` up to that snapshot via [recordActionImpl]'s
-     * bumpActionCountTo path. Deleting an owned plan can reduce the live
-     * snapshot, but the stored counter never goes down.
+     * The award itself lives entirely server-side now: `accept_plan_invite`
+     * (SECURITY DEFINER) writes the creator's `user_badges` rows on each accept
+     * (+2500 base, +5000 at 5 guests, +10000 at 10), and the `sync_fomo_total`
+     * trigger credits `user_profiles.fomo_total` instantly — no dependency on
+     * the creator opening the app. This method therefore does NOT award; it
+     * only:
+     *   1. Ratchets the Profile-screen lifetime counters (`user_action_counts`)
+     *      up to the live snapshot, so progress rows stay in sync. This touches
+     *      only the counter table, never `user_badges`.
+     *   2. Emits a [BadgeCelebration.MilestoneEarned] for each creator badge
+     *      newer than the per-device watermark, so the global celebration
+     *      overlay toasts it. `totalPointsCache` is re-summed authoritatively
+     *      from the DB (not incremented) so restarts can't double-count.
      *
-     * Snapshot zeros short-circuit — calling recordActionImpl with newCount=0
-     * would trigger the per-action increment path, which is wrong for these
-     * snapshot-driven actions.
-     *
-     * The three actions run sequentially in a single coroutine so that:
-     *   1. [totalPointsCache] reads/writes don't race across actions.
-     *   2. Celebration emissions arrive in a deterministic crescendo order —
-     *      INVITE_ACCEPTED milestone → GROUP_5 milestone → GROUP_10 milestone,
-     *      with any StatusLevelUp interleaved at the exact action that crossed
-     *      the tier. The ProgressViewModel queue then plays them back in order.
-     *
-     * Safe to call repeatedly: each call is idempotent — only crossings of
-     * previously-unawarded thresholds emit.
+     * Idempotent: re-opening the same plan after the toast fired is a no-op —
+     * the watermark already covers those badges.
      */
     fun claimCreatorBadges() {
         val userId = userPrefsRepo.getLocalUserId() ?: return
         scope.launch {
-            val snapshot = try {
-                badgeRepository.getCreatorAcceptSnapshot(userId)
-            } catch (_: Throwable) { return@launch }
+            // 1. Keep Profile counters fresh (counter table only — no award).
+            try {
+                val snapshot = badgeRepository.getCreatorAcceptSnapshot(userId)
+                if (snapshot.totalAccepts > 0)
+                    badgeRepository.bumpActionCountTo(userId, "invite_accepted", snapshot.totalAccepts)
+                if (snapshot.qualifiesForGroup5)
+                    badgeRepository.bumpActionCountTo(userId, "group_5_confirmed", 1)
+                if (snapshot.qualifiesForGroup10)
+                    badgeRepository.bumpActionCountTo(userId, "group_10_confirmed", 1)
+            } catch (_: Throwable) {}
 
-            if (snapshot.totalAccepts > 0) {
-                recordActionImpl(userId, BadgeAction.INVITE_ACCEPTED, "global", snapshot.totalAccepts)
+            // 2. Toast newly-arrived creator badges.
+            val all = try { badgeRepository.getMilestones(userId) } catch (_: Throwable) { return@launch }
+            val creatorBadges = all.filter { it.actionType in creatorBadgeActions }
+
+            val wmKey = watermarkKey(userId)
+            val watermark = settings.getStringOrNull(wmKey)
+            if (watermark == null) {
+                // First sight on this device — baseline without retro-toasting.
+                val latest = creatorBadges
+                    .maxByOrNull { parseTs(it.earnedAt) ?: kotlin.time.Instant.DISTANT_PAST }?.earnedAt
+                settings.putString(wmKey, latest ?: "")
+                return@launch
             }
-            if (snapshot.qualifiesForGroup5) {
-                recordActionImpl(userId, BadgeAction.GROUP_5_CONFIRMED, "global", 1)
+
+            val wmTs = parseTs(watermark) ?: kotlin.time.Instant.DISTANT_PAST
+            val fresh = creatorBadges
+                .mapNotNull { b -> parseTs(b.earnedAt)?.let { it to b } }
+                .filter { it.first > wmTs }
+                .sortedBy { it.first }
+                .map { it.second }
+            if (fresh.isEmpty()) return@launch
+
+            val previousTier = statusTierForPoints(totalPointsCache)
+            for (b in fresh) {
+                val action = creatorAction(b.actionType) ?: continue
+                _celebrations.emit(
+                    BadgeCelebration.MilestoneEarned(
+                        action = action,
+                        milestone = b.milestone,
+                        points = b.points,
+                        state = b.state,
+                    )
+                )
             }
-            if (snapshot.qualifiesForGroup10) {
-                recordActionImpl(userId, BadgeAction.GROUP_10_CONFIRMED, "global", 1)
+
+            // Re-sum authoritatively (matches initialize()'s dedup) so the cache
+            // is the true total regardless of when badges were written.
+            totalPointsCache = all.distinctBy { "${it.actionType}_${it.milestone}" }.sumOf { it.points }
+            val newTier = statusTierForPoints(totalPointsCache)
+            if (newTier != previousTier) {
+                _celebrations.emit(
+                    BadgeCelebration.StatusLevelUp(previousTier, newTier, totalPointsCache)
+                )
             }
+
+            settings.putString(
+                wmKey,
+                fresh.maxByOrNull { parseTs(it.earnedAt) ?: kotlin.time.Instant.DISTANT_PAST }!!.earnedAt,
+            )
+            _dataChanged.emit(Unit)
         }
     }
 }
