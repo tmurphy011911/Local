@@ -716,10 +716,16 @@ function weightsForUser(userLat: number, userLng: number, radiusMiles: number): 
   const milesFromMetro = distanceMiles(userLat, userLng, METRO_CENTER_LAT, METRO_CENTER_LNG);
   let proxWeight: number;
   let decay: number;
-  if (milesFromMetro <= 12.0) { proxWeight = 0.25; decay = 6.0; }
-  else if (milesFromMetro <= 25.0) { proxWeight = 0.40; decay = 3.5; }
-  else if (milesFromMetro <= 45.0) { proxWeight = 0.55; decay = 2.0; }
-  else { proxWeight = 0.65; decay = 1.0; }
+  // Proximity weight raised across all tiers (2026-07 tuning): far events
+  // (70+ mi) were floating into "Picked for You" for metro users because
+  // proximity counted for only 0.25 of the score. Raising proxWeight also
+  // shrinks the relevance / venue-rank / date weights (they share 1-proxWeight),
+  // so a distant event's strong-venue advantage is down-weighted too; steeper
+  // decay on the near tiers makes the proximity score fall off faster with miles.
+  if (milesFromMetro <= 12.0) { proxWeight = 0.42; decay = 4.0; }
+  else if (milesFromMetro <= 25.0) { proxWeight = 0.52; decay = 3.0; }
+  else if (milesFromMetro <= 45.0) { proxWeight = 0.64; decay = 1.8; }
+  else { proxWeight = 0.72; decay = 1.0; }
 
   // Far-from-metro users get a widened radius so they still see metro events,
   // but never beyond the hard ceiling.
