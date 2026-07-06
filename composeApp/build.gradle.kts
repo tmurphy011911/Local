@@ -120,9 +120,9 @@ android {
         // Aligned with the iOS build number scheme so the two platforms don't
         // drift. Play requires versionCode to strictly increase per upload.
         // 102 = clean rebuild after pulling 101 (deep-link ANR fix + native
-        // debug symbols).
-        versionCode = 102
-        versionName = "1.0.0"
+        // debug symbols). 104 = 1.1.0 test builds (clears iOS hotfix build 103).
+        versionCode = 104
+        versionName = "1.1.0"
         // Used by AndroidManifest's <meta-data android:value="${MAPS_API_KEY}" />
         // and read at runtime by the Directions API client.
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
