@@ -708,11 +708,15 @@ fun ChatScreen(
         if (state.draftTray.isNotEmpty()) {
             DraftPlanTray(
                 tray = state.draftTray,
-                chips = state.draftTrayChips,
                 onRemove = { id -> viewModel.removeFromDraftTray(id) },
-                onChipTap = { chip -> viewModel.sendDraftTrayChip(chip.intent) },
-                onBuild = { viewModel.buildFromDraftTray() },
-                boIntent = state.boIntent,
+                onSaveEvents = {
+                    val ids = state.draftTray.map { it.eventId }
+                    viewModel.saveEventsFromSelections(ids)
+                    viewModel.clearDraftTray()
+                },
+                onCreatePlan = { viewModel.buildPlanFromSelections(state.draftTray.map { it.eventId }) },
+                // "Add to Plan" once Bo has an active plan in this chat (mirrors iOS).
+                addingToPlan = state.days.isNotEmpty(),
             )
         }
 

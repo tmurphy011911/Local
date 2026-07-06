@@ -986,6 +986,8 @@ struct ChatView: View {
                         selectedEventIds.remove(eventId)
                     } else {
                         selectedEventIds.insert(eventId)
+                        // Jump the drawer's day tabs to this newest pick's day.
+                        navigateDraftToPick(eventId)
                     }
                 }
             },
@@ -1035,6 +1037,20 @@ struct ChatView: View {
             }
         }
         return out
+    }
+
+    /// After the user stages a new pick, jump the drawer's day tabs to that
+    /// pick's day (matches Android). Computes the same dayKeys the drawer does.
+    private func navigateDraftToPick(_ eventId: String) {
+        let picks = pickedSnapshots.sorted { $0.sortEpochMillis < $1.sortEpochMillis }
+        var dayKeys: [String] = []
+        for ev in picks where !ev.dayLabel.isEmpty && !dayKeys.contains(ev.dayLabel) {
+            dayKeys.append(ev.dayLabel)
+        }
+        if let ev = picks.first(where: { $0.eventId == eventId }),
+           let idx = dayKeys.firstIndex(of: ev.dayLabel) {
+            draftDayIndex = idx
+        }
     }
 
     /// Draft drawer above the input bar — mirrors the Compose `DraftPlanTray`.
