@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import live.localapp.local.feature.onboarding.OnboardingButton
 import live.localapp.local.ui.common.CircleShape
 import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.material3.Text
@@ -366,24 +367,21 @@ fun HomeTutorial(cityName: String = "", onComplete: () -> Unit) {
                 }
             }
 
-            // CTA button
+            // CTA button — shared Duolingo-style 3D button.
+            // OnboardingButton uses a plain clickable (not `pressable`), which
+            // avoids the iOS tap-dropping bug this stack hit previously.
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .windowInsetsPadding(WindowInsets.navigationBars)
                     .padding(horizontal = 32.dp)
-                    .padding(bottom = 24.dp)
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(if (isLastPage) AppColors.Coral else AppColors.Ink)
-                    // Use a plain clickable for the CTA — `pressable` was
-                    // dropping taps in this stack on iOS (gesture detector
-                    // not committing on quick taps). Plain clickable is
-                    // bullet-proof and the slight scale animation is
-                    // cosmetic in this context.
-                    .clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                    ) {
+                    .padding(bottom = 24.dp),
+            ) {
+                OnboardingButton(
+                    text = if (isLastPage) "Get Started" else "Next",
+                    color = if (isLastPage) AppColors.Coral else AppColors.Ink,
+                    shadowColor = if (isLastPage) AppColors.CoralDk else Color(0xFF0D0B12),
+                    onClick = {
                         if (isLastPage) {
                             onComplete()
                         } else {
@@ -391,18 +389,7 @@ fun HomeTutorial(cityName: String = "", onComplete: () -> Unit) {
                                 pagerState.animateScrollToPage(pagerState.currentPage + 1)
                             }
                         }
-                    }
-                    .padding(vertical = 16.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    if (isLastPage) "Get Started" else "Next",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.Black,
-                        fontSize = 16.sp,
-                        color = Color.White,
-                    ),
+                    },
                 )
             }
         }

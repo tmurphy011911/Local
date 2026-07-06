@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import live.localapp.local.ui.common.CircleShape
 import live.localapp.local.ui.common.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -341,6 +342,7 @@ fun OnboardingButton(
     shadowColor: Color,
     onClick: () -> Unit,
     enabled: Boolean = true,
+    isLoading: Boolean = false,
     textColor: Color = AppColors.White,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -380,7 +382,7 @@ fun OnboardingButton(
                 .border(2.dp, shadowColor, AppShapes.CardSmall)
                 .clip(AppShapes.CardSmall)
                 .then(
-                    if (enabled) {
+                    if (enabled && !isLoading) {
                         Modifier.clickable(
                             interactionSource = interactionSource,
                             indication = null,
@@ -394,6 +396,13 @@ fun OnboardingButton(
                 .padding(vertical = 16.dp),
             contentAlignment = Alignment.Center,
         ) {
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    color = textColor,
+                    strokeWidth = 2.5.dp,
+                )
+            } else
             Text(
                 text,
                 style = TextStyle(

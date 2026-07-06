@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import live.localapp.local.feature.onboarding.OnboardingButton
 import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
@@ -603,43 +604,14 @@ private fun AuthButton(
     isLoading: Boolean = false,
     onClick: () -> Unit,
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(52.dp)
-            .then(
-                if (enabled) {
-                    Modifier.clickable(
-                        interactionSource = remember { MutableInteractionSource() },
-                        indication = null,
-                        onClick = onClick,
-                    )
-                } else {
-                    Modifier
-                }
-            )
-            .background(
-                color = if (enabled) AppColors.Coral else AppColors.Coral.copy(alpha = 0.45f),
-                shape = AppShapes.Pill,
-            ),
-        contentAlignment = Alignment.Center,
-    ) {
-        if (isLoading) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(22.dp),
-                color = AppColors.White,
-                strokeWidth = 2.5.dp,
-            )
-        } else {
-            Text(
-                text,
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 15.sp,
-                    color = AppColors.White,
-                ),
-            )
-        }
-    }
+    // Duolingo-style 3D button — shared with onboarding/tutorial CTAs.
+    OnboardingButton(
+        text = text,
+        color = AppColors.Coral,
+        shadowColor = AppColors.CoralDk,
+        onClick = onClick,
+        enabled = enabled,
+        isLoading = isLoading,
+        textColor = AppColors.White,
+    )
 }
