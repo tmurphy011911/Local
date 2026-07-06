@@ -290,6 +290,59 @@ jobs:
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
         run: node backfill_city_photos.js
 
+  # Detect venues that SILENTLY went dark — reliably carried upcoming events and
+  # collapsed to ~none without any hard crawl error (e.g. ICA Boston, whose
+  # calendar moved to a JS widget so the crawl still 200s but yields nothing).
+  # Runs AFTER dedupe-pass so counts reflect this run's fully-attributed events.
+  # Weekly (run_heavy) only — snapshots the crawl's own output, so it must ride
+  # the same Sunday gate as the crawl chain. Emails a digest ONLY when a venue
+  # newly goes dark; needs ~2 weekly runs of history before it flags anything.
+  venue-health:
+    runs-on: ubuntu-latest
+    needs: [dedupe-pass, compute-states]
+    if: ${{ !cancelled() && needs.compute-states.outputs.run_heavy == 'true' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Snapshot venue health + detect silent failures
+        id: detect
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          MIN_RANK: '25'
+        run: node venue_health_snapshot.js
+      - name: Email the silent-failure digest (Resend)
+        if: ${{ steps.detect.outputs.has_alerts == 'true' }}
+        working-directory: scripts
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+        run: |
+          if [ -z "$RESEND_API_KEY" ]; then
+            echo "RESEND_API_KEY not set; skipping email (full report is in the run summary)."
+            exit 0
+          fi
+          if [ ! -f venue_alert_email.html ]; then
+            echo "No email body produced; skipping."
+            exit 0
+          fi
+          TO="${ALERT_EMAIL_TO:-tmurphy011911@gmail.com}"
+          SUBJECT="$(cat venue_alert_subject.txt)"
+          jq -n \
+            --arg from "Local Alerts <onboarding@resend.dev>" \
+            --arg to "$TO" \
+            --arg subject "$SUBJECT" \
+            --rawfile html venue_alert_email.html \
+            '{from:$from, to:[$to], subject:$subject, html:$html}' \
+          | curl -sf -X POST "https://api.resend.com/emails" \
+              -H "Authorization: Bearer $RESEND_API_KEY" \
+              -H "Content-Type: application/json" \
+              --data @- \
+          && echo "Silent-failure digest emailed to $TO."
+
   # Independent of the crawl→classify chain: the adapter writes fully-classified
   # rows (category=always_on, subcategory=farmers-market, tags set), so it needs
   # neither run_crawls nor classify_events. One deterministic fetch of the
