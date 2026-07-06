@@ -14,7 +14,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyRow
@@ -27,9 +29,15 @@ import androidx.compose.material.icons.outlined.ArrowForward
 import androidx.compose.material.icons.outlined.Check
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberSwipeToDismissBoxState
+import androidx.compose.ui.layout.ContentScale
+import coil3.compose.AsyncImage
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -359,6 +367,127 @@ private fun SuggestionCard(
 }
 
 /**
+ * Full-width list row for BoResultsMap's list mode — thumbnail + text +
+ * side-by-side +/✕ circles. Mirrors the iOS `EventListRow` (60pt image, 30pt
+ * buttons). Swipe is added by the caller via SwipeToDismissBox.
+ */
+@Composable
+private fun SuggestionListRow(
+    event: Event,
+    isInTray: Boolean,
+    onAddToTray: () -> Unit,
+    onDismiss: () -> Unit,
+    onOpenEvent: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val haptics = LocalHapticFeedback.current
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(Color.White)
+            .border(1.dp, AppColors.Pebble, RoundedCornerShape(14.dp))
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onOpenEvent,
+            )
+            .padding(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // 60pt thumbnail (skyLt placeholder behind the image).
+        Box(
+            modifier = Modifier.size(60.dp).clip(RoundedCornerShape(10.dp)).background(AppColors.SkyLt),
+        ) {
+            if (!event.imageUrl.isNullOrBlank()) {
+                AsyncImage(
+                    model = event.imageUrl,
+                    contentDescription = null,
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop,
+                )
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                event.title,
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = AppColors.Ink),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            event.venueName?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    it,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Medium, fontSize = 12.sp, color = AppColors.Ink3),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            val meta = listOfNotNull(
+                event.dateDisplay.takeIf { it.isNotBlank() },
+                event.distanceDisplay.takeIf { it.isNotBlank() },
+            ).joinToString(" · ")
+            if (meta.isNotBlank()) {
+                Text(
+                    meta,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Medium, fontSize = 11.sp, color = AppColors.Ink3),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Spacer(Modifier.width(6.dp))
+        // + add (coral, → sage ✓ when added). 30pt to match iOS.
+        Box(
+            modifier = Modifier
+                .size(30.dp)
+                .clip(CircleShape)
+                .background(if (isInTray) AppColors.Sage else AppColors.Coral)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    if (!isInTray) onAddToTray()
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (isInTray) Icons.Outlined.Check else Icons.Outlined.Add,
+                contentDescription = if (isInTray) "Added" else "Add",
+                tint = Color.White,
+                modifier = Modifier.size(15.dp),
+            )
+        }
+        Spacer(Modifier.width(6.dp))
+        // ✕ dismiss (white, pebble ring). 30pt.
+        Box(
+            modifier = Modifier
+                .size(30.dp)
+                .clip(CircleShape)
+                .background(Color.White)
+                .border(1.dp, AppColors.Pebble, CircleShape)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) {
+                    haptics.performHapticFeedback(HapticFeedbackType.LongPress)
+                    onDismiss()
+                },
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Outlined.Close,
+                contentDescription = "Not interested",
+                tint = AppColors.Ink3,
+                modifier = Modifier.size(13.dp),
+            )
+        }
+    }
+}
+
+/**
  * Trailing tile in a carousel that pulls more events for the day/category
  * inline. Mirrors iOS `FindMoreTile`: loading spinner, exhausted checkmark,
  * or a "Find more" call-to-action.
@@ -474,9 +603,13 @@ fun BoResultsMap(
     onFindMore: (dayKey: String?, categoryKey: String?) -> Unit = { _, _ -> },
     modifier: Modifier = Modifier,
 ) {
-    // Groups with at least one visible (non-dismissed), hydrated event.
+    // Groups with at least one visible event. Events that are dismissed (✕) or
+    // already added to the draft sheet (isInTray) drop out of the results —
+    // added items live in the sheet; removing them there restores them here
+    // (this is reactive on isInTray/isDismissed). Mirrors iOS.
     val visibleGroups = suggestions.groups.map { g ->
-        g to g.events.mapNotNull { ref -> eventsById[ref.eventId] }.filter { !isDismissed(it.id) }
+        g to g.events.mapNotNull { ref -> eventsById[ref.eventId] }
+            .filter { !isDismissed(it.id) && !isInTray(it.id) }
     }.filter { it.second.isNotEmpty() }
 
     // Nothing to place → fall back to the list tray (which owns the empty state).
@@ -515,6 +648,11 @@ fun BoResultsMap(
             try { carouselState.animateScrollToItem(idx) } catch (_: Throwable) {}
         }
     }
+
+    // List-mode scroll — reset to the top whenever the mode or day tab changes
+    // (otherwise switching lands you at the bottom of the previous list).
+    val listScrollState = rememberLazyListState()
+    LaunchedEffect(safeIndex, mode) { runCatching { listScrollState.scrollToItem(0) } }
 
     val showMap = mode == BoResultsMode.MAP && pins.isNotEmpty()
 
@@ -629,61 +767,68 @@ fun BoResultsMap(
                 }
             }
         } else {
-            // List mode (or no plottable coords) — vertical full-width cards for
-            // the current group.
-            Column(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+            // List mode (or no plottable coords) — vertical full-width cards.
+            // Bounded height + its own LazyColumn so the list scrolls WITHIN the
+            // component instead of scrolling the whole chat away (matches iOS).
+            LazyColumn(
+                state = listScrollState,
+                modifier = Modifier.fillMaxWidth().heightIn(max = 460.dp).padding(horizontal = 14.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                events.forEach { ev ->
-                    SuggestionCard(
-                        event = ev,
-                        isInTray = isInTray(ev.id),
-                        onAddToTray = { onAddToTray(ev) },
-                        onDismiss = { onDismiss(ev.id) },
-                        onOpenEvent = { onOpenEvent(ev) },
-                        modifier = Modifier.fillMaxWidth(),
+                items(events, key = { it.id }) { ev ->
+                    // Swipe RIGHT → add to plan, swipe LEFT → dismiss (mirrors the
+                    // iOS EventListRow .swipeActions). The +/✕ buttons stay for
+                    // discoverability. The row then leaves the list via the
+                    // in-tray / dismissed filter, so we snap the box back (false).
+                    val dismissState = rememberSwipeToDismissBoxState(
+                        confirmValueChange = { value ->
+                            when (value) {
+                                SwipeToDismissBoxValue.StartToEnd -> { onAddToTray(ev); false }
+                                SwipeToDismissBoxValue.EndToStart -> { onDismiss(ev.id); false }
+                                else -> false
+                            }
+                        },
                     )
-                }
-            }
-        }
-
-        // Footer chip strip (Search wider / Different category / …).
-        val footer = suggestions.footer
-        if (footer != null && footer.actions.isNotEmpty()) {
-            Spacer(Modifier.height(12.dp))
-            footer.text?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    it,
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
-                    modifier = Modifier.padding(horizontal = 14.dp),
-                )
-                Spacer(Modifier.height(6.dp))
-            }
-            LazyRow(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                contentPadding = PaddingValues(horizontal = 14.dp),
-            ) {
-                items(footer.actions) { action ->
-                    Box(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(50))
-                            .background(AppColors.SkyLt)
-                            .border(1.dp, AppColors.Sky, RoundedCornerShape(50))
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                            ) { onFooterAction(action) }
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    SwipeToDismissBox(
+                        state = dismissState,
+                        backgroundContent = {
+                            val add = dismissState.targetValue == SwipeToDismissBoxValue.StartToEnd
+                            val dismiss = dismissState.targetValue == SwipeToDismissBoxValue.EndToStart
+                            val bg = when {
+                                add -> AppColors.Coral
+                                dismiss -> Color(0xFFE85D5D)
+                                else -> Color.Transparent
+                            }
+                            Box(
+                                modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp))
+                                    .background(bg).padding(horizontal = 22.dp),
+                                contentAlignment = if (add) Alignment.CenterStart else Alignment.CenterEnd,
+                            ) {
+                                if (add || dismiss) {
+                                    Icon(
+                                        if (add) Icons.Outlined.Add else Icons.Outlined.Close,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                }
+                            }
+                        },
                     ) {
-                        Text(
-                            actionLabel(action),
-                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = AppColors.Sky),
+                        SuggestionListRow(
+                            event = ev,
+                            isInTray = isInTray(ev.id),
+                            onAddToTray = { onAddToTray(ev) },
+                            onDismiss = { onDismiss(ev.id) },
+                            onOpenEvent = { onOpenEvent(ev) },
                         )
                     }
                 }
             }
         }
+
+        // Footer suggestion chips intentionally removed (parity with iOS) — the
+        // header, day tabs, and card actions are the only affordances.
     }
 }
 
