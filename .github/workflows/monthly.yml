@@ -42,7 +42,7 @@ jobs:
   fix-venue-urls:
     runs-on: ubuntu-latest
     needs: discover-venues
-    timeout-minutes: 360
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -50,8 +50,19 @@ jobs:
           node-version: '22'
       - name: Fix Venue URLs
         working-directory: scripts
+        # RETRY_GATE only attempts venues worth a token — active, has a website,
+        # missing an events_url, rank >= MIN_RANK — and skips any we've already
+        # tried and failed on (until RETRY_AFTER_DAYS backoff / MAX_ATTEMPTS).
+        # Every attempt is recorded on the venue, so the working set collapses to
+        # new + due-for-recheck venues after the first pass. MAX_VENUES bounds the
+        # run so it can't hit the timeout the old re-attempt-everything run did
+        # (6h on 2026-07-01). Never deactivates.
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          RETRY_GATE: '1'
+          MIN_RANK: '40'
+          MAX_VENUES: '6000'
+          CONCURRENCY: '6'
         run: node fix_venue_urls.js
 
   rank-venues:
