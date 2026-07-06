@@ -2007,6 +2007,14 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 },
                 sheetState = chatSheetState,
                 containerColor = AppColors.Snow,
+                // Fix Android-only chat-scroll jitter: the sheet's default
+                // contentWindowInsets (system bars) oscillated ~15-60px during
+                // scroll under enableEdgeToEdge, resizing the sheet content slot
+                // → the LazyColumn viewport → the whole chat visibly jumped up
+                // and down. Zeroing it stops the sheet re-measuring on inset
+                // changes. (Verified via onSizeChanged: sheet slot went from
+                // oscillating every frame to a single stable height.)
+                contentWindowInsets = { androidx.compose.foundation.layout.WindowInsets(0, 0, 0, 0) },
                 dragHandle = {
                     Box(
                         modifier = Modifier
