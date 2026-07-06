@@ -440,22 +440,12 @@ fun ChatScreen(
         }
     }
 
-    // Intent picker on open — "What are you looking to do?" Shown until the
-    // user picks a goal (boIntent set), which steers Bo's framing + planning.
-    // confirmValueChange blocks swipe-to-dismiss so a goal must be chosen
-    // (mirrors the iOS interactiveDismissDisabled sheet).
-    if (state.boIntent == null) {
-        androidx.compose.material3.ModalBottomSheet(
-            onDismissRequest = { },
-            sheetState = androidx.compose.material3.rememberModalBottomSheetState(
-                skipPartiallyExpanded = true,
-                confirmValueChange = { it != androidx.compose.material3.SheetValue.Hidden },
-            ),
-            containerColor = Color.White,
-        ) {
-            BoIntentPicker(onPick = { viewModel.setBoIntent(it) })
-        }
-    }
+    // Intent picker on open — REMOVED for parity with iOS (commit 26cab9d):
+    // "What are you looking to do?" was redundant with Bo's greeting, which
+    // already asks the same looking-to-do / exploring / just-browsing question.
+    // boIntent now stays null (the SESSION GOAL steer's null/else branch = no
+    // steer); BoIntentPicker.kt is left unused, matching iOS's retained-but-
+    // unused BoIntentSheet.
 
     // Airbnb-style scale-in: on iOS the background view scales to 0.92 when
     // the chat sheet opens. We can't reach the host view from here, so we
