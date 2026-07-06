@@ -39,9 +39,6 @@ actual fun BoResultsMapView(
     val mapStyle = remember(context) {
         try { MapStyleOptions.loadRawResourceStyle(context, R.raw.map_style_no_poi) } catch (_: Throwable) { null }
     }
-    // One shared bitmap per style — cheap and avoids re-rasterising per marker.
-    val focusedIcon = remember(context) { boPinDescriptor(context, focused = true) }
-    val plainIcon = remember(context) { boPinDescriptor(context, focused = false) }
 
     val cameraPositionState = rememberCameraPositionState {
         position = CameraPosition.fromLatLngZoom(
@@ -80,6 +77,12 @@ actual fun BoResultsMapView(
             zoomGesturesEnabled = true,
         ),
     ) {
+        // Build pin bitmaps INSIDE the GoogleMap content: BitmapDescriptorFactory
+        // only works after the Maps SDK is initialized, which doesn't happen
+        // until GoogleMap composes. Creating them earlier throws
+        // "IBitmapDescriptorFactory is not initialized".
+        val focusedIcon = remember { boPinDescriptor(context, focused = true) }
+        val plainIcon = remember { boPinDescriptor(context, focused = false) }
         pins.forEach { pin ->
             val isFocused = pin.id == focusedPinId
             Marker(
