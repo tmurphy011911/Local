@@ -429,6 +429,11 @@ Deno.serve(async (req) => {
     const lng = parseFloat(url.searchParams.get("lng") ?? "-71.0589");
     const userId = url.searchParams.get("user_id");
     const query = url.searchParams.get("query");
+    // City (top-level filter) and category (venue-type drill-down) are applied
+    // POST-cache over the full scored list — so one cached list per
+    // lat/lng/radius/user serves every city+category slice AND lets us compute
+    // facet counts across the whole set. Neither is in the cache key.
+    const city = url.searchParams.get("city");
     const category = url.searchParams.get("category");
     const radiusMiles = Math.min(parseFloat(url.searchParams.get("radius") ?? "100"), 150);
     const hasEventsOnly = url.searchParams.get("has_events") === "true";
@@ -445,7 +450,6 @@ Deno.serve(async (req) => {
       Math.round(lat * 10) / 10,
       Math.round(lng * 10) / 10,
       (query ?? "").trim().toLowerCase(),
-      category ?? "",
       radiusMiles,
       userId ?? "anon",
     ].join("|");
@@ -456,7 +460,9 @@ Deno.serve(async (req) => {
       scored = cached.scored;
     } else {
       const [rawVenues, eventBuckets, prefs, affinityMap] = await Promise.all([
-        fetchVenues(supabase, lat, lng, query, category, radiusMiles),
+        // category is null here on purpose — the scored list must be
+        // category-complete so it serves every drill-down + facet counts.
+        fetchVenues(supabase, lat, lng, query, null, radiusMiles),
         fetchEventsByVenue(supabase, lat, lng, radiusMiles),
         userId ? fetchUserPrefs(supabase, userId) : Promise.resolve(null),
         fetchCategoryAffinity(supabase, userId),
@@ -494,7 +500,26 @@ Deno.serve(async (req) => {
     // dataset (not just the popularity top-50 the client happens to hold).
     // Sort runs post-cache so the cache key stays sort-agnostic.
     const sortedAll = sortScored(scored, sort);
-    const filtered = hasEventsOnly ? sortedAll.filter((x) => x.eventCount > 0) : sortedAll;
+
+    // ── Two-tier facets ──────────────────────────────────────────────────
+    // City row is computed from the FULL scored list (independent of the
+    // current city/category selection) so it stays stable as the user drills.
+    // Category row reflects the selected city.
+    const userState = inferUserState(scored);
+    const cityFacets = buildCityFacets(scored, userState);
+
+    const cityNorm = (city ?? "").trim().toLowerCase();
+    const cityScoped = cityNorm
+      ? sortedAll.filter((x) => (x.v.city ?? "").trim().toLowerCase() === cityNorm)
+      : sortedAll;
+    const categoryFacets = buildCategoryFacets(cityScoped);
+
+    const catNorm = (category ?? "").trim().toLowerCase();
+    const catScoped = catNorm
+      ? cityScoped.filter((x) => (x.v.category ?? "").trim().toLowerCase() === catNorm)
+      : cityScoped;
+
+    const filtered = hasEventsOnly ? catScoped.filter((x) => x.eventCount > 0) : catScoped;
     const page = filtered.slice(offset, offset + limit);
     const hasMore = filtered.length > offset + limit;
 
@@ -544,6 +569,10 @@ Deno.serve(async (req) => {
         cursor: hasMore ? encodeCursor(offset + limit) : null,
         hasMore,
         total: filtered.length,
+        // Two-tier filter facets. `name` is the RAW value the client sends back
+        // as ?city= / ?category= ; the client title-cases category for display.
+        cityFacets,
+        categoryFacets,
       },
       { extraHeaders: { "Cache-Control": "public, max-age=60" } },
     );
@@ -562,4 +591,73 @@ function toTitleCase(s: string): string {
     .split(/[\s_]+/)
     .map((w) => (w ? w[0].toUpperCase() + w.slice(1).toLowerCase() : ""))
     .join(" ");
+}
+
+interface Facet {
+  name: string;
+  count: number;
+}
+
+/** User's home state ≈ the most common state among venues within 25 mi. Used
+ *  to decide which FAR (>25 mi) cities are worth showing as "major in-state
+ *  metros" vs. dropping (far out-of-state cities). */
+function inferUserState(scored: ScoredVenue[]): string | null {
+  const counts: Record<string, number> = {};
+  for (const s of scored) {
+    if (s.dist <= 25 && s.v.state) counts[s.v.state] = (counts[s.v.state] ?? 0) + 1;
+  }
+  let best: string | null = null;
+  let bestN = 0;
+  for (const [st, n] of Object.entries(counts)) {
+    if (n > bestN) {
+      best = st;
+      bestN = n;
+    }
+  }
+  return best;
+}
+
+/** Top-level city chips: every city with a venue within 25 mi, PLUS the major
+ *  cities of the user's home state beyond 25 mi (density-ranked). Near cities
+ *  sort first, then far in-state majors; capped so the row stays usable. */
+function buildCityFacets(scored: ScoredVenue[], userState: string | null): Facet[] {
+  const NEAR_MI = 25;
+  const MIN_IN_STATE_COUNT = 3; // a far city needs real density to count as "major"
+  const MAX_CITIES = 24;
+  const g: Record<string, { count: number; minDist: number; state: string | null }> = {};
+  for (const s of scored) {
+    const cityName = (s.v.city ?? "").trim();
+    if (!cityName) continue;
+    const e = g[cityName] ?? { count: 0, minDist: Infinity, state: s.v.state ?? null };
+    e.count += 1;
+    if (s.dist < e.minDist) e.minDist = s.dist;
+    g[cityName] = e;
+  }
+  return Object.entries(g)
+    .filter(([, e]) =>
+      e.minDist <= NEAR_MI ||
+      (userState != null && e.state === userState && e.count >= MIN_IN_STATE_COUNT)
+    )
+    .sort((a, b) => {
+      const aNear = a[1].minDist <= NEAR_MI ? 0 : 1;
+      const bNear = b[1].minDist <= NEAR_MI ? 0 : 1;
+      if (aNear !== bNear) return aNear - bNear; // near cities first
+      return b[1].count - a[1].count; // then by density
+    })
+    .slice(0, MAX_CITIES)
+    .map(([name, e]) => ({ name, count: e.count }));
+}
+
+/** Second-tier chips: venue categories present in the (city-scoped) set,
+ *  density-ranked. `name` is the raw venue.category the client sends back. */
+function buildCategoryFacets(scored: ScoredVenue[]): Facet[] {
+  const g: Record<string, number> = {};
+  for (const s of scored) {
+    const cat = (s.v.category ?? "").trim();
+    if (!cat) continue;
+    g[cat] = (g[cat] ?? 0) + 1;
+  }
+  return Object.entries(g)
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count);
 }

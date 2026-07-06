@@ -123,6 +123,7 @@ import live.localapp.local.domain.model.Event
 import live.localapp.local.snakeToTitleCase
 import live.localapp.local.domain.model.Venue
 import live.localapp.local.domain.repository.CategoryInfo
+import live.localapp.local.domain.repository.PlaceFacet
 import live.localapp.local.domain.repository.VenueWithMeta
 import live.localapp.local.domain.repository.VENUE_UPCOMING_EVENTS_CAP
 import live.localapp.local.domain.repository.CommunityInterestRepository
@@ -249,9 +250,13 @@ fun PlacesScreen(
                     onCustomRangePicked = { start, end -> viewModel.setCustomDateRange(start, end) },
                     onSelectCategory = { viewModel.setFilter(it) },
                 )
-                SearchTab.PLACES -> PlaceSortRow(
-                    selected = state.placeSort,
-                    onSelect = { viewModel.setPlaceSort(it) },
+                SearchTab.PLACES -> PlacesCityCategoryRow(
+                    selectedCity = state.selectedCity,
+                    selectedVenueCategory = state.selectedVenueCategory,
+                    cityFacets = state.cityFacets,
+                    categoryFacets = state.categoryFacets,
+                    onSelectCity = { viewModel.setSelectedCity(it) },
+                    onSelectVenueCategory = { viewModel.setSelectedVenueCategory(it) },
                 )
             }
 
@@ -909,24 +914,132 @@ private fun formatDateRangeShort(start: LocalDate, end: LocalDate): String {
     }
 }
 
+/**
+ * Places filter — the SAME UX as the Events tab's date→category row
+ * ([EventDateFilterRow]), but for city→venue-type. No city selected → a
+ * scrollable row of city chips (all cities within 25 mi + home-state majors,
+ * density-ranked by the server; no selection = "all"). Pick a city → it pins to
+ * the left with an X to clear, a pipe separator, then the venue types of that
+ * city scroll behind it in a self-centering LazyRow. Re-tapping a type clears it.
+ */
 @Composable
-private fun PlaceSortRow(selected: PlaceSort, onSelect: (PlaceSort) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        PlaceSort.entries.forEach { sort ->
-            FilterChip(
-                label = sort.label,
-                selected = selected == sort,
-                onClick = { onSelect(sort) },
-            )
+private fun PlacesCityCategoryRow(
+    selectedCity: String?,
+    selectedVenueCategory: String?,
+    cityFacets: List<PlaceFacet>,
+    categoryFacets: List<PlaceFacet>,
+    onSelectCity: (String?) -> Unit,
+    onSelectVenueCategory: (String?) -> Unit,
+) {
+    val cityActive = selectedCity != null
+
+    // Cache the last non-null city so the AnimatedContent exit branch keeps
+    // rendering the pinned chip while it slides out after the user clears it
+    // (outer state flips to null immediately — see EventDateFilterRow).
+    var lastCity by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(selectedCity) { if (selectedCity != null) lastCity = selectedCity }
+
+    AnimatedContent(
+        targetState = cityActive,
+        transitionSpec = {
+            // Selecting → venue types slide in from the right, cities slide out
+            // to the left. Deselecting → mirror.
+            if (targetState) {
+                (slideInHorizontally(tween(220)) { it / 3 } + fadeIn(tween(180))) togetherWith
+                    (slideOutHorizontally(tween(220)) { -it / 3 } + fadeOut(tween(140)))
+            } else {
+                (slideInHorizontally(tween(220)) { -it / 3 } + fadeIn(tween(180))) togetherWith
+                    (slideOutHorizontally(tween(220)) { it / 3 } + fadeOut(tween(140)))
+            }
+        },
+        label = "PlacesCityCategorySwap",
+    ) { isActive ->
+        if (!isActive) {
+            // Default — all cities, scrollable. No "All" chip (no selection = all).
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                cityFacets.forEach { facet ->
+                    FilterChip(
+                        label = facet.name,
+                        selected = false,
+                        onClick = { onSelectCity(facet.name) },
+                    )
+                }
+            }
+        } else {
+            // City selected — pin it to the left, scroll venue types behind it.
+            // Read from the lastCity cache so this branch keeps rendering during
+            // the exit animation after outer state flipped to null on dismiss.
+            val effectiveCity = selectedCity ?: lastCity ?: return@AnimatedContent
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FilterChip(
+                    label = effectiveCity,
+                    selected = true,
+                    onClick = { /* no-op — X clears */ },
+                    onDismiss = { onSelectCity(null) },
+                    dismissOnLeft = true,
+                )
+                Spacer(Modifier.width(14.dp))
+                Box(
+                    modifier = Modifier
+                        .height(22.dp)
+                        .width(1.5.dp)
+                        .background(AppColors.Ink3.copy(alpha = 0.35f))
+                )
+                Spacer(Modifier.width(14.dp))
+                // Self-centering LazyRow — same idiom as the Events category row.
+                val listState = rememberLazyListState()
+                val selectedIndex = categoryFacets.indexOfFirst { it.name == selectedVenueCategory }
+                LaunchedEffect(selectedIndex) {
+                    if (selectedIndex < 0) return@LaunchedEffect
+                    val info = listState.layoutInfo
+                    val viewport = info.viewportEndOffset - info.viewportStartOffset
+                    val visible = info.visibleItemsInfo.firstOrNull { it.index == selectedIndex }
+                    if (visible != null && viewport > 0) {
+                        val itemCenter = visible.offset + visible.size / 2
+                        val nudge = itemCenter - viewport / 2
+                        if (nudge != 0) listState.animateScrollBy(nudge.toFloat())
+                    } else if (viewport > 0) {
+                        listState.animateScrollToItem(selectedIndex)
+                    }
+                }
+                LazyRow(
+                    state = listState,
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = 20.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    items(categoryFacets, key = { it.name }) { facet ->
+                        FilterChip(
+                            // Re-tap toggles off (VM setter handles the toggle).
+                            label = venueCategoryLabel(facet.name),
+                            selected = selectedVenueCategory == facet.name,
+                            onClick = { onSelectVenueCategory(facet.name) },
+                        )
+                    }
+                }
+            }
         }
     }
 }
+
+/** "music_venue" → "Music Venue". */
+private fun venueCategoryLabel(raw: String): String =
+    raw.split('_', ' ')
+        .filter { it.isNotBlank() }
+        .joinToString(" ") { part -> part.replaceFirstChar { it.uppercase() } }
 
 @Composable
 private fun FilterChip(

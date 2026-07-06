@@ -20,6 +20,7 @@ import live.localapp.local.domain.repository.CommunityInterestRepository
 import live.localapp.local.domain.repository.EventPage
 import live.localapp.local.domain.repository.EventRepository
 import live.localapp.local.domain.repository.ExploreRepository
+import live.localapp.local.domain.repository.PlaceFacet
 import live.localapp.local.domain.repository.PlacePage
 import live.localapp.local.domain.repository.InteractionType
 import live.localapp.local.domain.repository.UserPreferences
@@ -98,6 +99,14 @@ data class PlacesUiState(
     val hasEventsOnly: Boolean = false,
     // Places tab — client-side sort over the loaded venue list.
     val placeSort: PlaceSort = PlaceSort.POPULAR,
+    // Places tab — two-tier geo→type filter. selectedCity is the raw venue.city
+    // (null = all cities in radius); selectedVenueCategory is the raw
+    // venue.category slug within that city (null = all types). The facet lists
+    // drive the chip rows; category names are raw slugs (title-case in UI).
+    val selectedCity: String? = null,
+    val selectedVenueCategory: String? = null,
+    val cityFacets: List<PlaceFacet> = emptyList(),
+    val categoryFacets: List<PlaceFacet> = emptyList(),
     val favoriteVenueIds: Set<String> = emptySet(),
     val favoriteEventIds: Set<String> = emptySet(),
     val savedEvents: List<Event> = emptyList(),
@@ -163,7 +172,7 @@ class PlacesViewModel(
     private fun PlacesUiState.placesCacheKey(): String = listOf(
         userLat?.toString() ?: "", userLng?.toString() ?: "",
         userPreferences?.id ?: "anon",
-        searchQuery, selectedFilter, placeSort.slug,
+        searchQuery, selectedFilter, selectedCity ?: "", selectedVenueCategory ?: "", placeSort.slug,
         hasEventsOnly.toString(), radiusFilter?.toString() ?: "",
     ).joinToString("|")
 
@@ -345,6 +354,22 @@ class PlacesViewModel(
         loadPlaces(reset = true)
     }
 
+    /** Top-level city chip. Tapping the active city clears it (back to "all
+     *  cities in radius"); switching cities resets the venue-type drill-down. */
+    fun setSelectedCity(city: String?) {
+        val next = if (city == _uiState.value.selectedCity) null else city
+        _uiState.update { it.copy(selectedCity = next, selectedVenueCategory = null) }
+        loadPlaces(reset = true)
+    }
+
+    /** Second-tier venue-type chip (raw venue.category slug). Tapping the
+     *  active type clears it (back to "all types in this city"). */
+    fun setSelectedVenueCategory(category: String?) {
+        val next = if (category == _uiState.value.selectedVenueCategory) null else category
+        _uiState.update { it.copy(selectedVenueCategory = next) }
+        loadPlaces(reset = true)
+    }
+
     private var searchDebounceJob: Job? = null
     fun setSearchQuery(query: String) {
         _uiState.update { it.copy(searchQuery = query) }
@@ -374,6 +399,8 @@ class PlacesViewModel(
                         venues = hit.page.items,
                         venueCursor = hit.page.cursor,
                         hasMore = hit.page.hasMore,
+                        cityFacets = hit.page.cityFacets,
+                        categoryFacets = hit.page.categoryFacets,
                         isLoading = false,
                         isRefreshing = false,
                         error = null,
@@ -406,8 +433,10 @@ class PlacesViewModel(
                 val lat = state.userLat ?: METRO_LAT
                 val lng = state.userLng ?: METRO_LNG
                 val cursor = if (reset) null else state.venueCursor
-                val category = state.selectedFilter.takeIf { it != "All" }
-                    ?.let { filterToServerCategory(it) }
+                // The two-tier venue-type drill-down (raw slug from the facet)
+                // takes precedence; fall back to the legacy selectedFilter map.
+                val category = state.selectedVenueCategory
+                    ?: state.selectedFilter.takeIf { it != "All" }?.let { filterToServerCategory(it) }
 
                 val page = exploreRepository.fetchPlaces(
                     userLat = lat,
@@ -415,6 +444,7 @@ class PlacesViewModel(
                     userId = state.userPreferences?.id,
                     query = state.searchQuery,
                     category = category,
+                    city = state.selectedCity,
                     radiusMiles = state.radiusFilter,
                     hasEventsOnly = state.hasEventsOnly,
                     sort = state.placeSort.slug,
@@ -429,6 +459,10 @@ class PlacesViewModel(
                         venues = merged,
                         venueCursor = page.cursor,
                         hasMore = page.hasMore,
+                        // Facets are computed over the full scored list, so
+                        // they're identical across pages — safe to set always.
+                        cityFacets = page.cityFacets,
+                        categoryFacets = page.categoryFacets,
                         isLoading = false,
                         isRefreshing = false,
                         error = null,
