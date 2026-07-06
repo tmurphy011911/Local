@@ -3051,7 +3051,11 @@ private fun StructuredResponseRenderer(
     val trayIds = remember(tray) { tray.map { it.eventId }.toSet() }
     when (response) {
         is live.localapp.local.domain.model.BoStructuredResponse.Suggestions ->
-            SuggestionTray(
+            // Android Bo results now render the map component (BoResultsMap),
+            // parity with the iOS SwiftUI/MapKit BoResultsMapView. Falls back to
+            // the SuggestionTray list internally when a group has no plottable
+            // coords, and offers a map/list toggle.
+            BoResultsMap(
                 messageId = messageId,
                 suggestions = response,
                 eventsById = hydratedEvents,

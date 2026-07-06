@@ -46,8 +46,18 @@ import androidx.compose.ui.unit.sp
 import kotlinx.datetime.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.material.icons.automirrored.outlined.List
+import androidx.compose.material.icons.outlined.Map
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import live.localapp.local.domain.model.BoStructuredResponse
 import live.localapp.local.domain.model.Event
+import live.localapp.local.platform.BoResultsMapView
+import live.localapp.local.platform.venuePins
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 
@@ -435,4 +445,297 @@ private fun actionLabel(action: BoStructuredResponse.Suggestions.Action): String
     BoStructuredResponse.Suggestions.Action.DIFFERENT_DAY -> "Different day"
     BoStructuredResponse.Suggestions.Action.MORE_RESULTS -> "More results"
     BoStructuredResponse.Suggestions.Action.BUILD_FROM_WEB -> "Build a plan"
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Bo results MAP (Android) — parity with the iOS BoResultsMapView. Header +
+// map/list toggle + day/category tabs + a card carousel synced to venue pins.
+// One pin per venue; the carousel disambiguates multi-event venues. Reuses
+// SuggestionCard/FindMoreTile and the tray's empty state. The GoogleMap surface
+// is the platform expect/actual BoResultsMapView (Android renders it; iOS is a
+// no-op since iOS chat is native SwiftUI).
+// ═══════════════════════════════════════════════════════════════════════════
+
+private enum class BoResultsMode { MAP, LIST }
+
+@Composable
+fun BoResultsMap(
+    messageId: String,
+    suggestions: BoStructuredResponse.Suggestions,
+    eventsById: Map<String, Event>,
+    onAddToTray: (Event) -> Unit,
+    onOpenEvent: (Event) -> Unit,
+    onFooterAction: (BoStructuredResponse.Suggestions.Action) -> Unit,
+    isInTray: (String) -> Boolean,
+    isDismissed: (String) -> Boolean = { false },
+    onDismiss: (String) -> Unit = {},
+    isGroupLoading: (String) -> Boolean = { false },
+    isGroupExhausted: (String) -> Boolean = { false },
+    onFindMore: (dayKey: String?, categoryKey: String?) -> Unit = { _, _ -> },
+    modifier: Modifier = Modifier,
+) {
+    // Groups with at least one visible (non-dismissed), hydrated event.
+    val visibleGroups = suggestions.groups.map { g ->
+        g to g.events.mapNotNull { ref -> eventsById[ref.eventId] }.filter { !isDismissed(it.id) }
+    }.filter { it.second.isNotEmpty() }
+
+    // Nothing to place → fall back to the list tray (which owns the empty state).
+    if (visibleGroups.isEmpty()) {
+        SuggestionTray(
+            messageId, suggestions, eventsById, onAddToTray, onOpenEvent, onFooterAction,
+            isInTray, isDismissed, onDismiss, isGroupLoading, isGroupExhausted, onFindMore, modifier,
+        )
+        return
+    }
+
+    var groupIndex by remember(messageId) { mutableStateOf(0) }
+    var mode by remember(messageId) { mutableStateOf(BoResultsMode.MAP) }
+    val safeIndex = groupIndex.coerceIn(0, visibleGroups.size - 1)
+    val (group, events) = visibleGroups[safeIndex]
+    val pins = venuePins(events)
+
+    var focusedEventId by remember(messageId, safeIndex) { mutableStateOf(events.firstOrNull()?.id) }
+    // Effective focus tolerates a just-dismissed card without writing state
+    // during composition — falls back to the first remaining event.
+    val effectiveFocusedId = focusedEventId?.takeIf { id -> events.any { it.id == id } } ?: events.firstOrNull()?.id
+    val focusedPinId = pins.firstOrNull { it.eventIds.contains(effectiveFocusedId) }?.id
+
+    val carouselState = rememberLazyListState()
+    // Carousel settle → focus the leading card.
+    LaunchedEffect(carouselState, safeIndex) {
+        snapshotFlow { carouselState.isScrollInProgress to carouselState.firstVisibleItemIndex }
+            .collect { (scrolling, idx) ->
+                if (!scrolling) events.getOrNull(idx)?.let { focusedEventId = it.id }
+            }
+    }
+    // Focus (from a pin tap) → scroll the carousel to it.
+    LaunchedEffect(effectiveFocusedId) {
+        val idx = events.indexOfFirst { it.id == effectiveFocusedId }
+        if (idx >= 0 && idx != carouselState.firstVisibleItemIndex && !carouselState.isScrollInProgress) {
+            try { carouselState.animateScrollToItem(idx) } catch (_: Throwable) {}
+        }
+    }
+
+    val showMap = mode == BoResultsMode.MAP && pins.isNotEmpty()
+
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(Color.White)
+            .border(1.5.dp, AppColors.Pebble, RoundedCornerShape(16.dp))
+            .padding(vertical = 14.dp),
+    ) {
+        // Header: title + map/list toggle.
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                suggestions.headline,
+                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 18.sp, color = AppColors.Ink),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+            if (pins.isNotEmpty()) {
+                Spacer(Modifier.width(8.dp))
+                ModeToggle(mode = mode, onMode = { mode = it })
+            }
+        }
+
+        // Day/category tabs — only when there's more than one group.
+        if (visibleGroups.size > 1) {
+            Spacer(Modifier.height(10.dp))
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp),
+            ) {
+                itemsIndexed(visibleGroups) { i, pair ->
+                    val selected = i == safeIndex
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(if (selected) AppColors.Coral else AppColors.SkyLt)
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) { groupIndex = i }
+                            .padding(horizontal = 14.dp, vertical = 7.dp),
+                    ) {
+                        Text(
+                            pair.first.label.ifBlank { "Events" },
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp,
+                                color = if (selected) Color.White else AppColors.Sky,
+                            ),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(12.dp))
+
+        if (showMap) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(190.dp)
+                    .padding(horizontal = 14.dp)
+                    .clip(RoundedCornerShape(14.dp)),
+            ) {
+                BoResultsMapView(
+                    pins = pins,
+                    focusedPinId = focusedPinId,
+                    onPinTap = { pinId ->
+                        pins.firstOrNull { it.id == pinId }?.eventIds?.firstOrNull()?.let { focusedEventId = it }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            val (dayKey, categoryKey) = groupKeys(suggestions, group, events.firstOrNull())
+            val groupKey = dayKey ?: categoryKey ?: ""
+            LazyRow(
+                state = carouselState,
+                flingBehavior = rememberSnapFlingBehavior(lazyListState = carouselState),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp),
+            ) {
+                items(events) { ev ->
+                    SuggestionCard(
+                        event = ev,
+                        isInTray = isInTray(ev.id),
+                        onAddToTray = { onAddToTray(ev) },
+                        onDismiss = { onDismiss(ev.id) },
+                        onOpenEvent = { onOpenEvent(ev) },
+                        modifier = Modifier.width(270.dp),
+                    )
+                }
+                if (groupKey.isNotEmpty()) {
+                    item {
+                        FindMoreTile(
+                            isLoading = isGroupLoading(groupKey),
+                            isExhausted = isGroupExhausted(groupKey),
+                            onClick = { onFindMore(dayKey, categoryKey) },
+                            modifier = Modifier.width(180.dp),
+                        )
+                    }
+                }
+            }
+        } else {
+            // List mode (or no plottable coords) — vertical full-width cards for
+            // the current group.
+            Column(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                events.forEach { ev ->
+                    SuggestionCard(
+                        event = ev,
+                        isInTray = isInTray(ev.id),
+                        onAddToTray = { onAddToTray(ev) },
+                        onDismiss = { onDismiss(ev.id) },
+                        onOpenEvent = { onOpenEvent(ev) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+
+        // Footer chip strip (Search wider / Different category / …).
+        val footer = suggestions.footer
+        if (footer != null && footer.actions.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            footer.text?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    it,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
+                    modifier = Modifier.padding(horizontal = 14.dp),
+                )
+                Spacer(Modifier.height(6.dp))
+            }
+            LazyRow(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                contentPadding = PaddingValues(horizontal = 14.dp),
+            ) {
+                items(footer.actions) { action ->
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(AppColors.SkyLt)
+                            .border(1.dp, AppColors.Sky, RoundedCornerShape(50))
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) { onFooterAction(action) }
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                    ) {
+                        Text(
+                            actionLabel(action),
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 12.sp, color = AppColors.Sky),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ModeToggle(mode: BoResultsMode, onMode: (BoResultsMode) -> Unit) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(AppColors.SkyLt)
+            .padding(2.dp),
+    ) {
+        ModeToggleSeg(Icons.Outlined.Map, "Map view", mode == BoResultsMode.MAP) { onMode(BoResultsMode.MAP) }
+        ModeToggleSeg(Icons.AutoMirrored.Outlined.List, "List view", mode == BoResultsMode.LIST) { onMode(BoResultsMode.LIST) }
+    }
+}
+
+@Composable
+private fun ModeToggleSeg(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    desc: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (selected) AppColors.Coral else Color.Transparent)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onClick,
+            )
+            .padding(horizontal = 10.dp, vertical = 5.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon,
+            contentDescription = desc,
+            tint = if (selected) Color.White else AppColors.Sky,
+            modifier = Modifier.size(16.dp),
+        )
+    }
+}
+
+/** Day-grouped trays key find-more on the first event's local date; category
+ *  trays on the label; NONE gets no key. Mirrors SuggestionTray. */
+private fun groupKeys(
+    suggestions: BoStructuredResponse.Suggestions,
+    group: BoStructuredResponse.Suggestions.Group,
+    firstEvent: Event?,
+): Pair<String?, String?> = when (suggestions.groupBy) {
+    BoStructuredResponse.Suggestions.GroupBy.DAY -> localDateKey(firstEvent) to null
+    BoStructuredResponse.Suggestions.GroupBy.CATEGORY -> null to group.label.takeIf { it.isNotBlank() }
+    BoStructuredResponse.Suggestions.GroupBy.NONE -> null to null
 }
