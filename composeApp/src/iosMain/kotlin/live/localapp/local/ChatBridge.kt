@@ -118,6 +118,11 @@ object ChatBridge {
      *  conversation history only. */
     var buildPlanFromSelections: ((eventIds: List<String>) -> Unit)? = null
 
+    /** "Save Events" CTA — persists the staged picks to Saved Events and has
+     *  Bo acknowledge in-chat (what was saved + where to find it, then a short
+     *  "anything else?" follow-up). */
+    var saveEventsFromSelections: ((eventIds: List<String>) -> Unit)? = null
+
     /** Editable location chip — Swift calls this when the user picks a new
      *  scope in the location editor sheet. ChatViewModel geocodes the name
      *  and updates currentLat/Lng/currentLocationName; the next push of the
@@ -314,6 +319,10 @@ data class SuggestionEventSnapshot(
     val venueName: String,
     val timeLabel: String,
     val dateDisplay: String,
+    /** Epoch millis of the event's start, for chronological sorting of the
+     *  draft picks. Undated/unparseable events get Long.MAX_VALUE so they
+     *  sort to the end. */
+    val sortEpochMillis: Long = Long.MAX_VALUE,
     /** Day-only label ("Friday, Jul 3") with NO time — for grouping draft
      *  picks into day tabs (dateDisplay includes the time, so same-day events
      *  would otherwise split into multiple tabs). */
@@ -423,6 +432,9 @@ private fun BoStructuredResponse.Suggestions.EventRef.toEventSnapshot(
         venueName = ev.venueName.orEmpty().decodeHtmlEntities(),
         timeLabel = eventTimeLabel(ev),
         dateDisplay = ev.dateDisplay,
+        sortEpochMillis = ev.startAt?.let {
+            try { Instant.parse(it).toEpochMilliseconds() } catch (_: Throwable) { null }
+        } ?: Long.MAX_VALUE,
         dayLabel = computeDayKey(ev, TimeZone.currentSystemDefault(), "__tbd").third,
         priceLabel = if (ev.isFree) "Free" else ev.priceDisplay.orEmpty(),
         imageUrl = ev.imageUrl,

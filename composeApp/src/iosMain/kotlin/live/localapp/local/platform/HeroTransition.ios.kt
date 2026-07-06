@@ -73,6 +73,7 @@ actual fun openChatSheet(onReady: () -> Unit) {
     }
     ChatBridge.saveFavorite = { eventId -> chatVm.saveEventIfNew(eventId) }
     ChatBridge.buildPlanFromSelections = { ids -> chatVm.buildPlanFromSelections(ids) }
+    ChatBridge.saveEventsFromSelections = { ids -> chatVm.saveEventsFromSelections(ids) }
     ChatBridge.setLocationByName = { name -> chatVm.setChatSearchLocationByName(name) }
     ChatBridge.setSearchScope = { name, radius -> chatVm.setChatSearchScope(name, radius) }
     ChatBridge.setSearchScopeWithCoords = { name, lat, lng, radius ->

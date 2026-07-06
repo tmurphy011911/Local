@@ -1065,7 +1065,9 @@ struct ChatView: View {
     }
 
     private var draftDrawer: some View {
-        let picks = pickedSnapshots
+        // Chronological order so the day tabs and each day's rows read
+        // earliest-first (undated events sort last via Long.MAX_VALUE).
+        let picks = pickedSnapshots.sorted { $0.sortEpochMillis < $1.sortEpochMillis }
         let count = picks.count
         let addingToPlan = hasActivePlan
         // Day tabs when the picks span multiple days. Group by dayLabel
@@ -1109,14 +1111,19 @@ struct ChatView: View {
                 ScrollView(.vertical, showsIndicators: false) {
                     VStack(spacing: 8) {
                         ForEach(visiblePicks, id: \.eventId) { ev in
+                            // "8pm · Big Night Live" — time prefixes the venue,
+                            // dropping either part cleanly when it's empty.
+                            let meta = [ev.timeLabel, ev.venueName]
+                                .filter { !$0.isEmpty }
+                                .joined(separator: " · ")
                             HStack(spacing: 10) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(ev.title)
                                         .font(F.body(14, .bold))
                                         .foregroundColor(C.ink)
                                         .lineLimit(1)
-                                    if !ev.venueName.isEmpty {
-                                        Text(ev.venueName)
+                                    if !meta.isEmpty {
+                                        Text(meta)
                                             .font(F.body(12, .medium))
                                             .foregroundColor(C.ink3)
                                             .lineLimit(1)
@@ -1149,7 +1156,10 @@ struct ChatView: View {
 
                 HStack(spacing: 10) {
                     duoButton("Save Events", primary: false) {
-                        picks.forEach { ChatBridge.shared.saveFavorite?($0.eventId) }
+                        // Saves the picks AND has Bo acknowledge in-chat; the
+                        // results component scrolls up as the ack messages land.
+                        let ids = picks.map { $0.eventId }
+                        ChatBridge.shared.saveEventsFromSelections?(ids)
                         withAnimation(.easeOut(duration: 0.18)) {
                             selectedEventIds.removeAll()
                             lastSubmittedSelection.removeAll()
@@ -2502,7 +2512,7 @@ private struct BoResultsMapView: View {
                 region: region,
                 onSelect: { eid in focusedId = eid }
             )
-            .frame(height: 230)
+            .frame(height: 190)
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .padding(.horizontal, 12)
             .padding(.top, 10)

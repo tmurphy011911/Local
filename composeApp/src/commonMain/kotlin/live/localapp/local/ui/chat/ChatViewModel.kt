@@ -940,6 +940,61 @@ class ChatViewModel(
         }
     }
 
+    /**
+     * Save the user's staged picks to Saved Events and acknowledge in-chat.
+     * Called from the iOS results drawer's "Save Events" CTA. Posts two Bo
+     * messages: a confirmation listing what was saved (chronological) + where
+     * to find it, then a short "anything else?" follow-up. The structured
+     * results message stays in history and naturally scrolls up as these two
+     * append below it. Idempotent per-event (no-op for already-saved ids).
+     */
+    fun saveEventsFromSelections(eventIds: List<String>) {
+        val ids = eventIds.filter { it.isNotBlank() }.distinct()
+        if (ids.isEmpty()) return
+        ids.forEach { saveEventIfNew(it) }
+        viewModelScope.launch {
+            val events = ids.mapNotNull { id ->
+                searchResultCache.find { it.id == id }
+                    ?: try { eventRepo.getEvent(id) } catch (_: Throwable) { null }
+            }
+            addMessage(
+                ChatMessage(
+                    role = MessageRole.AI,
+                    content = MessageContent.Text(buildSaveAcknowledgment(events, ids.size)),
+                )
+            )
+            addMessage(
+                ChatMessage(
+                    role = MessageRole.AI,
+                    content = MessageContent.Text("Anything else I can help you find?"),
+                )
+            )
+        }
+    }
+
+    /** Bo's save confirmation — bullet list of saved events + where to find them. */
+    private fun buildSaveAcknowledgment(
+        events: List<live.localapp.local.domain.model.Event>,
+        count: Int,
+    ): String {
+        val intro = if (count == 1) {
+            "I've saved this event for you:"
+        } else {
+            "I've saved these $count events for you:"
+        }
+        // Chronological by start_at so the bullets read in date order; undated
+        // events sink to the bottom.
+        val sorted = events.sortedWith(compareBy(nullsLast()) { ev -> ev.startAt })
+        val bullets = sorted.joinToString("\n") { ev ->
+            val datePart = formatHandoffEventDate(ev.startAt, ev.timeKnown)
+            if (datePart.isEmpty()) "• ${ev.title}" else "• ${ev.title} — $datePart"
+        }
+        // Hydration can fail for every id (rare) — fall back to intro-only.
+        val body = if (bullets.isBlank()) "" else "\n$bullets"
+        return "$intro$body\n\nYou can find them anytime by expanding the " +
+            "“Saved Events” carousel on the home page."
+    }
+
     /** Bo's confirmation message — bullet list of picks + the question. */
     private fun buildHandoffConfirmation(
         events: List<live.localapp.local.domain.model.Event>,
