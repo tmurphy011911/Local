@@ -20,6 +20,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -195,6 +196,29 @@ private fun todayLocalDateIso(): String {
 @Composable
 fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onConciergeSend: (String) -> Unit = { onConciergeClick() }, onProfileClick: () -> Unit = {}, onLocationClick: () -> Unit = {}, onFavorite: ((Event) -> Unit)? = null, showUpdateBanner: Boolean = false, onDismissUpdateBanner: () -> Unit = {}, onUpgrade: () -> Unit = {}, onSeeAllVenue: (venueName: String, venueCity: String?) -> Unit = { _, _ -> }, onSeeAllEvents: (category: String?, dateFilter: live.localapp.local.ui.places.EventDateFilter?) -> Unit = { _, _ -> }) {
     val state by viewModel.uiState.collectAsState()
+    // Collapse the soft keyboard the moment the user scrolls the feed — the Ask
+    // Bo input stays focused otherwise. Mirrors PlacesScreen.dismissKeyboardOnScroll.
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val dismissKeyboardOnScroll = remember(focusManager, keyboardController) {
+        object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
+            override fun onPreScroll(
+                available: androidx.compose.ui.geometry.Offset,
+                source: androidx.compose.ui.input.nestedscroll.NestedScrollSource,
+            ): androidx.compose.ui.geometry.Offset {
+                if (available.y != 0f) {
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                }
+                return androidx.compose.ui.geometry.Offset.Zero
+            }
+        }
+    }
+    // Opening an event card also dismisses the Ask Bo keyboard.
+    val onEventClickWithDismiss: (Event, CardTransitionInfo?) -> Unit = { e, t ->
+        focusManager.clearFocus()
+        onEventClick(e, t)
+    }
     var previouslyLoading by remember { mutableStateOf(true) }
     val haptic = LocalHapticFeedback.current
 
@@ -365,7 +389,7 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
         PullToRefreshBox(
             isRefreshing = state.isRefreshing,
             onRefresh = { viewModel.refresh() },
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().nestedScroll(dismissKeyboardOnScroll),
         ) {
             @OptIn(ExperimentalFoundationApi::class)
             LazyColumn(
@@ -403,7 +427,7 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                     item(key = "saved_events_album") {
                         SavedEventsAlbumCarousel(
                             events = state.savedUpcoming,
-                            onEventClick = { event, transitionInfo -> onEventClick(event, transitionInfo) },
+                            onEventClick = onEventClickWithDismiss,
                             onUnfavorite = { event -> viewModel.toggleEventFavorite(event.id, event.subcategory ?: event.category) },
                         )
                     }
@@ -436,7 +460,7 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                         item(key = section.slug) {
                             val dest = seeAllDestFor(section, state.selectedCategory)
                             CarouselSectionView(
-                                section, onEventClick,
+                                section, onEventClickWithDismiss,
                                 showTags = isForYou,
                                 onFavorite = onFavorite,
                                 favoriteIds = state.favoriteEventIds,
@@ -665,6 +689,8 @@ private val forYouTile = CategoryInfo(
 
 @Composable
 private fun CategoryRow(state: HomeUiState, viewModel: HomeViewModel) {
+    // Selecting a category dismisses the Ask Bo keyboard if it was open.
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     // Show skeleton placeholders while categories load
     if (state.availableCategories.isEmpty() && state.isLoading) {
         Row(
@@ -732,7 +758,7 @@ private fun CategoryRow(state: HomeUiState, viewModel: HomeViewModel) {
                     CategoryTileItem(
                         tile = cat,
                         isActive = isActive,
-                        onClick = { viewModel.selectCategory(cat.id) },
+                        onClick = { focusManager.clearFocus(); viewModel.selectCategory(cat.id) },
                     )
                 }
             }

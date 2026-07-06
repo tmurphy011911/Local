@@ -52,6 +52,7 @@ import live.localapp.local.ui.common.CircleShape
 import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
@@ -246,17 +247,17 @@ fun PlacesScreen(
                     categories = homeState.availableCategories.filterNot {
                         it.id.equals("experiences", ignoreCase = true)
                     },
-                    onSelectPreset = { viewModel.setDateFilter(it) },
-                    onCustomRangePicked = { start, end -> viewModel.setCustomDateRange(start, end) },
-                    onSelectCategory = { viewModel.setFilter(it) },
+                    onSelectPreset = { focusManager.clearFocus(); viewModel.setDateFilter(it) },
+                    onCustomRangePicked = { start, end -> focusManager.clearFocus(); viewModel.setCustomDateRange(start, end) },
+                    onSelectCategory = { focusManager.clearFocus(); viewModel.setFilter(it) },
                 )
                 SearchTab.PLACES -> PlacesCityCategoryRow(
                     selectedCity = state.selectedCity,
                     selectedVenueCategory = state.selectedVenueCategory,
                     cityFacets = state.cityFacets,
                     categoryFacets = state.categoryFacets,
-                    onSelectCity = { viewModel.setSelectedCity(it) },
-                    onSelectVenueCategory = { viewModel.setSelectedVenueCategory(it) },
+                    onSelectCity = { focusManager.clearFocus(); viewModel.setSelectedCity(it) },
+                    onSelectVenueCategory = { focusManager.clearFocus(); viewModel.setSelectedVenueCategory(it) },
                 )
             }
 
@@ -264,7 +265,22 @@ fun PlacesScreen(
             PullToRefreshBox(
                 isRefreshing = state.isRefreshing,
                 onRefresh = { viewModel.refresh() },
-                modifier = Modifier.weight(1f).nestedScroll(dismissKeyboardOnScroll),
+                modifier = Modifier.weight(1f).nestedScroll(dismissKeyboardOnScroll)
+                    // Also dismiss when the user taps a result card (event/place)
+                    // or any empty space in the results. Observes the initial-pass
+                    // press without consuming, so cards/scroll still work. Safe
+                    // here because the search field is above this container.
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val e = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                                if (e.type == androidx.compose.ui.input.pointer.PointerEventType.Press) {
+                                    focusManager.clearFocus()
+                                    keyboardController?.hide()
+                                }
+                            }
+                        }
+                    },
             ) {
                 when (state.activeTab) {
                     SearchTab.PLACES -> {
