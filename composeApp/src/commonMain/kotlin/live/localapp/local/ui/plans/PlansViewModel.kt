@@ -414,12 +414,11 @@ class PlansViewModel(
                 val eventIds = communityInterestRepository.getFavoriteEventIds(userId)
                 val venueIds = communityInterestRepository.getFavoriteVenueIds(userId)
 
-                val now = kotlin.time.Clock.System.now().toString()
+                // Drop past events so they fall out of Saved Events once their
+                // date passes. isUpcoming parses the timestamp (never a raw ISO
+                // string compare, which breaks on offset/precision differences).
                 val events = if (eventIds.isNotEmpty()) {
-                    eventRepository.getEventsByIds(eventIds).filter {
-                        val startAt = it.startAt ?: return@filter true
-                        startAt >= now
-                    }
+                    eventRepository.getEventsByIds(eventIds).filter { it.isUpcoming }
                 } else emptyList()
                 val venues = if (venueIds.isNotEmpty()) venueRepository.getVenuesByIds(venueIds) else emptyList()
 

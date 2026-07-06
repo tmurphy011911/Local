@@ -56,7 +56,7 @@ data class HomeUiState(
     val error: String? = null,
     val userPreferences: UserPreferences? = null,
     val radiusFilter: Double? = null,
-    val savedThisWeek: List<Event> = emptyList(),
+    val savedUpcoming: List<Event> = emptyList(),
     val favoriteEventIds: Set<String> = emptySet(),
     val locationMode: LocationMode = LocationMode.CURRENT_LOCATION,
     val manualLocationName: String = "",
@@ -593,7 +593,7 @@ class HomeViewModel(
             _uiState.update {
                 it.copy(
                     favoriteEventIds = it.favoriteEventIds - eventId,
-                    savedThisWeek = it.savedThisWeek.filterNot { e -> e.id == eventId },
+                    savedUpcoming = it.savedUpcoming.filterNot { e -> e.id == eventId },
                 )
             }
             live.localapp.local.observability.Analytics.track(
@@ -713,23 +713,12 @@ class HomeViewModel(
                     } else event
                 }
 
-                val now = kotlinx.datetime.Instant.fromEpochMilliseconds(kotlin.time.Clock.System.now().toEpochMilliseconds())
-                val tz = TimeZone.currentSystemDefault()
-                val todayEpochDay = now.toLocalDateTime(tz).date.toEpochDays()
-                val endEpochDay = todayEpochDay + 7
+                // All upcoming saved events (not just this week). Past events are
+                // dropped via Event.isUpcoming so they fall out of the rail once
+                // their date passes.
+                val upcoming = events.filter { it.isUpcoming }
 
-                val thisWeek = events.filter { event ->
-                    val startAt = event.startAt ?: return@filter false
-                    try {
-                        val eventDate = Instant.parse(startAt).toLocalDateTime(tz).date
-                        val eventEpochDay = eventDate.toEpochDays()
-                        eventEpochDay in todayEpochDay..endEpochDay
-                    } catch (_: Exception) {
-                        false
-                    }
-                }
-
-                _uiState.update { it.copy(savedThisWeek = thisWeek.sortedBy { it.startAt ?: "" }) }
+                _uiState.update { it.copy(savedUpcoming = upcoming.sortedBy { it.startAt ?: "" }) }
             } catch (_: Exception) {
                 // Non-fatal
             }

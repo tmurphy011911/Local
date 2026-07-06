@@ -398,11 +398,11 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                     }
                 }
 
-                // "Your Events This Week" album carousel
-                if (state.savedThisWeek.isNotEmpty()) {
+                // "Saved Events" album carousel — all upcoming saved events
+                if (state.savedUpcoming.isNotEmpty()) {
                     item(key = "saved_events_album") {
                         SavedEventsAlbumCarousel(
-                            events = state.savedThisWeek,
+                            events = state.savedUpcoming,
                             onEventClick = { event, transitionInfo -> onEventClick(event, transitionInfo) },
                             onUnfavorite = { event -> viewModel.toggleEventFavorite(event.id, event.subcategory ?: event.category) },
                         )
@@ -2011,7 +2011,7 @@ private fun SavedEventsAlbumCarousel(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "Saved Events This Week (${events.size})",
+                "Saved Events (${events.size})",
                 modifier = Modifier.weight(1f),
                 style = TextStyle(
                     fontFamily = AppFonts.Heading,

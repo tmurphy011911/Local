@@ -723,7 +723,9 @@ class PlacesViewModel(
             // Hydrate the saved carousels from the full favorite sets,
             // independent of the active filters — by-id fetches surface saved
             // items even when they fall outside the current page.
-            val savedEvents = if (eventIds.isEmpty()) emptyList() else eventRepository.getEventsByIds(eventIds)
+            // Drop past events so Saved Events sheds them once their date passes.
+            val savedEvents = if (eventIds.isEmpty()) emptyList()
+                else eventRepository.getEventsByIds(eventIds).filter { it.isUpcoming }
             val savedVenues = if (venueIds.isEmpty()) {
                 emptyList()
             } else {
