@@ -39,6 +39,27 @@ const STATE = (process.env.STATE || "").trim().toUpperCase() || null;
 // events_url we DO discover while leaving every venue active.
 const NO_DEACTIVATE = process.env.NO_DEACTIVATE === "1";
 
+// ── Retry gate (RETRY_GATE=1) ──────────────────────────────────────────────
+// Opt-in mode that only attempts venues where success is plausible AND that we
+// haven't recently tried and failed on. It records every attempt (count, time,
+// outcome) on the venue so the next run can skip the hopeless ones instead of
+// re-burning Claude/Scrapfly tokens on them. Never deactivates — a venue with no
+// events page is still a valid "things to do" place. Legacy modes (default,
+// SKIP_URL_CHECK, RECHECK_ALL) are untouched when RETRY_GATE is off.
+const RETRY_GATE = process.env.RETRY_GATE === "1";
+// Only spend tokens on venues at/above this public_interest_rank (0 = no floor).
+const MIN_RANK = parseInt(process.env.MIN_RANK || "0", 10);
+// Give up on a venue after this many failed attempts (until a manual re-sweep).
+const MAX_ATTEMPTS = parseInt(process.env.MAX_ATTEMPTS || "4", 10);
+// Don't re-attempt a previously-failed venue until this many days have passed.
+const RETRY_AFTER_DAYS = parseInt(process.env.RETRY_AFTER_DAYS || "90", 10);
+// Hard cap on venues processed per run (0 = no cap). Keeps the job well under
+// its timeout; stalest-first ordering means nothing is starved across runs.
+const MAX_VENUES = parseInt(process.env.MAX_VENUES || "0", 10);
+// Validate the retry-gate selection query and print the eligible count, then
+// exit WITHOUT fetching pages or calling Claude — a zero-cost smoke test.
+const COUNT_ONLY = process.env.COUNT_ONLY === "1";
+
 const FETCH_HEADERS = {
   "User-Agent":
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -383,12 +404,167 @@ async function processWithConcurrency(venues, concurrency) {
   return results;
 }
 
+// ── Retry gate: selection, attempt, and state recording ──
+//
+// These run only when RETRY_GATE=1 and are fully additive — legacy fixVenue /
+// fetchVenuesNeedingFix paths are unchanged.
+
+// Fetch only venues worth attempting: active, has a website, missing an
+// events_url, at/above the rank floor, under the attempt cap, and either never
+// tried or past the backoff window. Ordered stalest-first (never-tried first).
+async function fetchRetryGateVenues() {
+  const cutoffIso = new Date(Date.now() - RETRY_AFTER_DAYS * 86_400_000).toISOString();
+  // Single PostgREST and=() tree so the nested or()s compose correctly.
+  const conds = [
+    "events_url.is.null",
+    "website.not.is.null",
+    "is_active.is.true",
+    `events_url_attempts.lt.${MAX_ATTEMPTS}`,
+    // never tried, or past the backoff window
+    `or(events_url_last_attempt.is.null,events_url_last_attempt.lt.${encodeURIComponent(cutoffIso)})`,
+  ];
+  if (MIN_RANK > 0) {
+    // Include unranked venues (public_interest_rank IS NULL): the monthly
+    // pipeline runs this job BEFORE rank-venues, so freshly discovered venues
+    // aren't ranked yet. Excluding nulls would make every new venue wait a
+    // month for its events_url. null = unknown (give it a shot), not known-low.
+    conds.push(`or(public_interest_rank.gte.${MIN_RANK},public_interest_rank.is.null)`);
+  }
+  if (STATE) conds.push(`state.eq.${encodeURIComponent(STATE)}`);
+  const base =
+    `${SUPABASE_URL}/rest/v1/venues` +
+    `?select=id,name,website,events_url,public_interest_rank,events_url_attempts,events_url_last_attempt,events_url_result` +
+    `&and=(${conds.join(",")})` +
+    `&order=events_url_last_attempt.asc.nullsfirst`;
+
+  const out = [];
+  const pageSize = 1000;
+  let offset = 0;
+  while (true) {
+    const cap = MAX_VENUES > 0 ? Math.min(pageSize, MAX_VENUES - out.length) : pageSize;
+    if (cap <= 0) break;
+    const res = await fetch(`${base}&offset=${offset}&limit=${cap}`, {
+      headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` },
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Failed to fetch retry-gate venues: ${res.status} ${body}`);
+    }
+    const rows = await res.json();
+    out.push(...rows);
+    if (rows.length < cap) break;
+    offset += rows.length;
+  }
+  return out;
+}
+
+// Attempt discovery for one venue (caller guarantees website present, events_url
+// null). Pure: returns an outcome code, never writes or deactivates.
+async function attemptVenue(venue) {
+  const homepage = await fetchPage(venue.website);
+  if (!homepage.ok) {
+    return { resultCode: "website_down", reason: `website returned ${homepage.status || homepage.error}` };
+  }
+  const cleanedHtml = stripHtmlKeepLinks(homepage.html);
+  if (cleanedHtml.length < 50) {
+    return { resultCode: "empty_page", reason: "website returned empty page" };
+  }
+  let discoveredUrl;
+  try {
+    discoveredUrl = await askClaudeForEventsUrl(venue, cleanedHtml);
+  } catch (err) {
+    return { resultCode: "error", reason: `Claude error: ${err.message}` };
+  }
+  if (!discoveredUrl) {
+    return { resultCode: "no_events_page", reason: "no events page found by Claude" };
+  }
+  let valid = await urlReturns200(discoveredUrl);
+  if (!valid) {
+    const getCheck = await fetchPage(discoveredUrl, 10_000);
+    valid = getCheck.ok;
+  }
+  if (!valid) {
+    return { resultCode: "discovered_404", reason: `discovered URL 404: ${discoveredUrl}`, url: discoveredUrl };
+  }
+  return { resultCode: "found", url: discoveredUrl };
+}
+
+// Persist the attempt on the venue so future runs can skip the hopeless ones.
+// Transient Claude/network errors don't burn an attempt — they retry next run.
+async function recordAttempt(venue, outcome) {
+  if (DRY_RUN) return;
+  if (outcome.resultCode === "error") return;
+  const updates = {
+    events_url_attempts: (venue.events_url_attempts || 0) + 1,
+    events_url_last_attempt: new Date().toISOString(),
+    events_url_result: outcome.resultCode,
+  };
+  if (outcome.resultCode === "found") updates.events_url = outcome.url;
+  await updateVenue(venue.id, updates);
+}
+
+async function runRetryGate() {
+  console.log("=== Venue URL Discovery — retry gate ===\n");
+  console.log(`  Rank floor:       ${MIN_RANK || "none"}`);
+  console.log(`  Max attempts:     ${MAX_ATTEMPTS}`);
+  console.log(`  Retry after:      ${RETRY_AFTER_DAYS} days`);
+  console.log(`  Per-run cap:      ${MAX_VENUES || "none"}`);
+  console.log(`  State scope:      ${STATE || "all"}`);
+  console.log(`  Concurrency:      ${CONCURRENCY}`);
+  console.log(`  Dry run:          ${DRY_RUN}\n`);
+
+  console.log("Selecting eligible venues (missing events_url, has website, not in backoff)...");
+  const venues = await fetchRetryGateVenues();
+  console.log(`  Eligible this run: ${venues.length}\n`);
+  if (COUNT_ONLY) {
+    console.log("COUNT_ONLY — query validated, exiting without processing.");
+    return;
+  }
+  if (venues.length === 0) {
+    console.log("Nothing eligible — every candidate is filled, exhausted, or in backoff.");
+    return;
+  }
+
+  const counts = {};
+  let index = 0;
+  async function worker() {
+    while (index < venues.length) {
+      const i = index++;
+      const v = venues[i];
+      const outcome = await attemptVenue(v);
+      await recordAttempt(v, outcome);
+      counts[outcome.resultCode] = (counts[outcome.resultCode] || 0) + 1;
+      const icon = outcome.resultCode === "found" ? "+" : outcome.resultCode === "error" ? "!" : "x";
+      console.log(`  [${i + 1}/${venues.length}] [${icon}] ${v.name}: ${outcome.resultCode}${outcome.url ? " → " + outcome.url : ""}`);
+      await new Promise((r) => setTimeout(r, 500));
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, venues.length) }, () => worker()));
+
+  const failRecorded =
+    (counts.no_events_page || 0) + (counts.website_down || 0) +
+    (counts.empty_page || 0) + (counts.discovered_404 || 0);
+  console.log("\n=== Retry-gate summary ===");
+  console.log(`  Found new events_url:   ${counts.found || 0}`);
+  console.log(`  No events page:         ${counts.no_events_page || 0}`);
+  console.log(`  Website down/empty:     ${(counts.website_down || 0) + (counts.empty_page || 0)}`);
+  console.log(`  Discovered URL 404:     ${counts.discovered_404 || 0}`);
+  console.log(`  Transient errors:       ${counts.error || 0} (not counted — retry next run)`);
+  console.log(`  Failed attempts recorded (kept active): ${failRecorded}`);
+  if (DRY_RUN) console.log("\n  (DRY RUN — no changes written to Supabase)");
+}
+
 // ── Main ──
 
 async function main() {
   const secrets = await getSecrets(["ANTHROPIC_API_KEY"]);
   ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
   SUPABASE_SERVICE_KEY = secrets.SUPABASE_SERVICE_KEY;
+
+  if (RETRY_GATE) {
+    await runRetryGate();
+    return;
+  }
 
   console.log("=== Venue URL Discovery ===\n");
   console.log(`Metro: ${METRO}`);
