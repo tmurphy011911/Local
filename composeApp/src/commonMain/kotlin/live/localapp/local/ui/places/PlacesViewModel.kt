@@ -290,10 +290,23 @@ class PlacesViewModel(
         // Switching away from CUSTOM clears the picked range; the next CUSTOM
         // tap will re-open the picker fresh.
         _uiState.update { state ->
-            if (filter == EventDateFilter.CUSTOM) {
-                state.copy(dateFilter = filter)
-            } else {
-                state.copy(dateFilter = filter, customStart = null, customEnd = null)
+            when {
+                filter == EventDateFilter.CUSTOM -> state.copy(dateFilter = filter)
+                // Removing the date filter also drops the category. Category
+                // chips are a sub-filter that only renders in the "date active"
+                // mode of EventDateFilterRow — leaving that mode (date -> null)
+                // hides them, so a still-applied category would keep filtering
+                // results with no visible chip to remove it. Reset it here in
+                // the same atomic update so the one reload below uses the
+                // cleared category.
+                filter == null -> state.copy(
+                    dateFilter = null,
+                    customStart = null,
+                    customEnd = null,
+                    selectedFilter = "All",
+                    selectedSubFilter = null,
+                )
+                else -> state.copy(dateFilter = filter, customStart = null, customEnd = null)
             }
         }
         // Don't optimistically narrow the visible list — loadEvents() clears
