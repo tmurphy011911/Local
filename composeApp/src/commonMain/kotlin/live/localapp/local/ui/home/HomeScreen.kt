@@ -1906,6 +1906,17 @@ private fun AiConciergeCard(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(modifier = Modifier.weight(1f)) {
+                        // High-contrast text selection: the pre-filled prompt is
+                        // selected on focus, but the default (coral-ish) highlight
+                        // is invisible on the coral card. A darker band + white
+                        // handles make "the whole text is selected" obvious.
+                        androidx.compose.runtime.CompositionLocalProvider(
+                            androidx.compose.foundation.text.selection.LocalTextSelectionColors provides
+                                androidx.compose.foundation.text.selection.TextSelectionColors(
+                                    handleColor = AppColors.White,
+                                    backgroundColor = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.28f),
+                                ),
+                        ) {
                         androidx.compose.foundation.text.BasicTextField(
                             value = input,
                             onValueChange = { input = it },
@@ -1937,6 +1948,7 @@ private fun AiConciergeCard(
                                 }
                                 .testTag("home_concierge_input"),
                         )
+                        }
                         // Typewriter overlay shown only while empty + unfocused.
                         // The typewriter component types once and holds (no auto-cycle).
                         if (input.text.isEmpty() && !focused) {
