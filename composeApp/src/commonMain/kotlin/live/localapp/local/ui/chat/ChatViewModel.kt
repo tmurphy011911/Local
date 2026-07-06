@@ -634,6 +634,18 @@ class ChatViewModel(
     // and the user sees the previous one flicker back during reset.
     private var welcomeJob: kotlinx.coroutines.Job? = null
 
+    /** Full text of the most recent turn that was revealed LIVE via
+     *  [streamingText] (set in [sendStreaming]'s Done handler). When
+     *  [addAiMessage] finalizes a bubble whose text matches this, we mark the
+     *  bubble already-typed in [TypewriterCompletionStore] so the per-message
+     *  typewriter does NOT replay the whole message — the live stream already
+     *  showed it in full. Without this the finalized bubble re-animates from
+     *  zero right after the stream completes, which reads as: the full message
+     *  flashes, vanishes, then re-streams. Consumed (nulled) on match. Not set
+     *  for tool rounds or structured responses, which never stream user-facing
+     *  text into [streamingText]. */
+    private var lastStreamedText: String? = null
+
     // Must be declared BEFORE init {} — buildSystemPrompt() reads this from the
     // welcome coroutine, and on Kotlin/Native a field declared after the init
     // block stays at its null-pointer default until that line of the class
@@ -2145,7 +2157,11 @@ class ChatViewModel(
                     is StreamEvent.Done -> {
                         // Flush any remaining buffered text
                         if (!isToolRound && streamBuffer.isNotEmpty()) {
-                            _uiState.update { it.copy(streamingText = streamBuffer.toString()) }
+                            val full = streamBuffer.toString()
+                            _uiState.update { it.copy(streamingText = full) }
+                            // Remember what was just revealed live so the
+                            // finalized bubble doesn't replay the typewriter.
+                            lastStreamedText = full
                         }
                         roundResponse = event.response
                     }
@@ -4558,6 +4574,35 @@ class ChatViewModel(
         val query = lastBrowseQuery?.trim()?.takeIf { it.isNotBlank() }
         val kw = query?.lowercase()
 
+        // VENUE-SCOPED QUERY GUARD. When the user asks about ONE specific venue
+        // ("what's on at Brookline Booksmith"), Bo searches keyword=<venue name>,
+        // so `query` is that venue — NOT a category or date browse. The category
+        // expansion below fills Bo's picks' categories from the WHOLE radius,
+        // which floods the tray with OTHER venues (the "Upcoming at Brookline
+        // Booksmith but showing Old North Church" bug). Detect a venue query and
+        // scope the tray to ONLY that venue's events below — skipping the
+        // radius/category widening AND the radius drop (a named venue may sit
+        // outside the current search radius). Genre keywords ("jazz") are
+        // rejected two ways: they resolve to a category, and even when they
+        // don't, requiring the keyword to cover most of a venue's name keeps
+        // "jazz" from latching onto "Wally's Jazz Cafe".
+        val venueScope: String? = kw
+            ?.takeIf { it.length >= 3 && categoryKeyForQuery(it) == null }
+            ?.let { k ->
+                val isVenue = pool.any { ev ->
+                    val vn = ev.venueName?.trim()?.lowercase() ?: return@any false
+                    when {
+                        vn == k -> true
+                        // Bo's keyword IS most of a venue's name → venue query.
+                        vn.contains(k) -> k.length >= (vn.length * 0.6).toInt()
+                        // Stored venue name sits fully inside Bo's longer keyword.
+                        k.contains(vn) -> vn.length >= 4
+                        else -> false
+                    }
+                }
+                if (isVenue) k else null
+            }
+
         // Radius-scoped CATEGORY-COMPLETE supplemental search. Bo's stratified
         // pool balances across categories, so a single-category query ("arts")
         // under-returns vs Explore. For a single-topic query, re-search that
@@ -4578,7 +4623,7 @@ class ChatViewModel(
         val winEnd = boDays.maxOrNull() ?: lastSearchEndDate?.take(10)
         val hasDateWindow = winStart != null || lastSearchDateRange != null
         val complete: List<live.localapp.local.domain.model.Event> =
-            if ((query != null || hasDateWindow) && lat != null && lng != null) {
+            if (venueScope == null && (query != null || hasDateWindow) && lat != null && lng != null) {
                 try {
                     val useCustom = winStart != null
                     val dr = if (useCustom) "custom" else lastSearchDateRange
@@ -4652,9 +4697,21 @@ class ChatViewModel(
         // bucketer as the tabs. Skipped for generic date browses (query names
         // no category → intentCategoryKey null → show everything).
         val intentCategoryKey = query?.let { categoryKeyForQuery(it) }
-        val universe = if (intentCategoryKey != null) {
-            universeGeo.filter { computeEventCategoryKey(it).first == intentCategoryKey }
-        } else universeGeo
+        val universe = when {
+            // Venue query: ONLY this venue's events, from Bo's picks + the raw
+            // pool (bypassing the radius guard above — a named venue may be
+            // outside the radius, and any of Bo's own off-venue picks are
+            // dropped here too). No category filtering — a venue's whole slate
+            // (readings, tours, kids' events) belongs under "Upcoming at X".
+            venueScope != null -> (pool + boEvents).distinctBy { it.id }.filter { ev ->
+                if (ev.subcategory == "no-public-interest") return@filter false
+                val vn = ev.venueName?.trim()?.lowercase() ?: return@filter false
+                vn == venueScope || vn.contains(venueScope) || venueScope.contains(vn)
+            }
+            intentCategoryKey != null ->
+                universeGeo.filter { computeEventCategoryKey(it).first == intentCategoryKey }
+            else -> universeGeo
+        }
         // Rebuild whenever we have anything to show — the radius guard above
         // must run even when the count didn't grow (to drop Bo's far picks).
         if (universe.isEmpty()) return null
@@ -6033,8 +6090,21 @@ $currentPlanContext
                 return
             }
         }
+        val msg = ChatMessage(role = MessageRole.AI, content = MessageContent.Text(trimmed))
+        // If this exact text was just revealed live via streamingText, mark the
+        // finalized bubble already-typed so its per-message typewriter renders
+        // instantly instead of replaying the whole reveal the user just watched.
+        // Skipping this is what made the full message flash, vanish, then
+        // re-stream. TypewriterCompletionStore is shared (commonMain): Android's
+        // TypewritingAiText reads it directly; iOS reads it via the ChatBridge
+        // `preRevealed` field. Non-streamed messages (errors, paywall, canned
+        // fallbacks) don't match and keep their typewriter reveal.
+        if (lastStreamedText?.trim() == trimmed) {
+            TypewriterCompletionStore.markCompleted(msg.id)
+            lastStreamedText = null
+        }
         _uiState.update { it.copy(
-            messages = it.messages + ChatMessage(role = MessageRole.AI, content = MessageContent.Text(trimmed)),
+            messages = it.messages + msg,
             streamingText = "",
         ) }
     }

@@ -528,7 +528,14 @@ struct ChatView: View {
                         // newest text stays on screen. Only for plain AI text —
                         // cards are top-anchored by lastPresentationCardId.
                         let last = state.messages.last
-                        if let last, !last.isUser, !last.isPlanCard, last.structured == nil {
+                        // Only follow within a real exchange. The opening
+                        // greeting (and the post–Start-over greeting) has no
+                        // preceding user bubble, so `latestUserBubbleY` is stale
+                        // and `below` inflates — bottom-follow then yanks the
+                        // full-height greeting down and it snaps back on settle
+                        // (the ~100px jump). A greeting just sits at the top.
+                        if let last, !last.isUser, !last.isPlanCard, last.structured == nil,
+                           lastUserMessageId != nil {
                             startBottomFollow(geo: geo, proxy: proxy, targetId: last.id)
                         }
                     }
@@ -561,7 +568,11 @@ struct ChatView: View {
                         // The loop's overflow guard keeps short replies anchored
                         // at the top; once the streaming bubble grows past the
                         // viewport it pins the newest text to the bottom.
-                        guard !newText.isEmpty else { return }
+                        // Same guard as the settle-follow above: don't follow
+                        // the opening greeting's stream (no user anchor →
+                        // spurious scroll). Greetings are 1–2 short sentences
+                        // and never overflow, so nothing needs pinning.
+                        guard !newText.isEmpty, lastUserMessageId != nil else { return }
                         startBottomFollow(geo: geo, proxy: proxy, targetId: "streaming")
                     }
                     .onChange(of: typewriterTick) { _ in
@@ -851,7 +862,11 @@ struct ChatView: View {
                     .padding(.vertical, 10)
                     .background(C.mist)
                     .clipShape(RoundedRectangle(cornerRadius: 18))
-            } else if typedMessageIds.contains(message.id) {
+            } else if typedMessageIds.contains(message.id) || message.preRevealed {
+                // `preRevealed`: this bubble was already revealed live via
+                // streamingText, so render it full/static — replaying the
+                // typewriter here is the "full message flashes, vanishes, then
+                // re-streams" bug (shared fix, see ChatViewModel.addAiMessage).
                 aiMessageBubble(message.text)
             } else {
                 TypewritingAiBubble(rawText: message.text, onReveal: { typewriterTick &+= 1 }) {

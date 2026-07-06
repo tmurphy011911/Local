@@ -184,6 +184,7 @@ object ChatBridge {
                 dayIndex = if (content is MessageContent.DayCardRef) content.dayIndex else 0,
                 isSuperseded = msg.id in supersededIds,
                 structured = structuredSnap,
+                preRevealed = live.localapp.local.ui.chat.TypewriterCompletionStore.isCompleted(msg.id),
             )
         }
 
@@ -292,6 +293,11 @@ data class ChatMessageSnapshot(
      *  structured tools (event/venue brief, quick fact, scope redirect)
      *  collapse to plain text in [text] so no extra UI is needed. */
     val structured: SuggestionsSnapshot? = null,
+    /** True when this bubble was already revealed live via streamingText, so
+     *  Swift should render the full text statically instead of replaying the
+     *  typewriter (which reads as: full message flashes, vanishes, re-streams).
+     *  Sourced from the shared TypewriterCompletionStore. */
+    val preRevealed: Boolean = false,
 )
 
 // ── Structured response snapshots (Phase 6 / Bo present_suggestions) ──
