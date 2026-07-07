@@ -16,6 +16,7 @@ import live.localapp.local.data.sync.PlanReconciler
 import live.localapp.local.data.sync.PlanSyncer
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.model.Plan
+import live.localapp.local.domain.model.isLastDayPast
 import live.localapp.local.domain.model.PlanDay
 import live.localapp.local.domain.model.PlanSlot
 import live.localapp.local.domain.model.ReservationState
@@ -146,8 +147,10 @@ class PlansViewModel(
             }.collect { reconciled ->
                 _uiState.update {
                     it.copy(
-                        upcomingPlans = reconciled.filter { p -> !p.isPast }.sortedBy { p -> p.createdAt },
-                        pastPlans = reconciled.filter { p -> p.isPast }.sortedByDescending { p -> p.createdAt },
+                        // Past = last day before today (computed from day labels;
+                        // the DB is_past flag is never maintained). See Plan.isLastDayPast.
+                        upcomingPlans = reconciled.filter { p -> !p.isLastDayPast() }.sortedBy { p -> p.createdAt },
+                        pastPlans = reconciled.filter { p -> p.isLastDayPast() }.sortedByDescending { p -> p.createdAt },
                     )
                 }
             }

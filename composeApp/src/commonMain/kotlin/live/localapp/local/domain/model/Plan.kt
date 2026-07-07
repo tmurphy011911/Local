@@ -1,6 +1,10 @@
 package live.localapp.local.domain.model
 
 import kotlinx.serialization.Serializable
+import kotlinx.datetime.LocalDate
+import kotlinx.datetime.TimeZone
+import kotlinx.datetime.toLocalDateTime
+import kotlin.time.Clock
 
 data class Plan(
     val id: String,
@@ -131,3 +135,56 @@ data class PlanAttendee(
     val confirmed: Boolean,
     val avatarColor: Long,
 )
+
+// ── Past-plan detection ──────────────────────────────────────────────────
+// Plans carry no machine-readable event date: `plans.date` is stamped with the
+// creation date and the DB `is_past` flag is never maintained (always false).
+// The only date signal is the day labels ("Friday, June 26" — month + day, no
+// year). We infer the year from `createdAt`: plans are near-term, so the event's
+// year is the creation year, bumped to the next year only when the label's
+// month/day sits well before the creation date (the Dec→Jan wrap).
+
+private val PLAN_MONTHS = listOf(
+    "january", "february", "march", "april", "may", "june",
+    "july", "august", "september", "october", "november", "december",
+)
+
+/** Parse a day label's month + day, e.g. "Friday, June 26" -> (6, 26). Null when
+ *  the label carries no recognizable month + day (e.g. a "Day 1" placeholder). */
+private fun parsePlanLabelMonthDay(label: String): Pair<Int, Int>? {
+    val after = label.substringAfter(',', label).trim()
+    val tokens = after.split(' ', ' ').filter { it.isNotBlank() }
+    if (tokens.size < 2) return null
+    val monthRaw = tokens[0].trim('.', ',', ' ').lowercase()
+    val monthIdx = PLAN_MONTHS.indexOfFirst { it == monthRaw || it.take(3) == monthRaw.take(3) }
+    if (monthIdx < 0) return null
+    val day = tokens[1].takeWhile { it.isDigit() }.toIntOrNull() ?: return null
+    if (day !in 1..31) return null
+    return (monthIdx + 1) to day
+}
+
+/** The plan's last calendar day, inferred from its day labels + createdAt.
+ *  Null when no day label is parseable. */
+fun Plan.lastDayDate(): LocalDate? {
+    val created = try { LocalDate.parse(createdAt.take(10)) } catch (_: Throwable) { null }
+    val createdYear = created?.year ?: return null
+    val createdEpoch = created.toEpochDays()
+    return days.mapNotNull { d ->
+        val (month, day) = parsePlanLabelMonthDay(d.label) ?: return@mapNotNull null
+        val base = try { LocalDate(createdYear, month, day) } catch (_: Throwable) { return@mapNotNull null }
+        // Label month/day well before creation → next-year event (Dec→Jan wrap).
+        if (base.toEpochDays() < createdEpoch - 7)
+            try { LocalDate(createdYear + 1, month, day) } catch (_: Throwable) { base }
+        else base
+    }.maxByOrNull { it.toEpochDays() }
+}
+
+/** True when the plan's last day is strictly before today. Unparseable dates and
+ *  the stale DB flag are ORed in; parse failures fall back to "not past" so an
+ *  ambiguous plan stays visible in the upcoming list rather than being hidden. */
+fun Plan.isLastDayPast(): Boolean {
+    if (isPast) return true
+    val today = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
+    val last = lastDayDate() ?: return false
+    return last.toEpochDays() < today.toEpochDays()
+}

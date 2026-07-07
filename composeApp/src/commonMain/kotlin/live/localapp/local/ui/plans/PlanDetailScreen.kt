@@ -89,6 +89,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import live.localapp.local.domain.model.Plan
+import live.localapp.local.domain.model.isLastDayPast
 import live.localapp.local.domain.model.PlanAttendee
 import live.localapp.local.domain.model.PlanDay
 import live.localapp.local.domain.model.PlanSlot
@@ -166,7 +167,11 @@ fun PlanDetailScreen(
     // is now the single source of truth for plan edits.
     val canEdit = isCreator
     val readOnly = !canEdit || isShared
-    val past = plan.isPast
+    // Computed from the day labels (the DB is_past flag is never maintained) so
+    // this matches the list's Upcoming/Past split. Surfaces PastPlanBanner and
+    // makes a plan whose last day has passed read-only. "Today" plans stay
+    // editable (strictly-before-today).
+    val past = plan.isLastDayPast()
     val firstImageUrl = plan.days.flatMap { it.slots }.firstNotNullOfOrNull { it.imageUrl }
 
     var showEditNameDialog by remember { mutableStateOf(false) }
