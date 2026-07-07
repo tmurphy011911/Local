@@ -7,7 +7,9 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
+import kotlin.time.Duration.Companion.hours
 import live.localapp.local.domain.model.BadgeAction
+import live.localapp.local.domain.model.BadgeMilestone
 import live.localapp.local.domain.model.thresholdsFor
 import live.localapp.local.domain.model.StatusTier
 import live.localapp.local.domain.model.pointsForMilestone
@@ -69,6 +71,30 @@ class BadgeService(
 
     private fun watermarkKey(userId: String) = "creator_badge_seen_through_$userId"
 
+    /** On a device's FIRST sight of the creator badges, we must not retro-toast
+     *  the user's whole back-catalogue — but we MUST still toast an accept that
+     *  just happened while they're using the app (the common case, and the whole
+     *  point of the creator toast). So the first-sight baseline is set to the
+     *  newest badge earned *before* this window; anything newer is treated as
+     *  live and toasted. Widening this only risks a benign duplicate celebration
+     *  after a reinstall; narrowing it risks silently eating a real accept — so
+     *  we err generous. */
+    private val FIRST_SIGHT_RECENT_WINDOW = 6.hours
+
+    /** Newest creator badge that is clearly historical (earned before
+     *  [FIRST_SIGHT_RECENT_WINDOW] ago) — the correct first-sight watermark.
+     *  Null when there is no such badge (brand-new creator, or every creator
+     *  badge is within the window), in which case the caller baselines to
+     *  DISTANT_PAST so the recent ones toast. */
+    private fun firstSightWatermark(badges: List<BadgeMilestone>): kotlin.time.Instant? {
+        val cutoff = kotlin.time.Clock.System.now() - FIRST_SIGHT_RECENT_WINDOW
+        return badges
+            .filter { it.actionType in creatorBadgeActions }
+            .mapNotNull { parseTs(it.earnedAt) }
+            .filter { it < cutoff }
+            .maxOrNull()
+    }
+
     private fun creatorAction(actionType: String): BadgeAction? = when (actionType) {
         "invite_accepted" -> BadgeAction.INVITE_ACCEPTED
         "group_5_confirmed" -> BadgeAction.GROUP_5_CONFIRMED
@@ -97,13 +123,15 @@ class BadgeService(
 
                 // Baseline the creator-badge toast watermark on first run so the
                 // server's already-awarded historical badges don't retro-toast.
+                // Baseline to the newest *historical* badge only — an accept that
+                // just landed (within the recent window) is left unbaselined so
+                // claimCreatorBadges still toasts it. (This runs from
+                // ProgressViewModel, which may not have loaded before the accept;
+                // claimCreatorBadges applies the same rule so the toast is robust
+                // to that ordering.)
                 val wmKey = watermarkKey(userId)
                 if (settings.getStringOrNull(wmKey) == null) {
-                    val latest = milestones
-                        .filter { it.actionType in creatorBadgeActions }
-                        .maxByOrNull { parseTs(it.earnedAt) ?: kotlin.time.Instant.DISTANT_PAST }
-                        ?.earnedAt
-                    settings.putString(wmKey, latest ?: "")
+                    settings.putString(wmKey, firstSightWatermark(milestones)?.toString() ?: "")
                 }
                 initialized = true
             } catch (_: Throwable) {}
@@ -254,15 +282,19 @@ class BadgeService(
 
             val wmKey = watermarkKey(userId)
             val watermark = settings.getStringOrNull(wmKey)
-            if (watermark == null) {
-                // First sight on this device — baseline without retro-toasting.
-                val latest = creatorBadges
-                    .maxByOrNull { parseTs(it.earnedAt) ?: kotlin.time.Instant.DISTANT_PAST }?.earnedAt
-                settings.putString(wmKey, latest ?: "")
-                return@launch
+            // First sight on this device: baseline to the newest *historical*
+            // badge (older than the recent window) rather than the newest badge
+            // overall. That keeps the back-catalogue from retro-toasting while
+            // still letting an accept that just happened fall through and toast —
+            // otherwise the creator's very first accept on a fresh install (before
+            // ProgressViewModel's initialize() has run) is silently swallowed.
+            // We do NOT return early; we fall through to the fresh-badge check
+            // below, which advances the watermark to whatever it toasts.
+            val wmTs = if (watermark == null) {
+                firstSightWatermark(creatorBadges) ?: kotlin.time.Instant.DISTANT_PAST
+            } else {
+                parseTs(watermark) ?: kotlin.time.Instant.DISTANT_PAST
             }
-
-            val wmTs = parseTs(watermark) ?: kotlin.time.Instant.DISTANT_PAST
             val fresh = creatorBadges
                 .mapNotNull { b -> parseTs(b.earnedAt)?.let { it to b } }
                 .filter { it.first > wmTs }

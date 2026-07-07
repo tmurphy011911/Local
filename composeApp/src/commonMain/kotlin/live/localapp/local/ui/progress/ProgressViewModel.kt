@@ -340,8 +340,11 @@ class ProgressViewModel(
                             BadgeAction.GROUP_5_CONFIRMED -> "group_5_confirmed"
                             BadgeAction.GROUP_10_CONFIRMED -> "group_10_confirmed"
                         }
-                        val count = stateCounts[actionKey] ?: 0
                         val completed = stateMilestones.count { it.actionType == actionKey }
+                        // Per-action creator rewards are one-badge-per-occurrence and
+                        // awarded server-side; count them from badges, not the counter
+                        // table (see the global-action note below).
+                        val count = if (action.isPerAction) completed else (stateCounts[actionKey] ?: 0)
                         val nextMilestone = nextMilestoneFor(action, count)
                         val pointsAtNext = if (nextMilestone != null) pointsForMilestone(action, nextMilestone) else null
 
@@ -368,8 +371,16 @@ class ProgressViewModel(
                 // Compute global action progress (sum across all states)
                 val globalActions = BadgeAction.entries.map { action ->
                     val actionKey = action.name.lowercase()
-                    val totalCount = actionCounts.values.sumOf { it[actionKey] ?: 0 }
                     val totalCompleted = milestones.count { it.actionType == actionKey }
+                    // Per-action creator rewards (invite_accepted, group_5/10_confirmed)
+                    // are awarded server-side, one badge per occurrence, so the badge
+                    // count IS the number of times they happened. Source the count from
+                    // badges rather than the user_action_counts table — that counter is
+                    // only bumped from the plan-open claimCreatorBadges path and reads 0
+                    // until (and unless) that fires, leaving REWARDS stuck at 0 even
+                    // though the server already awarded the FOMO.
+                    val totalCount = if (action.isPerAction) totalCompleted
+                                     else actionCounts.values.sumOf { it[actionKey] ?: 0 }
                     val nextMilestone = nextMilestoneFor(action, totalCount)
                     val pointsAtNext = if (nextMilestone != null) pointsForMilestone(action, nextMilestone) else null
                     ActionProgress(
