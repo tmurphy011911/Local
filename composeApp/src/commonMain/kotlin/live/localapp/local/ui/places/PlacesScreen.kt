@@ -1733,13 +1733,18 @@ fun VenueDetailPage(
                     Icon(Icons.Outlined.IosShare, contentDescription = "Share", modifier = Modifier.size(18.dp), tint = AppColors.Ink)
                 }
                 Spacer(Modifier.width(6.dp))
-                // Favorite (save) — RIGHTmost
+                // Favorite (save) — RIGHTmost. On a shared deep link the heart IS
+                // the save action (records the favorite or stashes it for
+                // post-auth), matching the event detail + iOS; the old full-width
+                // "Add to Favorites" button that stacked this role was removed.
                 Box(
                     modifier = Modifier
                         .size(36.dp)
                         .background(AppColors.Snow, RoundedCornerShape(10.dp))
                         .clip(RoundedCornerShape(10.dp))
-                        .clickable(onClick = onFavoriteToggle),
+                        .clickable(onClick = {
+                            if (isShared && onSaveVenue != null) onSaveVenue() else onFavoriteToggle()
+                        }),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
@@ -1957,9 +1962,9 @@ fun VenueDetailPage(
                     }
 
                     // Visit Website — bottom coral CTA, matching iOS
-                    // VenueDetailView ctaBar. Hidden in shared deep-link mode
-                    // (that surface shows "Add to Favorites" instead).
-                    if (!isShared && !v.website.isNullOrBlank()) {
+                    // VenueDetailView ctaBar. Shown in shared deep-link mode too
+                    // (saving moved to the hero heart), matching the event detail.
+                    if (!v.website.isNullOrBlank()) {
                         Spacer(Modifier.height(20.dp))
                         Row(
                             modifier = Modifier
@@ -1984,33 +1989,10 @@ fun VenueDetailPage(
             }
         }
 
-        // "Add to Favorites" CTA for shared deep link mode
-        if (isShared && onSaveVenue != null) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .background(
-                        Brush.verticalGradient(listOf(Color.Transparent, AppColors.Snow, AppColors.Snow)),
-                    )
-                    .padding(horizontal = 20.dp, vertical = 16.dp),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(AppColors.Coral)
-                        .clickable(onClick = onSaveVenue)
-                        .padding(vertical = 14.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        "Add to Favorites",
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = Color.White),
-                    )
-                }
-            }
-        }
+        // Shared deep-link mode shows the same Visit Website CTA as the normal
+        // view; saving happens via the hero heart (see onFavoriteToggle). The old
+        // full-width "Add to Favorites" button that lived here was removed to
+        // match the event detail and avoid a second stacked bottom action.
 
         // Event detail as bottom sheet
         if (selectedEvent != null) {
