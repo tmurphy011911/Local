@@ -110,6 +110,7 @@ async function fetchVenues(
   query: string | null,
   category: string | null,
   radiusMiles: number,
+  city: string | null,
 ): Promise<VenueRow[]> {
   const latDelta = radiusMiles / 55;
   const lngDelta = radiusMiles / 45;
@@ -142,6 +143,19 @@ async function fetchVenues(
   }
   if (category) {
     q = q.eq("category", category);
+  }
+  // City drill-down is applied IN-QUERY (not post-fetch) so it runs before the
+  // .limit(500) rank cut. Without this, a mid-rank venue in a smaller city
+  // (e.g. Gore Place, rank 45 in Waltham) is crowded out of the top-500 by
+  // higher-ranked venues across the whole radius and vanishes under the city
+  // filter — even though it's active and in that city. ilike = case-insensitive
+  // exact match on the raw city string the client echoes back from cityFacets.
+  if (city && city.trim()) {
+    // Strip LIKE wildcards (as the query path above does for %) so a city
+    // string never widens the match; ilike keeps the case-insensitive
+    // semantics the post-cache city filter already uses.
+    const safeCity = city.trim().replace(/[%_]/g, "");
+    if (safeCity) q = q.ilike("city", safeCity);
   }
 
   const { data, error } = await q;
@@ -450,6 +464,7 @@ Deno.serve(async (req) => {
       Math.round(lat * 10) / 10,
       Math.round(lng * 10) / 10,
       (query ?? "").trim().toLowerCase(),
+      (city ?? "").trim().toLowerCase(),
       radiusMiles,
       userId ?? "anon",
     ].join("|");
@@ -460,9 +475,12 @@ Deno.serve(async (req) => {
       scored = cached.scored;
     } else {
       const [rawVenues, eventBuckets, prefs, affinityMap] = await Promise.all([
-        // category is null here on purpose — the scored list must be
-        // category-complete so it serves every drill-down + facet counts.
-        fetchVenues(supabase, lat, lng, query, null, radiusMiles),
+        // category stays null so the scored list is category-complete within
+        // its scope (category drill-down + its facet counts are computed
+        // post-fetch). city IS pushed down so a city-filtered list is COMPLETE,
+        // not a post-hoc slice of the top-500 (which dropped mid-rank venues in
+        // smaller cities). city is in the cache key below to match.
+        fetchVenues(supabase, lat, lng, query, null, radiusMiles, city),
         fetchEventsByVenue(supabase, lat, lng, radiusMiles),
         userId ? fetchUserPrefs(supabase, userId) : Promise.resolve(null),
         fetchCategoryAffinity(supabase, userId),
