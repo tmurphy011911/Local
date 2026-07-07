@@ -8,3 +8,6 @@ actual fun getAppVersion(): String {
     val build = info?.get("CFBundleVersion") as? String ?: "?"
     return "Local v$version (Build $build)"
 }
+
+actual fun getMarketingVersion(): String =
+    NSBundle.mainBundle.infoDictionary?.get("CFBundleShortVersionString") as? String ?: ""

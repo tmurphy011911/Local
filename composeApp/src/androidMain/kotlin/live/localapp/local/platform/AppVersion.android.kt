@@ -25,3 +25,14 @@ actual fun getAppVersion(): String {
     }
     return "Local v${BuildConfig.VERSION_NAME} (Build ${BuildConfig.VERSION_CODE})"
 }
+
+actual fun getMarketingVersion(): String {
+    val activity = ActivityProvider.activity
+    if (activity != null) {
+        try {
+            val pInfo = activity.packageManager.getPackageInfo(activity.packageName, 0)
+            return pInfo.versionName ?: BuildConfig.VERSION_NAME
+        } catch (_: Throwable) { /* fall through */ }
+    }
+    return BuildConfig.VERSION_NAME
+}
