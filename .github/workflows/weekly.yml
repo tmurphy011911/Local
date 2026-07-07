@@ -329,7 +329,7 @@ jobs:
             echo "No email body produced; skipping."
             exit 0
           fi
-          TO="${ALERT_EMAIL_TO:-tmurphy011911@gmail.com}"
+          TO="${ALERT_EMAIL_TO:-tom@localapp.live}"
           SUBJECT="$(cat venue_alert_subject.txt)"
           jq -n \
             --arg from "Local Alerts <onboarding@resend.dev>" \

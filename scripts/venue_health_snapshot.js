@@ -57,6 +57,7 @@ const BASELINE_WEEKS = parseInt(process.env.BASELINE_WEEKS || "4", 10); // trail
 const MIN_HISTORY = parseInt(process.env.MIN_HISTORY || "2", 10); // prior snapshots required before we judge
 const MIN_BASELINE = parseInt(process.env.MIN_BASELINE || "3", 10); // baseline must be a real stream to count
 const DROP_RATIO = parseFloat(process.env.DROP_RATIO || "0.2"); // "collapsed" = today <= baseline*ratio
+const RETAIN_WEEKS = parseInt(process.env.RETAIN_WEEKS || "8", 10); // prune snapshots older than this
 const DRY_RUN = process.env.DRY_RUN === "1"; // skip the snapshot write (local testing)
 
 const TODAY = new Date().toISOString().slice(0, 10); // YYYY-MM-DD (runner injects the date)
@@ -95,6 +96,20 @@ async function insertRows(table, rows) {
       const body = await res.text();
       throw new Error(`Insert into ${table} failed (${res.status}): ${body.slice(0, 200)}`);
     }
+  }
+}
+
+// Retention: drop snapshots older than the cutoff so the table stays bounded
+// (detection only ever reads the trailing BASELINE_WEEKS). The date filter is
+// ALWAYS present, so this can never delete the whole table.
+async function deleteOlderThan(table, cutoffDate) {
+  const res = await fetch(`${SUPABASE_URL}/rest/v1/${table}?snapshot_date=lt.${cutoffDate}`, {
+    method: "DELETE",
+    headers: { ...HEADERS, Prefer: "return=minimal" },
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Prune of ${table} failed (${res.status}): ${body.slice(0, 200)}`);
   }
 }
 
@@ -155,6 +170,13 @@ async function main() {
   } else {
     await insertRows("venue_event_snapshots", snapshotRows);
     console.log(`Wrote ${comma(snapshotRows.length)} snapshot rows.`);
+
+    // Bound the table: keep ~RETAIN_WEEKS of history (detection needs only BASELINE_WEEKS).
+    const cutoff = new Date(Date.parse(`${TODAY}T00:00:00Z`) - RETAIN_WEEKS * 7 * 86400000)
+      .toISOString()
+      .slice(0, 10);
+    await deleteOlderThan("venue_event_snapshots", cutoff);
+    console.log(`Pruned snapshots older than ${cutoff} (kept ~${RETAIN_WEEKS} weeks).`);
   }
 
   // 4. Pull prior snapshots (strictly before today) to build each venue's baseline.
