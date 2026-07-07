@@ -37,7 +37,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import live.localapp.local.ui.common.CircleShape
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -126,6 +125,12 @@ fun PlansScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val currentUserId = remember { viewModel.currentUserId() }
+
+    // "Past Plans" section is tucked behind a collapsible, collapsed by default,
+    // so the list always leads with what's upcoming. Hoisted above the LazyColumn
+    // so the toggle survives scroll/recomposition (resets to collapsed on tab
+    // switch, which is the intended default).
+    var pastPlansExpanded by remember { mutableStateOf(false) }
 
     // Refresh plans + attendee counts whenever the app comes back to the
     // foreground. Without realtime, this is the cheapest way to make the
@@ -274,15 +279,37 @@ fun PlansScreen(
                 }
             }
 
-            // Past plans — dimmed, slim rows
+            // Past plans — tucked behind a collapsible header (collapsed by
+            // default) so the list leads with what's upcoming. Same CompactPlanRow
+            // design as the active list; the header toggles visibility. Sits above
+            // the Saved Events / Places sections below.
             if (state.pastPlans.isNotEmpty()) {
-                item {
+                item(key = "past_plans_header") {
                     Spacer(Modifier.height(4.dp))
-                    Text("Past Plans", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = AppColors.Ink3))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .pressable(onClick = { pastPlansExpanded = !pastPlansExpanded })
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            "Past Plans (${state.pastPlans.size})",
+                            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = AppColors.Ink3),
+                        )
+                        Icon(
+                            if (pastPlansExpanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+                            contentDescription = if (pastPlansExpanded) "Collapse past plans" else "Expand past plans",
+                            tint = AppColors.Ink3,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
                 }
-                items(state.pastPlans, key = { it.id }) { plan ->
-                    SwipeToRevealDelete(onDelete = { viewModel.deletePlan(plan.id) }) {
-                        Box(modifier = Modifier.alpha(0.5f)) {
+                if (pastPlansExpanded) {
+                    items(state.pastPlans, key = { it.id }) { plan ->
+                        SwipeToRevealDelete(onDelete = { viewModel.deletePlan(plan.id) }) {
                             CompactPlanRow(
                                 plan = plan,
                                 onClick = { bounds -> onPlanClick(plan, bounds) },
