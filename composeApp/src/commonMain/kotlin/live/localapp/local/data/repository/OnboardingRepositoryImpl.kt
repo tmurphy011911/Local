@@ -3,6 +3,8 @@ package live.localapp.local.data.repository
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.query.Columns
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import io.github.jan.supabase.postgrest.query.Order
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -52,6 +54,19 @@ class OnboardingRepositoryImpl(
 ) : OnboardingRepository {
 
     override suspend fun loadOnboardingData(
+        city: String,
+        userLat: Double,
+        userLng: Double,
+    ): OnboardingData = withContext(Dispatchers.Default) {
+        // The Supabase decode + the neighborhood aggregation below are CPU-heavy and
+        // used to run on the caller's dispatcher (viewModelScope == Dispatchers.Main),
+        // freezing the UI for several seconds during onboarding (Sentry: "App Hang,
+        // fully blocked", HashMap.findKey hot in loadOnboardingData). Pin the whole
+        // operation to Default so Main only ever receives the finished result.
+        loadOnboardingDataInternal(city, userLat, userLng)
+    }
+
+    private suspend fun loadOnboardingDataInternal(
         city: String,
         userLat: Double,
         userLng: Double,
@@ -230,13 +245,22 @@ class OnboardingRepositoryImpl(
             .mapNotNull { v -> cleanCity(v.city)?.let { it to v } }
             .groupBy({ it.first }, { it.second })
 
+        // Index events by their resolved city ONCE (O(events)). The neighborhood
+        // loop below previously re-filtered the entire events list for every city
+        // (O(cities × events), each element doing a HashMap lookup in eventCity) —
+        // the exact hot path in the App Hang trace. One pass here makes the loop O(1)
+        // per city.
+        val eventsByCity: Map<String, List<EventSummaryDto>> = events
+            .mapNotNull { e -> eventCity(e)?.let { it to e } }
+            .groupBy({ it.first }, { it.second })
+
         val neighborhoods = venuesByCity
             .map { (cityName, group) ->
                 // Need venue coords for distance; we already filtered venues by lat/lng
                 // upstream, so the underlying rows exist in the DB even if we didn't
                 // hydrate them on VenueFullDto. Estimate distance from any event with
                 // coords whose venue is in this city, falling back to null.
-                val sampleEvents = events.filter { eventCity(it) == cityName }
+                val sampleEvents = eventsByCity[cityName].orEmpty()
                 val withCoords = sampleEvents.filter { it.venueLat != null && it.venueLng != null }
                 val dist = if (withCoords.isNotEmpty()) {
                     val avgLat = withCoords.sumOf { it.venueLat!! } / withCoords.size

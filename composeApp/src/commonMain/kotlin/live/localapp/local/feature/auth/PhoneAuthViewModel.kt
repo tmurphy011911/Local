@@ -208,13 +208,24 @@ class PhoneAuthViewModel(
                 e.printStackTrace()
                 val fullError = "${e::class.simpleName}: ${e.message}"
                 println("DEBUG: OTP verification error: $fullError")
-                Analytics.recordError(e, message = "otp_verify_failed")
+                val msg = e.message.orEmpty()
+                // Expired / invalid codes are ordinary user error (wrong or stale OTP),
+                // not app failures. Show inline guidance but DON'T report them to
+                // Sentry — they were dominating the error feed as otp_verify_failed
+                // noise. Only genuinely unexpected verify failures get recorded.
+                val expectedUserError = msg.contains("expired", ignoreCase = true) ||
+                    msg.contains("invalid", ignoreCase = true) ||
+                    msg.contains("otp_expired", ignoreCase = true) ||
+                    msg.contains("Token", ignoreCase = true)
+                if (!expectedUserError) {
+                    Analytics.recordError(e, message = "otp_verify_failed")
+                }
                 val message = when {
-                    e.message?.contains("expired", ignoreCase = true) == true ->
+                    msg.contains("expired", ignoreCase = true) ->
                         "Code expired. Please request a new one."
-                    e.message?.contains("invalid", ignoreCase = true) == true ->
+                    msg.contains("invalid", ignoreCase = true) ->
                         "Invalid code. Please check and try again."
-                    e.message?.contains("Token", ignoreCase = true) == true ->
+                    msg.contains("Token", ignoreCase = true) ->
                         "Invalid code. Please try again."
                     else -> fullError
                 }

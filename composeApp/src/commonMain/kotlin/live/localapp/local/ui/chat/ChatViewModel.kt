@@ -2049,6 +2049,20 @@ class ChatViewModel(
                     handleClaudeResponse(parsed)
                     break
                 } catch (e: Throwable) {
+                    // Entitlement rejection (free user / lapsed trial → proxy 402) is
+                    // EXPECTED control flow, not a failure. Route straight to the
+                    // paywall: retrying a 402 just 402s again, and recording it to
+                    // Sentry buries real crashes under handled-paywall noise.
+                    if (e is live.localapp.local.data.remote.BoEntitlementRequiredException ||
+                        e.message?.contains("Local Pro required", true) == true) {
+                        println("ChatVM: entitlement required — paywall, no retry/record")
+                        _uiState.update { it.copy(streamingText = "") }
+                        handleAiError(
+                            if (e is Exception) e
+                            else live.localapp.local.data.remote.BoEntitlementRequiredException()
+                        )
+                        break
+                    }
                     attempts++
                     println("Claude error (attempt $attempts/$maxAttempts): ${e::class.simpleName}: ${e.message}")
                     e.printStackTrace()
@@ -2058,13 +2072,15 @@ class ChatViewModel(
                             phase = "llm",
                         )
                     )
-                    live.localapp.local.observability.Analytics.recordError(e, "bo_response_failed")
                     if (attempts < maxAttempts) {
                         println("ChatVM: retrying in 2s...")
                         _uiState.update { it.copy(streamingText = "") }
                         kotlinx.coroutines.delay(2000)
                         continue
                     }
+                    // Only report to Sentry once we've actually given up — recording
+                    // per-attempt inflated the error count for every transient blip.
+                    live.localapp.local.observability.Analytics.recordError(e, "bo_response_failed")
                     _uiState.update { it.copy(streamingText = "") }
                     try {
                         handleAiError(if (e is Exception) e else RuntimeException(e.message ?: "Unknown error"))

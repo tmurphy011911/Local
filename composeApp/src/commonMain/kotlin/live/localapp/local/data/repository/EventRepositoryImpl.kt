@@ -99,8 +99,13 @@ class EventRepositoryImpl(
         // this is called from Main-scoped callers (plan slots / saved events) —
         // running it inline hung the UI. The network calls suspend fine here too.
         return withContext(Dispatchers.Default) {
-            // Supabase `isIn` has practical limits; paginate in chunks of 100.
-            val raw = ids.chunked(100).flatMap { chunk ->
+            // Chunk small: this is `select *`, so each row drags every column
+            // (description, venue_description, …). A single request for ~50 ids was
+            // hitting the 20s client timeout when the DB was under IO load (Sentry:
+            // HttpRequestTimeoutException on /events?id=in.(…)&select=*). Smaller
+            // chunks keep every request comfortably under the timeout. Sequential
+            // (flatMap) — NOT parallel — to avoid Postgres connection-pool queueing.
+            val raw = ids.chunked(25).flatMap { chunk ->
                 supabaseClient.from("events")
                     .select {
                         filter { isIn("id", chunk) }
