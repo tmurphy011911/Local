@@ -196,11 +196,22 @@ struct ComposeView: UIViewControllerRepresentable {
                 // When opened from chat plan cards, coords are all zero —
                 // use a bottom-slide modal instead of the hero transition.
                 if cardFrame.width == 0 && cardFrame.height == 0 {
+                    // Fire onDismissed exactly once, from whichever path closes
+                    // the sheet: the back button (programmatic dismiss, below) or
+                    // an interactive swipe-down (the presentation delegate). The
+                    // two are mutually exclusive in UIKit, but the flag guards
+                    // against any future overlap. Without the swipe path, a
+                    // deep-linked event's onDismissed never fired and the app was
+                    // stranded on a blank surface.
+                    var didFireDismiss = false
+                    let fireDismiss = {
+                        if didFireDismiss { return }
+                        didFireDismiss = true
+                        detailBridge.onDismissed?()
+                    }
                     weak var weakHostingVC: UIHostingController<EventDetailView>?
                     let detailView = EventDetailView(event: event, onDismiss: {
-                        weakHostingVC?.dismiss(animated: true) {
-                            detailBridge.onDismissed?()
-                        }
+                        weakHostingVC?.dismiss(animated: true) { fireDismiss() }
                     })
                     let hostingVC = UIHostingController(rootView: detailView)
                     weakHostingVC = hostingVC
@@ -209,6 +220,12 @@ struct ComposeView: UIViewControllerRepresentable {
                         sheet.detents = [.large()]
                         sheet.prefersGrabberVisible = true
                     }
+                    // Swipe-to-dismiss doesn't call the dismiss completion above,
+                    // so a delegate relays the interactive dismissal. Retained on
+                    // the transition controller (presentationController is weak).
+                    let dismissDelegate = SheetDismissDelegate { fireDismiss() }
+                    transition.sheetDismissDelegate = dismissDelegate
+                    hostingVC.presentationController?.delegate = dismissDelegate
                     // Walk to the actual top — events triggered from a slot
                     // tap inside PlanDetail (itself a sheet, possibly over
                     // ChatSheet) need this deep walk; the prior shallow
