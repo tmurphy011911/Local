@@ -9,7 +9,7 @@ BUNDLE_DISPLAY_NAME=Local
 // Internal build number — integer scheme (was decimal 3.7). Must strictly increase
 // per marketing version on App Store Connect. Jumped to 100 to clear the messy
 // 3.x/4 history; 101 = iPhone-only rebuild (TARGETED_DEVICE_FAMILY 1,2 -> 1).
-CURRENT_PROJECT_VERSION=104
+CURRENT_PROJECT_VERSION=105
 MARKETING_VERSION=1.1.0
 
 // Default = real app. The Staging configuration (Config-Staging.xcconfig)
