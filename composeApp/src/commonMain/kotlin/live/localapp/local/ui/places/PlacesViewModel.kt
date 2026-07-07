@@ -358,7 +358,15 @@ class PlacesViewModel(
      *  cities in radius"); switching cities resets the venue-type drill-down. */
     fun setSelectedCity(city: String?) {
         val next = if (city == _uiState.value.selectedCity) null else city
-        _uiState.update { it.copy(selectedCity = next, selectedVenueCategory = null) }
+        // Drop the previous city's sub-filter (venue-type) chips immediately so
+        // they can't linger — or be tapped into a mismatched state — while the
+        // new city's facets load. loadPlaces repopulates them: instantly on a
+        // cache hit, or after the skeleton on a real fetch. Only cleared here
+        // (city change), NOT in setSelectedVenueCategory / search / sort, so
+        // the chip row doesn't skeleton-flicker on same-city refetches.
+        _uiState.update {
+            it.copy(selectedCity = next, selectedVenueCategory = null, categoryFacets = emptyList())
+        }
         loadPlaces(reset = true)
     }
 

@@ -256,6 +256,7 @@ fun PlacesScreen(
                     selectedVenueCategory = state.selectedVenueCategory,
                     cityFacets = state.cityFacets,
                     categoryFacets = state.categoryFacets,
+                    facetsLoading = state.isLoading,
                     onSelectCity = { focusManager.clearFocus(); viewModel.setSelectedCity(it) },
                     onSelectVenueCategory = { focusManager.clearFocus(); viewModel.setSelectedVenueCategory(it) },
                 )
@@ -944,6 +945,7 @@ private fun PlacesCityCategoryRow(
     selectedVenueCategory: String?,
     cityFacets: List<PlaceFacet>,
     categoryFacets: List<PlaceFacet>,
+    facetsLoading: Boolean,
     onSelectCity: (String?) -> Unit,
     onSelectVenueCategory: (String?) -> Unit,
 ) {
@@ -1013,40 +1015,70 @@ private fun PlacesCityCategoryRow(
                         .background(AppColors.Ink3.copy(alpha = 0.35f))
                 )
                 Spacer(Modifier.width(14.dp))
-                // Self-centering LazyRow — same idiom as the Events category row.
-                val listState = rememberLazyListState()
-                val selectedIndex = categoryFacets.indexOfFirst { it.name == selectedVenueCategory }
-                LaunchedEffect(selectedIndex) {
-                    if (selectedIndex < 0) return@LaunchedEffect
-                    val info = listState.layoutInfo
-                    val viewport = info.viewportEndOffset - info.viewportStartOffset
-                    val visible = info.visibleItemsInfo.firstOrNull { it.index == selectedIndex }
-                    if (visible != null && viewport > 0) {
-                        val itemCenter = visible.offset + visible.size / 2
-                        val nudge = itemCenter - viewport / 2
-                        if (nudge != 0) listState.animateScrollBy(nudge.toFloat())
-                    } else if (viewport > 0) {
-                        listState.animateScrollToItem(selectedIndex)
+                // Sub-filter (venue-type) chips. While the newly-selected city's
+                // facets load, categoryFacets is empty (cleared in the VM on city
+                // change), so we show a skeleton instead of the previous city's
+                // stale, tappable chips — which otherwise let the user tap into a
+                // mismatched category before the new city's facets arrive.
+                if (categoryFacets.isEmpty() && facetsLoading) {
+                    CategoryChipsSkeleton(modifier = Modifier.weight(1f).padding(end = 20.dp))
+                } else {
+                    // Self-centering LazyRow — same idiom as the Events category row.
+                    val listState = rememberLazyListState()
+                    val selectedIndex = categoryFacets.indexOfFirst { it.name == selectedVenueCategory }
+                    LaunchedEffect(selectedIndex) {
+                        if (selectedIndex < 0) return@LaunchedEffect
+                        val info = listState.layoutInfo
+                        val viewport = info.viewportEndOffset - info.viewportStartOffset
+                        val visible = info.visibleItemsInfo.firstOrNull { it.index == selectedIndex }
+                        if (visible != null && viewport > 0) {
+                            val itemCenter = visible.offset + visible.size / 2
+                            val nudge = itemCenter - viewport / 2
+                            if (nudge != 0) listState.animateScrollBy(nudge.toFloat())
+                        } else if (viewport > 0) {
+                            listState.animateScrollToItem(selectedIndex)
+                        }
                     }
-                }
-                LazyRow(
-                    state = listState,
-                    modifier = Modifier
-                        .weight(1f)
-                        .padding(end = 20.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    items(categoryFacets, key = { it.name }) { facet ->
-                        FilterChip(
-                            // Re-tap toggles off (VM setter handles the toggle).
-                            label = venueCategoryLabel(facet.name),
-                            selected = selectedVenueCategory == facet.name,
-                            onClick = { onSelectVenueCategory(facet.name) },
-                        )
+                    LazyRow(
+                        state = listState,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        items(categoryFacets, key = { it.name }) { facet ->
+                            FilterChip(
+                                // Re-tap toggles off (VM setter handles the toggle).
+                                label = venueCategoryLabel(facet.name),
+                                selected = selectedVenueCategory == facet.name,
+                                onClick = { onSelectVenueCategory(facet.name) },
+                            )
+                        }
                     }
                 }
             }
+        }
+    }
+}
+
+/** Shimmer placeholder chips shown in the sub-filter row while a newly-selected
+ *  city's venue-type facets load. Same shimmer idiom as [PlacesSkeletonLoader].
+ *  Non-interactive, so the user can't tap a stale/mismatched category. */
+@Composable
+private fun CategoryChipsSkeleton(modifier: Modifier = Modifier) {
+    val shimmerAlpha by animateFloatAsState(
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(800, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+    )
+    val c = AppColors.Pebble.copy(alpha = 0.3f + shimmerAlpha * 0.2f)
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        listOf(60.dp, 46.dp, 68.dp, 52.dp).forEach { w ->
+            Box(Modifier.height(32.dp).width(w).background(c, RoundedCornerShape(20.dp)))
         }
     }
 }
