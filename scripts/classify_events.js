@@ -63,6 +63,44 @@ const ONLY_CATEGORY = process.env.ONLY_CATEGORY || null;
 // genuinely want to re-evaluate suppressed events.
 const RECLASSIFY_EXCLUDED = process.env.RECLASSIFY_EXCLUDED === "1";
 
+// ── Fetch with retry for transient network failures ──────────────────
+//
+// Yesterday's run crashed with `TypeError: fetch failed / ECONNRESET` mid-way
+// through applying ~867 reclassifications — one Supabase PATCH hung up
+// the connection and killed the whole pass. The script is idempotent
+// (scopes to unclassified rows + still-matching patterns) so a rerun
+// recovers, but losing a 90-second-into-it pass on a one-off network blip
+// is the wrong default. Wrap the worker fetches in retry-with-backoff so
+// transient ECONNRESET / ETIMEDOUT / EAI_AGAIN / 5xx errors don't kill
+// the run.
+
+async function fetchWithRetry(url, opts, { maxAttempts = 4, baseDelayMs = 500 } = {}) {
+  let lastErr = null;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const res = await fetch(url, opts);
+      // Retry on transient 5xx too — Supabase occasionally returns 502/503
+      // when its Postgres connection pool churns under load.
+      if (res.status >= 500 && res.status < 600 && attempt < maxAttempts) {
+        lastErr = new Error(`HTTP ${res.status}`);
+      } else {
+        return res;
+      }
+    } catch (err) {
+      const code = err.cause?.code || err.code || "";
+      const msg = String(err.message || err);
+      const transient =
+        ["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"].includes(code) ||
+        /fetch failed|socket hang up|other side closed/i.test(msg);
+      if (!transient || attempt === maxAttempts) throw err;
+      lastErr = err;
+    }
+    // Exponential backoff: 500ms → 1s → 2s → 4s
+    await new Promise((r) => setTimeout(r, baseDelayMs * 2 ** (attempt - 1)));
+  }
+  throw lastErr;
+}
+
 // ── Rule-based auto-exclusion ─────────────────────────────────────────
 //
 // Events matching any of these patterns get immediately tagged as
@@ -274,21 +312,28 @@ async function applyReclassifications(events, skipIds = new Set()) {
     while (index < matches.length) {
       const i = index++;
       const m = matches[i];
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/events?id=eq.${m.id}`, {
-        method: "PATCH",
-        headers: {
-          apikey: SUPABASE_SERVICE_KEY,
-          Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          subcategory: m._newSubcategory,
-          // Preserve prior value once — original_subcategory is set by the
-          // auto-exclusion pass too, so only write if not already set.
-          ...(m.original_subcategory ? {} : { original_subcategory: m.subcategory ?? null }),
-        }),
-      });
-      if (res.ok) updated++;
+      try {
+        const res = await fetchWithRetry(`${SUPABASE_URL}/rest/v1/events?id=eq.${m.id}`, {
+          method: "PATCH",
+          headers: {
+            apikey: SUPABASE_SERVICE_KEY,
+            Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            subcategory: m._newSubcategory,
+            // Preserve prior value once — original_subcategory is set by the
+            // auto-exclusion pass too, so only write if not already set.
+            ...(m.original_subcategory ? {} : { original_subcategory: m.subcategory ?? null }),
+          }),
+        });
+        if (res.ok) updated++;
+      } catch (err) {
+        // Don't let a single row's repeated transient failure kill the whole
+        // pass. Log and move on — the next classify run picks it up (the
+        // script scopes to still-matching-pattern rows).
+        console.warn(`  reclassify ${m.id} failed after retries: ${err.message}`);
+      }
     }
   }
   await Promise.all(Array.from({ length: 5 }, worker));
@@ -339,20 +384,24 @@ async function applyAutoExclusions(events) {
     while (index < matches.length) {
       const i = index++;
       const m = matches[i];
-      const res = await fetch(`${SUPABASE_URL}/rest/v1/events?id=eq.${m.id}`, {
-        method: "PATCH",
-        headers: {
-          apikey: SUPABASE_SERVICE_KEY,
-          Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          subcategory: "no-public-interest",
-          // Preserve an audit trail so we can revert if a pattern is too aggressive.
-          original_subcategory: m.subcategory || null,
-        }),
-      });
-      if (res.ok) updated++;
+      try {
+        const res = await fetchWithRetry(`${SUPABASE_URL}/rest/v1/events?id=eq.${m.id}`, {
+          method: "PATCH",
+          headers: {
+            apikey: SUPABASE_SERVICE_KEY,
+            Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            subcategory: "no-public-interest",
+            // Preserve an audit trail so we can revert if a pattern is too aggressive.
+            original_subcategory: m.subcategory || null,
+          }),
+        });
+        if (res.ok) updated++;
+      } catch (err) {
+        console.warn(`  auto-exclude ${m.id} failed after retries: ${err.message}`);
+      }
     }
   }
   await Promise.all(Array.from({ length: 5 }, worker));
@@ -500,7 +549,12 @@ async function main() {
   ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
   SUPABASE_SERVICE_KEY = secrets.SUPABASE_SERVICE_KEY;
 
-  if (!REVERT_MODE && !ANTHROPIC_API_KEY) { console.error("Missing ANTHROPIC_API_KEY"); process.exit(1); }
+  // Anthropic is only needed when we're actually calling Claude. REVERT_MODE
+  // and PREFILTER_ONLY (pattern-based prefilter) don't touch the model and
+  // shouldn't fail when the key is unavailable — important when Supabase's
+  // secrets table is briefly unreachable (Cloudflare 520s, etc.) and we'd
+  // otherwise lose the daily prefilter pass.
+  if (!REVERT_MODE && !PREFILTER_ONLY && !ANTHROPIC_API_KEY) { console.error("Missing ANTHROPIC_API_KEY"); process.exit(1); }
   if (!SUPABASE_SERVICE_KEY) { console.error("Missing SUPABASE_SERVICE_KEY"); process.exit(1); }
 
   if (REVERT_MODE) return await revertClassifications();

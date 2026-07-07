@@ -33,6 +33,15 @@ const SKIP_URL_CHECK = process.env.SKIP_URL_CHECK === "1";
 // Optional state scope (e.g. STATE=NJ). Limits the venue fetch to one state so a
 // new-state run can't touch — or deactivate — venues in already-live states.
 const STATE = (process.env.STATE || "").trim().toUpperCase() || null;
+// Comma-separated city list to scope to a subset within STATE (or globally if
+// no STATE set). Empty = all cities. Useful for onboarding runs that should
+// only touch the venues we just inserted, not the full long-tail of an entire
+// state's Google-discovered rows.
+const CITIES = (process.env.CITIES || "").split(",").map((c) => c.trim()).filter(Boolean);
+// ISO timestamp (e.g. "2026-06-25") — only process venues created on/after.
+// Use for onboarding the most-recently-added venues without touching anything
+// older.
+const CREATED_AFTER = (process.env.CREATED_AFTER || "").trim() || null;
 // When set, never flip is_active=false. For freshly Google-discovered states the
 // default deactivate-on-no-events-page behavior nukes legit venues (bowling,
 // wineries, diners) that simply lack an events calendar. NO_DEACTIVATE keeps any
@@ -247,7 +256,14 @@ async function fetchVenuesNeedingFix() {
   if (STATE) {
     baseUrl += `&state=eq.${encodeURIComponent(STATE)}`;
   }
-  baseUrl += "&order=name.asc";
+  if (CITIES.length) {
+    const quoted = CITIES.map((c) => `"${c.replace(/"/g, '\\"')}"`).join(",");
+    baseUrl += `&city=in.(${encodeURIComponent(quoted)})`;
+  }
+  if (CREATED_AFTER) baseUrl += `&created_at=gte.${encodeURIComponent(CREATED_AFTER)}`;
+  // Highest-public-interest venues first so a bounded budget never starves
+  // flagship venues. Newly-discovered rows (rank=NULL) sort last.
+  baseUrl += "&order=public_interest_rank.desc.nullslast,name.asc";
 
   const allVenues = [];
   let offset = 0;
