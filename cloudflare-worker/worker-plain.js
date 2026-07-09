@@ -26,8 +26,10 @@ var ASSETLINKS = JSON.stringify([{
   }
 }]);
 
-// Smart "get the app" redirect: iOS → App Store, Android → Play Store, else → site.
-// Branded like Local (coral/ink palette, serif heading) + rich link-preview meta.
+// Branded "get the app" page: tap-first store buttons (iOS → App Store,
+// Android → Play Store) + rich link-preview meta. Tap-first, NOT an auto-redirect —
+// in-app browsers (Messages, Instagram, etc.) block a gesture-less store hand-off
+// ("Could not find an appropriate application"); a real tap always resolves.
 var GET_APP_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -86,31 +88,42 @@ var GET_APP_HTML = `<!DOCTYPE html>
       transition:transform .1s ease, box-shadow .1s ease;
     }
     .cta:active{transform:translateY(1px);box-shadow:0 4px 12px rgba(255,107,107,.4)}
-    .hint{margin-top:2px;color:var(--pebble);font-size:13px}
+    .hint{margin-top:2px;font-size:13px}
+    .hint a{color:var(--coral-dk);text-decoration:none;border-bottom:1px solid rgba(232,85,85,.35)}
     .brand{margin-top:auto;padding-top:28px;color:var(--pebble);font-size:12px;letter-spacing:.14em;text-transform:uppercase}
   </style>
 </head>
 <body>
   <div class="wrap">
     <img class="logo" src="https://localapp.live/app-icon.png" alt="Local" width="96" height="96" />
-    <h1>Opening Local…</h1>
-    <p class="sub">Taking you to the right app store for your device.</p>
-    <a id="cta" class="cta" href="#">Get the app</a>
-    <p class="hint">Not redirected automatically? Tap the button above.</p>
+    <h1>Get Local</h1>
+    <p class="sub">The best events, venues, and plans near you — in one app.</p>
+    <a id="cta" class="cta" href="https://localapp.live" rel="noopener">Get the app</a>
+    <p class="hint"><a id="alt" href="https://localapp.live">on another device?</a></p>
     <div class="brand">Local</div>
   </div>
   <script>
     var IOS_URL      = "https://apps.apple.com/us/app/local-app/id6761425705";
-    var ANDROID_URL  = "https://play.google.com/store/apps/details?id=live.localapp.local";
+    var ANDROID_URL  = "https://play.google.com/store/apps/details?id=live.localapp.local&pcampaignid=web_share";
     var WEB_FALLBACK = "https://localapp.live";
-    var ua = navigator.userAgent || navigator.vendor || window.opera;
+    var ua = navigator.userAgent || navigator.vendor || window.opera || "";
     var isIOS = /iPad|iPhone|iPod/.test(ua) ||
                 (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
     var isAndroid = /android/i.test(ua);
-    var target = isIOS ? IOS_URL : isAndroid ? ANDROID_URL : WEB_FALLBACK;
-    document.getElementById("cta").href = target;
-    // Give the branded page a beat to paint before handing off to the store.
-    setTimeout(function(){ window.location.replace(target); }, 900);
+    var cta = document.getElementById("cta");
+    var alt = document.getElementById("alt");
+    // Tap-first: an in-app browser blocks a gesture-less store hand-off, so we set
+    // real anchor hrefs and let the user's tap do the navigation (that always works).
+    if (isIOS) {
+      cta.href = IOS_URL;      cta.textContent = "Download on the App Store";
+      alt.href = ANDROID_URL;  alt.textContent = "On Android? Get it on Google Play";
+    } else if (isAndroid) {
+      cta.href = ANDROID_URL;  cta.textContent = "Get it on Google Play";
+      alt.href = IOS_URL;      alt.textContent = "On iPhone? Download on the App Store";
+    } else {
+      cta.href = IOS_URL;      cta.textContent = "Download on the App Store";
+      alt.href = ANDROID_URL;  alt.textContent = "Get it on Google Play";
+    }
   </script>
 </body>
 </html>`;
