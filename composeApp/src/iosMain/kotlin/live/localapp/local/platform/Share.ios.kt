@@ -95,6 +95,14 @@ actual fun logOutRevenueCatUser() {
     live.localapp.local.RevenueCatBridge.logOut?.invoke()
 }
 
+actual fun identifyPushUser(appUserId: String) {
+    live.localapp.local.PushBridge.login?.invoke(appUserId)
+}
+
+actual fun clearPushUser() {
+    live.localapp.local.PushBridge.logout?.invoke()
+}
+
 actual fun fetchSubscriptionPricing(onResult: (String?, String?, String?) -> Unit) {
     live.localapp.local.RevenueCatBridge.fetchPricing?.invoke(onResult) ?: onResult(null, null, null)
 }
@@ -132,6 +140,14 @@ actual fun areNotificationsEnabled(onResult: (Boolean) -> Unit) {
 }
 
 actual fun requestNotificationPermission(onResult: (Boolean) -> Unit) {
+    // Prefer OneSignal's prompt (Swift, via the bridge) so a grant registers the
+    // device for remote notifications and mints an APNs/OneSignal token. Fall
+    // back to raw UNUserNotificationCenter only if the bridge isn't wired yet.
+    val viaOneSignal = live.localapp.local.PushBridge.requestPermission
+    if (viaOneSignal != null) {
+        viaOneSignal(onResult)
+        return
+    }
     val center = platform.UserNotifications.UNUserNotificationCenter.currentNotificationCenter()
     center.requestAuthorizationWithOptions(
         platform.UserNotifications.UNAuthorizationOptionAlert or

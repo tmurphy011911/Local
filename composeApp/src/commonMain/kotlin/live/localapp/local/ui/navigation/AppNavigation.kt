@@ -129,6 +129,7 @@ import live.localapp.local.platform.setTabBarUserInitial
 import live.localapp.local.platform.requestHeroCollapse
 import live.localapp.local.platform.checkSubscriptionStatus
 import live.localapp.local.platform.identifyRevenueCatUser
+import live.localapp.local.platform.identifyPushUser
 import live.localapp.local.platform.purchaseSubscription
 import live.localapp.local.platform.presentShareSheet
 import live.localapp.local.platform.showNativePlanDetail
@@ -383,6 +384,10 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             // the anonymous per-device id. logIn returns the identified user's
             // status, so no separate check is needed.
             identifyRevenueCatUser(currentUserId) { isPro, expiry -> applyStatus(isPro, expiry) }
+            // Associate the OneSignal device with this user (external id = uid) so
+            // the push evaluator can target them. No-op on iOS until the Swift
+            // PushBridge is wired; harmless before then.
+            identifyPushUser(currentUserId)
         } else {
             checkSubscriptionStatus { isPro, expiryDate -> applyStatus(isPro, expiryDate) }
         }

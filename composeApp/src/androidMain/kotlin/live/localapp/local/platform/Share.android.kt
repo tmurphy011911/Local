@@ -12,6 +12,10 @@ import com.revenuecat.purchases.logInWith
 import com.revenuecat.purchases.logOutWith
 import com.revenuecat.purchases.purchaseWith
 import com.revenuecat.purchases.restorePurchasesWith
+import com.onesignal.OneSignal
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 actual fun presentShareSheet(text: String, url: String) {
     val activity = live.localapp.local.ActivityProvider.activity ?: return
@@ -261,19 +265,23 @@ actual fun areNotificationsEnabled(onResult: (Boolean) -> Unit) {
     onResult(androidx.core.app.NotificationManagerCompat.from(activity).areNotificationsEnabled())
 }
 
+actual fun identifyPushUser(appUserId: String) {
+    OneSignal.login(appUserId)
+}
+
+actual fun clearPushUser() {
+    OneSignal.logout()
+}
+
 actual fun requestNotificationPermission(onResult: (Boolean) -> Unit) {
-    val activity = live.localapp.local.ActivityProvider.activity
-    if (activity == null) { onResult(false); return }
-    if (android.os.Build.VERSION.SDK_INT >= 33) {
-        val granted = androidx.core.content.ContextCompat.checkSelfPermission(
-            activity, android.Manifest.permission.POST_NOTIFICATIONS
-        ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-        if (granted) { onResult(true); return }
-        androidx.core.app.ActivityCompat.requestPermissions(
-            activity, arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001,
-        )
-        onResult(false)
-    } else {
-        onResult(true)
+    // Route through OneSignal instead of the raw POST_NOTIFICATIONS request so
+    // that granting also subscribes the device with OneSignal (registers a push
+    // token) — a bare OS grant wouldn't. requestPermission() is a suspend fn
+    // that shows the OS prompt and returns whether it was granted;
+    // fallbackToSettings=true sends a previously-denied user to Settings.
+    // OneSignal is initialized at launch (MainActivity), so it's ready here.
+    CoroutineScope(Dispatchers.Main).launch {
+        val granted = OneSignal.Notifications.requestPermission(true)
+        onResult(granted)
     }
 }

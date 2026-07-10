@@ -12,6 +12,7 @@ import androidx.compose.ui.semantics.testTagsAsResourceId
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.core.view.WindowCompat
+import com.onesignal.OneSignal
 import com.revenuecat.purchases.LogLevel
 import com.revenuecat.purchases.Purchases
 import com.revenuecat.purchases.PurchasesConfiguration
@@ -63,6 +64,21 @@ class MainActivity : ComponentActivity() {
                     .build()
             )
         }
+
+        // Configure OneSignal (push). initWithContext registers the device with
+        // OneSignal; a push token is only obtained once the OS notification
+        // permission is granted, which we request from the onboarding
+        // "Turn on notifications" screen (not at launch). A notification tap
+        // carries a `path` in additionalData that routes through the existing
+        // deep-link handler, same as a universal link.
+        if (BuildConfig.DEBUG) OneSignal.Debug.logLevel = com.onesignal.debug.LogLevel.VERBOSE
+        OneSignal.initWithContext(this, Config.ONESIGNAL_APP_ID)
+        OneSignal.Notifications.addClickListener(object : com.onesignal.notifications.INotificationClickListener {
+            override fun onClick(event: com.onesignal.notifications.INotificationClickEvent) {
+                val path = event.notification.additionalData?.optString("path").orEmpty()
+                if (path.isNotBlank()) DeepLinkHandler.pendingPath = path
+            }
+        })
 
         setContent {
             // Expose Compose testTags as Android resource-ids so Maestro (and any

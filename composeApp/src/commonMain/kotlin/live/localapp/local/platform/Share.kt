@@ -40,6 +40,16 @@ expect fun identifyRevenueCatUser(appUserId: String, onResult: (Boolean, String?
 /** Reset RevenueCat back to an anonymous id (call on sign-out). */
 expect fun logOutRevenueCatUser()
 
+/**
+ * Associate the OneSignal device with the authenticated user so pushes can be
+ * targeted by Supabase uid (external_user_id = uid). Call on sign-in, alongside
+ * [identifyRevenueCatUser].
+ */
+expect fun identifyPushUser(appUserId: String)
+
+/** Reset OneSignal to an anonymous device (call on sign-out, alongside [logOutRevenueCatUser]). */
+expect fun clearPushUser()
+
 /** Request OS-level push notification permission. Callback receives whether granted. */
 expect fun requestNotificationPermission(onResult: (Boolean) -> Unit)
 
