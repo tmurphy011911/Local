@@ -115,26 +115,31 @@ var GET_APP_HTML = `<!DOCTYPE html>
     <div class="brand">Local</div>
   </div>
   <script>
-    var IOS_URL      = "https://apps.apple.com/us/app/local-app/id6761425705";
-    var ANDROID_URL  = "https://play.google.com/store/apps/details?id=live.localapp.local&pcampaignid=web_share";
-    var WEB_FALLBACK = "https://localapp.live";
+    var PKG      = "live.localapp.local";
+    var IOS_URL  = "https://apps.apple.com/us/app/local-app/id6761425705";
+    var PLAY_WEB = "https://play.google.com/store/apps/details?id=" + PKG + "&pcampaignid=web_share";
+    // intent:// launches the Play Store app directly (with an https fallback baked in)
+    // so it survives in-app browsers (Messages, Instagram) that refuse to hand a plain
+    // play.google.com link to the Play app — the "Could not find an appropriate
+    // application" case.
+    var PLAY_APP = "intent://details?id=" + PKG + "&pcampaignid=web_share" +
+                   "#Intent;scheme=market;package=com.android.vending;" +
+                   "S.browser_fallback_url=" + encodeURIComponent(PLAY_WEB) + ";end";
     var ua = navigator.userAgent || navigator.vendor || window.opera || "";
     var isIOS = /iPad|iPhone|iPod/.test(ua) ||
                 (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
     var isAndroid = /android/i.test(ua);
     var cta = document.getElementById("cta");
     var alt = document.getElementById("alt");
-    // Tap-first: an in-app browser blocks a gesture-less store hand-off, so we set
-    // real anchor hrefs and let the user's tap do the navigation (that always works).
     if (isIOS) {
-      cta.href = IOS_URL;      cta.textContent = "Download on the App Store";
-      alt.href = ANDROID_URL;  alt.textContent = "On Android? Get it on Google Play";
+      cta.href = IOS_URL;   cta.textContent = "Download on the App Store";
+      alt.href = PLAY_WEB;  alt.textContent = "On Android? Get it on Google Play";
     } else if (isAndroid) {
-      cta.href = ANDROID_URL;  cta.textContent = "Get it on Google Play";
-      alt.href = IOS_URL;      alt.textContent = "On iPhone? Download on the App Store";
+      cta.href = PLAY_APP;  cta.textContent = "Get it on Google Play";
+      alt.href = PLAY_WEB;  alt.textContent = "Trouble? Open Google Play in your browser";
     } else {
-      cta.href = IOS_URL;      cta.textContent = "Download on the App Store";
-      alt.href = ANDROID_URL;  alt.textContent = "Get it on Google Play";
+      cta.href = IOS_URL;   cta.textContent = "Download on the App Store";
+      alt.href = PLAY_WEB;  alt.textContent = "Get it on Google Play";
     }
   </script>
 </body>
@@ -213,7 +218,7 @@ export default {
       if (path === "/get" || path === "/app" || path === "/download") {
         route = "get_app";
         const resp = new Response(GET_APP_HTML, {
-          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" }
+          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300" }
         });
         status = resp.status;
         return resp;
