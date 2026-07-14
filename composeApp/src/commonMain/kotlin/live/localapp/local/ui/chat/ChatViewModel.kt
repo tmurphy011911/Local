@@ -3431,12 +3431,23 @@ class ChatViewModel(
             )
         }
 
+        // Bo must never surface a result it can't place on the map. An event
+        // with no coordinates can't be distance-ranked, shown on the results
+        // map, or reliably located, so it's worse than not showing it at all.
+        // Drop any event lacking BOTH a venue and an event lat/lng up front —
+        // before caching, display, and the coverage counts below — so it never
+        // reaches Bo or the user. (Coords resolve as venue-first, falling back
+        // to the event's own, mirroring the narration filter further down.)
+        val geolocated = rawEvents.filter { e ->
+            (e.venueLat ?: e.eventLat) != null && (e.venueLng ?: e.eventLng) != null
+        }
+
         // Drop events at rank <= 10 venues (community centers, K-12 fields,
         // junk listings). Matches the same global floor the Explore and
         // carousels surfaces enforce — Yocal should never recommend venues
         // the user can't actually discover elsewhere in the app.
         val lowRankNames = venueRepo.getLowRankVenueNames()
-        val cleaned = if (lowRankNames.isEmpty()) rawEvents else rawEvents.filter { e ->
+        val cleaned = if (lowRankNames.isEmpty()) geolocated else geolocated.filter { e ->
             val vn = e.venueName?.trim()?.lowercase() ?: return@filter true
             val normalized = vn.removePrefix("the ").replace(Regex("[^a-z0-9\\s]"), "").trim()
             vn !in lowRankNames && normalized !in lowRankNames
@@ -3672,7 +3683,9 @@ class ChatViewModel(
             userLat = scopeLat,
             userLng = scopeLng,
             radiusMiles = if (haveCoords) state.searchRadiusMiles else null,
-        )
+        ).filter { it.latitude != null && it.longitude != null }
+        // ^ Bo must never surface a venue it can't place on the map — same
+        //   coordinate-integrity rule as searchEvents. Drop coordless venues.
 
         return venues.joinToString("\n") { v ->
             val cat = v.category ?: v.placeType ?: ""

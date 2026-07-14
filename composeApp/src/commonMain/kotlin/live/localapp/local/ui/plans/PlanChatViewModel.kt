@@ -682,6 +682,12 @@ class PlanChatViewModel(
                     ec == target || ec.contains(target) || target.contains(ec)
                 }
             } else rawEvents
+        }.filter { e ->
+            // Bo must never surface a result it can't place on the map — an
+            // event with no coordinates can't be distance-ranked or located,
+            // so drop any lacking BOTH a venue and an event lat/lng. Same
+            // coordinate-integrity rule as the create-plan chat surface.
+            (e.venueLat ?: e.eventLat) != null && (e.venueLng ?: e.eventLng) != null
         }
 
         events.forEach { searchResultCache[it.id] = it }
@@ -712,7 +718,9 @@ class PlanChatViewModel(
             category = category,
             keyword = keyword,
             limit = limit,
-        )
+        ).filter { it.latitude != null && it.longitude != null }
+        // ^ Bo must never surface a venue it can't place on the map — drop
+        //   coordless venues, same rule as searchEvents.
         if (venues.isEmpty()) return "No venues found."
         return buildString {
             venues.forEach { v ->
