@@ -211,13 +211,31 @@ export default {
         // link, which in-app browsers like Google Messages block). Desktop sees the
         // page. Vary + no-store so a per-UA response is never cached for another UA.
         var ua = request.headers.get("User-Agent") || "";
+        // Optional source tag for attribution: /get?s=instagram (also accepts
+        // src / source / utm_source). Sanitized to a short slug; "direct" if absent.
+        var srcRaw = url.searchParams.get("s") || url.searchParams.get("src") ||
+                     url.searchParams.get("source") || url.searchParams.get("utm_source") || "";
+        var source = srcRaw.toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 40) || "direct";
         var isBot = /(bot|crawler|spider|preview|facebookexternalhit|facebot|whatsapp|telegram|slack|discord|linkedin|embedly|pinterest|redditbot|applebot|skype|twitter|vkshare|googlebot|google-inspectiontool|bingbot|okhttp|iframely|snapchat)/i.test(ua);
         var goAndroid = !isBot && /android/i.test(ua);
         var goIOS = !isBot && /iphone|ipad|ipod/i.test(ua);
         if (goAndroid || goIOS) {
-          var dest = goAndroid
-            ? "https://play.google.com/store/apps/details?id=live.localapp.local&pcampaignid=web_share"
-            : "https://apps.apple.com/us/app/local-app/id6761425705";
+          var store = goAndroid ? "android" : "ios";
+          var dest;
+          if (goAndroid) {
+            // referrer carries the source to the app post-install via the Play
+            // Install Referrer API (needs app-side reading to attribute installs).
+            dest = "https://play.google.com/store/apps/details?id=live.localapp.local" +
+                   "&pcampaignid=web_share&referrer=" +
+                   encodeURIComponent("utm_source=" + source + "&utm_medium=share");
+          } else {
+            // ct = App Store Connect campaign token (surfaces in App Analytics).
+            dest = "https://apps.apple.com/us/app/local-app/id6761425705?ct=" +
+                   encodeURIComponent(source);
+          }
+          // Attribution click — real users only, never crawler preview fetches. Fresh
+          // distinct_id per tap so PostHog can count unique taps broken down by source.
+          track("get_app_click", { source: source, store: store }, crypto.randomUUID(), ctx);
           const redir = new Response(null, {
             status: 302,
             headers: { "Location": dest, "Cache-Control": "no-store", "Vary": "User-Agent" }
