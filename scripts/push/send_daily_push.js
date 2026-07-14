@@ -327,7 +327,8 @@ async function treeForDay(day, ctx) {
     case "tue": return [A, await buildDiscoveryFomo(ctx), await buildDailyLocalSocialProof(ctx)];
     case "thu": return [A, await buildSavedVenueWeekend(), await buildTasteWeekend(ctx)]; // F falls back to C internally; E is Sun-only
     case "fri": return [A, await buildSavedEventSoon("weekend_edge")];
-    // mon/wed/sat: silent except A (utility).
+    // mon/wed/sat: only the plan reminder, and it's gated (main() drops it for
+    // users who logged in today) — so A reaches only inactive users with a plan.
     default:   return [A];
   }
 }
@@ -342,11 +343,14 @@ async function main() {
   const day = WEEKDAYS.includes(DAY_OVERRIDE) ? DAY_OVERRIDE : easternWeekday();
   console.log(`[push] day=${day}  env=${SUPABASE_URL.includes("xbyqwe") ? "DEV" : "PROD"}  mode=${SEND ? "SEND" : "DRY-RUN"}`);
 
-  // Load shared context only on days with non-A leaves.
+  // Load shared context. Active days need everything; silent days (mon/wed/sat)
+  // still need the activity map to gate the plan reminder.
   let ctx = { profiles: new Map(), activity: new Map(), playedToday: new Set(), topScoreByState: new Map(), streaks: new Map() };
   if (["sun", "tue", "thu", "fri"].includes(day)) {
     const [profiles, activity, dl] = await Promise.all([loadProfiles(), loadActivity(), loadDailyLocal()]);
     ctx = { profiles, activity, ...dl };
+  } else if (["mon", "wed", "sat"].includes(day)) {
+    ctx.activity = await loadActivity();
   }
 
   const layers = await treeForDay(day, ctx);
@@ -359,12 +363,16 @@ async function main() {
     }
   }
 
-  // Activity gate: drop non-A leaves for users active within the day's window
-  // (A = utility, never gated; Thu = weekend preview, deliberately ungated).
-  const gateDays = { sun: 1, fri: 2, tue: 7 };
+  // Activity gate: drop leaves for users active within the day's window. A (plan
+  // reminder) is EXEMPT on the active days (sun/tue/thu/fri) but IS gated on the
+  // SILENT days (mon/wed/sat) — there we only nudge users who didn't open the app
+  // today, and A is the only leaf. Thu has no gate (weekend preview for everyone).
+  const gateDays = { sun: 1, mon: 1, tue: 7, wed: 1, fri: 2, sat: 1 };
+  const silentDays = ["mon", "wed", "sat"];
   if (gateDays[day]) {
     for (const [uid, n] of [...chosen]) {
-      if (n.type !== "A" && isActive(ctx.activity, uid, gateDays[day])) chosen.delete(uid);
+      const gated = n.type !== "A" || silentDays.includes(day);
+      if (gated && isActive(ctx.activity, uid, gateDays[day])) chosen.delete(uid);
     }
   }
 
