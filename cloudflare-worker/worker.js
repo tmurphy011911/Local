@@ -217,8 +217,28 @@ export default {
 
       if (path === "/get" || path === "/app" || path === "/download") {
         route = "get_app";
+        // Server-side store redirect. Link-preview crawlers get the HTML so the rich
+        // card still unfurls; real mobile browsers are 302'd straight to their store
+        // (an HTTP redirect hands off to the store app more reliably than an in-page
+        // link, which in-app browsers like Google Messages block). Desktop sees the
+        // page. Vary + no-store so a per-UA response is never cached for another UA.
+        var ua = request.headers.get("User-Agent") || "";
+        var isBot = /(bot|crawler|spider|preview|facebookexternalhit|facebot|whatsapp|telegram|slack|discord|linkedin|embedly|pinterest|redditbot|applebot|skype|twitter|vkshare|googlebot|google-inspectiontool|bingbot|okhttp|iframely|snapchat)/i.test(ua);
+        var goAndroid = !isBot && /android/i.test(ua);
+        var goIOS = !isBot && /iphone|ipad|ipod/i.test(ua);
+        if (goAndroid || goIOS) {
+          var dest = goAndroid
+            ? "https://play.google.com/store/apps/details?id=live.localapp.local&pcampaignid=web_share"
+            : "https://apps.apple.com/us/app/local-app/id6761425705";
+          const redir = new Response(null, {
+            status: 302,
+            headers: { "Location": dest, "Cache-Control": "no-store", "Vary": "User-Agent" }
+          });
+          status = redir.status;
+          return redir;
+        }
         const resp = new Response(GET_APP_HTML, {
-          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=300" }
+          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Vary": "User-Agent" }
         });
         status = resp.status;
         return resp;
