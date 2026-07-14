@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.imePadding
@@ -365,9 +366,11 @@ private fun PhoneInputContent(
             }
         }
 
-        // Bottom button
+        // Bottom button \u2014 pad for the iOS home-indicator / nav-bar safe area.
         Column(
-            modifier = Modifier.padding(horizontal = 28.dp, vertical = 28.dp),
+            modifier = Modifier
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(horizontal = 28.dp, vertical = 20.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             AuthButton(
@@ -438,6 +441,7 @@ private fun OtpVerificationContent(
         Column(
             modifier = Modifier
                 .weight(1f)
+                .verticalScroll(rememberScrollState())
                 .padding(horizontal = 28.dp),
         ) {
             Spacer(Modifier.height(32.dp))
@@ -583,9 +587,12 @@ private fun OtpVerificationContent(
             )
         }
 
-        // Bottom button
+        // Bottom button \u2014 pad for the iOS home-indicator / nav-bar safe area so it
+        // isn't clipped at the bottom edge.
         Column(
-            modifier = Modifier.padding(horizontal = 28.dp, vertical = 28.dp),
+            modifier = Modifier
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(horizontal = 28.dp, vertical = 20.dp),
         ) {
             AuthButton(
                 text = if (isLoading) "Verifying..." else "Verify \u2192",
