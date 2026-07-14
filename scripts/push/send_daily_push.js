@@ -80,6 +80,28 @@ function easternWeekday() {
   return wd;
 }
 
+/** Date boundary (UTC midnight) of the ET calendar date today+days, for start_at
+ * comparisons. UTC (not ET) offset on purpose: date-only events are stamped at
+ * 00:00 UTC, so a UTC boundary includes them; timed events shift at most a few
+ * hours. Fine while all live states are Eastern; see TIMEZONE note. */
+function dateBoundaryISO(days = 0) {
+  return `${isoDateEastern(days)}T00:00:00Z`; // Z, not +00:00 — the + decodes to a space in a query string
+}
+
+/** "Thursday at 7pm" for a timed event, or just "Thursday" for a date-only one
+ * (time_known=false, stamped at 00:00 UTC — rendering a time would be wrong, and
+ * the day must come from the UTC date, not ET, or it lands a day early). */
+function formatDayTime(startAt, timeKnown) {
+  const d = new Date(startAt);
+  if (!timeKnown) {
+    return new Intl.DateTimeFormat("en-US", { timeZone: "UTC", weekday: "long" }).format(d);
+  }
+  const day = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", weekday: "long" }).format(d);
+  const time = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit", hour12: true })
+    .format(d).toLowerCase().replace(":00", "").replace(" ", "");
+  return `${day} at ${time}`;
+}
+
 // --- notification builders ----------------------------------------------------
 // Each returns Map<uid, { title, body, path, dedupeKey, type }>. Priority is the
 // ARRAY ORDER in the per-day tree below; first match per uid wins.
@@ -105,29 +127,205 @@ async function buildPlanReminders() {
   return out;
 }
 
-// --- TODO: builders below need their targeting queries verified against the
-// live dev schema (events start_at/category/is_active/coords; community_interactions
-// entity columns; user_taste_profiles.category_scores; quiz_completions; auth
-// last_sign_in_at for the activity gate; user_profiles home_state + lat/lng +
-// 10-mi radius). Stubbed to return no recipients so the engine runs end-to-end
-// with A today; filled in next, notification by notification.
-async function buildSavedEventSoon(_window) { return new Map(); }        // D
-async function buildDiscoveryFomo() { return new Map(); }                // B
-async function buildDailyLocalSocialProof() { return new Map(); }        // C  (needs Daily Local shipped)
-async function buildDailyLocalReminder() { return new Map(); }           // E  (needs Daily Local shipped)
-async function buildTasteWeekend() { return new Map(); }                 // F
-async function buildSavedVenueWeekend() { return new Map(); }            // G
+/**
+ * D — saved event happening soon. Sun window = next 7 days; Fri window =
+ * tonight..Sunday. Saved events are community_interactions favorite/event
+ * (item_id = events.id). Copy: "{Event} is almost here / {Day} at {Time}. Bringing Bo?"
+ */
+async function buildSavedEventSoon(window) {
+  const start = dateBoundaryISO(0);
+  const end = window === "weekend_edge" ? dateBoundaryISO(3) : dateBoundaryISO(8); // Fri: Fri–Sun; Sun: next 7d
+  const favs = await sbGet(`community_interactions?interaction_type=eq.favorite&item_type=eq.event&select=user_id,item_id`);
+  if (favs.length === 0) return new Map();
+  const ids = [...new Set(favs.map((f) => f.item_id))];
+  const events = await sbGet(`events?id=in.(${ids.join(",")})&is_active=eq.true&start_at=gte.${start}&start_at=lt.${end}&select=id,title,start_at,time_known`);
+  const evById = new Map(events.map((e) => [e.id, e]));
+  const soonest = new Map(); // uid -> soonest saved event in window
+  for (const f of favs) {
+    const e = evById.get(f.item_id);
+    if (!e) continue;
+    const cur = soonest.get(f.user_id);
+    if (!cur || e.start_at < cur.start_at) soonest.set(f.user_id, e);
+  }
+  const out = new Map();
+  for (const [uid, e] of soonest) {
+    out.set(uid, {
+      type: "D",
+      title: `${e.title} is almost here`,
+      body: `${formatDayTime(e.start_at, e.time_known)}. Bringing Bo?`,
+      path: `/e/${e.id}`,
+      dedupeKey: `D:event:${e.id}:${isoDateEastern(0)}`,
+    });
+  }
+  return out;
+}
+
+/**
+ * G — a favorited venue has events this weekend (Thu–Sun). Favorites are
+ * community_interactions favorite/place (item_id = venues.id); events join by
+ * venue_name (events carry no venue_id). Copy: "Bo has something at {Venue}
+ * this weekend / {Event}{ + N more}".
+ */
+async function buildSavedVenueWeekend() {
+  const start = dateBoundaryISO(0), end = dateBoundaryISO(4); // Thu..Sun
+  const favs = await sbGet(`community_interactions?interaction_type=eq.favorite&item_type=eq.place&select=user_id,item_id`);
+  if (favs.length === 0) return new Map();
+  const vIds = [...new Set(favs.map((f) => f.item_id))];
+  const venues = await sbGet(`venues?id=in.(${vIds.join(",")})&select=id,name`);
+  const vById = new Map(venues.map((v) => [v.id, v]));
+  const byUser = new Map(); // uid -> [venueId...]
+  for (const f of favs) {
+    if (!byUser.has(f.user_id)) byUser.set(f.user_id, []);
+    byUser.get(f.user_id).push(f.item_id);
+  }
+  const out = new Map();
+  for (const [uid, vids] of byUser) {
+    for (const vid of vids) {
+      const v = vById.get(vid);
+      if (!v) continue;
+      const evs = await sbGet(`events?venue_name=eq.${encodeURIComponent(v.name)}&is_active=eq.true&start_at=gte.${start}&start_at=lt.${end}&select=id,title&order=start_at.asc&limit=6`);
+      if (evs.length > 0) {
+        const more = evs.length > 1 ? ` + ${evs.length - 1} more` : "";
+        out.set(uid, {
+          type: "G",
+          title: `Bo has something at ${v.name} this weekend`,
+          body: `${evs[0].title}${more}`,
+          path: `/v/${v.id}`,
+          dedupeKey: `G:venue:${v.id}:${isoDateEastern(0)}`,
+        });
+        break; // one G per user
+      }
+    }
+  }
+  return out;
+}
+
+// Shared context (loaded once in main, passed to the builders that need it).
+async function loadProfiles() {
+  const rows = await sbGet(`user_profiles?onboarding_complete=eq.true&select=id,selected_categories,user_lat,user_lng,manual_lat,manual_lng,location_mode,home_state`);
+  return new Map(rows.map((r) => [r.id, r]));
+}
+async function loadActivity() {
+  // last_sign_in_at per user via the auth admin API (paged). Powers the gate.
+  const map = new Map();
+  for (let page = 1; ; page++) {
+    const res = await fetch(`${SUPABASE_URL}/auth/v1/admin/users?page=${page}&per_page=1000`, {
+      headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` },
+    });
+    const users = (await res.json()).users || [];
+    for (const u of users) if (u.last_sign_in_at) map.set(u.id, new Date(u.last_sign_in_at));
+    if (users.length < 1000) break;
+  }
+  return map;
+}
+async function loadDailyLocal() {
+  const today = isoDateEastern(0);
+  const rows = await sbGet(`quiz_completions?quiz_date=eq.${today}&select=user_id,state,score`);
+  const playedToday = new Set(rows.map((r) => r.user_id));
+  const topScoreByState = new Map();
+  for (const r of rows) {
+    if (r.state == null) continue;
+    const cur = topScoreByState.get(r.state);
+    if (cur == null || r.score > cur) topScoreByState.set(r.state, r.score);
+  }
+  // latest streak per user (most recent completion)
+  const recent = await sbGet(`quiz_completions?select=user_id,streak,quiz_date&order=quiz_date.desc&limit=2000`);
+  const streaks = new Map();
+  for (const r of recent) if (!streaks.has(r.user_id)) streaks.set(r.user_id, r.streak || 0);
+  return { playedToday, topScoreByState, streaks };
+}
+function userLatLng(p) {
+  if (p.location_mode === "manual" && p.manual_lat != null) return { lat: p.manual_lat, lng: p.manual_lng };
+  if (p.user_lat != null) return { lat: p.user_lat, lng: p.user_lng };
+  return null;
+}
+function topCategory(p) {
+  const cats = Array.isArray(p.selected_categories) ? p.selected_categories : [];
+  return cats.length ? cats[0] : null;
+}
+function isActive(activity, uid, withinDays) {
+  const last = activity.get(uid);
+  return last ? Date.now() - last.getTime() <= withinDays * 86400000 : false;
+}
+/** exact count of `cat` events within ~10mi of (lat,lng) in [start,end).
+ * Filters on venue_lat/venue_lng — event_lat/event_lng are null across the table;
+ * venue coords are the populated geo field (matches the carousel geo queries). */
+async function tasteEventCount(cat, lat, lng, start, end) {
+  const dLat = 10 / 69, dLng = 10 / (69 * Math.cos((lat * Math.PI) / 180));
+  const box = `venue_lat=gte.${(lat - dLat).toFixed(4)}&venue_lat=lte.${(lat + dLat).toFixed(4)}&venue_lng=gte.${(lng - dLng).toFixed(4)}&venue_lng=lte.${(lng + dLng).toFixed(4)}`;
+  const res = await fetch(
+    `${SUPABASE_URL}/rest/v1/events?category=eq.${encodeURIComponent(cat)}&is_active=eq.true&start_at=gte.${start}&start_at=lt.${end}&${box}&select=id`,
+    { headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, Prefer: "count=exact", Range: "0-0" } },
+  );
+  const cr = res.headers.get("content-range"); // "0-0/<total>" or "*/<total>"
+  return cr ? parseInt(cr.split("/")[1], 10) || 0 : 0;
+}
+/** C — Daily Local social-proof, void if the user already played today or has no state high score. */
+function buildCFor(uid, p, ctx) {
+  if (ctx.playedToday.has(uid)) return null;
+  const top = ctx.topScoreByState.get(p.home_state);
+  if (top == null) return null;
+  return { type: "C", title: `Score to beat: ${top} 💛`, body: "Unfortunately, Bo says you don't stand a chance", dedupeKey: `C:${uid}:${isoDateEastern(0)}` };
+}
+
+/** B — discovery/FOMO (Tue): >=3 taste events within 10mi this week, else fall back to C. */
+async function buildDiscoveryFomo(ctx) {
+  const start = dateBoundaryISO(0), end = dateBoundaryISO(8);
+  const out = new Map();
+  for (const [uid, p] of ctx.profiles) {
+    const loc = userLatLng(p), cat = topCategory(p);
+    if (loc && cat) {
+      const n = await tasteEventCount(cat, loc.lat, loc.lng, start, end);
+      if (n >= 3) { out.set(uid, { type: "B", title: "Bo's been busy", body: `${n} ${cat} events within 10 miles of you this week`, dedupeKey: `B:${uid}:${isoDateEastern(0)}` }); continue; }
+    }
+    const c = buildCFor(uid, p, ctx);
+    if (c) out.set(uid, c);
+  }
+  return out;
+}
+/** C standalone (Tue leaf). */
+async function buildDailyLocalSocialProof(ctx) {
+  const out = new Map();
+  for (const [uid, p] of ctx.profiles) { const c = buildCFor(uid, p, ctx); if (c) out.set(uid, c); }
+  return out;
+}
+/** E — Daily Local reminder (Sun): users who haven't played today. */
+async function buildDailyLocalReminder(ctx) {
+  const out = new Map();
+  for (const [uid, p] of ctx.profiles) {
+    if (ctx.playedToday.has(uid)) continue;
+    const streak = ctx.streaks.get(uid) || 0;
+    const clause = streak > 0 ? ` — keep your ${streak}-day streak alive` : "";
+    out.set(uid, { type: "E", title: "Today's Daily Local is live 💛", body: `3 questions, 30 seconds. Bo bets you can't go 3/3${clause}`, dedupeKey: `E:${uid}:${isoDateEastern(0)}` });
+  }
+  return out;
+}
+/** F — taste weekend events (Thu): >=3 within 10mi Thu–Sun, else fall back to C. */
+async function buildTasteWeekend(ctx) {
+  const start = dateBoundaryISO(0), end = dateBoundaryISO(4);
+  const out = new Map();
+  for (const [uid, p] of ctx.profiles) {
+    const loc = userLatLng(p), cat = topCategory(p);
+    if (loc && cat) {
+      const n = await tasteEventCount(cat, loc.lat, loc.lng, start, end);
+      if (n >= 3) { out.set(uid, { type: "F", title: "Bo says you're welcome", body: `${n} ${cat} events within 10 miles of you this weekend`, dedupeKey: `F:${uid}:${isoDateEastern(0)}` }); continue; }
+    }
+    const c = buildCFor(uid, p, ctx);
+    if (c) out.set(uid, c);
+  }
+  return out;
+}
 
 // --- per-weekday priority trees (first non-empty match per user wins) ---------
 // A is prepended to every day (ungated utility). Activity-gate + B/F->C fallback
 // live inside the individual builders once implemented.
 
-async function treeForDay(day) {
+async function treeForDay(day, ctx) {
   const A = await buildPlanReminders();
   switch (day) {
-    case "sun": return [A, await buildSavedEventSoon("this_week"), await buildDailyLocalReminder()];
-    case "tue": return [A, await buildDiscoveryFomo(), await buildDailyLocalSocialProof()];
-    case "thu": return [A, await buildSavedVenueWeekend(), await buildTasteWeekend(), await buildDailyLocalReminder()];
+    case "sun": return [A, await buildSavedEventSoon("this_week"), await buildDailyLocalReminder(ctx)];
+    case "tue": return [A, await buildDiscoveryFomo(ctx), await buildDailyLocalSocialProof(ctx)];
+    case "thu": return [A, await buildSavedVenueWeekend(), await buildTasteWeekend(ctx)]; // F falls back to C internally; E is Sun-only
     case "fri": return [A, await buildSavedEventSoon("weekend_edge")];
     // mon/wed/sat: silent except A (utility).
     default:   return [A];
@@ -144,13 +342,29 @@ async function main() {
   const day = WEEKDAYS.includes(DAY_OVERRIDE) ? DAY_OVERRIDE : easternWeekday();
   console.log(`[push] day=${day}  env=${SUPABASE_URL.includes("xbyqwe") ? "DEV" : "PROD"}  mode=${SEND ? "SEND" : "DRY-RUN"}`);
 
-  const layers = await treeForDay(day);
+  // Load shared context only on days with non-A leaves.
+  let ctx = { profiles: new Map(), activity: new Map(), playedToday: new Set(), topScoreByState: new Map(), streaks: new Map() };
+  if (["sun", "tue", "thu", "fri"].includes(day)) {
+    const [profiles, activity, dl] = await Promise.all([loadProfiles(), loadActivity(), loadDailyLocal()]);
+    ctx = { profiles, activity, ...dl };
+  }
+
+  const layers = await treeForDay(day, ctx);
 
   // First-match-per-user wins (layers are in priority order).
   const chosen = new Map();
   for (const layer of layers) {
     for (const [uid, notif] of layer) {
       if (!chosen.has(uid)) chosen.set(uid, notif);
+    }
+  }
+
+  // Activity gate: drop non-A leaves for users active within the day's window
+  // (A = utility, never gated; Thu = weekend preview, deliberately ungated).
+  const gateDays = { sun: 1, fri: 2, tue: 7 };
+  if (gateDays[day]) {
+    for (const [uid, n] of [...chosen]) {
+      if (n.type !== "A" && isActive(ctx.activity, uid, gateDays[day])) chosen.delete(uid);
     }
   }
 
