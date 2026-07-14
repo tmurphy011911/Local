@@ -340,7 +340,12 @@ fun ProgressScreen(
 
                 // ── Support & Info ──
                 SupportSection(
-                    onRateApp = { live.localapp.local.platform.requestAppReview() },
+                    // A user-initiated "Rate Local" tap must open the store review composer.
+                    // requestAppReview() is the silent, system-rate-limited API (Apple forbids
+                    // tying it to a button) and usually shows nothing — leaving the tap looking
+                    // dead. Auto "positive moment" prompts still use requestAppReview() via
+                    // ReviewPromptService.
+                    onRateApp = { live.localapp.local.platform.openWriteReview() },
                     onNotifications = onNotifications,
                 )
 

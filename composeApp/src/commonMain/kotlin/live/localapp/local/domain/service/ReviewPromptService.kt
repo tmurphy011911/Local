@@ -9,14 +9,15 @@ import live.localapp.local.platform.requestAppReview
  *
  * Triggers (positive moments only):
  * - After saving a plan (core paid feature value)
- * - After 5th event save
- * - After sharing a plan or event
+ * - After the first event save / first place save
+ * - After sharing a plan, event, or place
+ * - Once the user has opened 3+ events / 3+ places
  *
- * Guards:
+ * Guards (deliberately lenient — optimizing for review volume):
  * - Max 3 prompts ever from our side
- * - At least 7 days since install
- * - At least 3 app opens
  * - At least 30 days between prompts
+ * (App-open count is still tracked via [recordAppOpen] for future tuning, but is
+ *  no longer a gate.)
  */
 class ReviewPromptService {
 
@@ -25,26 +26,36 @@ class ReviewPromptService {
     private companion object {
         const val KEY_PROMPT_COUNT = "review_prompt_count"
         const val KEY_LAST_PROMPT_MS = "review_last_prompt_ms"
-        const val KEY_INSTALL_MS = "review_install_ms"
         const val KEY_APP_OPENS = "review_app_opens"
+        const val KEY_EVENTS_OPENED = "review_events_opened"
+        const val KEY_PLACES_OPENED = "review_places_opened"
         const val MAX_PROMPTS = 3
-        const val MIN_DAYS_SINCE_INSTALL = 7L
         const val MIN_DAYS_BETWEEN_PROMPTS = 30L
-        const val MIN_APP_OPENS = 3
+        const val OPENS_FOR_PROMPT = 3
     }
 
-    /** Call on every app launch to track opens and install date. */
+    /** Call on every app launch to track opens. */
     fun recordAppOpen() {
-        val now = currentTimeMs()
-        if (settings.getLong(KEY_INSTALL_MS, 0L) == 0L) {
-            settings.putLong(KEY_INSTALL_MS, now)
-        }
         settings.putInt(KEY_APP_OPENS, settings.getInt(KEY_APP_OPENS, 0) + 1)
+    }
+
+    /** Call whenever an event detail is opened. Fires once the user has opened 3+ events. */
+    fun recordEventOpened() {
+        val opened = settings.getInt(KEY_EVENTS_OPENED, 0) + 1
+        settings.putInt(KEY_EVENTS_OPENED, opened)
+        if (opened >= OPENS_FOR_PROMPT) onPositiveMoment(ReviewTrigger.EVENTS_OPENED_3)
+    }
+
+    /** Call whenever a place/venue detail is opened. Fires once the user has opened 3+ places. */
+    fun recordPlaceOpened() {
+        val opened = settings.getInt(KEY_PLACES_OPENED, 0) + 1
+        settings.putInt(KEY_PLACES_OPENED, opened)
+        if (opened >= OPENS_FOR_PROMPT) onPositiveMoment(ReviewTrigger.PLACES_OPENED_3)
     }
 
     /** Call after a positive moment. Shows the review prompt if conditions are met. */
     fun onPositiveMoment(trigger: ReviewTrigger) {
-        if (!shouldPrompt(trigger)) return
+        if (!shouldPrompt()) return
 
         // Record that we prompted
         val now = currentTimeMs()
@@ -55,19 +66,12 @@ class ReviewPromptService {
         requestAppReview()
     }
 
-    private fun shouldPrompt(trigger: ReviewTrigger): Boolean {
+    private fun shouldPrompt(): Boolean {
         val now = currentTimeMs()
         val dayMs = 86_400_000L
 
         val promptCount = settings.getInt(KEY_PROMPT_COUNT, 0)
         if (promptCount >= MAX_PROMPTS) return false
-
-        val installMs = settings.getLong(KEY_INSTALL_MS, now)
-        val daysSinceInstall = (now - installMs) / dayMs
-        if (daysSinceInstall < MIN_DAYS_SINCE_INSTALL) return false
-
-        val appOpens = settings.getInt(KEY_APP_OPENS, 0)
-        if (appOpens < MIN_APP_OPENS) return false
 
         val lastPromptMs = settings.getLong(KEY_LAST_PROMPT_MS, 0L)
         if (lastPromptMs > 0) {
@@ -83,7 +87,11 @@ class ReviewPromptService {
 
 enum class ReviewTrigger {
     PLAN_SAVED,
-    EVENT_SAVED_5TH,
+    EVENT_SAVED_1ST,
+    PLACE_SAVED_1ST,
     PLAN_SHARED,
     EVENT_SHARED,
+    PLACE_SHARED,
+    EVENTS_OPENED_3,
+    PLACES_OPENED_3,
 }

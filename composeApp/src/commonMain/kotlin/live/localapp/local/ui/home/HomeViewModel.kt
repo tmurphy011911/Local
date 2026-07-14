@@ -574,6 +574,7 @@ class HomeViewModel(
 
     fun recordEventClick(eventId: String, category: String? = null) {
         communityInterestRepository.recordClick(eventId, InteractionType.EVENT, category)
+        reviewPromptService.recordEventOpened()
     }
 
     fun recordEventShare(eventId: String, category: String? = null) {
@@ -607,9 +608,9 @@ class HomeViewModel(
             )
             // Badge: track event saved
             badgeService.recordAction(BadgeAction.EVENT_SAVED, deriveUserState())
-            // Review prompt on 5th save
-            if (_uiState.value.favoriteEventIds.size == 5) {
-                reviewPromptService.onPositiveMoment(live.localapp.local.domain.service.ReviewTrigger.EVENT_SAVED_5TH)
+            // Review prompt on first save
+            if (_uiState.value.favoriteEventIds.size == 1) {
+                reviewPromptService.onPositiveMoment(live.localapp.local.domain.service.ReviewTrigger.EVENT_SAVED_1ST)
             }
         }
     }
@@ -625,6 +626,7 @@ class HomeViewModel(
 
     fun recordPlaceShare(placeId: String) {
         communityInterestRepository.recordShare(placeId, InteractionType.PLACE)
+        reviewPromptService.onPositiveMoment(live.localapp.local.domain.service.ReviewTrigger.PLACE_SHARED)
     }
 
     fun setRadiusFilter(miles: Double?) {
