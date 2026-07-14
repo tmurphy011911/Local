@@ -90,13 +90,13 @@ function easternWeekday() {
  */
 async function buildPlanReminders() {
   const tomorrow = isoDateEastern(1);
-  const plans = await sbGet(`plans?date=eq.${tomorrow}&select=id,user_id,title`);
+  const plans = await sbGet(`plans?date=eq.${tomorrow}&select=id,user_id,name`);
   const out = new Map();
   for (const p of plans) {
     if (!p.user_id) continue;
     out.set(p.user_id, {
       type: "A",
-      title: `"${p.title}" starts tomorrow`,
+      title: `"${p.name}" starts tomorrow`,
       body: "Bo is here if you need any last minute changes or recommendations",
       path: `/p/${p.id}`,
       dedupeKey: `A:plan:${p.id}:${tomorrow}`,
@@ -171,8 +171,9 @@ async function main() {
     console.log(`  ${n.type} -> ${uid}: ${n.title} | ${n.body}`);
     if (SEND) {
       const resp = await sendPush({ restKey, externalIds: [uid], title: n.title, body: n.body, path: n.path });
-      if (resp.errors) { console.warn(`    OneSignal errors: ${JSON.stringify(resp.errors)}`); continue; }
-      await sbInsert("push_sends", [{ user_id: uid, push_type: n.type, dedupe_key: n.dedupeKey, meta: { title: n.title } }]);
+      console.log(`    OneSignal: id=${resp.id || "-"} recipients=${resp.recipients ?? "?"}${resp.errors ? " errors=" + JSON.stringify(resp.errors) : ""}`);
+      if (resp.errors && !resp.id) { continue; }
+      await sbInsert("push_sends", [{ user_id: uid, push_type: n.type, dedupe_key: n.dedupeKey, onesignal_id: resp.id || null, meta: { title: n.title } }]);
     }
     sent++;
   }
