@@ -96,6 +96,13 @@ object Config {
      */
     const val FEATURE_LEADERBOARD_ENABLED = true
 
+    /**
+     * Daily Local — the daily state-scoped trivia quiz that shares the Home
+     * carousel with the leaderboard. When false the quiz card + sheet are dead
+     * code (eliminated in release). Backed by get_daily_quiz / submit_quiz.
+     */
+    const val FEATURE_DAILY_QUIZ_ENABLED = true
+
     // --- Backend environment (prod vs dev) -------------------------------------
     //
     // A RELEASE build (App Store / TestFlight / Play) ALWAYS talks to prod — the

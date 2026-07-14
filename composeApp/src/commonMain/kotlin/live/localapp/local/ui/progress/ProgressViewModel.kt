@@ -45,6 +45,13 @@ sealed interface CelebrationEvent {
     data class NewState(
         val state: String,
     ) : CelebrationEvent
+
+    /** Generic "+N FOMO" toast with a custom title (username / preferences /
+     *  daily-quiz rewards that don't map to a badge milestone). */
+    data class FomoEarned(
+        val title: String,
+        val points: Int,
+    ) : CelebrationEvent
 }
 
 // ── UI State ──
@@ -123,6 +130,10 @@ class ProgressViewModel(
                     is BadgeCelebration.NewState -> CelebrationEvent.NewState(
                         state = celebration.state,
                     )
+                    is BadgeCelebration.FomoToast -> CelebrationEvent.FomoEarned(
+                        title = celebration.title,
+                        points = celebration.points,
+                    )
                 }
                 _uiState.update { state ->
                     if (state.celebration == null) {
@@ -137,9 +148,12 @@ class ProgressViewModel(
                 loadStats()
             }
         }
-        // Refresh on every action (even without milestone)
+        // Refresh on every action (even without milestone). loadProfile too, so a
+        // username set elsewhere (e.g. the lobby CTA) updates the header here
+        // without a relaunch.
         viewModelScope.launch {
             badgeService.dataChanged.collect {
+                loadProfile()
                 loadBadgeData()
                 loadStats()
             }

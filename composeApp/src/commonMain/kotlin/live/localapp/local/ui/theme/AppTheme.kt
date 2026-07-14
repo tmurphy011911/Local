@@ -45,6 +45,7 @@ object AppColors {
 
     val Orange = Color(0xFFFF9B4E)
     val OrangeDk = Color(0xFFE07030)
+    val OrangeLt = Color(0xFFFFEEDF)
 
     // Reel-safe variants used by SplashScreen at 44sp italic on Cream.
     // The brand Sun (#FFB830) and Orange (#FF9B4E) fail WCAG AA large-text

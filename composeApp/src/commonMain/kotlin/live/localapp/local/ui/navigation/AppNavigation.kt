@@ -2248,6 +2248,11 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         // State-specific toasts removed — dismiss silently
                         progressVm.dismissCelebration()
                     }
+                    is CelebrationEvent.FomoEarned -> GlobalFomoToast(
+                        title = event.title,
+                        points = event.points,
+                        onDismiss = { progressVm.dismissCelebration() },
+                    )
                 }
             }
         }
@@ -2608,6 +2613,70 @@ private fun GlobalMilestoneToast(event: CelebrationEvent.MilestoneEarned, onDism
                     )
                     Text(
                         "+${formatNumber(event.points)} FOMO",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, color = AppColors.Sun, letterSpacing = 0.5.sp),
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Generic "+N FOMO" toast with a custom title — used for rewards that aren't
+ *  badge milestones (username set, preferences saved, Daily Local complete). */
+@Composable
+private fun GlobalFomoToast(title: String, points: Int, onDismiss: () -> Unit) {
+    var visible by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
+
+    LaunchedEffect(Unit) {
+        visible = true
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        delay(150)
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        delay(3500)
+        visible = false
+        delay(300)
+        onDismiss()
+    }
+
+    AnimatedVisibility(
+        visible = visible,
+        enter = slideInVertically(
+            initialOffsetY = { -it * 2 },
+            animationSpec = spring(dampingRatio = 0.7f, stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow),
+        ) + fadeIn(),
+        exit = slideOutVertically(targetOffsetY = { -it * 2 }, animationSpec = tween(250)) + fadeOut(),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 56.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(AppColors.Ink)
+                    .clickable { onDismiss() }
+                    .padding(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp))
+                        .background(AppColors.SkyLt.copy(alpha = 0.2f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Rounded.Star,
+                        contentDescription = null,
+                        tint = AppColors.Sun,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "$title!",
+                        style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = AppColors.White),
+                    )
+                    Text(
+                        "+${formatNumber(points)} FOMO",
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, color = AppColors.Sun, letterSpacing = 0.5.sp),
                     )
                 }

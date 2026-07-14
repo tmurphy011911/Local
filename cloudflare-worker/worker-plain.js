@@ -39,6 +39,7 @@ var GET_APP_HTML = `<!DOCTYPE html>
   <meta name="description" content="Local finds the best events, venues, and plans near you. Download the app for iPhone and Android." />
   <meta name="theme-color" content="#FF6B6B" />
 
+  <!--PREVIEW_START-->
   <!-- Open Graph / rich link preview -->
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="Local" />
@@ -52,6 +53,7 @@ var GET_APP_HTML = `<!DOCTYPE html>
   <meta name="twitter:title" content="Get Local" />
   <meta name="twitter:description" content="The best events, venues, and plans near you — in one app." />
   <meta name="twitter:image" content="https://localapp.live/share-card.png" />
+  <!--PREVIEW_END-->
 
   <link rel="icon" href="https://localapp.live/app-icon.png" />
   <style>
@@ -243,7 +245,14 @@ export default {
           status = redir.status;
           return redir;
         }
-        const resp = new Response(GET_APP_HTML, {
+        // Suppress the rich link preview for shares that must NOT unfurl (e.g. the
+        // Daily Local text message, ?s=dailylocalshare): strip the OG/Twitter tags
+        // the crawler reads. Humans never see these tags, so the page is unchanged.
+        var noPreview = source === "dailylocalshare";
+        var html = noPreview
+          ? GET_APP_HTML.replace(/<!--PREVIEW_START-->[\s\S]*?<!--PREVIEW_END-->/, "")
+          : GET_APP_HTML;
+        const resp = new Response(html, {
           headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Vary": "User-Agent" }
         });
         status = resp.status;

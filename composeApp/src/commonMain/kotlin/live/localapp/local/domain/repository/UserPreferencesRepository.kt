@@ -20,6 +20,9 @@ data class UserPreferences(
     val notifNearby: Boolean = true,
     val notifVenues: Boolean = true,
     val onboardingComplete: Boolean = false,
+    /** True once the user completes the lobby-launched preferences flow. The
+     *  server awards 1000 FOMO on the false->true flip; the CTA hides at true. */
+    val preferencesCompleted: Boolean = false,
     val reviewPromptCount: Int = 0,
     val lastReviewPromptAt: String? = null,
     val locationMode: String = "current", // "current" or "manual"
@@ -34,6 +37,10 @@ data class UserPreferences(
     val hometownLng: Double? = null,
     /** When the hometown was first captured (server-stamped, read-only). */
     val hometownSetAt: String? = null,
+    /** 2-letter state from the geocoder for a typed home address (e.g. "PA").
+     *  Authoritative at borders; the server prefers it over coord-derived state
+     *  and preserves it once set (Philadelphia -> PA, not the NJ bbox neighbor). */
+    val geocodedState: String? = null,
     /** Local Pro trial end (ISO-8601, server-owned). Null if unknown. */
     val trialEndsAt: String? = null,
     /** Account creation timestamp (ISO-8601, server-owned). Null if unknown. */
@@ -109,6 +116,19 @@ interface UserPreferencesRepository {
      * `username_is_custom` to true; the client doesn't manage that flag.
      */
     suspend fun updateUsername(userId: String, username: String): UsernameUpdateResult
+
+    /**
+     * Persist the lobby preferences-flow selections. Targeted update (only the
+     * three selection columns + preferences_completed) so it can't clobber the
+     * rest of the profile. Flipping preferences_completed to true trips the
+     * server FOMO award. Returns true on success.
+     */
+    suspend fun savePreferencesSelection(
+        userId: String,
+        neighborhoods: List<String>,
+        venues: List<String>,
+        categories: List<String>,
+    ): Boolean
 
     /** Clear local cache (logout). */
     fun clearLocal()

@@ -123,64 +123,23 @@ fun ProgressScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     var showNameDialog by remember { mutableStateOf(false) }
-    var nameInput by remember { mutableStateOf("") }
-    var nameError by remember { mutableStateOf<String?>(null) }
 
     if (showNameDialog) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showNameDialog = false; nameError = null },
-            title = { Text("Choose a username", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp)) },
-            text = {
-                Column {
-                    androidx.compose.foundation.text.BasicTextField(
-                        value = nameInput,
-                        onValueChange = { nameInput = it; nameError = null },
-                        textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = AppColors.Ink),
-                        singleLine = true,
-                        decorationBox = { inner ->
-                            Box(
-                                Modifier.fillMaxWidth()
-                                    .background(AppColors.Mist, RoundedCornerShape(10.dp))
-                                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                            ) {
-                                if (nameInput.isEmpty()) Text("Username", style = TextStyle(fontFamily = AppFonts.Body, fontSize = 16.sp, color = AppColors.Ink3))
-                                inner()
-                            }
-                        },
-                    )
-                    if (nameError != null) {
-                        Spacer(Modifier.height(6.dp))
-                        Text(
-                            nameError!!,
-                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Coral),
-                        )
-                    }
+        // Same sheet the leaderboard + lobby use, routed through the one save path
+        // (LeaderboardViewModel.saveUsername) so it earns FOMO, toasts, and
+        // refreshes every screen — including this header, via dataChanged.
+        val leaderboardVm = remember {
+            org.koin.mp.KoinPlatform.getKoin().get<live.localapp.local.ui.leaderboard.LeaderboardViewModel>()
+        }
+        live.localapp.local.ui.leaderboard.UsernameSheet(
+            initial = state.userName,
+            onSave = { name, cb ->
+                leaderboardVm.saveUsername(name) { res ->
+                    if (res == live.localapp.local.domain.repository.UsernameUpdateResult.Success) onNameChanged(name)
+                    cb(res)
                 }
             },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    val trimmed = nameInput.trim()
-                    // Same client-side gate used for names today (length + profanity).
-                    // DB uniqueness is checked on save and surfaces via onError.
-                    val error = ProfanityFilter.validate(trimmed)
-                    if (error != null) {
-                        nameError = error
-                    } else {
-                        nameError = null
-                        viewModel.saveUsername(
-                            trimmed,
-                            onSuccess = {
-                                onNameChanged(trimmed)
-                                showNameDialog = false
-                            },
-                            onError = { nameError = it },
-                        )
-                    }
-                }) { Text("Save", color = AppColors.Coral, fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showNameDialog = false }) { Text("Cancel", color = AppColors.Ink3) }
-            },
+            onDismiss = { showNameDialog = false },
         )
     }
 
@@ -300,7 +259,6 @@ fun ProgressScreen(
             ) {
                 // ── Hero Card ──
                 HeroCard(state, animateToPoints, animateToProgress, displayTier, displayNextTier, showTierCelebration, onEditName = {
-                    nameInput = state.userName
                     showNameDialog = true
                 })
 

@@ -58,6 +58,8 @@ val appModule = module {
     single<TasteRepository> { TasteRepositoryImpl(get()) }
     single<ExploreRepository> { HttpExploreRepository() }
     single<live.localapp.local.domain.repository.LeaderboardRepository> { live.localapp.local.data.repository.LeaderboardRepositoryImpl(get(), get()) }
+    single<live.localapp.local.domain.repository.DailyQuizRepository> { live.localapp.local.data.repository.DailyQuizRepositoryImpl(get(), get()) }
+    single { live.localapp.local.ui.dailyquiz.DailyQuizViewModel(get(), get(), get()) }
     single { BadgeService(get(), get()) }
     single { ClaudeApiService(get()) }
     single { live.localapp.local.domain.service.SplashGreetingService(get(), get(), get(), get()) }

@@ -10,7 +10,9 @@ import androidx.compose.material3.Text
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -78,8 +80,21 @@ fun TypewritingAiText(
         TypewriterCompletionStore.markCompleted(messageId)
     }
 
+    // Reveal without reflow: always lay out the FULL styled string (so line
+    // breaks + height are fixed from the first frame) and hide the not-yet-typed
+    // tail with a transparent span. Slicing a shorter prefix instead would
+    // re-wrap every frame, making a word visibly jump to the next line the
+    // instant it grows past the line boundary — the "hitch on wrap".
+    val shownText = remember(annotated, visibleChars) {
+        val n = visibleChars.coerceIn(0, totalChars)
+        if (n >= totalChars) annotated
+        else buildAnnotatedString {
+            append(annotated)
+            addStyle(SpanStyle(color = Color.Transparent), n, totalChars)
+        }
+    }
     Text(
-        text = annotated.subSequence(0, visibleChars.coerceIn(0, totalChars)),
+        text = shownText,
         style = style.copy(fontSize = fontSize, color = color),
         modifier = modifier,
     )

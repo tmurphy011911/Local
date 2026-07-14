@@ -3,6 +3,8 @@ package live.localapp.local.ui.leaderboard
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -12,6 +14,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -21,14 +24,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -45,6 +45,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -59,6 +60,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import live.localapp.local.ProfanityFilter
 import live.localapp.local.data.remote.dto.LeaderboardDto
 import live.localapp.local.data.remote.dto.LeaderboardEntryDto
 import live.localapp.local.domain.model.boLevel
@@ -383,7 +385,7 @@ private fun LeaderboardSheetContent(viewModel: LeaderboardViewModel) {
     }
 
     if (showUsernameDialog) {
-        UsernameDialog(
+        UsernameSheet(
             initial = me?.username ?: state.username ?: "",
             onSave = viewModel::saveUsername,
             onDismiss = { showUsernameDialog = false },
@@ -572,52 +574,102 @@ private fun PlaceholderRow(rank: Int) {
     }
 }
 
-/** Dialog to set a custom username, used from the pencil on the own row. */
+/** Bottom sheet to set a custom username — matches the app's sheet system (Snow
+ *  container, filled input, chunky 3D orange CTA). The single username entry
+ *  point: leaderboard own-row pencil, lobby "set your username" CTA, and the
+ *  account page. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun UsernameDialog(
+internal fun UsernameSheet(
     initial: String,
     onSave: (String, (UsernameUpdateResult) -> Unit) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     var text by remember { mutableStateOf(initial) }
     var error by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
-    AlertDialog(
+    val canSave = !saving && text.trim().length >= 2
+
+    ModalBottomSheet(
         onDismissRequest = onDismiss,
-        containerColor = AppColors.White,
-        title = { Text("Choose a username", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = LbInk)) },
-        text = {
-            Column {
-                OutlinedTextField(
-                    value = text,
-                    onValueChange = { text = it; error = null },
-                    singleLine = true,
-                    placeholder = { Text("username") },
-                )
-                error?.let {
-                    Spacer(Modifier.height(6.dp))
-                    Text(it, style = TextStyle(fontFamily = AppFonts.Body, fontSize = 12.sp, color = AppColors.Coral))
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                enabled = !saving && text.trim().length >= 2,
-                onClick = {
-                    saving = true; error = null
-                    onSave(text) { res ->
-                        saving = false
-                        when (res) {
-                            UsernameUpdateResult.Success -> onDismiss()
-                            UsernameUpdateResult.Taken -> error = "That username's taken — try another"
-                            UsernameUpdateResult.Error -> error = "Couldn't save — try again"
-                        }
+        sheetState = sheetState,
+        containerColor = AppColors.Snow,
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(horizontal = 24.dp).padding(bottom = 28.dp).imePadding(),
+        ) {
+            Text(
+                "Choose a username",
+                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = LbInk),
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "This is how you'll show up on the leaderboard.",
+                style = TextStyle(fontFamily = AppFonts.Body, fontSize = 14.sp, color = LbSub),
+            )
+            Spacer(Modifier.height(20.dp))
+            // Filled input (no outline — the outlined variant read like an error).
+            BasicTextField(
+                value = text,
+                onValueChange = { text = it; error = null },
+                singleLine = true,
+                textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 16.sp, color = LbInk),
+                cursorBrush = SolidColor(AppColors.OrangeDk),
+                decorationBox = { inner ->
+                    Box(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(AppColors.Mist)
+                            .padding(horizontal = 16.dp, vertical = 15.dp),
+                    ) {
+                        if (text.isEmpty()) Text("username", style = TextStyle(fontFamily = AppFonts.Body, fontSize = 16.sp, color = LbSub))
+                        inner()
                     }
                 },
-            ) { Text("Save", color = LbGreenDeep) }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = LbSub) } },
-    )
+            )
+            error?.let {
+                Spacer(Modifier.height(8.dp))
+                Text(it, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = AppColors.Coral))
+            }
+            Spacer(Modifier.height(20.dp))
+            // Chunky 3D "Duolingo" CTA in orange — darker base peeks 4.dp below.
+            val face = if (canSave) AppColors.Orange else AppColors.Orange.copy(alpha = 0.5f)
+            val base = if (canSave) AppColors.OrangeDk else AppColors.OrangeDk.copy(alpha = 0.5f)
+            Box(Modifier.fillMaxWidth().height(56.dp)) {
+                Box(Modifier.fillMaxWidth().height(52.dp).align(Alignment.BottomCenter).clip(RoundedCornerShape(16.dp)).background(base))
+                Box(
+                    Modifier.fillMaxWidth().height(52.dp).align(Alignment.TopCenter).clip(RoundedCornerShape(16.dp))
+                        .background(face)
+                        .border(2.dp, base, RoundedCornerShape(16.dp))
+                        .then(
+                            if (canSave) Modifier.clickable {
+                                val trimmed = text.trim()
+                                val profErr = ProfanityFilter.validate(trimmed)
+                                if (profErr != null) {
+                                    error = profErr
+                                } else {
+                                    error = null; saving = true
+                                    onSave(trimmed) { res ->
+                                        saving = false
+                                        when (res) {
+                                            UsernameUpdateResult.Success -> onDismiss()
+                                            UsernameUpdateResult.Taken -> error = "That username's taken — try another"
+                                            UsernameUpdateResult.Error -> error = "Couldn't save — try again"
+                                        }
+                                    }
+                                }
+                            } else Modifier,
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (saving) {
+                        CircularProgressIndicator(modifier = Modifier.height(18.dp).width(18.dp), color = AppColors.Ink, strokeWidth = 2.dp)
+                    } else {
+                        Text("Save", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 16.sp, color = AppColors.Ink))
+                    }
+                }
+            }
+        }
+    }
 }
 
 // ── Iconography (faithful to sprites.jsx IconPodium) ─────────────────────────

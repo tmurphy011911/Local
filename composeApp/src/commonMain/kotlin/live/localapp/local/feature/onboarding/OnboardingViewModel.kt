@@ -57,6 +57,9 @@ data class OnboardingState(
     val userLat: Double? = null,
     val userLng: Double? = null,
     val userCity: String = "",
+    // 2-letter state from the geocoder for a typed home address (e.g. "PA").
+    // Authoritative at state borders; stored as the profile's geocoded_state.
+    val userState: String = "",
     val selectedNeighbourhoods: Set<String> = emptySet(),
     val selectedVenues: Set<String> = emptySet(),
     val selectedCategories: Set<String> = emptySet(),
@@ -170,13 +173,14 @@ class OnboardingViewModel(
         _state.update { it.copy(currentStep = OnboardingStep.MANUAL_ADDRESS) }
     }
 
-    fun onManualAddressSubmit(lat: Double, lng: Double, city: String) {
+    fun onManualAddressSubmit(lat: Double, lng: Double, city: String, state: String) {
         val resolvedCity = city.ifBlank { nearestCity(lat, lng) }
         _state.update {
             it.copy(
                 userLat = lat,
                 userLng = lng,
                 userCity = resolvedCity,
+                userState = state.trim().uppercase(),
                 locationMode = "manual",
                 // Shortened onboarding — straight to NOTIFICATIONS (skip SUCCESS
                 // + preference steps, kept for a future lobby CTA).
@@ -383,6 +387,10 @@ class OnboardingViewModel(
                     hometownName = s.userCity.replaceFirstChar { it.uppercase() }.ifBlank { "Boston" },
                     hometownLat = s.userLat,
                     hometownLng = s.userLng,
+                    // The geocoder's authoritative state for a typed address. The
+                    // server trusts this over coordinate-derived state, fixing the
+                    // border case (Philadelphia -> PA, not the NJ bbox neighbor).
+                    geocodedState = s.userState.ifBlank { null },
                 )
 
                 // Mirror the chosen location into the local cache up-front, before
@@ -433,6 +441,57 @@ class OnboardingViewModel(
                 } catch (_: Exception) {}
             }
             onSaved()
+        }
+    }
+
+    // ── Lobby-launched "preferences only" flow (reuses the pick screens) ──
+
+    /**
+     * Enter the preferences flow for the CURRENT (already-onboarded) user: seed
+     * the known home location, load the pick data, and jump to the first step.
+     * Used by the lobby "your preferences" CTA, not the first-run onboarding.
+     */
+    fun beginPreferencesOnly() {
+        viewModelScope.launch {
+            val uid = userPreferencesRepository.getLocalUserId() ?: return@launch
+            authUserId = uid
+            val p = userPreferencesRepository.loadPreferences(uid)
+            val city = (p?.hometownName ?: p?.city ?: "").ifBlank { "boston" }
+            _state.update {
+                it.copy(
+                    userCity = city,
+                    userLat = p?.hometownLat ?: p?.userLat,
+                    userLng = p?.hometownLng ?: p?.userLng,
+                    currentStep = OnboardingStep.NEIGHBOURHOODS,
+                    // Set up-front so the flow shows a loader, not an empty grid,
+                    // in the frame before loadOnboardingData flips this itself.
+                    isLoadingData = true,
+                )
+            }
+            loadOnboardingData()
+        }
+    }
+
+    /**
+     * Persist just the flow's selections and flip preferences_completed (the
+     * server awards 1000 FOMO on the false->true transition). [onSaved] runs on
+     * the main scope with whether the write succeeded.
+     */
+    fun savePreferencesOnly(onSaved: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val s = _state.value
+            val uid = authUserId ?: userPreferencesRepository.getLocalUserId()
+            if (uid == null) { onSaved(false); return@launch }
+            val neighborhoodNames = s.neighborhoods
+                .filter { it.name.lowercase().replace(" ", "-") in s.selectedNeighbourhoods }
+                .map { it.name }
+            val venueNames = s.venues
+                .filter { it.name.lowercase().replace(" ", "-") in s.selectedVenues }
+                .map { it.name }
+            val ok = userPreferencesRepository.savePreferencesSelection(
+                uid, neighborhoodNames, venueNames, s.selectedCategories.toList(),
+            )
+            onSaved(ok)
         }
     }
 

@@ -411,14 +411,27 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                     )
                 }
 
-                // Local Leaderboard — FOMO rank CTA + sheet. Build-time gated so a
-                // pre-readiness App Store build can drop it entirely (see Config).
-                if (live.localapp.local.Config.FEATURE_LEADERBOARD_ENABLED) {
-                    item(key = "leaderboard") {
+                // Daily Local + Local Leaderboard — the lobby carousel. Daily Local's
+                // quiz card sits at position 1 (until played today); the leaderboard is
+                // the permanent slot. Both build-time gated (see Config).
+                if (live.localapp.local.Config.FEATURE_DAILY_QUIZ_ENABLED ||
+                    live.localapp.local.Config.FEATURE_LEADERBOARD_ENABLED) {
+                    item(key = "daily_local") {
                         val leaderboardVm = remember {
                             KoinPlatform.getKoin().get<live.localapp.local.ui.leaderboard.LeaderboardViewModel>()
                         }
-                        live.localapp.local.ui.leaderboard.LeaderboardHost(leaderboardVm)
+                        if (live.localapp.local.Config.FEATURE_DAILY_QUIZ_ENABLED) {
+                            val quizVm = remember {
+                                KoinPlatform.getKoin().get<live.localapp.local.ui.dailyquiz.DailyQuizViewModel>()
+                            }
+                            live.localapp.local.ui.dailyquiz.DailyLocalHost(
+                                quizVm = quizVm,
+                                leaderboardVm = leaderboardVm,
+                                showLeaderboard = live.localapp.local.Config.FEATURE_LEADERBOARD_ENABLED,
+                            )
+                        } else {
+                            live.localapp.local.ui.leaderboard.LeaderboardHost(leaderboardVm)
+                        }
                     }
                 }
 
