@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.datetime.Instant
@@ -53,6 +54,10 @@ data class HomeUiState(
     val carouselsByCategory: Map<String, List<CarouselSection>> = emptyMap(),
     val isLoading: Boolean = false,
     val isRefreshing: Boolean = false,
+    // Bo pull-to-refresh: event ids that first appeared on the last manual
+    // refresh (NEW ribbon, cleared on scroll) + whether that refresh failed.
+    val newItemIds: Set<String> = emptySet(),
+    val refreshFailed: Boolean = false,
     val error: String? = null,
     val userPreferences: UserPreferences? = null,
     val radiusFilter: Double? = null,
@@ -683,13 +688,35 @@ class HomeViewModel(
 
     fun refresh() {
         carouselRepository.invalidateCaches()
-        _uiState.update { it.copy(isRefreshing = true) }
-        loadCarousels()
-        loadSavedThisWeek()
+        val oldIds = _uiState.value.carousels.flatMap { it.events }.mapTo(HashSet()) { it.id }
+        _uiState.update { it.copy(isRefreshing = true, refreshFailed = false, newItemIds = emptySet()) }
+        viewModelScope.launch {
+            loadCarousels()
+            val savedJob = loadSavedThisWeek()
+            carouselJob?.join()
+            savedJob.join()
+
+            val st = _uiState.value
+            val newIds = st.carousels.flatMap { it.events }.mapNotNull { e ->
+                e.id.takeIf { it !in oldIds }
+            }.toSet()
+            val failed = st.error != null
+            _uiState.update { it.copy(isRefreshing = false, newItemIds = newIds, refreshFailed = failed) }
+            badgeService.emitInfoToast(
+                if (failed) "Couldn't refresh — tap to retry" else "Fresh picks, just for you",
+                star = !failed,
+            )
+        }
     }
 
-    private fun loadSavedThisWeek() {
-        viewModelScope.launch {
+    /** Clear the NEW ribbons once the user scrolls (spec: ribbons clear on next view). */
+    fun clearNewRibbons() {
+        if (_uiState.value.newItemIds.isEmpty()) return
+        _uiState.update { it.copy(newItemIds = emptySet()) }
+    }
+
+    private fun loadSavedThisWeek(): Job = viewModelScope.launch {
+        run {
             try {
                 val userId = userPreferencesRepository.getLocalUserId() ?: return@launch
                 val eventIds = communityInterestRepository.getFavoriteEventIds(userId)
@@ -818,7 +845,6 @@ class HomeViewModel(
                             carouselsByCategory = nextMap,
                             availableCategories = categories,
                             isLoading = false,
-                            isRefreshing = false,
                         )
                     }
                 }
@@ -848,7 +874,6 @@ class HomeViewModel(
                                     carouselsByCategory = nextMap,
                                     availableCategories = cats,
                                     isLoading = false,
-                                    isRefreshing = false,
                                     error = null,
                                 )
                             }
@@ -856,7 +881,7 @@ class HomeViewModel(
                         return@launch
                     } catch (_: Exception) {}
                 }
-                _uiState.update { it.copy(error = e.message, isLoading = false, isRefreshing = false) }
+                _uiState.update { it.copy(error = e.message, isLoading = false) }
             }
         }
     }

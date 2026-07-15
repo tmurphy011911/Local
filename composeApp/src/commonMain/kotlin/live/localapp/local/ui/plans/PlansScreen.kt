@@ -6,6 +6,8 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import live.localapp.local.ui.common.AppRefreshBox
+import live.localapp.local.ui.common.NewRibbon
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.animation.core.LinearEasing
@@ -183,12 +185,20 @@ fun PlansScreen(
             return
         }
 
-        PullToRefreshBox(
+        AppRefreshBox(
             isRefreshing = state.isRefreshing,
             onRefresh = { viewModel.refresh() },
+            refreshFailed = state.refreshFailed,
             modifier = Modifier.fillMaxSize(),
         ) {
+        val plansListState = androidx.compose.foundation.lazy.rememberLazyListState()
+        // Clear the NEW ribbons as soon as the user scrolls the plans list.
+        if (state.newItemIds.isNotEmpty()) {
+            val plansScrolling = plansListState.isScrollInProgress
+            androidx.compose.runtime.LaunchedEffect(plansScrolling) { if (plansScrolling) viewModel.clearNewRibbons() }
+        }
         LazyColumn(
+            state = plansListState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 80.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -237,13 +247,16 @@ fun PlansScreen(
                 val heroPlan = state.upcomingPlans.first()
                 item(key = heroPlan.id) {
                     SwipeToRevealDelete(onDelete = { viewModel.deletePlan(heroPlan.id) }) {
-                        HeroPlanCard(
-                            plan = heroPlan,
-                            isCreator = !heroPlan.isAcceptedCopy &&
-                                (heroPlan.creatorId == null || heroPlan.creatorId == currentUserId),
-                            onClick = { bounds -> onPlanClick(heroPlan, bounds) },
-                            onShare = { onSharePlan?.invoke(heroPlan) },
-                        )
+                        Box {
+                            HeroPlanCard(
+                                plan = heroPlan,
+                                isCreator = !heroPlan.isAcceptedCopy &&
+                                    (heroPlan.creatorId == null || heroPlan.creatorId == currentUserId),
+                                onClick = { bounds -> onPlanClick(heroPlan, bounds) },
+                                onShare = { onSharePlan?.invoke(heroPlan) },
+                            )
+                            if (heroPlan.id in state.newItemIds) NewRibbon()
+                        }
                     }
                 }
 
@@ -251,13 +264,16 @@ fun PlansScreen(
                 if (state.upcomingPlans.size > 1) {
                     items(state.upcomingPlans.drop(1), key = { it.id }) { plan ->
                         SwipeToRevealDelete(onDelete = { viewModel.deletePlan(plan.id) }) {
-                            CompactPlanRow(
-                                plan = plan,
-                                isCreator = !plan.isAcceptedCopy &&
-                                    (plan.creatorId == null || plan.creatorId == currentUserId),
-                                onClick = { bounds -> onPlanClick(plan, bounds) },
-                                onShare = { onSharePlan?.invoke(plan) },
-                            )
+                            Box {
+                                CompactPlanRow(
+                                    plan = plan,
+                                    isCreator = !plan.isAcceptedCopy &&
+                                        (plan.creatorId == null || plan.creatorId == currentUserId),
+                                    onClick = { bounds -> onPlanClick(plan, bounds) },
+                                    onShare = { onSharePlan?.invoke(plan) },
+                                )
+                                if (plan.id in state.newItemIds) NewRibbon()
+                            }
                         }
                     }
                 }

@@ -35,6 +35,17 @@ sealed interface BadgeCelebration {
     data class NewState(
         val state: String,
     ) : BadgeCelebration
+
+    /**
+     * A neutral, non-badge toast — a dark pill with a star icon. Used by the
+     * Bo pull-to-refresh to report a fetch result ("3 new events near
+     * Nantucket", "+137 FOMO earned", "You're all caught up", …). Rides the
+     * same global celebration host so it never overlaps other surfaces.
+     */
+    data class InfoToast(
+        val message: String,
+        val star: Boolean = true,
+    ) : BadgeCelebration
 }
 
 /**
@@ -54,6 +65,15 @@ class BadgeService(
     /** Emitted on every action so profile can refresh counts even without a milestone. */
     private val _dataChanged = MutableSharedFlow<Unit>(extraBufferCapacity = 5)
     val dataChanged: SharedFlow<Unit> = _dataChanged.asSharedFlow()
+
+    /**
+     * Surface a neutral info toast on the global celebration host. Fire-and-
+     * forget (buffered) — safe to call from any ViewModel off the main thread.
+     * Backs the Bo pull-to-refresh result toasts.
+     */
+    fun emitInfoToast(message: String, star: Boolean = true) {
+        _celebrations.tryEmit(BadgeCelebration.InfoToast(message, star))
+    }
 
     /** Known states the user has milestones in (cached to detect new states). */
     private val knownStates = mutableSetOf<String>()

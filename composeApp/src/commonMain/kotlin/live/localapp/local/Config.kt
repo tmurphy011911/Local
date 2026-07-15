@@ -96,6 +96,15 @@ object Config {
      */
     const val FEATURE_LEADERBOARD_ENABLED = true
 
+    /**
+     * Build-time gate for the Bo mascot pull-to-refresh (replaces the generic
+     * Material3 spinner on the Home / Explore / Plans / Profile feeds). Flip to
+     * false to fall back to the stock [PullToRefreshBox] spinner in a shipped
+     * binary while the control is still being tuned; the elimination pass then
+     * drops the BoRefreshControl path as dead code.
+     */
+    const val FEATURE_BO_PTR_ENABLED = true
+
     // --- Backend environment (prod vs dev) -------------------------------------
     //
     // A RELEASE build (App Store / TestFlight / Play) ALWAYS talks to prod — the
