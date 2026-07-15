@@ -230,6 +230,10 @@ jobs:
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # Self-limit under the 30m hard cap so the job exits green and defers
+          # the stalest feeds to the next daily run (ordered last_synced_at.asc).
+          # ~6m of headroom below timeout-minutes: 30. Mirrors DISCOVER_MAX_MINUTES.
+          SYNC_MAX_MINUTES: '24'
         run: node sync_municipal_feeds.js
 
   split-aggregator-events:
