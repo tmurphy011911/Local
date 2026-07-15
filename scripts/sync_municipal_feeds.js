@@ -97,6 +97,19 @@ function inBbox(lat, lng, box) {
   return lat >= box.latMin && lat <= box.latMax && lng >= box.lngMin && lng <= box.lngMax;
 }
 
+// Sanity-check a coordinate against a claimed state. Used to apply the same
+// bbox guard to CLAUDE geocode results that googleGeocode already applies to
+// Google's — without it, a Claude mis-geocode slips through (e.g. "Indiana, PA"
+// resolved to Indiana the STATE at lng −86). Unknown state codes only get the
+// coarse US check, so a bogus parsed state can't over-reject.
+function coordsInState(lat, lng, state) {
+  if (lat == null || lng == null) return false;
+  if (!inBbox(lat, lng, US_BBOX)) return false;
+  const box = state ? STATE_BBOXES[String(state).toUpperCase()] : null;
+  if (box && !inBbox(lat, lng, box)) return false;
+  return true;
+}
+
 // In-memory cache for the run, keyed by "query|expectState". Aggregator feeds
 // reference the same venues/towns repeatedly — geocode each unique query once.
 const GOOGLE_CACHE = new Map();
@@ -276,9 +289,15 @@ async function resolveVenueCoords(name, city, state) {
   // 2. Claude fallback. Only when we have an API key AND the lookup missed.
   //    Restrict scope to {city, state} for disambiguation. Reject low
   //    confidence — better to ship null than a Lincoln, NE event tagged in
-  //    Lincoln, MA.
+  //    Lincoln, MA. Then bbox-guard the result against `state`: Claude
+  //    occasionally reads "Indiana, PA" as the state of Indiana (lng −86);
+  //    without this check that sails through at conf 0.85.
   if (!coords && ANTHROPIC_API_KEY) {
     coords = await askClaudeForCoords(name, city, state);
+    if (coords && !coordsInState(coords.lat, coords.lng, state)) {
+      console.log(`    Claude venue coords for "${name}" out of ${state || "US"} bbox — rejected`);
+      coords = null;
+    }
   }
 
   VENUE_COORDS_CACHE.set(key, coords);
@@ -389,6 +408,10 @@ async function resolveCityCoords(rawCity, state) {
   // geocode.
   if (!coords && ANTHROPIC_API_KEY) {
     coords = await askClaudeForCityCenter(city, state);
+    if (coords && !coordsInState(coords.lat, coords.lng, state)) {
+      console.log(`    Claude town coords for "${city}, ${state}" out of bbox — rejected`);
+      coords = null;
+    }
   }
 
   CITY_COORDS_CACHE.set(key, coords);
@@ -499,12 +522,18 @@ async function buildEvent(feed, raw) {
     //    only as a disambiguation HINT in the query when the source gave no
     //    city; the STORED city comes back from Google (canonical), and the
     //    bbox/expectState guard rejects a cross-state result.
+    //    expectState = the source's state, or the FEED's state when the source
+    //    gave none — municipal feeds are overwhelmingly in-state, so a result in
+    //    another state (e.g. "Cathedral Gardens, PA" matching a NYC address) is
+    //    rejected and the loop tries the next candidate, then drops. A genuine
+    //    cross-state event still carries its own state from the source, so this
+    //    only tightens the no-state case.
     if ((venueLat == null || venueLng == null) && hasLocationSignal) {
       const hintCity = cityLabel || feed.city;
       const hintState = stateLabel || feed.state;
       const query = [venueName, raw.venueAddress, raw.venueAddress ? null : hintCity, hintState]
         .filter(Boolean).join(", ");
-      const g = await googleGeocode(query, stateLabel);
+      const g = await googleGeocode(query, stateLabel || feed.state);
       if (g) {
         venueLat = g.lat;
         venueLng = g.lng;
@@ -950,6 +979,17 @@ async function recordSyncResult(feedId, status, eventCount) {
 
 async function upsertToSupabase(rows) {
   const url = `${SUPABASE_URL}/rest/v1/events?on_conflict=dedupe_hash`;
+  // Collapse rows that share a dedupe_hash before sending. PostgREST's upsert
+  // rejects the WHOLE batch with error 21000 ("ON CONFLICT DO UPDATE command
+  // cannot affect row a second time") if two proposed rows carry the same
+  // conflict key — which happens when a claude_html feed extracts a near-dup
+  // (same title/start/venue → same sourceId → same hash). Keep the last.
+  const byHash = new Map();
+  for (const r of rows) byHash.set(r.dedupe_hash, r);
+  if (byHash.size < rows.length) {
+    console.log(`  Collapsed ${rows.length - byHash.size} in-batch duplicate dedupe_hash row(s)`);
+    rows = [...byHash.values()];
+  }
   const batchSize = 50;
   let inserted = 0, errors = 0;
   for (let i = 0; i < rows.length; i += batchSize) {
@@ -1059,7 +1099,7 @@ async function main() {
   }
 
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-  console.log(`Total:  ${totalFetched} fetched, ${totalUpserted} upserted, ${totalErrors} errors`);
+  console.log(`Total:  ${totalFetched} fetched, ${totalUpserted} upserted, ${totalErrors} errors, ${TOTAL_DROPPED} dropped (no confident location)`);
 }
 
 main().catch((err) => {
