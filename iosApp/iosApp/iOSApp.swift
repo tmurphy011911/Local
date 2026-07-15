@@ -1,6 +1,7 @@
 import SwiftUI
 import ComposeApp
 import RevenueCat
+import OneSignalFramework
 
 @main
 struct iOSApp: App {
@@ -42,6 +43,14 @@ struct iOSApp: App {
         // Configure RevenueCat
         Purchases.logLevel = .debug
         Purchases.configure(withAPIKey: "appl_EYwaWlbtrUMLciPvdLpNOymStJV")
+
+        // Configure OneSignal (push). App ID is public — the single source of
+        // truth is Config.ONESIGNAL_APP_ID (Kotlin); duplicated here as a literal
+        // to match the RevenueCat pattern and avoid a cross-language read in init.
+        // The device only gets a push token once notification permission is
+        // granted, which we request from onboarding via the PushBridge
+        // (wired in ContentView.setupPushBridge).
+        OneSignal.initialize("bdbdc7ed-00db-4961-9ad7-67ec3a5cba9f", withLaunchOptions: nil)
     }
 
     var body: some Scene {

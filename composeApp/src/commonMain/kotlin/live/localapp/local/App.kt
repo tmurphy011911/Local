@@ -449,6 +449,9 @@ fun App() {
                             // Reset RevenueCat to an anonymous id so the next
                             // user doesn't inherit this account's entitlement.
                             try { live.localapp.local.platform.logOutRevenueCatUser() } catch (_: Exception) {}
+                            // Reset OneSignal to an anonymous device so the next user
+                            // isn't targeted with pushes meant for this account.
+                            try { live.localapp.local.platform.clearPushUser() } catch (_: Exception) {}
                             // Clear all in-memory caches so next user starts fresh
                             try { KoinPlatform.getKoin().get<live.localapp.local.domain.repository.CommunityInterestRepository>().clearCaches() } catch (_: Exception) {}
                             appState = AppState.AUTH

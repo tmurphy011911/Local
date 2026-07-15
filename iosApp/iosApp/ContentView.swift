@@ -52,6 +52,9 @@ struct ComposeView: UIViewControllerRepresentable {
         // Wire RevenueCat subscription bridge
         setupRevenueCatBridge()
 
+        // Wire OneSignal push bridge (login/logout + permission + tap→deep-link)
+        setupPushBridge()
+
         // Wire native time picker + Apple Maps autocomplete + date range bridges
         NativeTimePickerBridgeSetup.register()
         PlacesAutocompleteBridgeSetup.register()
@@ -685,6 +688,28 @@ struct ComposeView: UIViewControllerRepresentable {
         }
     }
 
+    // MARK: - Push (OneSignal) Bridge
+
+    private func setupPushBridge() {
+        let bridge = PushBridge.shared
+
+        // Associate / clear the OneSignal user (external id = Supabase uid), so
+        // the server-side evaluator can target pushes by user.
+        bridge.login = { uid in OneSignal.login(uid) }
+        bridge.logout = { OneSignal.logout() }
+
+        // Prompt for notification permission THROUGH OneSignal so a grant also
+        // registers for remote notifications (mints the APNs/OneSignal token).
+        bridge.requestPermission = { onResult in
+            OneSignal.Notifications.requestPermission({ accepted in
+                DispatchQueue.main.async { onResult(KotlinBoolean(value: accepted)) }
+            }, fallbackToSettings: true)
+        }
+
+        // Notification tap → deep link, same path routing as universal links.
+        OneSignal.Notifications.addClickListener(PushClickListener.shared)
+    }
+
     // MARK: - RevenueCat Subscription Bridge
 
     private func setupRevenueCatBridge() {
@@ -861,5 +886,19 @@ struct ContentView: View {
     var body: some View {
         ComposeView()
             .ignoresSafeArea()
+    }
+}
+
+/// Routes a OneSignal notification tap to the shared deep-link handler, using the
+/// same `/p/ /e/ /v/` path scheme as universal links. The push payload carries the
+/// path in `additionalData["path"]` (set server-side by the push evaluator).
+final class PushClickListener: NSObject, OSNotificationClickListener {
+    static let shared = PushClickListener()
+
+    func onClick(event: OSNotificationClickEvent) {
+        guard let path = event.notification.additionalData?["path"] as? String else { return }
+        if path.hasPrefix("/p/") || path.hasPrefix("/e/") || path.hasPrefix("/v/") {
+            DeepLinkBridge.shared.receivePath(path: path)
+        }
     }
 }

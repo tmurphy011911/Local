@@ -49,6 +49,10 @@ kotlin {
             implementation("com.google.android.gms:play-services-location:21.3.0")
             implementation("com.revenuecat.purchases:purchases:8.12.1")
             implementation("com.revenuecat.purchases:purchases-ui:8.12.1")
+            // Push notifications. OneSignal handles FCM registration itself —
+            // no google-services.json / Firebase SDK needed. Version range per
+            // OneSignal's official 5.x Android setup docs.
+            implementation("com.onesignal:OneSignal:[5.6.1, 5.9.99]")
             // Google Maps for the plan-detail map header (Android only —
             // iOS uses MapKit via PlanDetailView.swift).
             implementation("com.google.android.gms:play-services-maps:19.0.0")
