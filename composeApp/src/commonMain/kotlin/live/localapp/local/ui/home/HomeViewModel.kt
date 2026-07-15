@@ -252,6 +252,14 @@ class HomeViewModel(
         fetchYocalPromptsIfNeeded(cachedLoc.manualLat ?: 42.3601, cachedLoc.manualLng ?: -71.0589)
         fetchWeatherIfNeeded(cachedLoc.manualLat ?: 42.3601, cachedLoc.manualLng ?: -71.0589)
 
+        // Restore the persisted search radius (or the 25 mi post-onboarding
+        // default) BEFORE the first carousel fetch so it's fetched against the
+        // right radius, not the null "Any distance" placeholder. On a brand-new
+        // user this singleton's init runs pre-onboarding → resolves to null;
+        // refreshUserPreferences() re-resolves it to the default once onboarding
+        // completes.
+        _uiState.update { it.copy(radiusFilter = userPreferencesRepository.effectiveRadiusFilter()) }
+
         loadUserPreferencesThenCarousels()
         loadSavedThisWeek()
     }
@@ -265,6 +273,11 @@ class HomeViewModel(
      * favVenue/neighborhood rails never appear.
      */
     fun refreshUserPreferences() {
+        // Onboarding just completed on a fresh user: re-resolve the radius so the
+        // 25 mi default now applies (this singleton's init ran while onboarding
+        // was still incomplete). A user who already made an explicit choice keeps
+        // it — effectiveRadiusFilter() returns the persisted value.
+        _uiState.update { it.copy(radiusFilter = userPreferencesRepository.effectiveRadiusFilter()) }
         loadUserPreferencesThenCarousels()
     }
 
@@ -630,6 +643,8 @@ class HomeViewModel(
     fun setRadiusFilter(miles: Double?) {
         if (_uiState.value.radiusFilter == miles) return
         _uiState.update { it.copy(radiusFilter = miles) }
+        // Persist immediately so the choice survives an app kill / cold start.
+        userPreferencesRepository.cacheRadiusFilterLocally(miles)
         // Radius affects which events the edge function returns (it drives
         // the bbox + post-filter), so a fresh fetch is required. Without
         // this, the user would just see the previously-fetched pool

@@ -622,7 +622,7 @@ fun BoResultsMap(
     }
 
     var groupIndex by remember(messageId) { mutableStateOf(0) }
-    var mode by remember(messageId) { mutableStateOf(BoResultsMode.MAP) }
+    var mode by remember(messageId) { mutableStateOf(BoResultsMode.LIST) }
     val safeIndex = groupIndex.coerceIn(0, visibleGroups.size - 1)
     val (group, events) = visibleGroups[safeIndex]
     val pins = venuePins(events)

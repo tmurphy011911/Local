@@ -11,11 +11,10 @@ import live.localapp.local.data.remote.dto.QuizCompletionDto
  * Astral-plane emoji (heart, colored circles, etc.) are surrogate pairs and
  * corrupt to tofu across the Kotlin/Native -> Swift bridge, so they're avoided.
  *
- * The link carries the share source (?s=dailylocalshare) for click attribution.
- * It is deliberately placed after text ("Get Local → …") rather than alone on a
- * line so Messages/iMessage treats it as inline text and won't unfurl it into a
- * big preview card. (Full unfurl suppression also depends on the /get landing
- * page not serving OpenGraph preview tags — that's server-side.)
+ * The link is the short /dl path — the worker aliases it to the Daily Local
+ * "get the app" flow: attributes the install to source=dailylocalshare AND
+ * suppresses the rich link preview (strips OG/Twitter tags for crawlers) so the
+ * message never unfurls into a big card. Kept after text ("Get Local → …") too.
  */
 fun dailyQuizShareText(c: QuizCompletionDto): String {
     val sb = StringBuilder()
@@ -35,6 +34,6 @@ fun dailyQuizShareText(c: QuizCompletionDto): String {
         sb.append("Personal Best: ${c.bestAllTime} points\n\n")
     }
 
-    sb.append("Get Local → localapp.live/get?s=dailylocalshare")   // → , BMP arrow
+    sb.append("Get Local → localapp.live/dl")   // → , BMP arrow
     return sb.toString()
 }

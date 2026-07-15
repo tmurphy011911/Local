@@ -2279,7 +2279,7 @@ private struct BoResultsMapView: View {
     @State private var focusedId: String?
     @State private var region: MKCoordinateRegion?
     private enum ResultsMode: Hashable { case list, map }
-    @State private var resultsMode: ResultsMode = .map
+    @State private var resultsMode: ResultsMode = .list
 
     /// Groups that still have at least one non-dismissed event.
     // Events already picked (in the draft drawer) leave the results — they

@@ -205,7 +205,7 @@ export default {
         return resp;
       }
 
-      if (path === "/get" || path === "/app" || path === "/download") {
+      if (path === "/get" || path === "/app" || path === "/download" || path === "/dl") {
         route = "get_app";
         // Server-side store redirect. Link-preview crawlers get the HTML so the rich
         // card still unfurls; real mobile browsers are 302'd straight to their store
@@ -218,6 +218,9 @@ export default {
         var srcRaw = url.searchParams.get("s") || url.searchParams.get("src") ||
                      url.searchParams.get("source") || url.searchParams.get("utm_source") || "";
         var source = srcRaw.toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 40) || "direct";
+        // /dl is the Daily Local short link: always attributed to
+        // "dailylocalshare", which also suppresses the rich preview below.
+        if (path === "/dl") source = "dailylocalshare";
         var isBot = /(bot|crawler|spider|preview|facebookexternalhit|facebot|whatsapp|telegram|slack|discord|linkedin|embedly|pinterest|redditbot|applebot|skype|twitter|vkshare|googlebot|google-inspectiontool|bingbot|okhttp|iframely|snapchat)/i.test(ua);
         var goAndroid = !isBot && /android/i.test(ua);
         var goIOS = !isBot && /iphone|ipad|ipod/i.test(ua);

@@ -397,7 +397,7 @@ fun HomeTutorial(cityName: String = "", onComplete: () -> Unit) {
         // Skip button (top-right, not on last page)
         if (!isLastPage) {
             Text(
-                "Skip",
+                "Skip →",
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(top = 16.dp, end = 24.dp)
@@ -413,8 +413,8 @@ fun HomeTutorial(cityName: String = "", onComplete: () -> Unit) {
                     ),
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 12.sp,
                     color = AppColors.Ink3,
                 ),
             )

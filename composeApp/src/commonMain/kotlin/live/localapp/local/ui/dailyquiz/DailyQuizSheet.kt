@@ -1,7 +1,11 @@
 package live.localapp.local.ui.dailyquiz
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -243,27 +247,48 @@ private fun ResultsStage(
     }
 
     val r = s.result ?: return
+    // Bo + Share stay hidden while the rows reveal. Once the postcard finishes,
+    // Bo floats up and types; then Share floats up.
+    var rowsDone by remember(r) { mutableStateOf(false) }
+    var shareVisible by remember(r) { mutableStateOf(false) }
+    val floatUp = slideInVertically(spring(dampingRatio = 0.8f)) { it / 2 } + fadeIn()
+    // No Bo line → reveal Share as soon as the rows finish.
+    LaunchedEffect(rowsDone) { if (rowsDone && r.boMessage.isBlank()) shareVisible = true }
+
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         Spacer(Modifier.height(4.dp))
-        SharePostcard(breakdown = r.breakdown, bestAllTime = r.bestAllTime, isFirst = r.isFirst)
+        SharePostcard(
+            breakdown = r.breakdown,
+            bestAllTime = r.bestAllTime,
+            isFirst = r.isFirst,
+            onRevealComplete = { rowsDone = true },
+        )
 
-        if (r.boMessage.isNotBlank()) {
-            Spacer(Modifier.height(16.dp))
-            BoReaction(r.boMessage, r.breakdown.size)
+        AnimatedVisibility(visible = rowsDone && r.boMessage.isNotBlank(), enter = floatUp) {
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Spacer(Modifier.height(16.dp))
+                BoReaction(r.boMessage, onTypingDone = { shareVisible = true })
+            }
         }
 
-        Spacer(Modifier.height(20.dp))
-        PrimaryButton("Share") { onShare(dailyQuizShareText(r)) }
+        AnimatedVisibility(visible = shareVisible, enter = floatUp) {
+            Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                Spacer(Modifier.height(20.dp))
+                PrimaryButton("Share") { onShare(dailyQuizShareText(r)) }
+            }
+        }
     }
 }
 
-/** Bo appears beneath the results and types out a reaction line. */
+/** Bo types out a reaction line, then signals completion so Share can follow.
+ *  Mounts only after the rows have revealed, so it types immediately. */
 @Composable
-private fun BoReaction(message: String, rows: Int) {
+private fun BoReaction(message: String, onTypingDone: () -> Unit) {
     var shown by remember(message) { mutableStateOf(0) }
     LaunchedEffect(message) {
-        delay(500L + rows * 1650L)   // let the result rows finish revealing first
         for (i in 1..message.length) { shown = i; delay(22) }
+        delay(300)
+        onTypingDone()
     }
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
         Bo(size = 40.dp, showShadow = false, showSparkles = false)
@@ -289,7 +314,12 @@ private fun BoReaction(message: String, rows: Int) {
  * the correct ones drain a speed bar (10s -> time-left) then pop their points.
  */
 @Composable
-private fun SharePostcard(breakdown: List<QuizBreakdownDto>, bestAllTime: Int, isFirst: Boolean) {
+private fun SharePostcard(
+    breakdown: List<QuizBreakdownDto>,
+    bestAllTime: Int,
+    isFirst: Boolean,
+    onRevealComplete: () -> Unit = {},
+) {
     var rowsShown by remember { mutableStateOf(0) }
     var total by remember { mutableStateOf(0) }
     val rowProg = remember { mutableStateListOf(0f, 0f, 0f) }
@@ -317,6 +347,7 @@ private fun SharePostcard(breakdown: List<QuizBreakdownDto>, bestAllTime: Int, i
                 delay(450)
             }
         }
+        onRevealComplete()
     }
 
     Column(

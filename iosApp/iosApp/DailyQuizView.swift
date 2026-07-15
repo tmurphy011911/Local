@@ -134,6 +134,8 @@ struct DailyQuizView: View {
     @State private var rowRevealed: [Bool] = [false, false, false]
     @State private var rowBlinkOp: [Double] = [1, 1, 1]  // wrong-answer "0" blink opacity
     @State private var boStreamed = 0                    // chars of Bo's reaction revealed
+    @State private var rowsDone = false                  // all rows revealed → float Bo up
+    @State private var shareVisible = false              // Bo finished typing → float Share up
 
     private let ticker = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
     private let tick = UIImpactFeedbackGenerator(style: .light)
@@ -297,8 +299,16 @@ struct DailyQuizView: View {
                 ScrollView {
                     VStack(spacing: 18) {
                         postcard(r, score: displayScore)
-                        if !r.bo_message.isEmpty { boReaction(r) }
-                        primaryButton("Share") { shareCard(r) }
+                        // Bo + Share stay hidden while the rows reveal. Once done,
+                        // Bo floats up and types; then Share floats up.
+                        if rowsDone && !r.bo_message.isEmpty {
+                            boReaction(r)
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
+                        if shareVisible {
+                            primaryButton("Share") { shareCard(r) }
+                                .transition(.move(edge: .bottom).combined(with: .opacity))
+                        }
                     }
                 }
                 .onAppear { runResults(r) }
@@ -571,6 +581,9 @@ struct DailyQuizView: View {
         rowProg = [0, 0, 0]
         rowRevealed = [false, false, false]
         rowBlinkOp = [1, 1, 1]
+        rowsDone = false
+        shareVisible = false
+        boStreamed = 0
         tick.prepare()
         var t = 0.4
         for i in 0..<r.breakdown.count {
@@ -594,9 +607,25 @@ struct DailyQuizView: View {
             }
             t = revealAt + (b.correct ? 0.7 : 1.0)
         }
-        // Bo types out his reaction once every row has finished counting.
-        boStreamed = 0
-        DispatchQueue.main.asyncAfter(deadline: .now() + t + 0.3) { streamBo(r.bo_message) }
+        // Sequence the after-reveal beats: rows finish → Bo floats up → Bo types
+        // → Share floats up.
+        let boText = r.bo_message
+        let hasBo = !boText.isEmpty
+        // 1) Bo floats up once every row has revealed.
+        DispatchQueue.main.asyncAfter(deadline: .now() + t + 0.2) {
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) { rowsDone = true }
+        }
+        // 2) Bo types his line.
+        let boStart = t + 0.55
+        if hasBo {
+            DispatchQueue.main.asyncAfter(deadline: .now() + boStart) { streamBo(boText) }
+        }
+        // 3) Share floats up after Bo finishes typing (or right after Bo appears
+        //    if there's no line).
+        let shareAt = hasBo ? boStart + 0.025 * Double(boText.count) + 0.4 : t + 0.6
+        DispatchQueue.main.asyncAfter(deadline: .now() + shareAt) {
+            withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) { shareVisible = true }
+        }
     }
 
     /// Blink the wrong-answer "0" twice.

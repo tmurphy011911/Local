@@ -170,8 +170,8 @@ fun DailyLocalHost(
                     },
                 )
                 "username" -> LobbyFomoCard(
-                    wordmarkFirst = "your",
-                    wordmarkSecond = " username",
+                    wordmarkLead = "add your ",
+                    wordmarkAccent = "username",
                     accent = AppColors.OrangeDk,
                     tileBg = AppColors.OrangeLt,
                     border = AppColors.Orange,
@@ -179,8 +179,8 @@ fun DailyLocalHost(
                     onTap = { showUsernameDialog = true },
                 )
                 "preferences" -> LobbyFomoCard(
-                    wordmarkFirst = "your",
-                    wordmarkSecond = " preferences",
+                    wordmarkLead = "select your ",
+                    wordmarkAccent = "preferences",
                     accent = AppColors.SkyDk,
                     tileBg = AppColors.SkyLt,
                     border = AppColors.Sky,
@@ -286,15 +286,18 @@ private fun DailyLocalCard(played: Boolean, streak: Int, score: Int, correctCoun
         Column(Modifier.weight(1f)) {
             Text(
                 buildAnnotatedString {
-                    withStyle(SpanStyle(color = AppColors.SunDk)) { append("daily") }
-                    append(" local")
+                    // "daily" + "oca" black; only local's two l's are yellow.
+                    append("daily ")
+                    withStyle(SpanStyle(color = AppColors.SunDk)) { append("l") }
+                    append("oca")
+                    withStyle(SpanStyle(color = AppColors.SunDk)) { append("l") }
                 },
                 style = AppType.Logo.copy(fontSize = 20.sp, color = AppColors.Ink),
             )
             val subtitle = when {
                 played -> "$correctCount/3 · Play again in ${resetInLabel()}"
                 streak > 0 -> "Extend streak to ${streak + 1} days"
-                else -> "Start your streak"
+                else -> "3 questions · 30 seconds · Start your streak"
             }
             Text(
                 subtitle,
@@ -325,8 +328,8 @@ private fun DailyLocalCard(played: Boolean, streak: Int, score: Int, correctCoun
  */
 @Composable
 private fun LobbyFomoCard(
-    wordmarkFirst: String,
-    wordmarkSecond: String,
+    wordmarkLead: String,
+    wordmarkAccent: String,
     accent: Color,
     tileBg: Color,
     border: Color,
@@ -354,8 +357,8 @@ private fun LobbyFomoCard(
         Column(Modifier.weight(1f)) {
             Text(
                 buildAnnotatedString {
-                    withStyle(SpanStyle(color = accent)) { append(wordmarkFirst) }
-                    append(wordmarkSecond)
+                    append(wordmarkLead)
+                    withStyle(SpanStyle(color = accent)) { append(wordmarkAccent) }
                 },
                 style = AppType.Logo.copy(fontSize = 20.sp, color = AppColors.Ink),
             )

@@ -63,6 +63,7 @@ val appModule = module {
     single { BadgeService(get(), get()) }
     single { ClaudeApiService(get()) }
     single { live.localapp.local.domain.service.SplashGreetingService(get(), get(), get(), get()) }
+    single { live.localapp.local.domain.service.UpdateGreetingService(get(), get()) }
     single { live.localapp.local.domain.service.PlanSwapService(get(), get()) }
     single<MutationLog> { MutationLogImpl(Settings()) }
     single { BoTools(get(), get()) }

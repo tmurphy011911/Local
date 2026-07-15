@@ -184,8 +184,9 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     val userPrefsRepo: UserPreferencesRepository = remember { koin.get() }
     val isLoggedIn = userPrefsRepo.getLocalUserId() != null
     var showLocationSheet by remember { mutableStateOf(false) }
-    var showCreatePlanMenu by remember { mutableStateOf(false) }
-    var showManualPlanSheet by remember { mutableStateOf(false) }
+    // The "Ask Bo" button opens the Bo chat directly — the old Create Plan
+    // menu (Ask Bo / Build Manually) and the manual-plan sheet are no longer
+    // wired up. ManualPlanSheet.kt is retained as dead code.
 
     // ── Premium gating (paywall gates 1–4 + 6, and Bo) ──────────────────────
     // A non-premium user — no active Local Pro trial AND no paid subscription —
@@ -534,13 +535,6 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             )
         }
     }
-    LaunchedEffect(showManualPlanSheet) {
-        if (showManualPlanSheet) {
-            live.localapp.local.observability.Analytics.track(
-                live.localapp.local.observability.AnalyticsEvent.planCreateStarted(entryPoint = "create_menu")
-            )
-        }
-    }
 
     Box(
         modifier = Modifier
@@ -560,11 +554,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
 
         // Main tab content — fills entire screen, tab bar overlays on top
         if (!showHomeTutorial) {
-        val contentBlur by animateDpAsState(
-            targetValue = if (showCreatePlanMenu) 16.dp else 0.dp,
-            animationSpec = tween(durationMillis = 180),
-        )
-        Box(modifier = Modifier.fillMaxSize().blur(contentBlur)) {
+        Box(modifier = Modifier.fillMaxSize()) {
             Box(modifier = Modifier.fillMaxSize()) {
                 when (selectedTab) {
                     Tab.HOME -> {
@@ -776,11 +766,10 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         LaunchedEffect(selectedTab) { if (isLoggedIn) plansVm.refresh() }
                         PlansScreen(
                             viewModel = plansVm,
-                            // "+ New Plan" opens the picker overlay (Build Manually /
-                            // Create with Yocal) — same surface the tab-bar "+ Create Plan"
-                            // button uses. Previously this jumped straight into Yocal,
-                            // bypassing the manual option.
-                            onNewPlan = { showCreatePlanMenu = true },
+                            // "+ New Plan" opens the Bo chat directly — same as the
+                            // tab-bar "Ask Bo" button. The manual-plan option has been
+                            // removed.
+                            onNewPlan = { openChatOrLogin() },
                             onPlanClick = { plan, bounds ->
                                 if (!premiumGate.isPremium) { showPaywallGate(); return@PlansScreen }
                                 if (hasNativeHeroTransition) {
@@ -1190,61 +1179,16 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
 
             }
 
-            // Create Plan scrim — rendered BELOW the tab bar so the button stays bright
-            live.localapp.local.ui.plans.CreatePlanScrim(
-                visible = showCreatePlanMenu,
-                onDismiss = { showCreatePlanMenu = false },
-            )
-
             // Floating tab bar — overlays content at bottom
             Box(modifier = Modifier.align(Alignment.BottomCenter)) {
                 val tabInitial = homeState.userName.firstOrNull()?.uppercase() ?: ""
                 BottomTabBar(
                     selectedTab,
                     onSelect = { selectedTab = it },
-                    onCreatePlanClick = { showCreatePlanMenu = true },
+                    // "Ask Bo" pill opens the Bo chat directly (no more
+                    // Ask Bo / Build Manually menu).
+                    onCreatePlanClick = { openChatOrLogin() },
                     userInitial = tabInitial,
-                )
-            }
-
-            // Menu items — rendered ABOVE the tab bar so they appear to spring from the button
-            live.localapp.local.ui.plans.CreatePlanMenuItems(
-                visible = showCreatePlanMenu,
-                onDismiss = { showCreatePlanMenu = false },
-                onYocal = { openChatOrLogin() },
-                onManual = {
-                    if (userPrefsRepo.getLocalUserId() != null) {
-                        showManualPlanSheet = true
-                    } else {
-                        onLogout()
-                    }
-                },
-            )
-
-            if (showManualPlanSheet) {
-                val manualPremiumGate = remember { live.localapp.local.ui.chat.PremiumGate() }
-                live.localapp.local.ui.plans.ManualPlanSheet(
-                    onDismiss = { showManualPlanSheet = false },
-                    chatVm = chatVm,
-                    eventRepo = eventRepo,
-                    userLat = homeState.userLat,
-                    userLng = homeState.userLng,
-                    canSavePlan = { manualPremiumGate.canCreatePlan(live.localapp.local.ui.chat.PlanSource.MANUAL) },
-                    onPaywallRequired = {
-                        manualPremiumGate.hasSeenPaywall = true
-                        pendingShowPaywall = true
-                        showChat = true
-                        chatOpenCount++
-                    },
-                    onPlanSavedOpenChat = {
-                        manualPremiumGate.recordPlanCreated(live.localapp.local.ui.chat.PlanSource.MANUAL)
-                        // Open the chat sheet so the celebration overlay surfaces.
-                        openChatOrLogin()
-                    },
-                    onPlanWithBo = {
-                        // User abandoned manual flow — open Bo fresh.
-                        openChatOrLogin()
-                    },
                 )
             }
 

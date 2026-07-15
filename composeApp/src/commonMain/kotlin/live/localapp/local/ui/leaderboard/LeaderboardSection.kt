@@ -662,9 +662,9 @@ internal fun UsernameSheet(
                     contentAlignment = Alignment.Center,
                 ) {
                     if (saving) {
-                        CircularProgressIndicator(modifier = Modifier.height(18.dp).width(18.dp), color = AppColors.Ink, strokeWidth = 2.dp)
+                        CircularProgressIndicator(modifier = Modifier.height(18.dp).width(18.dp), color = AppColors.White, strokeWidth = 2.dp)
                     } else {
-                        Text("Save", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 16.sp, color = AppColors.Ink))
+                        Text("Save", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 16.sp, color = AppColors.White))
                     }
                 }
             }
