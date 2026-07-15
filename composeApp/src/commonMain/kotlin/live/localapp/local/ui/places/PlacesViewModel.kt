@@ -182,22 +182,34 @@ class PlacesViewModel(
     }
 
     init {
+        // Restore the persisted search radius (or the 25 mi post-onboarding
+        // default) so Explore opens filtered the same way Home does. Kept in
+        // sync with Home via the shared location sheet (onRadiusChanged mirrors
+        // to both VMs) and re-checked in ensureLoaded().
+        _uiState.update { it.copy(radiusFilter = userPreferencesRepository.effectiveRadiusFilter()) }
         loadUserPreferences()
         loadFavoriteVenueIds()
     }
 
     /** Call when the Explore tab becomes visible. Reloads if location changed. */
     fun ensureLoaded() {
+        // Adopt a radius default/choice that was persisted after this singleton's
+        // init ran — e.g. the 25 mi default that becomes effective when a fresh
+        // user finishes onboarding. Cache is the source of truth, so this also
+        // picks up a change made on Home.
+        val effectiveRadius = userPreferencesRepository.effectiveRadiusFilter()
+        val radiusChanged = effectiveRadius != _uiState.value.radiusFilter
+        if (radiusChanged) _uiState.update { it.copy(radiusFilter = effectiveRadius) }
         val state = _uiState.value
         val locationChanged = state.userLat != loadedLat || state.userLng != loadedLng
         if (locationChanged) clearCaches()
-        if (!venuesLoaded || locationChanged) {
+        if (!venuesLoaded || locationChanged || radiusChanged) {
             venuesLoaded = true
             loadedLat = state.userLat
             loadedLng = state.userLng
             loadPlaces(reset = true)
         }
-        if (!eventsLoaded || locationChanged) {
+        if (!eventsLoaded || locationChanged || radiusChanged) {
             eventsLoaded = true
             loadEvents(reset = true)
         }
@@ -290,6 +302,8 @@ class PlacesViewModel(
 
     fun setRadiusFilter(miles: Double?) {
         _uiState.update { it.copy(radiusFilter = miles) }
+        // Persist immediately so the choice survives an app kill / cold start.
+        userPreferencesRepository.cacheRadiusFilterLocally(miles)
         loadPlaces(reset = true)
         loadEvents(reset = true)
     }

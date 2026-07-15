@@ -47,6 +47,20 @@ data class CachedManualLocation(
     val manualLng: Double? = null,
 )
 
+/** The radius applied by default once a user finishes onboarding, in miles.
+ *  "25 mi" (full metro) is one of the location-sheet radius options; keep the
+ *  two in sync. */
+const val DEFAULT_RADIUS_MILES: Double = 25.0
+
+/**
+ * A persisted radius choice. [miles] `null` means the user explicitly picked
+ * "Any distance". The whole wrapper being `null` (see
+ * [UserPreferencesRepository.getCachedRadiusFilter]) means the user has never
+ * set a radius — distinct from an explicit "Any", so a deliberate "Any" is
+ * never silently re-defaulted back to 25 mi.
+ */
+data class CachedRadiusFilter(val miles: Double?)
+
 /**
  * Tri-state result of inspecting `user_profiles` for a given auth id.
  *
@@ -143,4 +157,32 @@ interface UserPreferencesRepository {
 
     /** Read the locally-cached onboarding city, or null if never set. */
     fun getCachedUserCity(): String?
+
+    /** Synchronously persist the user's chosen search radius so it survives an
+     *  app kill / cold start. [miles] `null` = an explicit "Any distance"
+     *  choice, which is stored distinctly from "never set" (see
+     *  [getCachedRadiusFilter]) so it is not re-defaulted to 25 mi. */
+    fun cacheRadiusFilterLocally(miles: Double?)
+
+    /** Read the persisted radius choice, or `null` if the user has never set
+     *  one. Prefer [effectiveRadiusFilter] for the value to actually apply on
+     *  cold start (it folds in the post-onboarding default). */
+    fun getCachedRadiusFilter(): CachedRadiusFilter?
+
+    /**
+     * The radius to apply on cold start / when a view model first resolves it:
+     * - the user's explicit choice if they've made one (including an explicit
+     *   "Any distance" = `null`), otherwise
+     * - [DEFAULT_RADIUS_MILES] (25 mi) once onboarding is complete — the product
+     *   default that "sticks" until the user changes it, otherwise
+     * - `null` (unfiltered) before onboarding.
+     */
+    fun effectiveRadiusFilter(): Double? {
+        val cached = getCachedRadiusFilter()
+        return when {
+            cached != null -> cached.miles
+            isOnboardingComplete() -> DEFAULT_RADIUS_MILES
+            else -> null
+        }
+    }
 }
