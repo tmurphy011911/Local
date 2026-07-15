@@ -84,6 +84,11 @@ data class PlacesUiState(
     // than the events screen staying blank while places finishes loading.
     val isEventsLoading: Boolean = false,
     val isRefreshing: Boolean = false,
+    // Bo pull-to-refresh: ids of items that first appeared on the last manual
+    // refresh (drive the NEW ribbon; cleared on scroll), and whether that
+    // refresh failed (drives the settle haptic + retry toast).
+    val newItemIds: Set<String> = emptySet(),
+    val refreshFailed: Boolean = false,
     val error: String? = null,
     val selectedVenue: VenueWithMeta? = null,
     val selectedVenueEvents: List<Event> = emptyList(),
@@ -284,10 +289,67 @@ class PlacesViewModel(
         _uiState.update { it.copy(streakDays = days) }
     }
 
+    /**
+     * Manual Bo pull-to-refresh. Unlike filter/sort reloads this bypasses the
+     * fresh-page cache (a pull should always hit the network), awaits both the
+     * places and events loads, then diffs against the pre-refresh ids to drive
+     * the NEW ribbons and surface a per-tab result toast.
+     */
     fun refresh() {
-        _uiState.update { it.copy(isRefreshing = true) }
-        loadPlaces(reset = true)
-        loadEvents(reset = true)
+        val before = _uiState.value
+        val oldEventIds = before.filteredEvents.mapTo(HashSet()) { it.id }
+        val oldPlaceIds = before.filteredVenues.mapTo(HashSet()) { it.venue.id }
+        _uiState.update { it.copy(isRefreshing = true, refreshFailed = false, newItemIds = emptySet()) }
+
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
+            loadPlaces(reset = true, force = true)
+            loadEvents(reset = true, force = true)
+            placesLoadJob?.join()
+            eventsLoadJob?.join()
+
+            val st = _uiState.value
+            val newEventIds = st.filteredEvents.mapNotNull { it.id.takeIf { id -> id !in oldEventIds } }.toSet()
+            val newPlaceIds = st.filteredVenues.mapNotNull { it.venue.id.takeIf { id -> id !in oldPlaceIds } }.toSet()
+            val failed = st.error != null
+
+            // Prepend the genuinely-new items to the top of each list (stable
+            // sort keeps the server order within the new / existing groups).
+            val eventsSorted = st.filteredEvents.sortedByDescending { it.id in newEventIds }
+            val venuesSorted = st.filteredVenues.sortedByDescending { it.venue.id in newPlaceIds }
+
+            _uiState.update {
+                it.copy(
+                    filteredEvents = eventsSorted,
+                    events = eventsSorted,
+                    filteredVenues = venuesSorted,
+                    venues = venuesSorted,
+                    newItemIds = newEventIds + newPlaceIds,
+                    refreshFailed = failed,
+                    isRefreshing = false,
+                )
+            }
+
+            val toast = when {
+                failed -> "Couldn't refresh — tap to retry"
+                before.activeTab == SearchTab.EVENTS -> when (newEventIds.size) {
+                    0 -> "You're all caught up"
+                    else -> "${newEventIds.size} new event${if (newEventIds.size == 1) "" else "s"}" +
+                        (st.locationName.takeIf { it.isNotBlank() }?.let { " near $it" } ?: " nearby")
+                }
+                else -> when (newPlaceIds.size) {
+                    0 -> "You're all caught up"
+                    else -> "${newPlaceIds.size} new place${if (newPlaceIds.size == 1) "" else "s"} near you"
+                }
+            }
+            badgeService.emitInfoToast(toast, star = !failed)
+        }
+    }
+
+    /** Clear the NEW ribbons once the user scrolls (spec: ribbons clear on next view). */
+    fun clearNewRibbons() {
+        if (_uiState.value.newItemIds.isEmpty()) return
+        _uiState.update { it.copy(newItemIds = emptySet()) }
     }
 
     fun setFilter(filter: String) {
@@ -405,12 +467,16 @@ class PlacesViewModel(
 
     // ══════ Places ══════
 
+    /** Coordinates a manual pull-to-refresh across the places + events loads. */
+    private var refreshJob: Job? = null
+
     private var placesLoadJob: Job? = null
-    private fun loadPlaces(reset: Boolean) {
+    private fun loadPlaces(reset: Boolean, force: Boolean = false) {
         placesLoadJob?.cancel()
 
-        // Cache short-circuit (Option B) — same pattern as loadEvents.
-        if (reset) {
+        // Cache short-circuit (Option B) — same pattern as loadEvents. A manual
+        // pull-to-refresh passes force=true to always hit the network.
+        if (reset && !force) {
             val state0 = _uiState.value
             val key = state0.placesCacheKey()
             val hit = placesCache[key]
@@ -424,7 +490,6 @@ class PlacesViewModel(
                         cityFacets = hit.page.cityFacets,
                         categoryFacets = hit.page.categoryFacets,
                         isLoading = false,
-                        isRefreshing = false,
                         error = null,
                     )
                 }
@@ -486,7 +551,6 @@ class PlacesViewModel(
                         cityFacets = page.cityFacets,
                         categoryFacets = page.categoryFacets,
                         isLoading = false,
-                        isRefreshing = false,
                         error = null,
                     )
                 }
@@ -498,7 +562,7 @@ class PlacesViewModel(
                     placesCache[key] = CachedPlacesPage(page, nowMs())
                 }
             } catch (e: Exception) {
-                _uiState.update { it.copy(error = e.message, isLoading = false, isRefreshing = false) }
+                _uiState.update { it.copy(error = e.message, isLoading = false) }
             }
         }
     }
@@ -512,12 +576,13 @@ class PlacesViewModel(
     // ══════ Events ══════
 
     private var eventsLoadJob: Job? = null
-    private fun loadEvents(reset: Boolean) {
+    private fun loadEvents(reset: Boolean, force: Boolean = false) {
         eventsLoadJob?.cancel()
 
         // Cache short-circuit: switching back to a recently-viewed filter
-        // combo on a reset should skip the network entirely.
-        if (reset) {
+        // combo on a reset should skip the network entirely. A manual
+        // pull-to-refresh passes force=true to always hit the network.
+        if (reset && !force) {
             val state0 = _uiState.value
             val key = state0.eventsCacheKey()
             val hit = eventsCache[key]

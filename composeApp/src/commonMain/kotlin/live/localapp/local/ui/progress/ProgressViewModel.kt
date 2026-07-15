@@ -4,10 +4,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -52,6 +54,12 @@ sealed interface CelebrationEvent {
         val title: String,
         val points: Int,
     ) : CelebrationEvent
+
+    /** Neutral dark-pill toast (Bo pull-to-refresh result). */
+    data class InfoToast(
+        val message: String,
+        val star: Boolean,
+    ) : CelebrationEvent
 }
 
 // ── UI State ──
@@ -63,6 +71,9 @@ data class ProgressUiState(
     val favoritesSaved: Int = 0,
     val plansCreated: Int = 0,
     val eventsExplored: Int = 0,
+    // Bo pull-to-refresh — re-syncs FOMO total + progress stats.
+    val isRefreshing: Boolean = false,
+    val refreshFailed: Boolean = false,
     // Badge system
     val totalPoints: Int = 0,
     val currentTier: StatusTier = StatusTier.NEW_IN_TOWN,
@@ -133,6 +144,10 @@ class ProgressViewModel(
                     is BadgeCelebration.FomoToast -> CelebrationEvent.FomoEarned(
                         title = celebration.title,
                         points = celebration.points,
+                    )
+                    is BadgeCelebration.InfoToast -> CelebrationEvent.InfoToast(
+                        message = celebration.message,
+                        star = celebration.star,
                     )
                 }
                 _uiState.update { state ->
@@ -210,8 +225,16 @@ class ProgressViewModel(
     }
 
     fun refresh() {
-        loadStats()
-        loadBadgeData()
+        val before = _uiState.value.totalPoints
+        _uiState.update { it.copy(isRefreshing = true, refreshFailed = false) }
+        viewModelScope.launch {
+            val jobs = listOf(loadStats(), loadBadgeData())
+            jobs.joinAll()
+            val delta = _uiState.value.totalPoints - before
+            _uiState.update { it.copy(isRefreshing = false) }
+            val toast = if (delta > 0) "+$delta FOMO earned" else "You're all caught up"
+            badgeService.emitInfoToast(toast)
+        }
     }
 
     /**
@@ -275,8 +298,8 @@ class ProgressViewModel(
         val id: String,
     )
 
-    private fun loadStats() {
-        viewModelScope.launch {
+    private fun loadStats(): Job = viewModelScope.launch {
+        run {
             val userId = userPrefsRepo.getLocalUserId() ?: return@launch
             try {
                 val favorites = supabaseClient.from("community_interactions")
@@ -316,8 +339,8 @@ class ProgressViewModel(
         }
     }
 
-    private fun loadBadgeData() {
-        viewModelScope.launch {
+    private fun loadBadgeData(): Job = viewModelScope.launch {
+        run {
             val userId = userPrefsRepo.getLocalUserId() ?: return@launch
             try {
                 val milestones = badgeRepository.getMilestones(userId)

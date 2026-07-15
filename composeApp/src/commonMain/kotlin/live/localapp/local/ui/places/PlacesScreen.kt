@@ -76,6 +76,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import live.localapp.local.ui.common.AppRefreshBox
+import live.localapp.local.ui.common.NewRibbon
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -263,9 +265,10 @@ fun PlacesScreen(
             }
 
             // ── Content ──
-            PullToRefreshBox(
+            AppRefreshBox(
                 isRefreshing = state.isRefreshing,
                 onRefresh = { viewModel.refresh() },
+                refreshFailed = state.refreshFailed,
                 modifier = Modifier.weight(1f).nestedScroll(dismissKeyboardOnScroll)
                     // Also dismiss when the user taps a result card (event/place)
                     // or any empty space in the results. Observes the initial-pass
@@ -329,6 +332,8 @@ fun PlacesScreen(
                                 },
                                 searchQuery = state.searchQuery,
                                 onClearSearch = { viewModel.setSearchQuery("") },
+                                newItemIds = state.newItemIds,
+                                onScrolled = { viewModel.clearNewRibbons() },
                                 scrollResetKey = state.placeSort,
                             )
                         }
@@ -370,6 +375,8 @@ fun PlacesScreen(
                                 },
                                 searchQuery = state.searchQuery,
                                 onClearSearch = { viewModel.setSearchQuery("") },
+                                newItemIds = state.newItemIds,
+                                onScrolled = { viewModel.clearNewRibbons() },
                                 scrollResetKey = Triple(state.dateFilter, state.customStart, state.customEnd),
                             )
                         }
@@ -1200,6 +1207,9 @@ private fun VenueGrid(
     onFavoriteToggle: (VenueWithMeta) -> Unit,
     searchQuery: String,
     onClearSearch: () -> Unit,
+    /** Ids that got a Bo pull-to-refresh NEW ribbon; [onScrolled] clears them. */
+    newItemIds: Set<String> = emptySet(),
+    onScrolled: () -> Unit = {},
     /** When this changes, the list jumps to the top — pass the sort enum so
      *  switching sort doesn't strand the user mid-list. */
     scrollResetKey: Any? = null,
@@ -1207,6 +1217,11 @@ private fun VenueGrid(
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     LaunchedEffect(scrollResetKey) {
         if (scrollResetKey != null) listState.scrollToItem(0)
+    }
+    // Clear the NEW ribbons the moment the user starts scrolling the results.
+    if (newItemIds.isNotEmpty()) {
+        val scrolling = listState.isScrollInProgress
+        LaunchedEffect(scrolling) { if (scrolling) onScrolled() }
     }
 
     LazyColumn(
@@ -1238,6 +1253,7 @@ private fun VenueGrid(
             VenueCard(
                 vm = venueWithMeta,
                 isFavorited = venueWithMeta.venue.id in favoriteIds,
+                isNew = venueWithMeta.venue.id in newItemIds,
                 onClick = { bounds -> onVenueClick(venueWithMeta, bounds) },
                 onFavoriteToggle = {
                     // Saving keeps the user's scroll position — the saved
@@ -1419,7 +1435,7 @@ private fun SavedVenueAlbumCard(vm: VenueWithMeta, onClick: (Rect) -> Unit, onFa
 // `internal` (not `private`) so the Plans tab can reuse the exact same place-row
 // card for its "Ask Bo for Upcoming Events at..." section — one component, no
 // duplicated layout. See PlansScreen.SavedVenueRow.
-internal fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -> Unit, onFavoriteToggle: () -> Unit) {
+internal fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) -> Unit, onFavoriteToggle: () -> Unit, isNew: Boolean = false) {
     val v = vm.venue
     // Hero source rect = the thumbnail, not the whole row, so the detail
     // page expands/collapses from the image.
@@ -1464,6 +1480,7 @@ internal fun VenueCard(vm: VenueWithMeta, isFavorited: Boolean, onClick: (Rect) 
                     tint = AppColors.Ink3.copy(alpha = 0.5f),
                 )
             }
+            if (isNew) NewRibbon()
         }
 
         Spacer(Modifier.width(12.dp))
@@ -2363,6 +2380,9 @@ private fun EventGrid(
     onFavoriteToggle: (live.localapp.local.domain.model.Event) -> Unit,
     searchQuery: String,
     onClearSearch: () -> Unit,
+    /** Ids that got a Bo pull-to-refresh NEW ribbon; [onScrolled] clears them. */
+    newItemIds: Set<String> = emptySet(),
+    onScrolled: () -> Unit = {},
     /** When this changes, the list jumps to the top — pass the date filter
      *  so switching filters doesn't strand the user mid-list. */
     scrollResetKey: Any? = null,
@@ -2370,6 +2390,11 @@ private fun EventGrid(
     val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     LaunchedEffect(scrollResetKey) {
         if (scrollResetKey != null) listState.scrollToItem(0)
+    }
+    // Clear the NEW ribbons the moment the user starts scrolling the results.
+    if (newItemIds.isNotEmpty()) {
+        val scrolling = listState.isScrollInProgress
+        LaunchedEffect(scrolling) { if (scrolling) onScrolled() }
     }
 
     if (events.isEmpty() && savedEvents.isEmpty()) {
@@ -2415,6 +2440,7 @@ private fun EventGrid(
             EventRowCard(
                 event = events[i],
                 isFavorited = events[i].id in favoriteIds,
+                isNew = events[i].id in newItemIds,
                 onClick = { bounds -> onEventClick(events[i], bounds) },
                 onFavoriteToggle = {
                     // Saving keeps the user's scroll position — the saved
@@ -2607,6 +2633,7 @@ private fun EventRowCard(
     isFavorited: Boolean,
     onClick: (Rect) -> Unit,
     onFavoriteToggle: () -> Unit,
+    isNew: Boolean = false,
 ) {
     // Hero source rect = the thumbnail, not the whole row, so the detail
     // page expands/collapses from the image.
@@ -2639,6 +2666,7 @@ private fun EventRowCard(
             }
             // No-image events show only the gradient — the calendar icon was
             // removed because it didn't add information beyond the colored tile.
+            if (isNew) NewRibbon()
         }
 
         Spacer(Modifier.width(12.dp))

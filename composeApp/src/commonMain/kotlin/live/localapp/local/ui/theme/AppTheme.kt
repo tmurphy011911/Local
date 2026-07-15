@@ -31,6 +31,10 @@ object AppColors {
     val SageDk = Color(0xFF3AAD85)
     val SageLt = Color(0xFFE6F9F2)
 
+    // "NEW" ribbon / freshness accent (Bo pull-to-refresh). Distinct, punchier
+    // green than Sage so newly-fetched cards read as new at a glance.
+    val NewGreen = Color(0xFF33B36B)
+
     val Sun = Color(0xFFFFB830)
     val SunDk = Color(0xFFE6A020)
     val SunLt = Color(0xFFFFF4DC)

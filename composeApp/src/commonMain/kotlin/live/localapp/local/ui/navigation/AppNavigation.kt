@@ -2197,6 +2197,10 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         points = event.points,
                         onDismiss = { progressVm.dismissCelebration() },
                     )
+                    is CelebrationEvent.InfoToast -> GlobalInfoToast(
+                        event = event,
+                        onDismiss = { progressVm.dismissCelebration() },
+                    )
                 }
             }
         }
@@ -2624,6 +2628,59 @@ private fun GlobalFomoToast(title: String, points: Int, onDismiss: () -> Unit) {
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, color = AppColors.Sun, letterSpacing = 0.5.sp),
                     )
                 }
+            }
+        }
+    }
+}
+
+/**
+ * Neutral dark-pill toast, top-center, ~2.6s — the Bo pull-to-refresh result
+ * ("3 new events near Nantucket", "+137 FOMO earned", …). No haptic here; the
+ * settle haptic is owned by BoRefreshControl.
+ */
+@Composable
+private fun GlobalInfoToast(event: CelebrationEvent.InfoToast, onDismiss: () -> Unit) {
+    var visible by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        visible = true
+        delay(2600)
+        visible = false
+        delay(300)
+        onDismiss()
+    }
+
+    AnimatedVisibility(
+        visible = visible,
+        enter = slideInVertically(
+            initialOffsetY = { -it * 2 },
+            animationSpec = spring(dampingRatio = 0.7f, stiffness = androidx.compose.animation.core.Spring.StiffnessMediumLow),
+        ) + fadeIn(),
+        exit = slideOutVertically(targetOffsetY = { -it * 2 }, animationSpec = tween(250)) + fadeOut(),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 56.dp), contentAlignment = Alignment.TopCenter) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(AppColors.Ink)
+                    .clickable { onDismiss() }
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (event.star) {
+                    Icon(
+                        Icons.Rounded.Star,
+                        contentDescription = null,
+                        tint = AppColors.Sun,
+                        modifier = Modifier.size(18.dp),
+                    )
+                    Spacer(Modifier.width(8.dp))
+                }
+                Text(
+                    event.message,
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.White),
+                )
             }
         }
     }
