@@ -30,7 +30,6 @@ import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -62,7 +61,7 @@ import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 
 /**
- * Bottom-bar "+ Create Plan" button.
+ * Bottom-bar "Ask Bo" button — opens the Bo chat directly.
  *
  * Interaction:
  * - Haptic on touch-down (feedback that the press registered)
@@ -82,6 +81,10 @@ fun CreatePlanButton(
     Box(
         modifier = modifier
             .height(52.dp)
+            // Pinned to the old "Create Plan" footprint so the shorter "Ask Bo"
+            // label doesn't shrink the pill (the left chat pill reserves room
+            // for this width).
+            .width(156.dp)
             .graphicsLayer {
                 scaleX = scale.value
                 scaleY = scale.value
@@ -132,22 +135,18 @@ fun CreatePlanButton(
         contentAlignment = Alignment.Center,
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(28.dp)
-                    .background(Color.White.copy(alpha = 0.22f), CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Rounded.Add,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(20.dp),
-                )
-            }
+            // Bo character as the icon — matches the "Ask Bo" hero card and the
+            // old Create Plan menu's "Ask Bo" item.
+            live.localapp.local.ui.character.Bo(
+                size = 34.dp,
+                level = live.localapp.local.ui.character.cachedBoLevel(),
+                showSparkles = false,
+                showShadow = false,
+                modifier = Modifier.size(34.dp),
+            )
             Spacer(Modifier.width(8.dp))
             Text(
-                "Create Plan",
+                "Ask Bo",
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.ExtraBold,
