@@ -101,6 +101,11 @@ function inBbox(lat, lng, box) {
 // reference the same venues/towns repeatedly — geocode each unique query once.
 const GOOGLE_CACHE = new Map();
 
+// Run-level tally of events dropped for lack of a confident location (see the
+// drop path in buildEvent). Printed in the final totals so a run's drop RATE is
+// visible at a glance — the key health signal when the fix can't be dev-tested.
+let TOTAL_DROPPED = 0;
+
 /**
  * Geocode a free-text query via Google Places, returning canonical
  * {lat, lng, city, state} or null. Works for both a venue ("Convention Hall,
@@ -155,6 +160,9 @@ async function googleGeocode(query, expectState) {
     }
   } catch (err) {
     console.log(`    Google geocode error for "${query}": ${err.message}`);
+  }
+  if (result) {
+    console.log(`    Google geocoded "${query}" → ${result.lat.toFixed(4)},${result.lng.toFixed(4)} (${result.city || "?"}, ${result.state || "?"})`);
   }
   GOOGLE_CACHE.set(key, result);
   return result;
@@ -527,6 +535,7 @@ async function buildEvent(feed, raw) {
   //    confidently place gets no coords → it would fail the carousel radius
   //    filter anyway, and shipping it with a guessed city is exactly the bug.
   if (venueLat == null || venueLng == null) {
+    TOTAL_DROPPED++;
     console.log(`    drop "${title.slice(0, 60)}" — no confident location (city=${cityLabel || "?"}, venue=${venueName || "?"})`);
     return null;
   }
