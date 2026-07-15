@@ -29,7 +29,12 @@ function trimHtmlForExtraction(html) {
 async function extractEventsFromHtml({ html, sourceUrl, anthropicKey, city, state }) {
   const trimmed = trimHtmlForExtraction(html);
   const prompt =
-    `You are extracting public events from a municipal/community calendar HTML page for ${city}, ${state}.\n\n` +
+    `You are extracting public events from a community events calendar HTML page.\n` +
+    `The publisher of this calendar is based in ${city}, ${state}, but the calendar is a ROUND-UP — ` +
+    `individual events may take place in surrounding towns or even a neighboring state ` +
+    `(e.g. a shore day-trip, a festival one town over). Record each event's OWN location from the page. ` +
+    `Do NOT assume an event is in ${city}, ${state} just because that's the publisher's home city — ` +
+    `only use ${city}, ${state} for an event if the page itself gives no other location.\n\n` +
     `Source URL: ${sourceUrl}\n\n` +
     `Return ONLY a JSON array. Each event is an object with fields:\n` +
     `  - title: string (the event name)\n` +
@@ -39,6 +44,8 @@ async function extractEventsFromHtml({ html, sourceUrl, anthropicKey, city, stat
     `  - time_known: boolean (true if a specific start time is shown, false for date-only or "TBD")\n` +
     `  - venue_name: string|null (the actual venue if listed; null when the city itself is the location)\n` +
     `  - venue_address: string|null (street + city + state if listed)\n` +
+    `  - venue_city: string|null (the TOWN/CITY this specific event is in — read it from the listing; null if the page genuinely doesn't say)\n` +
+    `  - venue_state: string|null (2-letter state code for THIS event, e.g. "NJ"; null if not shown)\n` +
     `  - source_url: string|null (the per-event detail URL if linked, otherwise null)\n` +
     `  - is_free: boolean|null\n` +
     `  - category: one of "music"|"arts"|"food"|"sports"|"comedy"|"family"|"outdoors"|"community"|"education"|"other"\n\n` +
@@ -46,6 +53,7 @@ async function extractEventsFromHtml({ html, sourceUrl, anthropicKey, city, stat
     `- Skip recurring-event template rows that don't have a concrete date.\n` +
     `- Skip past events (anything dated before today).\n` +
     `- Skip municipal meetings (planning board, council, commission, hearing) — they're noise for an event-discovery app.\n` +
+    `- Never guess venue_city/venue_state — leave them null rather than defaulting to the publisher's city.\n` +
     `- If there are no public events, return [].\n` +
     `- Output only the JSON array. No markdown fences, no prose.\n\n` +
     `HTML:\n${trimmed}`;

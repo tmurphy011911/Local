@@ -21,6 +21,7 @@ const { extractEventsFromHtml, findPageUrls } = require("./lib/claude_html_extra
 
 let SCRAPFLY_API_KEY = null;
 let ANTHROPIC_API_KEY = null;
+let GOOGLE_PLACES_API_KEY = null;
 
 const SUPABASE_SERVICE_KEY = (process.env.SUPABASE_SERVICE_KEY || "").trim();
 if (!SUPABASE_SERVICE_KEY) {
@@ -70,6 +71,111 @@ function decodeEntities(s) {
     if (result === before) break;
   }
   return result;
+}
+
+// ── Geocoding (Google Places) ──
+// Mirrors fix_municipal_centroid_coords.js: a US bbox + per-state bboxes so a
+// geocode that lands in the wrong state (a "Doylestown, PA" result for an event
+// the source says is in NJ) is rejected rather than stamped. This bbox guard is
+// what enforces "drop rather than mislocate."
+const US_BBOX = { latMin: 24, latMax: 50, lngMin: -125, lngMax: -66 };
+const STATE_BBOXES = {
+  MA: { latMin: 41.10, latMax: 42.95, lngMin: -73.55, lngMax: -69.85 },
+  RI: { latMin: 41.10, latMax: 42.10, lngMin: -71.95, lngMax: -71.05 },
+  NH: { latMin: 42.65, latMax: 45.35, lngMin: -72.60, lngMax: -70.55 },
+  CT: { latMin: 40.95, latMax: 42.10, lngMin: -73.80, lngMax: -71.75 },
+  VT: { latMin: 42.70, latMax: 45.05, lngMin: -73.50, lngMax: -71.40 },
+  ME: { latMin: 42.95, latMax: 47.50, lngMin: -71.10, lngMax: -66.85 },
+  NY: { latMin: 40.45, latMax: 45.05, lngMin: -79.85, lngMax: -71.80 },
+  NJ: { latMin: 38.85, latMax: 41.40, lngMin: -75.60, lngMax: -73.85 },
+  PA: { latMin: 39.65, latMax: 42.30, lngMin: -80.55, lngMax: -74.65 },
+  MD: { latMin: 37.85, latMax: 39.75, lngMin: -79.50, lngMax: -75.00 },
+  DE: { latMin: 38.40, latMax: 39.85, lngMin: -75.80, lngMax: -75.00 },
+};
+
+function inBbox(lat, lng, box) {
+  return lat >= box.latMin && lat <= box.latMax && lng >= box.lngMin && lng <= box.lngMax;
+}
+
+// In-memory cache for the run, keyed by "query|expectState". Aggregator feeds
+// reference the same venues/towns repeatedly — geocode each unique query once.
+const GOOGLE_CACHE = new Map();
+
+/**
+ * Geocode a free-text query via Google Places, returning canonical
+ * {lat, lng, city, state} or null. Works for both a venue ("Convention Hall,
+ * Wildwood, NJ") and a bare town ("Wildwood, NJ"): we take the first result
+ * that (a) lands in the US bbox, (b) lands in its own state's bbox, and (c) —
+ * when the caller passes expectState (the state the SOURCE claimed) — actually
+ * sits in that state. A mismatch returns null so the caller drops the event
+ * instead of mislocating it.
+ */
+async function googleGeocode(query, expectState) {
+  if (!GOOGLE_PLACES_API_KEY || !query) return null;
+  const key = `${query.toLowerCase()}|${(expectState || "").toLowerCase()}`;
+  if (GOOGLE_CACHE.has(key)) return GOOGLE_CACHE.get(key);
+
+  let result = null;
+  try {
+    const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+        "X-Goog-FieldMask": "places.location,places.formattedAddress,places.addressComponents",
+      },
+      body: JSON.stringify({ textQuery: query, maxResultCount: 5 }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const want = (expectState || "").toUpperCase();
+      for (const place of data.places || []) {
+        const loc = place.location;
+        if (!loc || typeof loc.latitude !== "number" || typeof loc.longitude !== "number") continue;
+        const lat = loc.latitude, lng = loc.longitude;
+        if (!inBbox(lat, lng, US_BBOX)) continue;
+        const comps = place.addressComponents || [];
+        const comp = (type) => comps.find((c) => (c.types || []).includes(type));
+        const stateShort = comp("administrative_area_level_1")?.shortText || null;
+        const cityLong =
+          (comp("locality") || comp("postal_town") ||
+           comp("administrative_area_level_3") || comp("sublocality"))?.longText || null;
+        // Reject if the result sits outside its own state's box (bad geocode).
+        const rBox = stateShort ? STATE_BBOXES[stateShort.toUpperCase()] : null;
+        if (rBox && !inBbox(lat, lng, rBox)) continue;
+        // Reject if the source claimed a state and this result is elsewhere.
+        if (want) {
+          if (stateShort && stateShort.toUpperCase() !== want) continue;
+          const wBox = STATE_BBOXES[want];
+          if (wBox && !inBbox(lat, lng, wBox)) continue;
+        }
+        result = { lat, lng, city: cityLong, state: stateShort };
+        break;
+      }
+    }
+  } catch (err) {
+    console.log(`    Google geocode error for "${query}": ${err.message}`);
+  }
+  GOOGLE_CACHE.set(key, result);
+  return result;
+}
+
+// Pull a trailing "City, ST" (optionally with ZIP) out of an address/location
+// string. Used by the iCal + RSS parsers, whose feeds carry the location only
+// as free text. Returns { city, state } with nulls when nothing matches.
+function parseCityState(str) {
+  if (!str) return { city: null, state: null };
+  // Preferred: a ", City, ST" span inside an address string.
+  const m = String(str).match(/,\s*([A-Za-z][A-Za-z .'-]+?),\s*([A-Z]{2})(?:\s+\d{5})?\b/);
+  if (m) return { city: m[1].trim(), state: m[2] };
+  // Fallback for text with no leading comma (RSS title "Pirate Fest — Wildwood,
+  // NJ", body "… in Doylestown, PA"). Cap the city to ≤3 words so free-form
+  // prose ("Join us in Doylestown, PA") doesn't swallow the leading words.
+  const m2 = String(str).match(
+    /(?:^|[—–-]\s*|\bin\s+)([A-Za-z][A-Za-z.'-]*(?:\s+[A-Za-z][A-Za-z.'-]*){0,2}),\s*([A-Z]{2})\b/,
+  );
+  if (m2) return { city: m2[1].trim(), state: m2[2] };
+  return { city: null, state: null };
 }
 
 function stripHtml(html) {
@@ -262,6 +368,13 @@ async function resolveCityCoords(rawCity, state) {
     } catch (_) { /* table may not exist — fall through to Claude */ }
   }
 
+  // Google Places geocode of the town center (bbox-guarded) — preferred over
+  // Claude for a plain "Town, ST", which is an unambiguous lookup.
+  if (!coords && GOOGLE_PLACES_API_KEY) {
+    const g = await googleGeocode(`${city}, ${state}`, state);
+    if (g) coords = { lat: g.lat, lng: g.lng };
+  }
+
   // Claude geocode of the town center. A dedicated municipality prompt (NOT
   // the venue prompt, which scores a bare "Town, ST" at low confidence and
   // rejects it) — a US town + state is an unambiguous, high-confidence
@@ -338,51 +451,84 @@ async function buildEvent(feed, raw) {
   const description = raw.description ? decodeEntities(raw.description) : null;
   const venueName = raw.venueName ? decodeEntities(raw.venueName) : null;
 
-  // Coordinate resolution chain — the old `raw.venueLat ?? metro?.lat`
-  // fallback caused the MASS MoCA bug: a Boston municipal feed cross-promotes
-  // events at the Berkshires, but when the feed entry omits coords the row
-  // gets STAMPED with downtown Boston (42.36, -71.06) instead of the real
-  // venue location 150 miles away. New order:
-  //   1. raw.venueLat / raw.venueLng if the feed provided them (best).
-  //   2. resolveVenueCoords(): venues table lookup → Claude fallback (gated
-  //      at confidence ≥ 0.8 with sanity checks).
-  //   3. TOWN center when venue_name is null (truly at-large civic events —
-  //      a city-wide festival / parade / "on the Common"). This MUST be the
-  //      feed's own town, not its metro: a Waltham festival belongs in
-  //      Waltham, not stamped ~10mi away at downtown-Boston metro center
-  //      (the RiverBeat bug — same family as the MASS MoCA mis-stamp).
-  //   4. Metro center only as a last resort, and only for a feed that IS a
-  //      metro (feed.city == feed.metro) — otherwise we'd re-introduce the
-  //      wrong-location stamp we just fixed.
-  //   5. Null — better to drop a far-away event from radius queries than to
-  //      ship it stamped miles from where it actually is.
+  // Location resolution chain. The bug this replaces: `venue_city` defaulted to
+  // `feed.city` and coords defaulted to the feed town, so a regional-aggregator
+  // feed configured with one home city (e.g. "Bucks County Parent" → Doylestown)
+  // stamped EVERY event — including cross-town and cross-state (NJ) ones — onto
+  // that one city. New rule: trust the event's OWN location from the source; when
+  // that's missing, geocode it (Google, bbox-guarded); only fall back to the feed
+  // city for genuinely at-large civic events (no venue, no city in the source),
+  // which is correct for single-town gov calendars. Anything with a location
+  // signal we can't confidently place is DROPPED rather than mislocated.
+  //
+  //   1. raw.venueLat / raw.venueLng if the feed provided them (best — Localist).
+  //   2. Source-extracted city/state (drupal locality, wp_tribe venue.city, the
+  //      claude_html/iCal/RSS location text) — NEVER feed.city.
+  //   3. venues table lookup, scoped to the SOURCE city/state (not feed.city).
+  //   4. Google Places geocode of venue+city+state, rejected if it lands in the
+  //      wrong state (the mislocation guard). Fills canonical city/state too.
+  //   5. TOWN center ONLY when there is no venue AND no source city — a truly
+  //      at-large civic event (parade / "on the Common"). Uses the feed's own
+  //      town; this is the sole place feed.city is still used as a location.
+  //   6. Drop (return null) — better absent than wrong.
   let venueLat = raw.venueLat ?? null;
   let venueLng = raw.venueLng ?? null;
-  if ((venueLat == null || venueLng == null) && venueName) {
-    const resolved = await resolveVenueCoords(
-      venueName,
-      raw.venueCity || feed.city,
-      raw.venueState || feed.state,
-    );
-    if (resolved) {
-      if (venueLat == null) venueLat = resolved.lat;
-      if (venueLng == null) venueLng = resolved.lng;
+  // Source-truth locality — no feed.city default (that default WAS the bug).
+  let cityLabel = raw.venueCity || null;
+  let stateLabel = raw.venueState || null;
+  const hasLocationSignal = Boolean(venueName || raw.venueAddress || cityLabel);
+
+  if (venueLat == null || venueLng == null) {
+    // 3. venues table, scoped to whatever real city/state the source gave.
+    if (venueName) {
+      const resolved = await resolveVenueCoords(venueName, cityLabel, stateLabel || feed.state);
+      if (resolved) {
+        if (venueLat == null) venueLat = resolved.lat;
+        if (venueLng == null) venueLng = resolved.lng;
+      }
+    }
+    // 4. Google geocode of the strongest query we can build. feed.city is used
+    //    only as a disambiguation HINT in the query when the source gave no
+    //    city; the STORED city comes back from Google (canonical), and the
+    //    bbox/expectState guard rejects a cross-state result.
+    if ((venueLat == null || venueLng == null) && hasLocationSignal) {
+      const hintCity = cityLabel || feed.city;
+      const hintState = stateLabel || feed.state;
+      const query = [venueName, raw.venueAddress, raw.venueAddress ? null : hintCity, hintState]
+        .filter(Boolean).join(", ");
+      const g = await googleGeocode(query, stateLabel);
+      if (g) {
+        venueLat = g.lat;
+        venueLng = g.lng;
+        if (!cityLabel && g.city) cityLabel = g.city;
+        if (!stateLabel && g.state) stateLabel = g.state;
+      }
+    }
+    // 5. Truly at-large civic event — no venue and no source city. Feed's own
+    //    town center (correct for single-town gov feeds).
+    if ((venueLat == null || venueLng == null) && !hasLocationSignal) {
+      const town = await resolveCityCoords(feed.city, feed.state);
+      if (town) {
+        if (venueLat == null) venueLat = town.lat;
+        if (venueLng == null) venueLng = town.lng;
+      }
+      cityLabel = cityLabel || feed.city;
+      stateLabel = stateLabel || feed.state;
+      // Last-resort metro center, only when the feed IS the metro hub.
+      const feedIsMetro = (feed.city || "").toLowerCase() === (feed.metro || "").toLowerCase();
+      if ((venueLat == null || venueLng == null) && feedIsMetro) {
+        venueLat = venueLat ?? metro?.lat ?? null;
+        venueLng = venueLng ?? metro?.lng ?? null;
+      }
     }
   }
-  if ((venueLat == null || venueLng == null) && !venueName) {
-    // At-large event — resolve the feed's OWN town center.
-    const town = await resolveCityCoords(raw.venueCity || feed.city, raw.venueState || feed.state);
-    if (town) {
-      if (venueLat == null) venueLat = town.lat;
-      if (venueLng == null) venueLng = town.lng;
-    }
-    // Last-resort metro center, only when the feed is itself the metro hub —
-    // never silently relocate a named town's event to the metro centroid.
-    const feedIsMetro = (feed.city || "").toLowerCase() === (feed.metro || "").toLowerCase();
-    if ((venueLat == null || venueLng == null) && feedIsMetro) {
-      venueLat = venueLat ?? metro?.lat ?? null;
-      venueLng = venueLng ?? metro?.lng ?? null;
-    }
+
+  // 6. Drop rather than mislocate: a row with a location signal we couldn't
+  //    confidently place gets no coords → it would fail the carousel radius
+  //    filter anyway, and shipping it with a guessed city is exactly the bug.
+  if (venueLat == null || venueLng == null) {
+    console.log(`    drop "${title.slice(0, 60)}" — no confident location (city=${cityLabel || "?"}, venue=${venueName || "?"})`);
+    return null;
   }
 
   return {
@@ -400,8 +546,8 @@ async function buildEvent(feed, raw) {
     status: "active",
     venue_name: venueName,
     venue_address: raw.venueAddress || null,
-    venue_city: raw.venueCity || feed.city,
-    venue_state: raw.venueState || feed.state,
+    venue_city: cityLabel,
+    venue_state: stateLabel,
     venue_lat: venueLat,
     venue_lng: venueLng,
     source: `municipal_${feed.metro}`,
@@ -414,6 +560,13 @@ async function buildEvent(feed, raw) {
     last_synced_at: new Date().toISOString(),
     updated_at: new Date().toISOString(),
   };
+}
+
+// Build an event and push it only if buildEvent resolved a confident location
+// (it returns null for rows it would otherwise mislocate — see the chain above).
+async function addEvent(events, feed, raw) {
+  const e = await buildEvent(feed, raw);
+  if (e) events.push(e);
 }
 
 // ── Parsers ──
@@ -438,7 +591,7 @@ async function fetchDrupalJsonApi(feed) {
       const addr = a.field_address || {};
       const detailsLink = a.field_details_link?.uri || null;
       const eventPath = a.path?.alias ? `https://${new URL(feed.url).host}${a.path.alias}` : null;
-      events.push(await buildEvent(feed, {
+      await addEvent(events, feed, {
         title: a.title,
         description: stripHtml(a.body?.value || "").slice(0, 2000),
         startAt,
@@ -450,7 +603,7 @@ async function fetchDrupalJsonApi(feed) {
         venueCity: addr.locality || null,
         venueState: addr.administrative_area || null,
         isFree: !a.field_cost || /free|no cost|\$0/i.test(String(a.field_cost)),
-      }));
+      });
     }
     url = data.links?.next?.href || null;
   }
@@ -473,7 +626,7 @@ async function fetchLocalist(feed) {
       const inst = (ev.event_instances || [])[0]?.event_instance;
       const startAt = inst?.start || ev.first_date;
       if (!startAt || new Date(startAt) < new Date()) continue;
-      events.push(await buildEvent(feed, {
+      await addEvent(events, feed, {
         title: ev.title,
         description: stripHtml(ev.description_text || ev.description || "").slice(0, 2000),
         startAt,
@@ -488,7 +641,7 @@ async function fetchLocalist(feed) {
         venueLng: ev.geo?.longitude ? Number(ev.geo.longitude) : null,
         isFree: !ev.ticket_cost || /free/i.test(ev.ticket_cost),
         imageUrl: ev.photo_url || null,
-      }));
+      });
     }
     page++;
   }
@@ -524,17 +677,23 @@ async function parseIcal(text, feed) {
     if (!map.SUMMARY) continue;
     const startAt = parseIcalDate(map.DTSTART);
     if (!startAt || new Date(startAt) < new Date()) continue;
-    events.push(await buildEvent(feed, {
+    // LOCATION is free text ("Venue, 123 Main St, Wildwood, NJ 08260"). Pull the
+    // event's own city/state out of it rather than defaulting to the feed city.
+    const icalLoc = map.LOCATION ? map.LOCATION.replace(/\\,/g, ",").replace(/\\n/g, " ") : null;
+    const icalCS = parseCityState(icalLoc);
+    await addEvent(events, feed, {
       title: map.SUMMARY.replace(/\\,/g, ",").replace(/\\n/g, " "),
       description: (map.DESCRIPTION || "").replace(/\\,/g, ",").replace(/\\n/g, " ").slice(0, 2000),
       startAt,
       endAt: parseIcalDate(map.DTEND),
       sourceId: map.UID || crypto.createHash("md5").update(map.SUMMARY + startAt).digest("hex"),
       sourceUrl: map.URL || null,
-      venueName: map.LOCATION ? map.LOCATION.split(",")[0] : null,
-      venueAddress: map.LOCATION || null,
+      venueName: icalLoc ? icalLoc.split(",")[0] : null,
+      venueAddress: icalLoc,
+      venueCity: icalCS.city,
+      venueState: icalCS.state,
       isFree: true,
-    }));
+    });
   }
   return events;
 }
@@ -569,7 +728,7 @@ async function fetchWpTribe(feed) {
     for (const ev of items) {
       const startAt = ev.utc_start_date || ev.start_date;
       if (!startAt || new Date(startAt) < new Date()) continue;
-      events.push(await buildEvent(feed, {
+      await addEvent(events, feed, {
         title: ev.title,
         description: stripHtml(ev.description || "").slice(0, 2000),
         startAt,
@@ -582,7 +741,7 @@ async function fetchWpTribe(feed) {
         venueState: ev.venue?.state || ev.venue?.region || null,
         isFree: !ev.cost || /free/i.test(ev.cost),
         imageUrl: ev.image?.url || null,
-      }));
+      });
     }
     page++;
   }
@@ -620,14 +779,22 @@ async function parseRss(text, feed) {
       : get("link");
     const guid = get("guid") || get("id") || link || title;
     const description = stripHtml(get("description") || get("summary") || get("content") || "").slice(0, 2000);
-    events.push(await buildEvent(feed, {
+    // RSS carries no structured location — the town/state, if present, is in the
+    // title or body text ("… — Wildwood, NJ"). Pull it out so a regional feed's
+    // out-of-town events aren't defaulted to the feed city. When nothing parses,
+    // venueCity/State stay null and buildEvent drops rather than mislocates.
+    const titleCS = parseCityState(title);
+    const rssCS = titleCS.state ? titleCS : parseCityState(description);
+    await addEvent(events, feed, {
       title,
       description,
       startAt,
       sourceId: guid,
       sourceUrl: link,
+      venueCity: rssCS.city,
+      venueState: rssCS.state,
       isFree: true,
-    }));
+    });
   }
   return events;
 }
@@ -705,7 +872,12 @@ async function fetchClaudeHtml(feed) {
       .update(`${e.title}|${e.start_at}|${e.venue_name || feed.city}`)
       .digest("hex")
       .slice(0, 24);
-    events.push(await buildEvent(feed, {
+    // Use the event's OWN city/state as extracted by Claude (added to the
+    // extractor schema); fall back to parsing the address. Do NOT default to
+    // feed.city — that hardcode is what stamped every aggregator event onto the
+    // publisher's home town. When neither yields a location, buildEvent drops it.
+    const addrCS = parseCityState(e.venue_address);
+    await addEvent(events, feed, {
       title: e.title,
       description: e.description || null,
       startAt: e.start_at,
@@ -714,10 +886,10 @@ async function fetchClaudeHtml(feed) {
       sourceUrl: e.source_url || feed.url,
       venueName: e.venue_name || null,
       venueAddress: e.venue_address || null,
-      venueCity: feed.city,
-      venueState: feed.state,
+      venueCity: e.venue_city || addrCS.city || null,
+      venueState: e.venue_state || addrCS.state || null,
       isFree: e.is_free ?? null,
-    }));
+    });
   }
   return events;
 }
@@ -799,13 +971,21 @@ async function main() {
   // — if a feed of type claude_html exists but keys are missing, it'll error
   // for that one feed and continue with the rest.
   try {
-    const secrets = await getSecrets(["SCRAPFLY_API_KEY", "ANTHROPIC_API_KEY"]);
+    const secrets = await getSecrets(["SCRAPFLY_API_KEY", "ANTHROPIC_API_KEY", "GOOGLE_PLACES_API_KEY"]);
     SCRAPFLY_API_KEY = secrets.SCRAPFLY_API_KEY || null;
     ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY || null;
+    GOOGLE_PLACES_API_KEY = secrets.GOOGLE_PLACES_API_KEY || null;
     console.log(
       `Scrapfly: ${SCRAPFLY_API_KEY ? "available" : "not configured"}, ` +
-      `Claude: ${ANTHROPIC_API_KEY ? "available" : "not configured"}`
+      `Claude: ${ANTHROPIC_API_KEY ? "available" : "not configured"}, ` +
+      `Google Places: ${GOOGLE_PLACES_API_KEY ? "available" : "not configured"}`
     );
+    if (!GOOGLE_PLACES_API_KEY) {
+      console.warn(
+        "  ⚠ GOOGLE_PLACES_API_KEY not configured — per-event geocoding is disabled; " +
+        "events whose location can't be resolved from the venues table will be dropped.",
+      );
+    }
   } catch (e) { console.warn(`Secret fetch failed: ${e.message}`); }
 
   // Load metro centers so events without parser-extracted venue coords
