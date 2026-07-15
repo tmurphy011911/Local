@@ -8,6 +8,7 @@ import io.github.jan.supabase.postgrest.query.Order
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import live.localapp.local.domain.repository.CachedManualLocation
+import live.localapp.local.domain.repository.CachedRadiusFilter
 import live.localapp.local.domain.repository.ProfileStatus
 import live.localapp.local.domain.repository.UserPreferences
 import live.localapp.local.domain.repository.UserPreferencesRepository
@@ -381,6 +382,7 @@ class UserPreferencesRepositoryImpl(
         settings.remove(KEY_MANUAL_LNG)
         settings.remove(KEY_GPS_LOCATION_NAME)
         settings.remove(KEY_USER_CITY)
+        settings.remove(KEY_RADIUS_FILTER)
     }
 
     override fun cacheManualLocationLocally(
@@ -420,6 +422,18 @@ class UserPreferencesRepositoryImpl(
 
     override fun getCachedUserCity(): String? =
         settings.getStringOrNull(KEY_USER_CITY)
+
+    override fun cacheRadiusFilterLocally(miles: Double?) {
+        // Store an explicit "Any distance" as a sentinel string so it reads back
+        // distinct from "never set" (key absent) — otherwise a deliberate "Any"
+        // would be re-defaulted to 25 mi on the next launch.
+        settings.putString(KEY_RADIUS_FILTER, miles?.toString() ?: RADIUS_ANY_SENTINEL)
+    }
+
+    override fun getCachedRadiusFilter(): CachedRadiusFilter? {
+        val raw = settings.getStringOrNull(KEY_RADIUS_FILTER) ?: return null
+        return CachedRadiusFilter(if (raw == RADIUS_ANY_SENTINEL) null else raw.toDoubleOrNull())
+    }
 
     /** Record an app open and return the updated streak count. Max +1 per calendar day. */
     fun recordAppOpenAndGetStreak(): Int {
@@ -464,5 +478,9 @@ class UserPreferencesRepositoryImpl(
         private const val KEY_MANUAL_LNG = "manual_lng"
         private const val KEY_GPS_LOCATION_NAME = "gps_location_name"
         private const val KEY_USER_CITY = "user_city"
+        private const val KEY_RADIUS_FILTER = "radius_filter"
+        // Stored in place of a number when the user explicitly picks "Any
+        // distance", so it reads back distinct from "never set" (key absent).
+        private const val RADIUS_ANY_SENTINEL = "any"
     }
 }

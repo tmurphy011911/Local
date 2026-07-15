@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.repository.CommunityInterestRepository
+import live.localapp.local.domain.repository.DEFAULT_RADIUS_MILES
 import live.localapp.local.domain.repository.InteractionType
 import live.localapp.local.domain.repository.NeighborhoodInfo
 import live.localapp.local.domain.repository.OnboardingRepository
@@ -431,6 +432,14 @@ class OnboardingViewModel(
                         onboardingComplete = true,
                     ))
                 } catch (_: Exception) {}
+            }
+            // Seed the default search radius (25 mi) the moment onboarding
+            // finishes, so it's concretely persisted and Home/Explore restore it
+            // on this and every future launch — independent of view-model init
+            // ordering. Only when the user hasn't already set one (they can't
+            // yet during onboarding, but this keeps it idempotent on resume).
+            if (userPreferencesRepository.getCachedRadiusFilter() == null) {
+                userPreferencesRepository.cacheRadiusFilterLocally(DEFAULT_RADIUS_MILES)
             }
             onSaved()
         }
