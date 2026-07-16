@@ -24,6 +24,7 @@ interface EventRow {
   description: string | null;
   category: string;
   subcategory: string | null;
+  tags: string[] | null;
   start_at: string | null;
   end_at: string | null;
   is_free: boolean;
@@ -289,7 +290,7 @@ async function fetchEvents(
   let q = supabase
     .from("events")
     .select(
-      "id,title,description,category,subcategory,start_at,end_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,venue_lat,venue_lng,event_city,event_state,event_lat,event_lng,source_url,city",
+      "id,title,description,category,subcategory,tags,start_at,end_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,venue_lat,venue_lng,event_city,event_state,event_lat,event_lng,source_url,city",
     )
     .eq("is_active", true)
     .gte("start_at", nowIso)
@@ -413,6 +414,53 @@ async function fetchCommunityScores(supabase: any, userId: string | null): Promi
   }
 }
 
+// ── Taste graph (spec §6): richer per-user taste vector ──
+// Normalized 0-1 feature weights from user_taste_summary (built nightly by
+// scripts/taste/build_taste_profiles.js). Entities (performers/brands) join in a
+// follow-up once that migration is guaranteed live everywhere; v1 uses the
+// subcategory + tag maps, which depend only on columns that already exist.
+interface UserTaste {
+  subcat: Record<string, number>;
+  tags: Record<string, number>;
+}
+
+async function fetchUserTaste(supabase: any, userId: string | null): Promise<UserTaste | null> {
+  if (!userId) return null;
+  try {
+    const { data } = await supabase
+      .from("user_taste_summary")
+      .select("subcategory_scores,tag_scores,interaction_count")
+      .eq("user_id", userId)
+      .maybeSingle();
+    // No row, cold-start (<3 interactions), or table absent → null → the taste
+    // term contributes 0 and ranking is identical to today (graceful).
+    if (!data || (data.interaction_count ?? 0) < 3) return null;
+    const norm = (m: Record<string, number> | null): Record<string, number> => {
+      const entries = Object.entries(m ?? {}).filter(([, v]) => (v as number) > 0);
+      if (entries.length === 0) return {};
+      const max = Math.max(...entries.map(([, v]) => v as number));
+      const out: Record<string, number> = {};
+      for (const [k, v] of entries) out[k.toLowerCase()] = (v as number) / max;
+      return out;
+    };
+    return { subcat: norm(data.subcategory_scores), tags: norm(data.tag_scores) };
+  } catch {
+    return null;
+  }
+}
+
+// 0-1 match between an event's features and the user's taste vector.
+function tasteVectorScore(e: EventRow, taste: UserTaste | null): number {
+  if (!taste) return 0;
+  const sub = e.subcategory ? (taste.subcat[e.subcategory.toLowerCase()] ?? 0) : 0;
+  let tagBest = 0;
+  for (const t of e.tags ?? []) {
+    const v = taste.tags[String(t).toLowerCase()] ?? 0;
+    if (v > tagBest) tagBest = v;
+  }
+  return Math.min(1, 0.6 * sub + 0.5 * tagBest);
+}
+
 // ── Scoring ──
 
 function scoreEvent(
@@ -426,6 +474,7 @@ function scoreEvent(
   _communityScores: Record<string, number>,
   _maxCommunityScore: number,
   nowMs: number,
+  userTaste: UserTaste | null,
 ): number {
   // Prefer the physical event location (event_lat) over the host-venue HQ
   // (venue_lat) — matches the home carousel's distance basis.
@@ -484,13 +533,20 @@ function scoreEvent(
   const wRank = hasAffinity ? 0.07 : 0.15;
   const wFresh = 0.03;
 
+  // Taste-vector term (spec §6). ADDITIVE and 0 when the user has no taste
+  // summary, so existing behavior is unchanged until profiles are built. The
+  // weight is a tunable knob; kept modest so it nudges rather than dominates.
+  const tasteVec = tasteVectorScore(e, userTaste);
+  const wTasteVec = 0.35;
+
   return (
     affinity * wAff +
     taste * wTaste +
     savedVenueBoost * wSaved +
     proxScore * wProx +
     rankScore * wRank +
-    freshness * wFresh
+    freshness * wFresh +
+    tasteVec * wTasteVec
   );
 }
 
@@ -562,11 +618,12 @@ Deno.serve(async (req) => {
       // community-scores fetch dropped — community signal removed from
       // scoreEvent under Option A (heavy personal affinity makes it
       // redundant). Saves one Postgres RPC per request.
-      const [venueMeta, cityPhotos, prefs, affinityMap] = await Promise.all([
+      const [venueMeta, cityPhotos, prefs, affinityMap, userTaste] = await Promise.all([
         fetchVenueMeta(supabase),
         fetchCityPhotos(supabase),
         userId ? fetchUserPrefs(supabase, userId) : Promise.resolve(null),
         fetchCategoryAffinity(supabase, userId),
+        fetchUserTaste(supabase, userId),
       ]);
       const communityScores: Record<string, number> = {};
       const maxCommunityScore = 0;
@@ -593,7 +650,7 @@ Deno.serve(async (req) => {
             resolvedImage,
             dist,
             venueRank,
-            score: scoreEvent(e, resolvedImage, venueRank, lat, lng, prefs, affinityMap, communityScores, maxCommunityScore, nowMs),
+            score: scoreEvent(e, resolvedImage, venueRank, lat, lng, prefs, affinityMap, communityScores, maxCommunityScore, nowMs, userTaste),
           };
         })
         .filter((x) => x.dist <= radiusMiles)
