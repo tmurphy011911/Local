@@ -39,6 +39,14 @@ actual object Analytics {
             // Crash + error only for now (no performance/replay).
             options.tracesSampleRate = 0.0
             options.isEnableAutoSessionTracking = true
+            // Drop EXPECTED control-flow exceptions before they reach Sentry — these
+            // are handled product states (paywall / re-auth / stale OTP / coroutine
+            // cancellation), not bugs, and were burying real crashes in the feed.
+            // Belt-and-suspenders with the call-site fixes: this also catches the
+            // auto-captured (uncaught-in-coroutine) instances like TokenExpired.
+            options.beforeSend = io.sentry.SentryOptions.BeforeSendCallback { event, _ ->
+                if (isExpectedNoise(event.throwable)) null else event
+            }
         }
 
         if (BuildKeys.POSTHOG_KEY.isNotBlank()) {
@@ -113,6 +121,38 @@ actual object Analytics {
         PostHog.flush()
         // Sentry.flush is blocking; cap at 2s so we never hang shutdown.
         Sentry.flush(2_000)
+    }
+
+    /**
+     * True for exceptions that represent expected, handled product states rather
+     * than defects, so they should never surface as Sentry issues:
+     *  - [BoEntitlementRequiredException] / "Local Pro required" → paywall (Sentry #2/#3)
+     *  - Supabase session expiry / refresh failure → re-auth on next cold start (#5)
+     *  - stale/invalid OTP (otp_expired) → inline "request a new code" (#6/#7)
+     *  - coroutine CancellationException → normal scope teardown
+     * Walks the cause chain (capped) and is fully null-safe so it can never throw
+     * inside beforeSend.
+     */
+    private fun isExpectedNoise(throwable: Throwable?): Boolean {
+        var e = throwable
+        var depth = 0
+        while (e != null && depth < 8) {
+            val name = e::class.simpleName ?: ""
+            val msg = e.message ?: ""
+            if (name == "BoEntitlementRequiredException" ||
+                name == "TokenExpiredException" ||
+                name.contains("CancellationException") ||
+                msg.contains("Local Pro required", ignoreCase = true) ||
+                msg.contains("otp_expired", ignoreCase = true) ||
+                (msg.contains("token has expired", ignoreCase = true) &&
+                    msg.contains("refresh", ignoreCase = true))
+            ) {
+                return true
+            }
+            e = e.cause
+            depth++
+        }
+        return false
     }
 
     private fun Map<String, Any?>.toNonNullStringMap(): Map<String, Any> =

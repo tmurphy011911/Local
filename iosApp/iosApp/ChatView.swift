@@ -62,6 +62,11 @@ class ChatState: ObservableObject {
     @Published var searchRadiusMiles: Double = 20.0
     /// Region-aware placeholder text for the scope-editor's city field.
     @Published var scopeEditorPlaceholder: String = "e.g. a city or neighborhood"
+    // The goal picked from the intent sheet ("find_events"/"create_plan"/
+    // "browsing"), or "" when not yet chosen. Empty drives the intent sheet.
+    @Published var boIntent: String = ""
+    // Saved (favorited) event ids — drives the filled ❤️ and the build CTA.
+    @Published var favoriteEventIds: Set<String> = []
 
     func update(from snapshot: ChatStateSnapshot) {
         DispatchQueue.main.async { [weak self] in
@@ -85,6 +90,8 @@ class ChatState: ObservableObject {
                 : nil
             self?.searchRadiusMiles = snapshot.searchRadiusMiles
             self?.scopeEditorPlaceholder = snapshot.scopeEditorPlaceholder
+            self?.boIntent = snapshot.boIntent
+            self?.favoriteEventIds = Set(snapshot.favoriteEventIds.map { $0 as String })
         }
     }
 }
@@ -203,16 +210,20 @@ struct ChatView: View {
     @StateObject private var state = ChatState()
     @State private var inputText = ""
     @FocusState private var inputFocused: Bool
-    /// Event IDs the user has tapped [+] on inside any SuggestionTray on this
-    /// chat session. While non-empty, a "Create plan" CTA appears above the
-    /// input bar — tap fires the canonical Build message back to Bo and
-    /// clears the selection. Cleared whenever messages reset (Start over).
+    /// Event IDs the user has tapped [+] on this session — drives the build CTA.
+    /// Tapping + also saves the event to Saved Events the first time (handled
+    /// by the bridge). Cleared on Start over.
     @State private var selectedEventIds: Set<String> = []
+    /// Selected day tab in the draft drawer when picks span multiple days.
+    @State private var draftDayIndex: Int = 0
     /// Snapshot of `selectedEventIds` at the moment the user last tapped the
     /// Build CTA. The CTA hides whenever the current selection equals this
     /// snapshot (idempotent — same set already submitted). It reappears the
     /// instant the user adds or removes any card. Cleared on Start over.
     @State private var lastSubmittedSelection: Set<String> = []
+    /// Events the user dismissed (✕) from the results. View-only filter across
+    /// all suggestion trays this session; cleared on Start over.
+    @State private var dismissedEventIds: Set<String> = []
     /// Per-(messageId, groupKey) loading flags for the Find-more tile. Set
     /// when the user taps Find more, cleared when ChatBridge.onLoadMoreFinished
     /// fires for that key.
@@ -229,6 +240,11 @@ struct ChatView: View {
     /// change the search scope. The chip value is the canonical scope Bo
     /// uses on every search.
     @State private var showLocationEditor: Bool = false
+
+    /// Gates the on-open intent sheet until just after this view (itself a
+    /// presented sheet) finishes appearing — presenting a nested sheet during
+    /// the parent's present animation can silently no-op on first open.
+    @State private var intentReady: Bool = false
 
     /// Live measurement of the "content height below the latest user bubble's
     /// top edge" inside the chat ScrollView — i.e. the latest user bubble's
@@ -512,7 +528,14 @@ struct ChatView: View {
                         // newest text stays on screen. Only for plain AI text —
                         // cards are top-anchored by lastPresentationCardId.
                         let last = state.messages.last
-                        if let last, !last.isUser, !last.isPlanCard, last.structured == nil {
+                        // Only follow within a real exchange. The opening
+                        // greeting (and the post–Start-over greeting) has no
+                        // preceding user bubble, so `latestUserBubbleY` is stale
+                        // and `below` inflates — bottom-follow then yanks the
+                        // full-height greeting down and it snaps back on settle
+                        // (the ~100px jump). A greeting just sits at the top.
+                        if let last, !last.isUser, !last.isPlanCard, last.structured == nil,
+                           lastUserMessageId != nil {
                             startBottomFollow(geo: geo, proxy: proxy, targetId: last.id)
                         }
                     }
@@ -545,7 +568,11 @@ struct ChatView: View {
                         // The loop's overflow guard keeps short replies anchored
                         // at the top; once the streaming bubble grows past the
                         // viewport it pins the newest text to the bottom.
-                        guard !newText.isEmpty else { return }
+                        // Same guard as the settle-follow above: don't follow
+                        // the opening greeting's stream (no user anchor →
+                        // spurious scroll). Greetings are 1–2 short sentences
+                        // and never overflow, so nothing needs pinning.
+                        guard !newText.isEmpty, lastUserMessageId != nil else { return }
                         startBottomFollow(geo: geo, proxy: proxy, targetId: "streaming")
                     }
                     .onChange(of: typewriterTick) { _ in
@@ -578,7 +605,7 @@ struct ChatView: View {
             if !selectedEventIds.isEmpty
                 && selectedEventIds != lastSubmittedSelection
                 && !state.showPlanSuccess {
-                createPlanBar
+                draftDrawer
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
@@ -587,12 +614,12 @@ struct ChatView: View {
                 quickRepliesRow
             }
 
-            // Suggestion-card follow-up chips ("Search wider", "Different day",
-            // …), hoisted out of the card to sit above the input bar in the
-            // opener-chip style. Only shown for the latest suggestion card.
-            if latestSuggestionFooter != nil && !state.showPlanSuccess {
-                suggestionFooterRow
-            }
+            // Suggestion-card follow-up chips ("Search wider" / "Different day"
+            // / "Different category") intentionally removed from under results to
+            // save vertical space — chips now only appear on the first prompt
+            // (intent) and the create-plan confirmation (both via quickReplies).
+            // `suggestionFooterRow` / `latestSuggestionFooter` are retained but
+            // unused; the same actions remain reachable by typing.
 
             // Input bar (hidden during celebration)
             if !state.showPlanSuccess {
@@ -612,6 +639,16 @@ struct ChatView: View {
                         ChatBridge.shared.sharePlan?()
                     },
                     onViewPlans: {
+                        // CRITICAL: drop the Bo input focus / collapse the keyboard
+                        // BEFORE tearing down the chat and presenting the native plan
+                        // detail. If the chat TextField stays first responder through
+                        // the tab-switch + sheet-dismiss + plan-detail present, SwiftUI
+                        // keeps recomputing its focused caret rect / intrinsic size
+                        // mid-transition and spins the main thread in TextField layout
+                        // until the watchdog kills the app (0x8BADF00D "View Plan crash").
+                        inputFocused = false
+                        UIApplication.shared.sendAction(#selector(UIResponder.resignFirstResponder), to: nil, from: nil, for: nil)
+
                         // First: switch to Plans tab and dismiss chat. Second:
                         // open the just-saved plan's detail sheet so the user
                         // lands directly on it rather than the list. The
@@ -652,6 +689,11 @@ struct ChatView: View {
             // recreation. The store survives the view, so previously-typed
             // messages render statically immediately.
             typedMessageIds = TypewriterCompletionStore.shared.completed
+            // Let the parent sheet's present animation settle before the
+            // intent sheet tries to present on top.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                intentReady = true
+            }
         }
         .sheet(isPresented: $showLocationEditor) {
             SearchScopeEditorSheet(
@@ -675,6 +717,9 @@ struct ChatView: View {
                 }
             )
         }
+        // (Intent sheet removed — Bo's opening greeting already asks the same
+        // "looking for something / planning / browsing?" question in prose, so
+        // the modal picker was redundant. `BoIntentSheet` retained but unused.)
     }
 
     /// Composite key for the loading/exhausted sets — same message can have
@@ -709,6 +754,7 @@ struct ChatView: View {
                 Button(action: {
                     selectedEventIds.removeAll()
                     lastSubmittedSelection.removeAll()
+                    dismissedEventIds.removeAll()
                     typedMessageIds.removeAll()
                     // Clear the app-lifetime store too — without this,
                     // post-reset messages with reused IDs (if any) would
@@ -816,7 +862,11 @@ struct ChatView: View {
                     .padding(.vertical, 10)
                     .background(C.mist)
                     .clipShape(RoundedRectangle(cornerRadius: 18))
-            } else if typedMessageIds.contains(message.id) {
+            } else if typedMessageIds.contains(message.id) || message.preRevealed {
+                // `preRevealed`: this bubble was already revealed live via
+                // streamingText, so render it full/static — replaying the
+                // typewriter here is the "full message flashes, vanishes, then
+                // re-streams" bug (shared fix, see ChatViewModel.addAiMessage).
                 aiMessageBubble(message.text)
             } else {
                 TypewritingAiBubble(rawText: message.text, onReveal: { typewriterTick &+= 1 }) {
@@ -939,17 +989,28 @@ struct ChatView: View {
     /// event cards. Matches the Compose `SuggestionTray` styling so the
     /// iOS and Android trays look the same.
     private func suggestionTrayRow(messageId: String, suggestions: SuggestionsSnapshot) -> some View {
-        SuggestionTrayView(
-            messageId: messageId,
+        BoResultsMapView(
             suggestions: suggestions,
-            isSelected: { selectedEventIds.contains($0) },
-            onToggleSelected: { eventId in
+            // + STAGES the event into the draft drawer only — it does NOT save
+            // to Saved Events here. Saving happens when the user taps "Save
+            // Events" or "Create Plan" in the drawer (Create Plan also saves).
+            isSaved: { selectedEventIds.contains($0) },
+            onToggleSave: { eventId in
                 withAnimation(.easeOut(duration: 0.18)) {
                     if selectedEventIds.contains(eventId) {
                         selectedEventIds.remove(eventId)
                     } else {
                         selectedEventIds.insert(eventId)
+                        // Jump the drawer's day tabs to this newest pick's day.
+                        navigateDraftToPick(eventId)
                     }
+                }
+            },
+            isDismissed: { dismissedEventIds.contains($0) },
+            onDismiss: { eventId in
+                withAnimation(.easeOut(duration: 0.18)) {
+                    dismissedEventIds.insert(eventId)
+                    selectedEventIds.remove(eventId)
                 }
             },
             onOpenEvent: { ev in
@@ -957,26 +1018,8 @@ struct ChatView: View {
                 // native event detail is presented over the chat.
                 inputFocused = false
                 ChatBridge.shared.onEventTap?(ev.eventId, ev.imageUrl)
-            },
-            onFooterAction: { intent in
-                ChatBridge.shared.sendMessage?(intent)
-            },
-            isGroupLoading: { groupKey in
-                loadingGroupKeys.contains(loadKey(messageId: messageId, groupKey: groupKey))
-            },
-            isGroupExhausted: { groupKey in
-                exhaustedGroupKeys.contains(loadKey(messageId: messageId, groupKey: groupKey))
-            },
-            onFindMore: { dayKey, categoryKey in
-                let groupKey = dayKey ?? categoryKey ?? ""
-                guard !groupKey.isEmpty else { return }
-                let key = loadKey(messageId: messageId, groupKey: groupKey)
-                guard !loadingGroupKeys.contains(key), !exhaustedGroupKeys.contains(key) else { return }
-                loadingGroupKeys.insert(key)
-                ChatBridge.shared.loadMoreSuggestions?(messageId, dayKey, categoryKey)
             }
         )
-        .padding(.trailing, 40) // visual balance: keep tray off the right edge
     }
 
     /// Persistent "Create plan" CTA above the input bar, shown when the user
@@ -994,42 +1037,180 @@ struct ChatView: View {
         state.messages.contains { $0.isPlanCard }
     }
 
-    private var createPlanBar: some View {
-        let count = selectedEventIds.count
+    /// The events the user has staged (tapped +) across every tray this chat,
+    /// in tray order, resolved to their snapshots for display in the drawer.
+    private var pickedSnapshots: [SuggestionEventSnapshot] {
+        var seen = Set<String>()
+        var out: [SuggestionEventSnapshot] = []
+        for m in state.messages {
+            guard let s = m.structured else { continue }
+            for g in s.groups {
+                for e in g.events where selectedEventIds.contains(e.eventId) && !seen.contains(e.eventId) {
+                    seen.insert(e.eventId)
+                    out.append(e)
+                }
+            }
+        }
+        return out
+    }
+
+    /// After the user stages a new pick, jump the drawer's day tabs to that
+    /// pick's day (matches Android). Computes the same dayKeys the drawer does.
+    private func navigateDraftToPick(_ eventId: String) {
+        let picks = pickedSnapshots.sorted { $0.sortEpochMillis < $1.sortEpochMillis }
+        var dayKeys: [String] = []
+        for ev in picks where !ev.dayLabel.isEmpty && !dayKeys.contains(ev.dayLabel) {
+            dayKeys.append(ev.dayLabel)
+        }
+        if let ev = picks.first(where: { $0.eventId == eventId }),
+           let idx = dayKeys.firstIndex(of: ev.dayLabel) {
+            draftDayIndex = idx
+        }
+    }
+
+    /// Draft drawer above the input bar — mirrors the Compose `DraftPlanTray`.
+    /// Shows the staged picks with a remove (✕) each, and two actions:
+    ///   • "Save Events" — save the picks to Saved Events, then clear.
+    ///   • "Create Plan" — save the picks to Saved Events AND build a plan from
+    ///     them (events added to a plan are always saved too).
+    /// Replaces the old single "Build a plan with my N picks" CTA.
+    /// Chunky "Duolingo" button matching the event page CTA — a darker coral
+    /// shadow layer offset down 4pt behind a coral (or light) face with a
+    /// matching stroke, giving the pressed-depth look.
+    private func duoButton(_ title: String, primary: Bool, action: @escaping () -> Void) -> some View {
+        let dark = Color(hex2: 0xE85D5D)
+        let face = primary ? C.coral : C.coralLt
+        let edge = primary ? dark : C.coral.opacity(0.30)
+        return Button(action: action) {
+            Text(title)
+                .font(F.body(15, .black))
+                .foregroundColor(primary ? .white : C.coral)
+                .frame(maxWidth: .infinity)
+                .frame(height: 50)                                   // fixed height (was greedy → giant)
+                .background(RoundedRectangle(cornerRadius: 14).fill(face))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(edge, lineWidth: 1.5))
+                .background(RoundedRectangle(cornerRadius: 14).fill(edge).offset(y: 4)) // 3D lip
+                .padding(.bottom, 4)                                 // room for the lip
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var draftDrawer: some View {
+        // Chronological order so the day tabs and each day's rows read
+        // earliest-first (undated events sort last via Long.MAX_VALUE).
+        let picks = pickedSnapshots.sorted { $0.sortEpochMillis < $1.sortEpochMillis }
+        let count = picks.count
         let addingToPlan = hasActivePlan
+        // Day tabs when the picks span multiple days. Group by dayLabel
+        // (day-only, e.g. "Friday, Jul 3") — NOT dateDisplay, which includes the
+        // time, so two same-day events would otherwise make two tabs.
+        let dayKeys: [String] = picks.reduce(into: []) { acc, ev in
+            if !ev.dayLabel.isEmpty && !acc.contains(ev.dayLabel) { acc.append(ev.dayLabel) }
+        }
+        let showDayTabs = dayKeys.count > 1
+        let activeDay = dayKeys.indices.contains(draftDayIndex) ? dayKeys[draftDayIndex] : (dayKeys.first ?? "")
+        let visiblePicks = showDayTabs ? picks.filter { $0.dayLabel == activeDay } : picks
         return VStack(spacing: 0) {
             Divider().background(C.pebble.opacity(0.5))
-            Button {
-                let ids = Array(selectedEventIds)
-                ChatBridge.shared.buildPlanFromSelections?(ids)
-                // Snapshot the selection so the CTA hides immediately. The
-                // green checkmarks on the SuggestionTray cards stay visible
-                // (selectedEventIds is intentionally NOT cleared). If the
-                // user adds or removes any card afterward, the snapshot no
-                // longer matches and the CTA returns. Cleared on Start over.
-                withAnimation(.easeOut(duration: 0.18)) {
-                    lastSubmittedSelection = selectedEventIds
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    if addingToPlan {
-                        Image(systemName: "plus.circle.fill")
-                            .font(.system(size: 14, weight: .bold))
+            VStack(alignment: .leading, spacing: 10) {
+                Text(addingToPlan ? "Add to your plan (\(count))" : "Your picks (\(count))")
+                    .font(F.body(12, .heavy))
+                    .foregroundColor(C.ink3)
+                    .tracking(0.4)
+
+                if showDayTabs {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 8) {
+                            ForEach(Array(dayKeys.enumerated()), id: \.offset) { idx, day in
+                                let active = idx == draftDayIndex
+                                Button { draftDayIndex = idx } label: {
+                                    Text(day)
+                                        .font(F.body(12, .bold))
+                                        .foregroundColor(active ? .white : C.ink)
+                                        .padding(.horizontal, 12)
+                                        .padding(.vertical, 5)
+                                        .background(active ? C.coral : C.coral.opacity(0.10))
+                                        .clipShape(Capsule())
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
                     }
-                    Text(addingToPlan
-                         ? "Add \(count) event\(count == 1 ? "" : "s") to my plan"
-                         : "Create plan from \(count) event\(count == 1 ? "" : "s")")
-                        .font(F.body(15, .black))
                 }
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(C.coral)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
+
+                // Staged picks — shows ~2.5 rows, scrolls for the rest.
+                ScrollView(.vertical, showsIndicators: false) {
+                    VStack(spacing: 8) {
+                        ForEach(visiblePicks, id: \.eventId) { ev in
+                            // "8pm · Big Night Live" — time prefixes the venue,
+                            // dropping either part cleanly when it's empty.
+                            let meta = [ev.timeLabel, ev.venueName]
+                                .filter { !$0.isEmpty }
+                                .joined(separator: " · ")
+                            HStack(spacing: 10) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(ev.title)
+                                        .font(F.body(14, .bold))
+                                        .foregroundColor(C.ink)
+                                        .lineLimit(1)
+                                    if !meta.isEmpty {
+                                        Text(meta)
+                                            .font(F.body(12, .medium))
+                                            .foregroundColor(C.ink3)
+                                            .lineLimit(1)
+                                    }
+                                }
+                                Spacer(minLength: 8)
+                                Button {
+                                    withAnimation(.easeOut(duration: 0.18)) {
+                                        // `_ =` so the closure returns Void, not
+                                        // Set.remove's String? (Button wants Void).
+                                        _ = selectedEventIds.remove(ev.eventId)
+                                    }
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 11, weight: .bold))
+                                        .foregroundColor(C.ink3)
+                                        .frame(width: 26, height: 26)
+                                        .background(C.snow)
+                                        .clipShape(Circle())
+                                        .overlay(Circle().stroke(C.pebble, lineWidth: 1))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+                // Fit the content (≤ ~2.5 rows) so 1-2 picks don't leave a tall
+                // empty gap above the buttons; scroll kicks in past 2.5.
+                .frame(height: min(CGFloat(max(visiblePicks.count, 1)) * 46, 94)) // ~2 rows max, scroll for more
+
+                HStack(spacing: 10) {
+                    duoButton("Save Events", primary: false) {
+                        // Saves the picks AND has Bo acknowledge in-chat; the
+                        // results component scrolls up as the ack messages land.
+                        let ids = picks.map { $0.eventId }
+                        ChatBridge.shared.saveEventsFromSelections?(ids)
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            selectedEventIds.removeAll()
+                            lastSubmittedSelection.removeAll()
+                        }
+                    }
+                    duoButton(addingToPlan ? "Add to Plan" : "Create Plan", primary: true) {
+                        let ids = picks.map { $0.eventId }
+                        // Events added to a plan are also saved to Saved Events.
+                        ids.forEach { ChatBridge.shared.saveFavorite?($0) }
+                        ChatBridge.shared.buildPlanFromSelections?(ids)
+                        // Snapshot so the drawer hides; checkmarks stay.
+                        withAnimation(.easeOut(duration: 0.18)) {
+                            lastSubmittedSelection = selectedEventIds
+                        }
+                    }
+                }
             }
-            .buttonStyle(.plain)
+            .padding(.horizontal, 14)
+            .padding(.top, 12)
+            .padding(.bottom, 10)
         }
         .background(C.snow)
     }
@@ -1395,14 +1576,16 @@ private struct MultiDayPlanCardView: View {
             ChatBridge.shared.approvePlan?()
         } label: {
             Text("Save to My Plans")
-                .font(F.body(14, .heavy))
+                .font(F.body(15, .black))
                 .foregroundColor(.white)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(C.sage)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .frame(height: 52)
+                .background(RoundedRectangle(cornerRadius: 14).fill(C.sage))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(hex2: 0x3DB88E), lineWidth: 1.5))
+                .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex2: 0x3DB88E)).offset(y: 4)) // 3D lip
         }
         .padding(12)
+        .padding(.bottom, 4)
     }
 }
 
@@ -1836,9 +2019,11 @@ private struct PlanCelebrationOverlay: View {
                                 .foregroundColor(C.coral)
                         }
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 15)
-                        .background(Color(hex2: 0xFFF8F2)) // warm cream — softer on coral than pure white
-                        .clipShape(RoundedRectangle(cornerRadius: 14))
+                        .frame(height: 54)
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex2: 0xFFF8F2))) // warm cream
+                        .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color(hex2: 0xE8D9C8), lineWidth: 1.5))
+                        .background(RoundedRectangle(cornerRadius: 14).fill(Color(hex2: 0xE8D9C8)).offset(y: 4)) // 3D lip
+                        .padding(.bottom, 4)
                     }
 
                     Button(action: onViewPlans) {
@@ -2076,11 +2261,531 @@ private enum STF {
     }
 }
 
+// MARK: - Bo Results Map
+
+/// Map rendering of a `present_suggestions` result: day/category tabs → a
+/// MapKit map with a pin per event → a synced bottom carousel of cards. Tap a
+/// pin to focus its card; swipe the carousel to recenter the map on its pin.
+/// Replaces the stacked-carousel SuggestionTrayView for event results.
+private struct BoResultsMapView: View {
+    let suggestions: SuggestionsSnapshot
+    let isSaved: (String) -> Bool
+    let onToggleSave: (String) -> Void
+    let isDismissed: (String) -> Bool
+    let onDismiss: (String) -> Void
+    let onOpenEvent: (SuggestionEventSnapshot) -> Void
+
+    @State private var groupIndex: Int = 0
+    @State private var focusedId: String?
+    @State private var region: MKCoordinateRegion?
+    private enum ResultsMode: Hashable { case list, map }
+    @State private var resultsMode: ResultsMode = .map
+
+    /// Groups that still have at least one non-dismissed event.
+    // Events already picked (in the draft drawer) leave the results — they
+    // reappear if removed from the drawer. So "shown" = not dismissed AND not
+    // saved/picked.
+    private func isShown(_ id: String) -> Bool { !isDismissed(id) && !isSaved(id) }
+    private var visibleGroups: [SuggestionGroupSnapshot] {
+        suggestions.groups.filter { g in g.events.contains { isShown($0.eventId) } }
+    }
+    private var currentEvents: [SuggestionEventSnapshot] {
+        let groups = visibleGroups
+        guard groupIndex >= 0 && groupIndex < groups.count else { return [] }
+        return groups[groupIndex].events.filter { isShown($0.eventId) }
+    }
+    private var pins: [SuggestionEventSnapshot] { currentEvents.filter { $0.hasCoords } }
+
+    /// One map pin per distinct venue — multiple events at the same place
+    /// collapse into a single pin (with a count badge) instead of stacking.
+    private struct PinGroup: Identifiable {
+        let id: String
+        let coordinate: CLLocationCoordinate2D
+        let eventIds: [String]
+    }
+    private var pinGroups: [PinGroup] {
+        var order: [String] = []
+        var byKey: [String: [SuggestionEventSnapshot]] = [:]
+        for ev in pins {
+            let key = String(format: "%.4f,%.4f", ev.venueLat, ev.venueLng)
+            if byKey[key] == nil { order.append(key) }
+            byKey[key, default: []].append(ev)
+        }
+        return order.map { key in
+            let evs = byKey[key]!
+            return PinGroup(
+                id: key,
+                coordinate: CLLocationCoordinate2D(latitude: evs[0].venueLat, longitude: evs[0].venueLng),
+                eventIds: evs.map { $0.eventId })
+        }
+    }
+    /// Advance focus + recenter the map when a card is dismissed (✕). Without
+    /// this, dismissing the focused event left `focusedId` pointing at a gone
+    /// card — its pin vanished and the map stayed put. Move to the next card
+    /// (or the previous if it was last) so the map follows the new top card.
+    private func handleDismiss(_ id: String) {
+        let list = currentEvents
+        let wasFocused = (focusedId == id)
+        var nextId: String? = focusedId
+        if wasFocused, let idx = list.firstIndex(where: { $0.eventId == id }) {
+            nextId = (idx + 1 < list.count) ? list[idx + 1].eventId
+                   : (idx - 1 >= 0 ? list[idx - 1].eventId : nil)
+        }
+        onDismiss(id)
+        if wasFocused { focusedId = nextId } // onChange(focusedId) recenters
+    }
+
+    /// Pick (+) from the carousel: the event leaves `currentEvents` (it's now in
+    /// the drawer), so advance focus to the next card first — same as dismiss.
+    private func handleAdd(_ id: String) {
+        let list = currentEvents
+        let wasFocused = (focusedId == id)
+        var nextId: String? = focusedId
+        if wasFocused, let idx = list.firstIndex(where: { $0.eventId == id }) {
+            nextId = (idx + 1 < list.count) ? list[idx + 1].eventId
+                   : (idx - 1 >= 0 ? list[idx - 1].eventId : nil)
+        }
+        onToggleSave(id)
+        if wasFocused { focusedId = nextId }
+    }
+
+    /// List ⇄ Map segmented toggle in the header.
+    private var modeToggle: some View {
+        HStack(spacing: 0) {
+            ForEach([ResultsMode.map, ResultsMode.list], id: \.self) { mode in
+                let active = resultsMode == mode
+                Button { resultsMode = mode } label: {
+                    Image(systemName: mode == .list ? "list.bullet" : "map")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(active ? .white : STC.ink3)
+                        .frame(width: 42, height: 26)
+                        .background(active ? STC.coral : Color.clear)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .background(STC.skyLt)
+        .clipShape(Capsule())
+    }
+
+    /// Vertical, scrollable results list. Swipe RIGHT to add to the draft plan,
+    /// swipe LEFT to dismiss — the +/✕ buttons stay for discoverability/a11y.
+    /// Bounded height with internal scroll (it's nested in the chat scroll).
+    private var swipeList: some View {
+        let events = currentEvents
+        let rowH: CGFloat = 92
+        let listH = min(CGFloat(max(events.count, 1)) * rowH, 460)
+        return List {
+            ForEach(events, id: \.eventId) { ev in
+                EventListRow(
+                    event: ev,
+                    isSelected: isSaved(ev.eventId),
+                    onTap: { onOpenEvent(ev) },
+                    onToggle: { onToggleSave(ev.eventId) },
+                    onDismiss: { handleDismiss(ev.eventId) }
+                )
+                .listRowInsets(EdgeInsets(top: 5, leading: 12, bottom: 5, trailing: 12))
+                .listRowSeparator(.hidden)
+                .listRowBackground(Color.clear)
+                .swipeActions(edge: .leading, allowsFullSwipe: true) {
+                    Button {
+                        if !isSaved(ev.eventId) { onToggleSave(ev.eventId) }
+                    } label: {
+                        Label("Add", systemImage: "plus")
+                    }
+                    .tint(STC.coral)
+                }
+                .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                    Button(role: .destructive) {
+                        handleDismiss(ev.eventId)
+                    } label: {
+                        Label("Dismiss", systemImage: "xmark")
+                    }
+                }
+            }
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        .frame(height: listH)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+    }
+
+    /// Compact result row for the swipe-list (thumb + text + +/✕).
+    private struct EventListRow: View {
+        let event: SuggestionEventSnapshot
+        let isSelected: Bool
+        let onTap: () -> Void
+        let onToggle: () -> Void
+        let onDismiss: () -> Void
+
+        var body: some View {
+            HStack(spacing: 10) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 10).fill(STC.skyLt)
+                        if let url = event.imageUrl, let u = URL(string: url) {
+                            AsyncImage(url: u) { img in
+                                img.resizable().aspectRatio(contentMode: .fill)
+                            } placeholder: { Color.clear }
+                        }
+                    }
+                    .frame(width: 60, height: 60)
+                    .clipShape(RoundedRectangle(cornerRadius: 10))
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(event.title)
+                            .font(STF.body(15, .bold))
+                            .foregroundColor(STC.ink)
+                            .lineLimit(1)
+                        if !event.venueName.isEmpty {
+                            Text(event.venueName)
+                                .font(STF.body(12, .medium))
+                                .foregroundColor(STC.ink3)
+                                .lineLimit(1)
+                        }
+                        HStack(spacing: 5) {
+                            if !event.timeLabel.isEmpty { Text(event.timeLabel) }
+                            if event.distanceMiles >= 0 {
+                                Text("· \(Int(event.distanceMiles.rounded())) mi")
+                            }
+                        }
+                        .font(STF.body(11, .medium))
+                        .foregroundColor(STC.ink3)
+                        .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 6)
+
+                    HStack(spacing: 6) {
+                        Button(action: onToggle) {
+                            // Match the map card: coral + when unselected,
+                            // GREEN check (sage) when added.
+                            Image(systemName: isSelected ? "checkmark" : "plus")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(.white)
+                                .frame(width: 30, height: 30)
+                                .background(isSelected ? STC.sage : STC.coral)
+                                .clipShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        Button(action: onDismiss) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 12, weight: .bold))
+                                .foregroundColor(STC.ink3)
+                                .frame(width: 30, height: 30)
+                                .background(Color.white)
+                                .clipShape(Circle())
+                                .overlay(Circle().stroke(STC.pebble, lineWidth: 1))
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(8)
+                .background(Color.white)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14).stroke(STC.pebble, lineWidth: 1))
+                .contentShape(Rectangle())
+                .onTapGesture { onTap() }
+        }
+    }
+
+    var body: some View {
+        let groups = visibleGroups
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(suggestions.headline)
+                    .font(STF.display(18, .black))
+                    .foregroundColor(STC.ink)
+                Spacer(minLength: 8)
+                modeToggle
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 14)
+
+            // Day / category tabs (only when there's more than one group).
+            if groups.count > 1 {
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 8) {
+                        ForEach(Array(groups.enumerated()), id: \.offset) { idx, g in
+                            let active = idx == groupIndex
+                            Button(action: { groupIndex = idx }) {
+                                Text(g.label.isEmpty ? "Results" : g.label)
+                                    .font(STF.body(13, .bold))
+                                    .foregroundColor(active ? .white : STC.ink)
+                                    .padding(.horizontal, 14)
+                                    .padding(.vertical, 7)
+                                    .background(active ? STC.coral : STC.skyLt)
+                                    .clipShape(Capsule())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 14)
+                    .padding(.top, 10)
+                }
+            }
+
+            if resultsMode == .list {
+                swipeList
+            } else {
+            // Map with a pin per (coord-bearing) venue in the current group.
+            // Backed by MKMapView (not SwiftUI Map) so the focused pin can be
+            // forced above overlapping neighbors via displayPriority/zPriority —
+            // SwiftUI Map gives no reliable annotation z-order control.
+            BoMapView(
+                pins: pinGroups.map {
+                    BoMapView.Pin(id: $0.id,
+                                  lat: $0.coordinate.latitude,
+                                  lng: $0.coordinate.longitude,
+                                  eventIds: $0.eventIds)
+                },
+                focusedId: focusedId,
+                region: region,
+                onSelect: { eid in focusedId = eid }
+            )
+            .frame(height: 190)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .overlay(alignment: .topLeading) {
+                if let ev = currentEvents.first(where: { $0.eventId == focusedId }) {
+                    Text(ev.venueName.isEmpty ? ev.title : ev.venueName)
+                        .font(STF.body(12, .bold))
+                        .foregroundColor(STC.ink)
+                        .lineLimit(1)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(.white)
+                        .clipShape(Capsule())
+                        .shadow(color: .black.opacity(0.1), radius: 3, y: 1)
+                        .padding(20)
+                }
+            }
+
+            // Horizontal carousel below the map: swipe left/right to browse
+            // (map recenters via focusedId); +/✕ on each card add/dismiss.
+            ScrollView(.horizontal, showsIndicators: false) {
+                LazyHStack(spacing: 10) {
+                    ForEach(currentEvents, id: \.eventId) { ev in
+                        SuggestionCardView(
+                            event: ev,
+                            isSelected: isSaved(ev.eventId),
+                            onTap: { onOpenEvent(ev) },
+                            onToggleSelected: { handleAdd(ev.eventId) }, // + → moves to drawer, advance focus
+                            onDismiss: { handleDismiss(ev.eventId) }
+                        )
+                        .frame(width: 280)
+                    }
+                }
+                .scrollTargetLayout()
+                .padding(.horizontal, 14)
+            }
+            .scrollTargetBehavior(.viewAligned)
+            .scrollPosition(id: $focusedId)
+            .padding(.top, 10)
+            .padding(.bottom, 14)
+            } // end map mode
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white)
+        .clipShape(RoundedRectangle(cornerRadius: 16))
+        .overlay(RoundedRectangle(cornerRadius: 16).stroke(STC.pebble, lineWidth: 1.5))
+        .onAppear {
+            if focusedId == nil { focusedId = currentEvents.first?.eventId }
+            focusRegion(focusedId)
+        }
+        .onChange(of: groupIndex) { _, _ in
+            focusedId = currentEvents.first?.eventId
+        }
+        // Map follows the carousel: focusing an event (swipe or pin tap)
+        // zooms to its local neighborhood so dense clusters read clearly.
+        .onChange(of: focusedId) { _, newId in
+            focusRegion(newId)
+        }
+    }
+
+    /// Center on the focused event and zoom to fit its ~nearest neighbors, so a
+    /// dense downtown cluster spreads out enough to read relative distances,
+    /// while a sparse group still shows context. The map is interactive — pinch
+    /// out any time for the wider view.
+    private func focusRegion(_ id: String?) {
+        guard let id, let target = pinGroups.first(where: { $0.eventIds.contains(id) }) else { return }
+        let center = target.coordinate
+        // The ~6 nearest distinct venues to the focused one set the zoom.
+        let nearest = pinGroups
+            .map { ($0.coordinate, hypot($0.coordinate.latitude - center.latitude, $0.coordinate.longitude - center.longitude)) }
+            .sorted { $0.1 < $1.1 }
+            .prefix(6)
+            .map { $0.0 }
+        let maxDLat = nearest.map { abs($0.latitude - center.latitude) }.max() ?? 0
+        let maxDLng = nearest.map { abs($0.longitude - center.longitude) }.max() ?? 0
+        // Centered on the focused event, so the span needs ~2× the farthest
+        // neighbor's offset; clamp to a readable band (~1mi floor, ~12mi cap).
+        let span = MKCoordinateSpan(
+            latitudeDelta: min(max(maxDLat * 2.6, 0.015), 0.18),
+            longitudeDelta: min(max(maxDLng * 2.6, 0.02), 0.22))
+        region = MKCoordinateRegion(center: center, span: span)
+    }
+}
+
+// MARK: - MKMapView wrapper (reliable focused-pin z-order)
+
+/// UIKit map backing `BoResultsMapView`. SwiftUI's `Map` gives no dependable
+/// way to keep the focused annotation above overlapping neighbors; MKMapView
+/// does, via `displayPriority = .required` + `zPriority = .max` on the focused
+/// pin. Also owns camera moves (driven by the `region` the parent computes) and
+/// forwards pin taps back up as the tapped venue's first event id.
+private struct BoMapView: UIViewRepresentable {
+    struct Pin: Equatable {
+        let id: String
+        let lat: Double
+        let lng: Double
+        let eventIds: [String]
+    }
+    let pins: [Pin]
+    let focusedId: String?
+    let region: MKCoordinateRegion?
+    let onSelect: (String) -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    func makeUIView(context: Context) -> MKMapView {
+        let map = MKMapView()
+        map.delegate = context.coordinator
+        map.showsUserLocation = false
+        map.isRotateEnabled = false
+        map.isPitchEnabled = false
+        map.register(MKAnnotationView.self, forAnnotationViewWithReuseIdentifier: PinAnnotation.reuseId)
+        return map
+    }
+
+    func updateUIView(_ map: MKMapView, context: Context) {
+        context.coordinator.parent = self
+
+        // Reconcile annotations against `pins` (by id).
+        let existing = map.annotations.compactMap { $0 as? PinAnnotation }
+        let desired = Set(pins.map { $0.id })
+        for a in existing where !desired.contains(a.pinId) { map.removeAnnotation(a) }
+        let have = Set(existing.map { $0.pinId })
+        for p in pins where !have.contains(p.id) {
+            map.addAnnotation(PinAnnotation(
+                pinId: p.id, eventIds: p.eventIds,
+                coordinate: CLLocationCoordinate2D(latitude: p.lat, longitude: p.lng)))
+        }
+
+        // Restyle every visible annotation for the current focus so the focused
+        // pin is enlarged AND forced on top.
+        for a in map.annotations.compactMap({ $0 as? PinAnnotation }) {
+            if let v = map.view(for: a) {
+                context.coordinator.style(v, focused: a.eventIds.contains(focusedId ?? "\u{0}"))
+            }
+        }
+
+        // Drive the camera from the parent's computed region (guarded so we
+        // don't fight the user's own panning/zoom on unrelated updates).
+        if let region, !context.coordinator.regionApproxEquals(map.region, region) {
+            map.setRegion(region, animated: true)
+        }
+    }
+
+    final class PinAnnotation: NSObject, MKAnnotation {
+        static let reuseId = "bo-pin"
+        let pinId: String
+        let eventIds: [String]
+        @objc dynamic var coordinate: CLLocationCoordinate2D
+        init(pinId: String, eventIds: [String], coordinate: CLLocationCoordinate2D) {
+            self.pinId = pinId
+            self.eventIds = eventIds
+            self.coordinate = coordinate
+        }
+    }
+
+    final class Coordinator: NSObject, MKMapViewDelegate {
+        var parent: BoMapView
+        init(_ p: BoMapView) { parent = p }
+
+        func mapView(_ mapView: MKMapView, viewFor annotation: MKAnnotation) -> MKAnnotationView? {
+            guard let pin = annotation as? PinAnnotation else { return nil }
+            let v = mapView.dequeueReusableAnnotationView(
+                withIdentifier: PinAnnotation.reuseId, for: annotation)
+            v.annotation = annotation
+            v.canShowCallout = false
+            style(v, focused: pin.eventIds.contains(parent.focusedId ?? "\u{0}"))
+            return v
+        }
+
+        // Annotation views are created lazily (async, after the region settles),
+        // so the initial focus set in onAppear can land BEFORE any view exists —
+        // updateUIView's restyle loop then finds nothing to style and the
+        // focused pin never shows selected. Style each view when it's actually
+        // added, using the current focus.
+        func mapView(_ mapView: MKMapView, didAdd views: [MKAnnotationView]) {
+            let fid = parent.focusedId ?? "\u{0}"
+            for v in views {
+                guard let pin = v.annotation as? PinAnnotation else { continue }
+                style(v, focused: pin.eventIds.contains(fid))
+            }
+        }
+
+        func style(_ v: MKAnnotationView, focused: Bool) {
+            let size: CGFloat = focused ? 34 : 26
+            v.frame = CGRect(x: 0, y: 0, width: size, height: size)
+            v.centerOffset = .zero
+            v.image = Self.pinImage(focused: focused, size: size)
+            // The two levers SwiftUI Map lacks: never let the focused pin be
+            // decluttered away, and draw it above all others.
+            v.displayPriority = focused ? .required : .defaultLow
+            v.zPriority = focused ? .max : .defaultUnselected
+        }
+
+        func mapView(_ mapView: MKMapView, didSelect view: MKAnnotationView) {
+            guard let pin = view.annotation as? PinAnnotation, let first = pin.eventIds.first
+            else { return }
+            // Deselect so the same pin can be tapped again later.
+            mapView.deselectAnnotation(view.annotation, animated: false)
+            parent.onSelect(first)
+        }
+
+        func regionApproxEquals(_ a: MKCoordinateRegion, _ b: MKCoordinateRegion) -> Bool {
+            abs(a.center.latitude - b.center.latitude) < 0.0008 &&
+            abs(a.center.longitude - b.center.longitude) < 0.0008 &&
+            abs(a.span.latitudeDelta - b.span.latitudeDelta) < 0.0015 &&
+            abs(a.span.longitudeDelta - b.span.longitudeDelta) < 0.0015
+        }
+
+        /// Render the coral map pin (focused = filled coral + white glyph;
+        /// unfocused = white fill + coral glyph). No count badge.
+        static func pinImage(focused: Bool, size: CGFloat) -> UIImage {
+            let coral = UIColor(STC.coral)
+            let renderer = UIGraphicsImageRenderer(size: CGSize(width: size, height: size))
+            return renderer.image { _ in
+                let rect = CGRect(x: 1.5, y: 1.5, width: size - 3, height: size - 3)
+                let circle = UIBezierPath(ovalIn: rect)
+                (focused ? coral : UIColor.white).setFill()
+                circle.fill()
+                coral.setStroke()
+                circle.lineWidth = 2
+                circle.stroke()
+                let cfg = UIImage.SymbolConfiguration(pointSize: focused ? 15 : 12, weight: .bold)
+                if let glyph = UIImage(systemName: "mappin", withConfiguration: cfg)?
+                    .withTintColor(focused ? .white : coral, renderingMode: .alwaysOriginal) {
+                    let gs = glyph.size
+                    glyph.draw(in: CGRect(
+                        x: (size - gs.width) / 2, y: (size - gs.height) / 2,
+                        width: gs.width, height: gs.height))
+                }
+            }
+        }
+    }
+}
+
 struct SuggestionTrayView: View {
     let messageId: String
     let suggestions: SuggestionsSnapshot
     let isSelected: (String) -> Bool
     let onToggleSelected: (String) -> Void
+    let isDismissed: (String) -> Bool
+    let onDismiss: (String) -> Void
     let onOpenEvent: (SuggestionEventSnapshot) -> Void
     let onFooterAction: (String) -> Void
     let isGroupLoading: (String) -> Bool
@@ -2107,6 +2812,11 @@ struct SuggestionTrayView: View {
                     .padding(.horizontal, 14)
             } else {
                 ForEach(Array(suggestions.groups.enumerated()), id: \.offset) { _, group in
+                    // Hide events the user dismissed (✕). If a group empties
+                    // out, drop its header + carousel entirely.
+                    let visible = group.events.filter { !isDismissed($0.eventId) }
+                    let groupKey = group.dayKey ?? group.categoryKey ?? ""
+                    if !visible.isEmpty {
                     Spacer().frame(height: 12)
                     if !group.label.isEmpty {
                         Text(group.label)
@@ -2120,16 +2830,15 @@ struct SuggestionTrayView: View {
                     // card. View-aligned snapping makes paging feel decisive.
                     // Content margins push the first card 14pt off the edge
                     // so it lines up with the headline above.
-                    let groupKey = group.dayKey ?? group.categoryKey ?? ""
-                    let canFindMore = !groupKey.isEmpty && !isGroupExhausted(groupKey)
                     ScrollView(.horizontal, showsIndicators: false) {
                         LazyHStack(spacing: 10) {
-                            ForEach(Array(group.events.enumerated()), id: \.offset) { _, ev in
+                            ForEach(Array(visible.enumerated()), id: \.offset) { _, ev in
                                 SuggestionCardView(
                                     event: ev,
                                     isSelected: isSelected(ev.eventId),
                                     onTap: { onOpenEvent(ev) },
-                                    onToggleSelected: { onToggleSelected(ev.eventId) }
+                                    onToggleSelected: { onToggleSelected(ev.eventId) },
+                                    onDismiss: { onDismiss(ev.eventId) }
                                 )
                                 .frame(width: cardWidth)
                             }
@@ -2147,6 +2856,7 @@ struct SuggestionTrayView: View {
                     }
                     .scrollTargetBehavior(.viewAligned)
                     .contentMargins(.horizontal, 14, for: .scrollContent)
+                    } // end if !visible.isEmpty
                 }
             }
             // NOTE: the footer action chips ("Search wider", "Different day",
@@ -2174,6 +2884,9 @@ private struct SuggestionCardView: View {
     let isSelected: Bool
     let onTap: () -> Void
     let onToggleSelected: () -> Void
+    /// ✕ — remove this event from the results (not interested). View-only;
+    /// drops it from the visible tray, doesn't touch the saved set.
+    let onDismiss: () -> Void
 
     /// Fixed card height — every card in a tray is the same height so the
     /// row reads as a clean uniform strip. Two lines (title + metadata),
@@ -2182,41 +2895,64 @@ private struct SuggestionCardView: View {
 
     var body: some View {
         Button(action: onTap) {
-            HStack(alignment: .center, spacing: 8) {
-                VStack(alignment: .leading, spacing: 4) {
-                    // Line 1 — title. Always 1 line, truncates if it
-                    // approaches the + button.
-                    Text(event.title)
-                        .font(STF.display(15, .bold))
-                        .foregroundColor(STC.ink)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                    // Line 2 — Time · Distance · Place. Always 1 line,
-                    // truncates if too long.
-                    Text(metaLine)
-                        .font(STF.body(12, .semibold))
-                        .foregroundColor(STC.ink3)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                Button(action: onToggleSelected) {
-                    Image(systemName: isSelected ? "checkmark" : "plus")
-                        .font(.system(size: 11, weight: .black))
-                        .foregroundColor(.white)
-                        .frame(width: 22, height: 22)
-                        .background(isSelected ? STC.sage : STC.coral)
-                        .clipShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isSelected ? "Remove from plan selection" : "Add to plan selection")
+            VStack(alignment: .leading, spacing: 4) {
+                // Line 1 — title. Always 1 line, truncates before the controls.
+                Text(event.title)
+                    .font(STF.display(15, .bold))
+                    .foregroundColor(STC.ink)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                // Line 2 — Time · Distance · Place. Always 1 line.
+                Text(metaLine)
+                    .font(STF.body(12, .semibold))
+                    .foregroundColor(STC.ink3)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
             }
-            .padding(.horizontal, 12)
+            // Inset so the corner controls (❤️ top-right, ✕ bottom-left)
+            // never overlap the text.
+            .padding(.leading, 14)
+            .padding(.trailing, 36)
             .frame(maxWidth: .infinity, alignment: .leading)
             .frame(height: Self.cardHeight)
             .background(STC.skyLt.opacity(0.35))
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .overlay(RoundedRectangle(cornerRadius: 14).stroke(STC.pebble, lineWidth: 1))
+            // + add to plan (also saves on first add) — top-right.
+            .overlay(alignment: .topTrailing) {
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    onToggleSelected()
+                }) {
+                    Image(systemName: isSelected ? "checkmark" : "plus")
+                        .font(.system(size: 12, weight: .black))
+                        .foregroundColor(.white)
+                        .frame(width: 26, height: 26)
+                        .background(isSelected ? STC.sage : STC.coral)
+                        .clipShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .padding(8)
+                .accessibilityLabel(isSelected ? "Added" : "Add")
+            }
+            // ✕ dismiss — bottom-right, directly beneath the + / ✓.
+            .overlay(alignment: .bottomTrailing) {
+                Button(action: {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    onDismiss()
+                }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 9, weight: .black))
+                        .foregroundColor(STC.ink3)
+                        .frame(width: 20, height: 20)
+                        .background(.white)
+                        .clipShape(Circle())
+                        .overlay(Circle().stroke(STC.pebble, lineWidth: 1))
+                }
+                .buttonStyle(.plain)
+                .padding(8)
+                .accessibilityLabel("Not interested")
+            }
         }
         .buttonStyle(.plain)
     }
@@ -2304,6 +3040,94 @@ private struct FindMoreTile: View {
         if isLoading { return "Looking…" }
         if isExhausted { return "No more events" }
         return "Find more"
+    }
+}
+
+// MARK: - Intent Sheet (on open)
+
+/// The "what are you looking to do?" sheet that comes up when Bo opens. Three
+/// goals; picking one sends the wire token back through the bridge, which sets
+/// boIntent (auto-dismissing this sheet) and steers Bo's framing + planning
+/// behavior for the rest of the session.
+private struct BoIntentSheet: View {
+    let onPick: (String) -> Void
+
+    private struct Option {
+        let wire: String
+        let icon: String
+        let title: String
+        let subtitle: String
+    }
+
+    private let options: [Option] = [
+        Option(wire: "find_events", icon: "magnifyingglass",
+               title: "Find events", subtitle: "See what's happening near you"),
+        Option(wire: "create_plan", icon: "calendar.badge.plus",
+               title: "Create a plan", subtitle: "Build an itinerary to save & share"),
+        Option(wire: "browsing", icon: "binoculars.fill",
+               title: "I'm just browsing", subtitle: "Just looking around for now"),
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("What are you looking to do?")
+                .font(F.display(24, .black))
+                .foregroundColor(C.ink)
+                .padding(.top, 30)
+                .padding(.horizontal, 22)
+            Text("Tell me where to point you and I'll take it from there.")
+                .font(F.body(14, .medium))
+                .foregroundColor(C.ink3)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 6)
+                .padding(.horizontal, 22)
+
+            VStack(spacing: 12) {
+                ForEach(options, id: \.wire) { opt in
+                    Button(action: { onPick(opt.wire) }) {
+                        HStack(spacing: 14) {
+                            ZStack {
+                                Circle()
+                                    .fill(C.coralLt)
+                                    .frame(width: 46, height: 46)
+                                Image(systemName: opt.icon)
+                                    .font(.system(size: 18, weight: .semibold))
+                                    .foregroundColor(C.coral)
+                            }
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(opt.title)
+                                    .font(F.body(17, .bold))
+                                    .foregroundColor(C.ink)
+                                Text(opt.subtitle)
+                                    .font(F.body(13, .medium))
+                                    .foregroundColor(C.ink3)
+                            }
+                            Spacer()
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundColor(C.ink3)
+                        }
+                        .padding(.vertical, 12)
+                        .padding(.horizontal, 16)
+                        .background(
+                            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                .fill(C.snow)
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .stroke(C.pebble, lineWidth: 1.5)
+                                )
+                        )
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.top, 22)
+            .padding(.horizontal, 18)
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.white.ignoresSafeArea())
     }
 }
 

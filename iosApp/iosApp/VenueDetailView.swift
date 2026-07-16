@@ -954,7 +954,8 @@ struct VenueDetailView: View {
             // Website button — coral CTA
             if let website = venue.website, !website.isEmpty {
                 Button(action: {
-                    if let url = URL(string: website) { UIApplication.shared.open(url) }
+                    // In-app webview — stays in Local instead of bouncing to Safari.
+                    InAppBrowserBridgeSetup.open(website)
                 }) {
                     Text("Visit Website")
                         .font(.system(size: 16, weight: .heavy))

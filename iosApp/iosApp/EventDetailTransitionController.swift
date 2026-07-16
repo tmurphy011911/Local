@@ -2,6 +2,20 @@ import UIKit
 import SwiftUI
 import ComposeApp
 
+/// Fires a callback when a sheet is dismissed interactively (swipe-down). UIKit
+/// does NOT call the presenter's `dismiss(completion:)` for an interactive
+/// dismissal — only a programmatic dismiss does — so without this delegate a
+/// swipe-away leaves the Kotlin side unaware the sheet closed. Used for the
+/// no-source-card event sheet (deep links / chat), where that gap stranded a
+/// deep-linked event on a blank surface (undismissable white screen).
+final class SheetDismissDelegate: NSObject, UIAdaptivePresentationControllerDelegate {
+    private let onDismiss: () -> Void
+    init(onDismiss: @escaping () -> Void) { self.onDismiss = onDismiss }
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        onDismiss()
+    }
+}
+
 /// Manages an Airbnb-style expand/collapse transition for the native EventDetailView.
 class EventDetailTransitionController {
     static let shared = EventDetailTransitionController()
@@ -12,6 +26,9 @@ class EventDetailTransitionController {
     private var originalFrame: CGRect = .zero
     private var cachedHeroImage: UIImage?
     private var onDismissed: (() -> Void)?
+    /// Retains the delegate for the no-card bottom-sheet path (its
+    /// presentationController holds it weakly). Replaced on each present.
+    var sheetDismissDelegate: SheetDismissDelegate?
 
     // MARK: - Present
 
@@ -62,6 +79,9 @@ class EventDetailTransitionController {
 
         window.addSubview(hosting.view)
         self.hostingController = hosting
+
+        // Left-edge swipe-back (no UINavigationController hosts this view).
+        EdgeSwipeBackGesture.install(on: hosting.view) { [weak self] in self?.dismiss() }
 
         // Fade in quickly, then spring to fullscreen
         UIView.animate(withDuration: 0.1) {

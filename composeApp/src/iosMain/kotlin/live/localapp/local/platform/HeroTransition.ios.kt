@@ -16,6 +16,7 @@ import live.localapp.local.domain.repository.VenueWithMeta
 
 actual val hasNativeHeroTransition: Boolean = true
 actual val hasNativeTabBar: Boolean = true
+actual val isIOS: Boolean = true
 
 actual fun notifyTabChanged(tabIndex: Int) {
     TabBarBridge.onTabChanged?.invoke(tabIndex)
@@ -67,7 +68,12 @@ actual fun openChatSheet(onReady: () -> Unit) {
     }
     ChatBridge.sendMessage = { msg -> chatVm.sendMessage(msg) }
     ChatBridge.resetChat = { chatVm.resetChat() }
+    ChatBridge.setBoIntent = { wire ->
+        live.localapp.local.ui.chat.BoIntent.fromWire(wire)?.let { chatVm.setBoIntent(it) }
+    }
+    ChatBridge.saveFavorite = { eventId -> chatVm.saveEventIfNew(eventId) }
     ChatBridge.buildPlanFromSelections = { ids -> chatVm.buildPlanFromSelections(ids) }
+    ChatBridge.saveEventsFromSelections = { ids -> chatVm.saveEventsFromSelections(ids) }
     ChatBridge.setLocationByName = { name -> chatVm.setChatSearchLocationByName(name) }
     ChatBridge.setSearchScope = { name, radius -> chatVm.setChatSearchScope(name, radius) }
     ChatBridge.setSearchScopeWithCoords = { name, lat, lng, radius ->

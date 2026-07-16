@@ -319,6 +319,14 @@ fun ProgressScreen(
                     Spacer(Modifier.height(20.dp))
                 }
 
+                // ── Local Leaderboard entry point (flag-gated) ──
+                if (live.localapp.local.Config.FEATURE_LEADERBOARD_ENABLED) {
+                    live.localapp.local.ui.leaderboard.LeaderboardAccountEntry(
+                        remember { org.koin.mp.KoinPlatform.getKoin().get<live.localapp.local.ui.leaderboard.LeaderboardViewModel>() },
+                    )
+                    Spacer(Modifier.height(20.dp))
+                }
+
                 // ── Segment Control: Progress | Tracking ──
                 ProgressTrackingCard(state, viewModel)
 
@@ -2074,6 +2082,11 @@ private fun SupportSection(onRateApp: () -> Unit, onNotifications: () -> Unit) {
         SupportRow("Terms of Service") { uriHandler.openUri("https://localapp.live/terms") }
         Spacer(Modifier.height(10.dp))
         SupportRow("Privacy Policy") { uriHandler.openUri("https://localapp.live/privacy-policy") }
+        // Apple requires an in-app account-deletion path; we route to contact-support. iOS only.
+        if (live.localapp.local.platform.isIOS) {
+            Spacer(Modifier.height(10.dp))
+            SupportRow("Delete Account") { uriHandler.openUri("https://www.localapp.live/contact-support") }
+        }
         Spacer(Modifier.height(10.dp))
 
         Text(

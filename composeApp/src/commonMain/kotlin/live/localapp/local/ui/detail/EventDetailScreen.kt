@@ -54,6 +54,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import live.localapp.local.platform.AppBackHandler
+import live.localapp.local.platform.rememberInAppBrowser
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -136,7 +138,11 @@ fun EventDetailScreen(
      */
     showDirections: Boolean = false,
 ) {
+    // Android predictive-back / system-back → dismiss (matches the swipe-back
+    // gesture). Inert on iOS, where the native detail view handles edge-swipe.
+    AppBackHandler(enabled = true, onBack = onBack)
     val uriHandler = LocalUriHandler.current
+    val inAppBrowser = rememberInAppBrowser()
     val clipboardManager = LocalClipboardManager.current
 
     // Upcoming-event count for the host venue, shown on the venue card. Events
@@ -252,12 +258,21 @@ fun EventDetailScreen(
                 onBack = onBack,
                 onShare = shareEvent,
                 onFavoriteToggle = {
-                    val wasFavorited = isFavorited
-                    isFavorited = !isFavorited
-                    if (!wasFavorited) {
-                        // Persistence + analytics both happen in the VM's
-                        // toggleEventFavorite (wired via onFavoriteTracked).
-                        onFavoriteTracked?.invoke(event.id)
+                    if (sharedMode && onSaveEvent != null) {
+                        // Shared deep-link view: the heart IS the save action
+                        // (records the favorite when signed in, or stashes it for
+                        // post-auth), matching iOS. Replaces the old full-width
+                        // "Save Event" button, which stacked over the Get Tickets /
+                        // More Info CTA below.
+                        onSaveEvent()
+                    } else {
+                        val wasFavorited = isFavorited
+                        isFavorited = !isFavorited
+                        if (!wasFavorited) {
+                            // Persistence + analytics both happen in the VM's
+                            // toggleEventFavorite (wired via onFavoriteTracked).
+                            onFavoriteTracked?.invoke(event.id)
+                        }
                     }
                 },
             )
@@ -408,7 +423,7 @@ fun EventDetailScreen(
             mapsExpanded = mapsExpanded,
             rideExpanded = rideExpanded,
             shareCopied = shareCopied,
-            onCtaClick = { if (ctaUrl != null) uriHandler.openUri(ctaUrl) },
+            onCtaClick = { if (ctaUrl != null) inAppBrowser.open(ctaUrl) },
             onToggleMaps = {
                 mapsExpanded = !mapsExpanded
                 if (mapsExpanded) rideExpanded = false
@@ -440,33 +455,10 @@ fun EventDetailScreen(
 
     }
 
-    // "Save Event" CTA for shared deep link mode — overlays at bottom
-    if (sharedMode && onSaveEvent != null) {
-        Box(
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .fillMaxWidth()
-                .background(
-                    Brush.verticalGradient(listOf(Color.Transparent, AppColors.Snow, AppColors.Snow)),
-                )
-                .padding(horizontal = 20.dp, vertical = 16.dp),
-        ) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(14.dp))
-                    .background(AppColors.Coral)
-                    .clickable(onClick = onSaveEvent)
-                    .padding(vertical = 14.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    "Save Event",
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = Color.White),
-                )
-            }
-        }
-    }
+    // Shared deep-link mode intentionally shows only the normal Get Tickets /
+    // More Info CTA above; saving happens via the hero heart (see
+    // onFavoriteToggle). The old full-width "Save Event" button here stacked on
+    // top of that CTA — removed for a single, iOS-matching bottom action.
     } // end Box
 }
 

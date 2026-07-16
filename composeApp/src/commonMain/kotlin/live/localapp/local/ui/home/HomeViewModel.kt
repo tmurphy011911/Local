@@ -56,12 +56,18 @@ data class HomeUiState(
     val error: String? = null,
     val userPreferences: UserPreferences? = null,
     val radiusFilter: Double? = null,
-    val savedThisWeek: List<Event> = emptyList(),
+    val savedUpcoming: List<Event> = emptyList(),
     val favoriteEventIds: Set<String> = emptySet(),
     val locationMode: LocationMode = LocationMode.CURRENT_LOCATION,
     val manualLocationName: String = "",
     val manualLat: Double? = null,
     val manualLng: Double? = null,
+    // GPS coords from the live location fix (written ONLY by setUserLocation). Kept
+    // separate from userLat/userLng — which a manual selection overwrites — so
+    // flipping back to Current Location restores the real GPS fix, not a stale
+    // manual one. This was the "GPS shows my last manual location" bug.
+    val gpsLat: Double? = null,
+    val gpsLng: Double? = null,
     val hasLocationPermission: Boolean = true,
     val isUnsupportedState: Boolean = false,
     // City name reverse-geocoded from GPS lat/lng. Separate from locationName so
@@ -393,7 +399,7 @@ class HomeViewModel(
             val locName = if (current.locationName.isBlank() && prefs != null) {
                 prefs.city.replaceFirstChar { c -> c.uppercase() }
             } else current.locationName
-            _uiState.update { it.copy(userLat = lat, userLng = lng, locationName = locName, isUnsupportedState = !isLocationInSupportedState(lat, lng)) }
+            _uiState.update { it.copy(userLat = lat, userLng = lng, gpsLat = lat, gpsLng = lng, locationName = locName, isUnsupportedState = !isLocationInSupportedState(lat, lng)) }
             reloadCarouselsForLocationChange()
             fetchYocalPromptsIfNeeded(lat, lng)
             fetchWeatherIfNeeded(lat, lng)
@@ -473,9 +479,12 @@ class HomeViewModel(
                 if (current.gpsLocationName.isNotBlank()) {
                     _uiState.update { it.copy(locationName = current.gpsLocationName) }
                 }
-                val prefs = current.userPreferences
-                val gpsLat = prefs?.userLat
-                val gpsLng = prefs?.userLng
+                // Use the dedicated GPS fix, NOT userPreferences.userLat/userLng —
+                // that field is overwritten by manual selection, so reading it here
+                // restored the stale manual location. If we have no live GPS fix yet,
+                // fall through to the skeleton + let RequestLocationEffect fetch one.
+                val gpsLat = current.gpsLat
+                val gpsLng = current.gpsLng
                 if (gpsLat != null && gpsLng != null) {
                     _uiState.update {
                         it.copy(userLat = gpsLat, userLng = gpsLng,
@@ -538,6 +547,12 @@ class HomeViewModel(
                 manualLat = state.manualLat,
                 manualLng = state.manualLng,
             )
+            // Reflect the new mode in the in-memory prefs too. The Home GPS effect
+            // (AppNavigation.RequestLocationEffect) is gated on
+            // userPreferences.locationMode != "manual"; without this update the
+            // gate stayed closed after switching to Current Location, so fresh GPS
+            // never re-fired and carousels kept the old manual market.
+            _uiState.update { it.copy(userPreferences = updated) }
             val userId = userPreferencesRepository.getLocalUserId() ?: return@launch
             try { userPreferencesRepository.savePreferencesWithId(userId, updated) } catch (_: Exception) {}
         }
@@ -578,7 +593,7 @@ class HomeViewModel(
             _uiState.update {
                 it.copy(
                     favoriteEventIds = it.favoriteEventIds - eventId,
-                    savedThisWeek = it.savedThisWeek.filterNot { e -> e.id == eventId },
+                    savedUpcoming = it.savedUpcoming.filterNot { e -> e.id == eventId },
                 )
             }
             live.localapp.local.observability.Analytics.track(
@@ -698,23 +713,12 @@ class HomeViewModel(
                     } else event
                 }
 
-                val now = kotlinx.datetime.Instant.fromEpochMilliseconds(kotlin.time.Clock.System.now().toEpochMilliseconds())
-                val tz = TimeZone.currentSystemDefault()
-                val todayEpochDay = now.toLocalDateTime(tz).date.toEpochDays()
-                val endEpochDay = todayEpochDay + 7
+                // All upcoming saved events (not just this week). Past events are
+                // dropped via Event.isUpcoming so they fall out of the rail once
+                // their date passes.
+                val upcoming = events.filter { it.isUpcoming }
 
-                val thisWeek = events.filter { event ->
-                    val startAt = event.startAt ?: return@filter false
-                    try {
-                        val eventDate = Instant.parse(startAt).toLocalDateTime(tz).date
-                        val eventEpochDay = eventDate.toEpochDays()
-                        eventEpochDay in todayEpochDay..endEpochDay
-                    } catch (_: Exception) {
-                        false
-                    }
-                }
-
-                _uiState.update { it.copy(savedThisWeek = thisWeek.sortedBy { it.startAt ?: "" }) }
+                _uiState.update { it.copy(savedUpcoming = upcoming.sortedBy { it.startAt ?: "" }) }
             } catch (_: Exception) {
                 // Non-fatal
             }

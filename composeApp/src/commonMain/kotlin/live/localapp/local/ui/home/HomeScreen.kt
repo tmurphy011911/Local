@@ -20,6 +20,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
@@ -195,6 +196,29 @@ private fun todayLocalDateIso(): String {
 @Composable
 fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInfo?) -> Unit = { _, _ -> }, onConciergeClick: () -> Unit = {}, onConciergeSend: (String) -> Unit = { onConciergeClick() }, onProfileClick: () -> Unit = {}, onLocationClick: () -> Unit = {}, onFavorite: ((Event) -> Unit)? = null, showUpdateBanner: Boolean = false, onDismissUpdateBanner: () -> Unit = {}, onUpgrade: () -> Unit = {}, onSeeAllVenue: (venueName: String, venueCity: String?) -> Unit = { _, _ -> }, onSeeAllEvents: (category: String?, dateFilter: live.localapp.local.ui.places.EventDateFilter?) -> Unit = { _, _ -> }) {
     val state by viewModel.uiState.collectAsState()
+    // Collapse the soft keyboard the moment the user scrolls the feed — the Ask
+    // Bo input stays focused otherwise. Mirrors PlacesScreen.dismissKeyboardOnScroll.
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
+    val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
+    val dismissKeyboardOnScroll = remember(focusManager, keyboardController) {
+        object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {
+            override fun onPreScroll(
+                available: androidx.compose.ui.geometry.Offset,
+                source: androidx.compose.ui.input.nestedscroll.NestedScrollSource,
+            ): androidx.compose.ui.geometry.Offset {
+                if (available.y != 0f) {
+                    focusManager.clearFocus()
+                    keyboardController?.hide()
+                }
+                return androidx.compose.ui.geometry.Offset.Zero
+            }
+        }
+    }
+    // Opening an event card also dismisses the Ask Bo keyboard.
+    val onEventClickWithDismiss: (Event, CardTransitionInfo?) -> Unit = { e, t ->
+        focusManager.clearFocus()
+        onEventClick(e, t)
+    }
     var previouslyLoading by remember { mutableStateOf(true) }
     val haptic = LocalHapticFeedback.current
 
@@ -365,7 +389,7 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
         PullToRefreshBox(
             isRefreshing = state.isRefreshing,
             onRefresh = { viewModel.refresh() },
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().nestedScroll(dismissKeyboardOnScroll),
         ) {
             @OptIn(ExperimentalFoundationApi::class)
             LazyColumn(
@@ -398,12 +422,12 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                     }
                 }
 
-                // "Your Events This Week" album carousel
-                if (state.savedThisWeek.isNotEmpty()) {
+                // "Saved Events" album carousel — all upcoming saved events
+                if (state.savedUpcoming.isNotEmpty()) {
                     item(key = "saved_events_album") {
                         SavedEventsAlbumCarousel(
-                            events = state.savedThisWeek,
-                            onEventClick = { event, transitionInfo -> onEventClick(event, transitionInfo) },
+                            events = state.savedUpcoming,
+                            onEventClick = onEventClickWithDismiss,
                             onUnfavorite = { event -> viewModel.toggleEventFavorite(event.id, event.subcategory ?: event.category) },
                         )
                     }
@@ -436,7 +460,7 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                         item(key = section.slug) {
                             val dest = seeAllDestFor(section, state.selectedCategory)
                             CarouselSectionView(
-                                section, onEventClick,
+                                section, onEventClickWithDismiss,
                                 showTags = isForYou,
                                 onFavorite = onFavorite,
                                 favoriteIds = state.favoriteEventIds,
@@ -652,7 +676,9 @@ private fun CarouselSectionView(section: CarouselSection, onEventClick: (Event, 
 
 // ── Category Row ──
 
-private const val ICON_BASE = "${Config.SUPABASE_URL}/storage/v1/object/public/category-icons"
+// `val` (not `const`) because Config.SUPABASE_URL is now a runtime getter
+// (dev/prod backend switch). Resolved per-access.
+private val ICON_BASE get() = "${Config.SUPABASE_URL}/storage/v1/object/public/category-icons"
 
 private val forYouTile = CategoryInfo(
     id = "foryou",
@@ -663,6 +689,8 @@ private val forYouTile = CategoryInfo(
 
 @Composable
 private fun CategoryRow(state: HomeUiState, viewModel: HomeViewModel) {
+    // Selecting a category dismisses the Ask Bo keyboard if it was open.
+    val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     // Show skeleton placeholders while categories load
     if (state.availableCategories.isEmpty() && state.isLoading) {
         Row(
@@ -730,7 +758,7 @@ private fun CategoryRow(state: HomeUiState, viewModel: HomeViewModel) {
                     CategoryTileItem(
                         tile = cat,
                         isActive = isActive,
-                        onClick = { viewModel.selectCategory(cat.id) },
+                        onClick = { focusManager.clearFocus(); viewModel.selectCategory(cat.id) },
                     )
                 }
             }
@@ -1012,7 +1040,7 @@ private fun SeeAllEventRow(
                     style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
                 )
                 val rawCat = event.subcategory ?: event.category
-                val displayCat = if (rawCat.lowercase() == "always_on") "Event" else rawCat.replaceFirstChar { it.uppercaseChar() }
+                val displayCat = if (rawCat.lowercase() == "always_on") "Event" else formatSubcategoryDisplay(rawCat)
                 Text(
                     displayCat,
                     style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Ink2),
@@ -1904,6 +1932,17 @@ private fun AiConciergeCard(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(modifier = Modifier.weight(1f)) {
+                        // High-contrast text selection: the pre-filled prompt is
+                        // selected on focus, but the default (coral-ish) highlight
+                        // is invisible on the coral card. A darker band + white
+                        // handles make "the whole text is selected" obvious.
+                        androidx.compose.runtime.CompositionLocalProvider(
+                            androidx.compose.foundation.text.selection.LocalTextSelectionColors provides
+                                androidx.compose.foundation.text.selection.TextSelectionColors(
+                                    handleColor = AppColors.White,
+                                    backgroundColor = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.28f),
+                                ),
+                        ) {
                         androidx.compose.foundation.text.BasicTextField(
                             value = input,
                             onValueChange = { input = it },
@@ -1935,6 +1974,7 @@ private fun AiConciergeCard(
                                 }
                                 .testTag("home_concierge_input"),
                         )
+                        }
                         // Typewriter overlay shown only while empty + unfocused.
                         // The typewriter component types once and holds (no auto-cycle).
                         if (input.text.isEmpty() && !focused) {
@@ -2009,7 +2049,7 @@ private fun SavedEventsAlbumCarousel(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                "Saved Events This Week (${events.size})",
+                "Saved Events (${events.size})",
                 modifier = Modifier.weight(1f),
                 style = TextStyle(
                     fontFamily = AppFonts.Heading,

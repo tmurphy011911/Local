@@ -63,6 +63,13 @@ object ChatBridge {
     var sendMessage: ((String) -> Unit)? = null
     var resetChat: (() -> Unit)? = null
     var onBack: (() -> Unit)? = null
+    /** Intent sheet on open — Swift sends the picked goal's wire token
+     *  ("find_events" / "create_plan" / "browsing"). The VM records it and
+     *  steers Bo's framing + planning behavior for the rest of the session. */
+    var setBoIntent: ((String) -> Unit)? = null
+    /** + on a result card — saves [eventId] to Saved Events (favorites) if it
+     *  isn't already saved. Idempotent; persists to community_interactions. */
+    var saveFavorite: ((String) -> Unit)? = null
     // Quick reply: pass both label (display text) and action (command token)
     // so the VM can route specials like "reset" / "save_plan" correctly.
     var onQuickReply: ((String, String) -> Unit)? = null
@@ -110,6 +117,11 @@ object ChatBridge {
      *  clean user bubble while the technical event_id list goes to Bo via
      *  conversation history only. */
     var buildPlanFromSelections: ((eventIds: List<String>) -> Unit)? = null
+
+    /** "Save Events" CTA — persists the staged picks to Saved Events and has
+     *  Bo acknowledge in-chat (what was saved + where to find it, then a short
+     *  "anything else?" follow-up). */
+    var saveEventsFromSelections: ((eventIds: List<String>) -> Unit)? = null
 
     /** Editable location chip — Swift calls this when the user picks a new
      *  scope in the location editor sheet. ChatViewModel geocodes the name
@@ -172,6 +184,7 @@ object ChatBridge {
                 dayIndex = if (content is MessageContent.DayCardRef) content.dayIndex else 0,
                 isSuperseded = msg.id in supersededIds,
                 structured = structuredSnap,
+                preRevealed = live.localapp.local.ui.chat.TypewriterCompletionStore.isCompleted(msg.id),
             )
         }
 
@@ -196,6 +209,8 @@ object ChatBridge {
             hasLocationCoords = state.currentLat != null && state.currentLng != null,
             searchRadiusMiles = state.searchRadiusMiles,
             scopeEditorPlaceholder = live.localapp.local.ui.home.scopeEditorPlaceholder(state.currentLat, state.currentLng),
+            boIntent = state.boIntent?.wireName ?: "",
+            favoriteEventIds = state.favoriteEventIds.toList(),
         )
 
         lastSnapshot = snapshot
@@ -251,6 +266,13 @@ data class ChatStateSnapshot(
      *  MA users see MA towns, PA users see PA towns, etc. Computed in
      *  Kotlin so the city list lives in one place. */
     val scopeEditorPlaceholder: String = "e.g. a city or neighborhood",
+    /** The goal the user picked from the intent sheet ("find_events" /
+     *  "create_plan" / "browsing"), or "" when not yet chosen. Empty = Swift
+     *  presents the intent sheet on open. */
+    val boIntent: String = "",
+    /** Event ids the user has saved (favorited). Drives the filled ❤️ on result
+     *  cards and the "build a plan" CTA selection. */
+    val favoriteEventIds: List<String> = emptyList(),
 )
 
 data class WeatherSnapshot(
@@ -271,6 +293,11 @@ data class ChatMessageSnapshot(
      *  structured tools (event/venue brief, quick fact, scope redirect)
      *  collapse to plain text in [text] so no extra UI is needed. */
     val structured: SuggestionsSnapshot? = null,
+    /** True when this bubble was already revealed live via streamingText, so
+     *  Swift should render the full text statically instead of replaying the
+     *  typewriter (which reads as: full message flashes, vanishes, re-streams).
+     *  Sourced from the shared TypewriterCompletionStore. */
+    val preRevealed: Boolean = false,
 )
 
 // ── Structured response snapshots (Phase 6 / Bo present_suggestions) ──
@@ -298,12 +325,26 @@ data class SuggestionEventSnapshot(
     val venueName: String,
     val timeLabel: String,
     val dateDisplay: String,
+    /** Epoch millis of the event's start, for chronological sorting of the
+     *  draft picks. Undated/unparseable events get Long.MAX_VALUE so they
+     *  sort to the end. */
+    val sortEpochMillis: Long = Long.MAX_VALUE,
+    /** Day-only label ("Friday, Jul 3") with NO time — for grouping draft
+     *  picks into day tabs (dateDisplay includes the time, so same-day events
+     *  would otherwise split into multiple tabs). */
+    val dayLabel: String = "",
     val priceLabel: String,
     val imageUrl: String?,
     val rationale: String?,
     /** Distance from the user's current location in miles. Null when the
      *  user's coords aren't available or the event has no venue coords. */
     val distanceMiles: Double = -1.0,
+    /** Venue coordinates for the results map pin. [hasCoords] is false when the
+     *  event has no usable venue lat/lng (lat/lng are placeholder 0.0 then), in
+     *  which case the card still shows in the carousel but drops no pin. */
+    val venueLat: Double = 0.0,
+    val venueLng: Double = 0.0,
+    val hasCoords: Boolean = false,
 )
 
 data class SuggestionFooterSnapshot(
@@ -397,10 +438,19 @@ private fun BoStructuredResponse.Suggestions.EventRef.toEventSnapshot(
         venueName = ev.venueName.orEmpty().decodeHtmlEntities(),
         timeLabel = eventTimeLabel(ev),
         dateDisplay = ev.dateDisplay,
+        sortEpochMillis = ev.startAt?.let {
+            try { Instant.parse(it).toEpochMilliseconds() } catch (_: Throwable) { null }
+        } ?: Long.MAX_VALUE,
+        dayLabel = computeDayKey(ev, TimeZone.currentSystemDefault(), "__tbd").third,
         priceLabel = if (ev.isFree) "Free" else ev.priceDisplay.orEmpty(),
         imageUrl = ev.imageUrl,
         rationale = rationale,
         distanceMiles = ev.distanceMiles ?: -1.0,
+        // Venue coords for the results map pin (fall back to the event's own
+        // coords). hasCoords gates whether this event drops a pin.
+        venueLat = ev.venueLat ?: ev.eventLat ?: 0.0,
+        venueLng = ev.venueLng ?: ev.eventLng ?: 0.0,
+        hasCoords = (ev.venueLat ?: ev.eventLat) != null && (ev.venueLng ?: ev.eventLng) != null,
     )
 }
 
@@ -512,64 +562,12 @@ private fun computeCategoryKey(
     ev: Event,
     tbdKey: String,
 ): Triple<String, Int, String> {
-    // Order matters: subcategory wins over category whenever it names a
-    // recognizable domain. The DB's `events.category` field is loose
-    // residue from the ingest classifier — Shane Gillis stand-up gets
-    // tagged category="arts" / subcategory="comedy", and the event-detail
-    // screen renders the subcategory pill, so the tray must match.
-    // `arts` as a category is a catch-all and must lose to any specific
-    // subcategory above.
-    val sub = (ev.subcategory ?: "").lowercase().trim()
-    val cat = (ev.category ?: "").lowercase().trim()
-    val venue = (ev.venueName ?: "").lowercase()
-    val title = ev.title.lowercase()
-    return when {
-        // Subcategory takes priority for every domain we recognize.
-        sub == "comedy" || sub.contains("stand-up") || sub.contains("standup") -> Triple("comedy", 50, "Comedy")
-        // Heuristic fallback: many comedy-club + stand-up events have
-        // category="arts" with no subcategory. Catch them by venue name
-        // ("Comedy Connection", "Wilbur", "Laugh Boston") or title text
-        // ("stand-up", "Live"). Better to occasionally over-route to
-        // Comedy than to keep dumping comedians into Arts.
-        venue.contains("comedy connection") || venue.contains("laugh boston") ||
-            venue.contains("nick's comedy") || venue.contains("the wilbur") ||
-            venue.endsWith(" comedy club") || venue.contains("comedy studio") -> Triple("comedy", 50, "Comedy")
-        title.contains("stand-up") || title.contains("standup") || title.contains("comedy night") -> Triple("comedy", 50, "Comedy")
-        sub == "museum" || sub == "museums" || sub == "gallery" || sub == "galleries" -> Triple("museums", 30, "Museums")
-        sub == "theatre" || sub == "theater" || sub == "musical" || sub == "play" -> Triple("theatre", 40, "Theatre")
-        sub == "library" || sub == "libraries" -> Triple("libraries", 70, "Libraries")
-        sub == "tour" || sub == "tours" -> Triple("tours", 60, "Tours")
-        sub == "music" || sub == "concert" || sub == "rock" || sub == "jazz" || sub == "pop" ||
-            sub == "country" || sub == "folk" || sub == "alternative" ||
-            sub.contains("hip-hop") || sub.contains("hip hop") || sub.contains("rap") ||
-            sub.contains("dance") || sub.contains("electronic") || sub.contains("dj") -> Triple("music", 10, "Music")
-        sub == "sports" || sub == "baseball" || sub == "basketball" || sub == "hockey" ||
-            sub == "football" || sub == "soccer" -> Triple("sports", 20, "Sports")
-        sub == "outdoor" || sub == "outdoors" || sub == "hiking" || sub == "park" -> Triple("outdoors", 25, "Outdoor")
-        sub == "for-kids" || sub == "kids" || sub == "family" -> Triple("for-kids", 65, "For Kids")
-        sub == "nightlife" || sub == "bar" || sub == "club" -> Triple("nightlife", 80, "Nightlife")
-        sub == "food" || sub == "restaurant" || sub == "brewery" || sub == "winery" || sub == "cafe" -> Triple("food", 55, "Food & Drink")
-        sub == "lecture/seminar" || sub == "lecture" || sub == "seminar" || sub == "book talk" -> Triple("lectures", 45, "Lectures & Talks")
-        sub == "community" || sub == "community/civic" -> Triple("community", 75, "Community")
-        sub == "performance art" || sub == "exhibit" || sub == "exhibits" -> Triple("arts", 35, "Arts")
-        // Fall back to category only when subcategory was uninformative.
-        cat == "music" -> Triple("music", 10, "Music")
-        cat == "sports" -> Triple("sports", 20, "Sports")
-        cat == "comedy" -> Triple("comedy", 50, "Comedy")
-        cat == "theatre" -> Triple("theatre", 40, "Theatre")
-        cat == "food" -> Triple("food", 55, "Food & Drink")
-        cat == "outdoors" || cat == "outdoor" -> Triple("outdoors", 25, "Outdoor")
-        cat == "for-kids" || cat == "kids" -> Triple("for-kids", 65, "For Kids")
-        cat == "nightlife" -> Triple("nightlife", 80, "Nightlife")
-        cat == "museums" -> Triple("museums", 30, "Museums")
-        cat == "tours" -> Triple("tours", 60, "Tours")
-        cat == "libraries" -> Triple("libraries", 70, "Libraries")
-        // Loose residue last — `arts` is the catch-all bucket events get
-        // dumped into during ingest, so it must lose to any recognizable
-        // subcategory above.
-        cat == "arts" -> Triple("arts", 35, "Arts")
-        else -> Triple(tbdKey, 999, "Other")
-    }
+    // Single source of truth: the shared bucketer in commonMain
+    // (SuggestionBucketing.kt), which mirrors Explore's subcategory→parent
+    // taxonomy so iOS tabs match the Explore page AND the Android tray. It
+    // returns "__other" for the catch-all; remap to this caller's tbdKey.
+    val (key, sort, label) = live.localapp.local.ui.chat.computeEventCategoryKey(ev)
+    return if (key == "__other") Triple(tbdKey, sort, label) else Triple(key, sort, label)
 }
 
 private fun computeDayKey(

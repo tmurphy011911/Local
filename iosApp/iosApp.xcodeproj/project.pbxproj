@@ -7,7 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		5E0B24E02FD3409300162445 /* Sentry in Frameworks */ = {isa = PBXBuildFile; productRef = 5E0B24DF2FD3409300162445 /* Sentry */; };
+		5E0B24E02FD3409300162445 /* Sentry-Dynamic in Frameworks */ = {isa = PBXBuildFile; productRef = 5E0B24DF2FD3409300162445 /* Sentry-Dynamic */; };
 		5E1C2C142F88028A0057E9F9 /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = 5E1C2C132F88028A0057E9F9 /* RevenueCat */; };
 		5E1C2C182F9187330057E9F9 /* Products.storekit in Resources */ = {isa = PBXBuildFile; fileRef = 5E1C2C172F9187330057E9F9 /* Products.storekit */; };
 		5E84B18C2FBEAA0F00B1A75B /* PostHog in Frameworks */ = {isa = PBXBuildFile; productRef = 5E84B18B2FBEAA0F00B1A75B /* PostHog */; };
@@ -51,7 +51,7 @@
 			files = (
 				5E1C2C142F88028A0057E9F9 /* RevenueCat in Frameworks */,
 				5E84B18C2FBEAA0F00B1A75B /* PostHog in Frameworks */,
-				5E0B24E02FD3409300162445 /* Sentry in Frameworks */,
+				5E0B24E02FD3409300162445 /* Sentry-Dynamic in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -108,7 +108,7 @@
 			packageProductDependencies = (
 				5E1C2C132F88028A0057E9F9 /* RevenueCat */,
 				5E84B18B2FBEAA0F00B1A75B /* PostHog */,
-				5E0B24DF2FD3409300162445 /* Sentry */,
+				5E0B24DF2FD3409300162445 /* Sentry-Dynamic */,
 			);
 			productName = iosApp;
 			productReference = EEB79C38E91BB2244F08BFBD /* Local.app */;
@@ -307,9 +307,99 @@
 				PRODUCT_BUNDLE_IDENTIFIER = live.localapp.local;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Debug;
+		};
+		5E71E2B12FF2C6560055E2A5 /* Staging */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = 6B5AEECECB5C8DEA201FCE1A /* Configuration */;
+			baseConfigurationReferenceRelativePath = "Config-Staging.xcconfig";
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 18.2;
+				LOCALIZATION_PREFERS_STRING_CATALOGS = YES;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Staging;
+		};
+		5E71E2B22FF2C6560055E2A5 /* Staging */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReferenceAnchor = 6B5AEECECB5C8DEA201FCE1A /* Configuration */;
+			baseConfigurationReferenceRelativePath = "Config-Staging.xcconfig";
+			buildSettings = {
+				ARCHS = arm64;
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = iosApp/iosApp.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_ASSET_PATHS = "\"iosApp/Preview Content\"";
+				DEVELOPMENT_TEAM = 2BGU22C396;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = iosApp/Info.plist;
+				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone = "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = live.localapp.local;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+			};
+			name = Staging;
 		};
 		D7567AFA79E21F1F30CC8955 /* Release */ = {
 			isa = XCBuildConfiguration;
@@ -395,7 +485,7 @@
 				PRODUCT_BUNDLE_IDENTIFIER = live.localapp.local;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
+				TARGETED_DEVICE_FAMILY = 1;
 			};
 			name = Release;
 		};
@@ -407,6 +497,7 @@
 			buildConfigurations = (
 				343F2B5AFB9BBFAEA7FB33B1 /* Debug */,
 				E21D81394E2DAB1F9C8D19EB /* Release */,
+				5E71E2B22FF2C6560055E2A5 /* Staging */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -416,6 +507,7 @@
 			buildConfigurations = (
 				253F7F6D469BD216BC626586 /* Debug */,
 				D7567AFA79E21F1F30CC8955 /* Release */,
+				5E71E2B12FF2C6560055E2A5 /* Staging */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -450,10 +542,10 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
-		5E0B24DF2FD3409300162445 /* Sentry */ = {
+		5E0B24DF2FD3409300162445 /* Sentry-Dynamic */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 5E84B1892FBEA9F200B1A75B /* XCRemoteSwiftPackageReference "sentry-cocoa" */;
-			productName = Sentry;
+			productName = "Sentry-Dynamic";
 		};
 		5E1C2C132F88028A0057E9F9 /* RevenueCat */ = {
 			isa = XCSwiftPackageProductDependency;

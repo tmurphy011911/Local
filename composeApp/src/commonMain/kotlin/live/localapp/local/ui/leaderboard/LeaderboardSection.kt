@@ -1,6 +1,7 @@
 package live.localapp.local.ui.leaderboard
 
 import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
@@ -14,13 +15,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -39,10 +47,16 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import live.localapp.local.data.remote.dto.LeaderboardDto
@@ -50,13 +64,16 @@ import live.localapp.local.data.remote.dto.LeaderboardEntryDto
 import live.localapp.local.domain.model.boLevel
 import live.localapp.local.domain.model.statusTierForPoints
 import live.localapp.local.domain.repository.LeaderboardScope
+import live.localapp.local.domain.repository.UsernameUpdateResult
 import live.localapp.local.ui.character.Bo
 import live.localapp.local.ui.common.pressable
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
+import live.localapp.local.ui.theme.AppType
 
 // ── Leaderboard palette (Option A "Podium" handoff) ──────────────────────────
-// Green == leaderboard. Medals for the top three.
+// Green == leaderboard. Podium ranks use the app's brand family (same accents as
+// the onboarding steps), not metal medal colors.
 private val LbGreen = Color(0xFF16B26A)
 private val LbGreenDeep = Color(0xFF0E9457)
 private val LbGreenSoft = Color(0xFFE4F6EC)
@@ -64,9 +81,7 @@ private val LbGreenTint = Color(0xFFF1FBF6)
 private val LbGreenLine = Color(0xFFBFE9D2)
 private val LbInk = Color(0xFF15201B)
 private val LbSub = Color(0xFF9A96A2)
-private val Gold = Color(0xFFF5B027); private val GoldFace = Color(0xFFFAC944); private val GoldDeep = Color(0xFFD9911A)
-private val SilverFace = Color(0xFFC4CDD7); private val SilverDeep = Color(0xFF8A97A6)
-private val BronzeFace = Color(0xFFD89A66); private val BronzeDeep = Color(0xFFA96632)
+private val SheetBg = Color(0xFFF6F5F9)
 
 // ── Public host ──────────────────────────────────────────────────────────────
 
@@ -76,33 +91,117 @@ private val BronzeFace = Color(0xFFD89A66); private val BronzeDeep = Color(0xFFA
  * the Ask Bo card and Saved Events. Hides itself until a rank is known and only
  * shows for users with FOMO > 0.
  */
+/** Lobby entry point — the shared card, hidden for 0-FOMO users. No home-city row. */
+@Composable
+fun LeaderboardHost(viewModel: LeaderboardViewModel, modifier: Modifier = Modifier) {
+    LeaderboardCard(viewModel, hideAtZeroFomo = true, showHomeCity = false, modifier = modifier)
+}
+
+/** Account-page entry point — the same card, always shown, with the home-city row. */
+@Composable
+fun LeaderboardAccountEntry(viewModel: LeaderboardViewModel, modifier: Modifier = Modifier) {
+    LeaderboardCard(viewModel, hideAtZeroFomo = false, showHomeCity = true, modifier = modifier)
+}
+
+/**
+ * The single leaderboard entry CTA used on BOTH the lobby and the account page:
+ * podium icon + "leaderboard" wordmark + a cascading rank subtitle, opening the
+ * B1 podium sheet. [hideAtZeroFomo] is the only difference between placements.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LeaderboardHost(
+fun LeaderboardCard(
     viewModel: LeaderboardViewModel,
+    hideAtZeroFomo: Boolean,
+    showHomeCity: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val state by viewModel.uiState.collectAsState()
     var showSheet by remember { mutableStateOf(false) }
+    var showHomeCityEditor by remember { mutableStateOf(false) }
+    // Load all three scopes — the subtitle cascades country → state → city.
+    LaunchedEffect(Unit) { viewModel.prefetchAll() }
 
-    LaunchedEffect(Unit) { viewModel.loadCta() }
+    // FOMO is global, so any loaded scope's `me` carries it.
+    val anyMe = state.byScope[LeaderboardScope.COUNTRY]?.me
+        ?: state.byScope[LeaderboardScope.STATE]?.me
+        ?: state.byScope[LeaderboardScope.CITY]?.me
+    val visible = !hideAtZeroFomo || (anyMe != null && anyMe.fomoTotal > 0)
 
-    val cta = state.cta
-    val stateCode = state.stateCode
-    // Hide for users with no FOMO yet (overrides spec §5's "always show").
-    if (cta != null && stateCode != null && cta.fomoTotal > 0) {
-        LeaderboardCta(
-            rank = cta.rank,
-            fomo = cta.fomoTotal,
-            inTop100 = cta.inTop100,
-            stateCode = stateCode,
-            modifier = modifier,
-            onClick = {
-                viewModel.resetScopeToState()
-                viewModel.prefetchAll()
-                showSheet = true
-            },
-        )
+    if (visible) {
+        Column(modifier) {
+            Row(
+                modifier = Modifier
+                    .padding(horizontal = 20.dp, vertical = 6.dp)
+                    .fillMaxWidth()
+                    // pressable BEFORE clip/background/border so its scale layer wraps
+                    // the whole card box, not just the inner content.
+                    .pressable(onClick = {
+                        viewModel.resetScopeToState()
+                        showSheet = true
+                    }, scale = 0.94f)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(AppColors.White, RoundedCornerShape(16.dp))
+                    .border(1.5.dp, LbGreen, RoundedCornerShape(16.dp))
+                    .padding(horizontal = 16.dp, vertical = 14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    modifier = Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(LbGreenSoft),
+                    contentAlignment = Alignment.Center,
+                ) { IconPodium(size = 23.dp) }
+                Spacer(Modifier.width(13.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    // "local leaderboard" in the wordmark font, green l's on "local".
+                    Text(
+                        buildAnnotatedString {
+                            "local".forEach { ch ->
+                                if (ch == 'l') withStyle(SpanStyle(color = LbGreen)) { append(ch) } else append(ch)
+                            }
+                            append(" leaderboard")
+                        },
+                        style = AppType.Logo.copy(fontSize = 20.sp, color = LbInk),
+                    )
+                    Text(
+                        leaderboardCtaSubtitle(state),
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = LbSub),
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text("›", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = LbGreen))
+            }
+            // Home city + edit pencil, BENEATH the card (account page only).
+            state.homeCity?.takeIf { showHomeCity }?.let { hc ->
+                Row(
+                    modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 2.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Home city: $hc", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = LbSub))
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        Icons.Outlined.Edit,
+                        contentDescription = "Edit home city",
+                        tint = LbGreen,
+                        modifier = Modifier.size(14.dp).pressable(onClick = {
+                            // iOS presents the native SwiftUI editor; Android (or if
+                            // the native presenter isn't wired) falls back to Compose.
+                            val presented = live.localapp.local.platform.presentNativeHomeCityEditor { name, lat, lng, pid, done ->
+                                viewModel.changeHomeCity(name, lat, lng, pid) { res ->
+                                    when (res) {
+                                        is live.localapp.local.domain.repository.ChangeHomeCityResult.Success -> done(true, false, res.nextAllowedAt)
+                                        is live.localapp.local.domain.repository.ChangeHomeCityResult.RateLimited -> done(false, true, res.nextAllowedAt)
+                                        live.localapp.local.domain.repository.ChangeHomeCityResult.Error -> done(false, false, null)
+                                    }
+                                }
+                            }
+                            if (!presented) showHomeCityEditor = true
+                        }, scale = 0.85f),
+                    )
+                }
+            }
+        }
     }
 
     if (showSheet) {
@@ -110,7 +209,7 @@ fun LeaderboardHost(
         ModalBottomSheet(
             onDismissRequest = { showSheet = false },
             sheetState = sheetState,
-            containerColor = Color(0xFFF6F5F9),
+            containerColor = SheetBg,
             dragHandle = {
                 Box(
                     modifier = Modifier
@@ -121,159 +220,174 @@ fun LeaderboardHost(
                 )
             },
         ) {
-            LeaderboardSheetContent(state = state, onSelectScope = viewModel::selectScope)
+            LeaderboardSheetContent(viewModel)
         }
+    }
+
+    if (showHomeCityEditor) {
+        HomeCityEditSheet(viewModel = viewModel, onDismiss = { showHomeCityEditor = false })
     }
 }
 
-// ── A1 home entry card (single line, green, podium icon) ─────────────────────
+/**
+ * Cascading rank line: show the BROADEST scope the user is still top-100 in
+ * (country → state → city); "1st" drops the ordinal; outside top-100 everywhere
+ * falls back to FOMO total + city rank.
+ */
+private fun leaderboardCtaSubtitle(state: LeaderboardViewModel.UiState): String {
+    val country = state.byScope[LeaderboardScope.COUNTRY]?.me
+    val stateDto = state.byScope[LeaderboardScope.STATE]
+    val cityDto = state.byScope[LeaderboardScope.CITY]
+    val stateMe = stateDto?.me
+    val cityMe = cityDto?.me
+    val stateLabel = stateDto?.location
+    val cityLabel = cityDto?.location
 
-@Composable
-private fun LeaderboardCta(
-    rank: Int,
-    fomo: Int,
-    inTop100: Boolean,
-    stateCode: String,
-    onClick: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Row(
-        modifier = modifier
-            .padding(horizontal = 18.dp)
-            .padding(top = 4.dp, bottom = 10.dp)
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(18.dp))
-            .background(AppColors.White, RoundedCornerShape(18.dp))
-            .border(1.5.dp, LbGreen, RoundedCornerShape(18.dp))
-            .pressable(onClick = onClick, scale = 0.97f)
-            .padding(horizontal = 15.dp, vertical = 13.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Box(
-            modifier = Modifier.size(34.dp).clip(RoundedCornerShape(11.dp)).background(LbGreenSoft),
-            contentAlignment = Alignment.Center,
-        ) { IconPodium(size = 21.dp) }
-        Spacer(Modifier.width(12.dp))
+    fun line(rank: Int, place: String) =
+        if (rank == 1) "You have the most FOMO in $place"
+        else "You have the ${ordinal(rank)} most FOMO in $place"
 
-        // Sentence with green emphasis on the rank/FOMO, single line w/ ellipsis.
-        val emphasis = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = LbGreenDeep)
-        val base = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = LbInk)
-        Row(
-            modifier = Modifier.weight(1f),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            when {
-                inTop100 && rank == 1 ->
-                    EllipsisLine(base, "You have ", emphasis to "the most", base to " FOMO in $stateCode.")
-                inTop100 ->
-                    EllipsisLine(base, "You have the ", emphasis to ordinal(rank), base to " most FOMO in $stateCode.")
-                else ->
-                    EllipsisLine(base, "", emphasis to groupThousands(fomo), base to " FOMO · ${ordinal(rank)} in $stateCode")
-            }
+    return when {
+        country?.inTop100 == true -> line(country.rank, "America")
+        stateMe?.inTop100 == true && !stateLabel.isNullOrBlank() -> line(stateMe.rank, stateLabel)
+        cityMe?.inTop100 == true && !cityLabel.isNullOrBlank() -> line(cityMe.rank, cityLabel)
+        else -> {
+            val fomo = country?.fomoTotal ?: stateMe?.fomoTotal ?: cityMe?.fomoTotal
+            if (fomo != null && cityMe != null && !cityLabel.isNullOrBlank())
+                "${groupThousands(fomo)}: ${ordinal(cityMe.rank)} in $cityLabel"
+            else "See where you rank"
         }
-        Spacer(Modifier.width(8.dp))
-        Text("›", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = LbGreen))
-    }
-}
-
-/** Builds a one-line sentence from a leading + an emphasized + a trailing span. */
-@Composable
-private fun EllipsisLine(
-    base: TextStyle,
-    leading: String,
-    emphasized: Pair<TextStyle, String>,
-    trailing: Pair<TextStyle, String>,
-) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        if (leading.isNotEmpty()) Text(leading, style = base, maxLines = 1)
-        Text(emphasized.second, style = emphasized.first, maxLines = 1)
-        Text(trailing.second, style = trailing.first, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
 // ── B1 Podium sheet ──────────────────────────────────────────────────────────
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun LeaderboardSheetContent(
-    state: LeaderboardViewModel.UiState,
-    onSelectScope: (LeaderboardScope) -> Unit,
-) {
+private fun LeaderboardSheetContent(viewModel: LeaderboardViewModel) {
+    val state by viewModel.uiState.collectAsState()
+    val onSelectScope = viewModel::selectScope
+    var showUsernameDialog by remember { mutableStateOf(false) }
     val current = state.current
-    val regionTitle = current?.location ?: when (state.scope) {
-        LeaderboardScope.CITY -> "City"; LeaderboardScope.STATE -> "State"; LeaderboardScope.COUNTRY -> "United States"
-    }
-    val homeCity = state.byScope[LeaderboardScope.CITY]?.location
+    val rows = current?.rows ?: emptyList()
+    val me = current?.me
+    val podium = rows.take(3)
+    val listRows = rows.drop(3) // ranks 4..100
+    // City scope: everyone shares the city, so show just the join date.
+    // State/Country: show the member's home city too.
+    val showCity = state.scope != LeaderboardScope.CITY
 
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .verticalScroll(rememberScrollState())
-            .padding(bottom = 28.dp),
+    // Swallow leftover downward fling once the list hits the top, so flicking the
+    // list back to the top doesn't carry through and dismiss the whole sheet — the
+    // user must start a fresh gesture to dismiss.
+    val listState = rememberLazyListState()
+    val keepSheetAtTop = remember(listState) {
+        object : NestedScrollConnection {
+            override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity =
+                if (available.y > 0f &&
+                    listState.firstVisibleItemIndex == 0 &&
+                    listState.firstVisibleItemScrollOffset == 0
+                ) available else Velocity.Zero
+        }
+    }
+
+    // LazyColumn (not a scrolling Column) so up to 100 rows render lazily —
+    // off-screen rows aren't composed.
+    LazyColumn(
+        state = listState,
+        modifier = Modifier.fillMaxWidth().nestedScroll(keepSheetAtTop),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 28.dp),
     ) {
-        // Title
-        Column(Modifier.padding(start = 22.dp, end = 22.dp, top = 6.dp, bottom = 16.dp)) {
-            Text(
-                "$regionTitle Leaderboard",
-                style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 30.sp, color = LbInk),
-            )
-            if (homeCity != null) {
-                Spacer(Modifier.height(6.dp))
-                Text("Your home city: $homeCity", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = LbSub))
+        // Sticky cluster: wordmark header + scope tabs + the caller's own row stay
+        // pinned to the top while the rankings scroll underneath.
+        stickyHeader("header") {
+            Column(Modifier.fillMaxWidth().background(SheetBg)) {
+                // Wordmark next to a bigger version of the card's podium icon.
+                Row(
+                    modifier = Modifier.padding(start = 22.dp, end = 22.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(
+                        modifier = Modifier.size(48.dp).clip(RoundedCornerShape(15.dp)).background(LbGreenSoft),
+                        contentAlignment = Alignment.Center,
+                    ) { IconPodium(size = 29.dp) }
+                    Spacer(Modifier.width(13.dp))
+                    Text(
+                        buildAnnotatedString {
+                            "local".forEach { ch ->
+                                if (ch == 'l') withStyle(SpanStyle(color = LbGreen)) { append(ch) } else append(ch)
+                            }
+                            append(" leaderboard")
+                        },
+                        modifier = Modifier.weight(1f),
+                        style = AppType.Logo.copy(fontSize = 26.sp, color = LbInk),
+                    )
+                }
+                RegionTabs(
+                    scope = state.scope,
+                    cityLabel = state.byScope[LeaderboardScope.CITY]?.location ?: "City",
+                    stateLabel = state.byScope[LeaderboardScope.STATE]?.location ?: "State",
+                    countryLabel = "USA",
+                    onSelect = onSelectScope,
+                )
+                Spacer(Modifier.height(8.dp))
+                // The caller's own row, pinned with the header. Shows the actual
+                // username; a pencil to set a custom one appears until they have.
+                if (me != null) {
+                    Box(Modifier.padding(start = 18.dp, end = 18.dp, bottom = 10.dp)) {
+                        ListRow(
+                            me, isYou = true, showCity = showCity,
+                            onEditUsername = if (!state.usernameIsCustom) ({ showUsernameDialog = true }) else null,
+                        )
+                    }
+                }
             }
         }
 
-        // Region tabs (green active)
-        RegionTabs(
-            scope = state.scope,
-            cityLabel = state.byScope[LeaderboardScope.CITY]?.location ?: "City",
-            stateLabel = state.byScope[LeaderboardScope.STATE]?.location ?: "State",
-            countryLabel = "USA",
-            onSelect = onSelectScope,
-        )
-
-        Spacer(Modifier.height(4.dp))
-
         when {
-            current == null && state.sheetLoading ->
+            current == null && state.sheetLoading -> item("loading") {
                 Box(Modifier.fillMaxWidth().padding(vertical = 48.dp), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator(color = LbGreen)
                 }
-            current == null || current.rows.isEmpty() ->
+            }
+            current == null || rows.isEmpty() -> item("empty") {
                 Text(
                     "No rankings here yet — be the first to rack up FOMO.",
                     style = TextStyle(fontFamily = AppFonts.Body, fontSize = 14.sp, color = LbSub),
                     modifier = Modifier.padding(horizontal = 22.dp, vertical = 24.dp),
                 )
+            }
             else -> {
-                val rows = current.rows
-                val me = current.me
-                val byRank = rows.associateBy { it.rank }
-                val meInShown = rows.any { it.isMe }
-
-                // Always render 10 positions (top-3 podium + ranks 4–10) so the
-                // sheet is a constant height regardless of how many real users a
-                // scope has; unclaimed spots show dashes.
-                Podium(byRank[1], byRank[2], byRank[3])
-
-                Spacer(Modifier.height(12.dp))
-                Column(Modifier.padding(horizontal = 18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    for (r in 4..10) {
-                        val e = byRank[r]
-                        if (e != null) ListRow(e, isYou = e.isMe)
-                        else PlaceholderRow(rank = r)
+                item("podium") {
+                    Podium(podium.getOrNull(0), podium.getOrNull(1), podium.getOrNull(2))
+                    Spacer(Modifier.height(12.dp))
+                }
+                items(listRows, key = { it.rank }) { e ->
+                    Box(Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) {
+                        ListRow(e, isYou = e.isMe, showCity = showCity)
                     }
                 }
-
-                // The pinned own-row the handoff omitted: when the caller is below
-                // the visible set, surface their spot at the bottom, clearly theirs.
-                if (me != null && !meInShown) {
-                    PinnedDivider()
-                    Column(Modifier.padding(horizontal = 18.dp)) {
-                        ListRow(me, isYou = true)
+                // Pad to a minimum of 10 visible spots so a small scope never looks
+                // empty below the podium. Real rows already grow up to 100.
+                val maxRank = rows.lastOrNull()?.rank ?: 0
+                val padStart = maxOf(4, maxRank + 1)
+                if (padStart <= 10) {
+                    items((padStart..10).toList(), key = { "ph$it" }) { r ->
+                        Box(Modifier.padding(horizontal = 18.dp, vertical = 4.dp)) {
+                            PlaceholderRow(rank = r)
+                        }
                     }
                 }
             }
         }
+    }
+
+    if (showUsernameDialog) {
+        UsernameDialog(
+            initial = me?.username ?: state.username ?: "",
+            onSave = viewModel::saveUsername,
+            onDismiss = { showUsernameDialog = false },
+        )
     }
 }
 
@@ -299,9 +413,9 @@ private fun RegionTabs(
 private fun Tab(label: String, on: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Box(
         modifier = modifier
+            .pressable(onClick = onClick, scale = 0.96f)
             .clip(RoundedCornerShape(16.dp))
             .background(if (on) LbGreen else AppColors.White, RoundedCornerShape(16.dp))
-            .pressable(onClick = onClick, scale = 0.96f)
             .padding(vertical = 14.dp, horizontal = 4.dp),
         contentAlignment = Alignment.Center,
     ) {
@@ -324,9 +438,9 @@ private fun Podium(p1: LeaderboardEntryDto?, p2: LeaderboardEntryDto?, p3: Leade
             .padding(start = 14.dp, end = 14.dp, top = 14.dp),
     ) {
         Row(verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            PodiumColumn(p2, place = 2, blockHeight = 86.dp, boSize = 60.dp, face = SilverFace, edge = SilverDeep, modifier = Modifier.weight(1f))
-            PodiumColumn(p1, place = 1, blockHeight = 120.dp, boSize = 88.dp, face = GoldFace, edge = GoldDeep, modifier = Modifier.weight(1f))
-            PodiumColumn(p3, place = 3, blockHeight = 66.dp, boSize = 56.dp, face = BronzeFace, edge = BronzeDeep, modifier = Modifier.weight(1f))
+            PodiumColumn(p2, place = 2, blockHeight = 86.dp, boSize = 60.dp, face = AppColors.Sky, edge = AppColors.SkyDk, modifier = Modifier.weight(1f))
+            PodiumColumn(p1, place = 1, blockHeight = 120.dp, boSize = 88.dp, face = AppColors.Sun, edge = AppColors.SunDk, modifier = Modifier.weight(1f))
+            PodiumColumn(p3, place = 3, blockHeight = 66.dp, boSize = 56.dp, face = AppColors.Orange, edge = AppColors.OrangeDk, modifier = Modifier.weight(1f))
         }
     }
 }
@@ -379,8 +493,19 @@ private fun PodiumColumn(
 }
 
 @Composable
-private fun ListRow(entry: LeaderboardEntryDto, isYou: Boolean) {
+private fun ListRow(
+    entry: LeaderboardEntryDto,
+    isYou: Boolean,
+    showCity: Boolean,
+    onEditUsername: (() -> Unit)? = null,
+) {
     val level = statusTierForPoints(entry.fomoTotal).boLevel.coerceIn(0, 8)
+    val joined = joinedShort(entry.joinedAt)
+    val subtext = when {
+        joined.isEmpty() -> null
+        showCity && !entry.city.isNullOrBlank() -> "${entry.city} · $joined"
+        else -> joined
+    }
 
     Row(
         modifier = Modifier
@@ -394,13 +519,23 @@ private fun ListRow(entry: LeaderboardEntryDto, isYou: Boolean) {
         Text("${entry.rank}", modifier = Modifier.width(26.dp), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = if (isYou) LbGreenDeep else LbSub))
         Bo(size = 38.dp, level = level, showShadow = false, showSparkles = false)
         Spacer(Modifier.width(13.dp))
-        Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-            Text(if (isYou) "You" else (entry.username ?: "Anonymous"), maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = LbInk))
-            if (isYou) {
-                Spacer(Modifier.width(7.dp))
-                Box(Modifier.clip(RoundedCornerShape(999.dp)).background(LbGreen).padding(horizontal = 7.dp, vertical = 1.dp)) {
-                    Text("YOU", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 9.sp, color = AppColors.White))
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(entry.username ?: (if (isYou) "You" else "Anonymous"), maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 17.sp, color = LbInk))
+                // (Removed the green "YOU" pill here — the row is already green-
+                // bordered with a green rank number, so the badge was redundant.)
+                if (onEditUsername != null) {
+                    Spacer(Modifier.width(6.dp))
+                    Icon(
+                        Icons.Outlined.Edit,
+                        contentDescription = "Edit username",
+                        tint = LbGreen,
+                        modifier = Modifier.size(15.dp).pressable(onClick = onEditUsername, scale = 0.85f),
+                    )
                 }
+            }
+            if (subtext != null) {
+                Text(subtext, maxLines = 1, overflow = TextOverflow.Ellipsis, style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = LbSub))
             }
         }
         Spacer(Modifier.width(8.dp))
@@ -418,7 +553,7 @@ private fun PlaceholderAvatar(size: Dp) {
     }
 }
 
-/** Filler row for ranks no one holds yet — keeps the list a constant 10 tall. */
+/** Filler row for ranks no one holds yet — keeps the list at least 10 tall. */
 @Composable
 private fun PlaceholderRow(rank: Int) {
     Row(
@@ -437,18 +572,52 @@ private fun PlaceholderRow(rank: Int) {
     }
 }
 
-/** Dashed green divider labelled "YOUR RANK" above the pinned own-row. */
+/** Dialog to set a custom username, used from the pencil on the own row. */
 @Composable
-private fun PinnedDivider() {
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        Box(Modifier.weight(1f).height(2.dp).background(LbGreenLine))
-        Text("YOUR RANK", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Black, fontSize = 11.sp, color = LbGreenDeep))
-        Box(Modifier.weight(1f).height(2.dp).background(LbGreenLine))
-    }
+private fun UsernameDialog(
+    initial: String,
+    onSave: (String, (UsernameUpdateResult) -> Unit) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var text by remember { mutableStateOf(initial) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = AppColors.White,
+        title = { Text("Choose a username", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = LbInk)) },
+        text = {
+            Column {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it; error = null },
+                    singleLine = true,
+                    placeholder = { Text("username") },
+                )
+                error?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(it, style = TextStyle(fontFamily = AppFonts.Body, fontSize = 12.sp, color = AppColors.Coral))
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !saving && text.trim().length >= 2,
+                onClick = {
+                    saving = true; error = null
+                    onSave(text) { res ->
+                        saving = false
+                        when (res) {
+                            UsernameUpdateResult.Success -> onDismiss()
+                            UsernameUpdateResult.Taken -> error = "That username's taken — try another"
+                            UsernameUpdateResult.Error -> error = "Couldn't save — try again"
+                        }
+                    }
+                },
+            ) { Text("Save", color = LbGreenDeep) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel", color = LbSub) } },
+    )
 }
 
 // ── Iconography (faithful to sprites.jsx IconPodium) ─────────────────────────
@@ -466,13 +635,24 @@ private fun IconPodium(size: androidx.compose.ui.unit.Dp, tint: Color = LbGreen)
             // flag
             drawLine(LbInk, Offset(32f * s, 8f * s), Offset(32f * s, 20f * s), strokeWidth = 3f * s, cap = StrokeCap.Round)
             val flag = Path().apply { moveTo(32f * s, 9f * s); lineTo(44f * s, 12f * s); lineTo(32f * s, 16f * s); close() }
-            drawPath(flag, Gold)
+            drawPath(flag, AppColors.Sun)
         }
         Text("1", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = (size.value * 0.2f).sp, color = AppColors.White), modifier = Modifier.padding(top = (size.value * 0.18f).dp))
     }
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+private val MONTHS = listOf("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+
+/** "2026-06-01T..." -> "Joined Jun '26". Returns "" when unparseable. */
+private fun joinedShort(iso: String?): String {
+    if (iso == null || iso.length < 7) return ""
+    val month = iso.substring(5, 7).toIntOrNull() ?: return ""
+    if (month !in 1..12) return ""
+    val yy = iso.substring(2, 4)
+    return "Joined ${MONTHS[month - 1]} '$yy"
+}
 
 /** 1 -> "1st", 2 -> "2nd", 3 -> "3rd", 11 -> "11th", 22 -> "22nd", ... */
 private fun ordinal(n: Int): String {

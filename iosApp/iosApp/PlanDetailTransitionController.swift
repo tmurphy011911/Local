@@ -62,6 +62,9 @@ class PlanDetailTransitionController {
         self.sheetDismissDelegate = delegate
         self.hostingController = hostVC
 
+        // Left-edge swipe-back, in addition to the sheet's built-in swipe-down.
+        EdgeSwipeBackGesture.install(on: hostVC.view) { [weak self] in self?.dismiss() }
+
         presentWhenReady(hostVC: hostVC, in: window, attempt: 0)
     }
 

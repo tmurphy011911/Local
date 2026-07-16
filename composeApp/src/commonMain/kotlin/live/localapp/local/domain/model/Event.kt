@@ -190,4 +190,28 @@ data class Event(
                 ""
             }
         }
+
+    /**
+     * True when the event is today or later — i.e. NOT in the past. Saved-events
+     * surfaces (home "Saved Events" rail, Plans tab, Places tab) use this to drop
+     * events whose date has passed. Date granularity in the viewer's timezone, so
+     * a same-day event stays visible through the end of its day. A null or
+     * unparseable start is treated as upcoming, so a saved event is never hidden
+     * over missing/bad date data (e.g. always-on entries). Compare via parsed
+     * Instant — never lexicographically, since ISO strings vary in offset and
+     * fractional-second width.
+     */
+    val isUpcoming: Boolean
+        get() {
+            val s = startAt ?: return true
+            return try {
+                val tz = TimeZone.currentSystemDefault()
+                val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
+                val eventDay = Instant.parse(s).toLocalDateTime(tz).date.toEpochDays()
+                val todayDay = Instant.fromEpochMilliseconds(nowMs).toLocalDateTime(tz).date.toEpochDays()
+                eventDay >= todayDay
+            } catch (_: Exception) {
+                true
+            }
+        }
 }

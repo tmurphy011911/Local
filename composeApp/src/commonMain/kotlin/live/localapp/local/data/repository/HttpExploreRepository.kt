@@ -20,6 +20,7 @@ import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.model.Venue
 import live.localapp.local.domain.repository.EventPage
 import live.localapp.local.domain.repository.ExploreRepository
+import live.localapp.local.domain.repository.PlaceFacet
 import live.localapp.local.domain.repository.PlacePage
 import live.localapp.local.domain.repository.VenueWithMeta
 
@@ -91,6 +92,7 @@ class HttpExploreRepository : ExploreRepository {
         userId: String?,
         query: String?,
         category: String?,
+        city: String?,
         radiusMiles: Double?,
         hasEventsOnly: Boolean,
         sort: String?,
@@ -104,6 +106,7 @@ class HttpExploreRepository : ExploreRepository {
             userId?.let { parameter("user_id", it) }
             query?.takeIf { it.isNotBlank() }?.let { parameter("query", it) }
             category?.takeIf { it.isNotBlank() && it != "foryou" }?.let { parameter("category", it) }
+            city?.takeIf { it.isNotBlank() }?.let { parameter("city", it) }
             radiusMiles?.let { parameter("radius", it) }
             if (hasEventsOnly) parameter("has_events", "true")
             sort?.takeIf { it.isNotBlank() }?.let { parameter("sort", it) }
@@ -117,6 +120,8 @@ class HttpExploreRepository : ExploreRepository {
             cursor = parsed.cursor,
             hasMore = parsed.hasMore,
             total = parsed.total,
+            cityFacets = parsed.cityFacets.map { PlaceFacet(it.name, it.count) },
+            categoryFacets = parsed.categoryFacets.map { PlaceFacet(it.name, it.count) },
         )
     }
 }
@@ -220,6 +225,14 @@ private data class PlacePageDto(
     val cursor: String? = null,
     val hasMore: Boolean = false,
     val total: Int = 0,
+    val cityFacets: List<FacetDto> = emptyList(),
+    val categoryFacets: List<FacetDto> = emptyList(),
+)
+
+@Serializable
+private data class FacetDto(
+    val name: String = "",
+    val count: Int = 0,
 )
 
 @Serializable

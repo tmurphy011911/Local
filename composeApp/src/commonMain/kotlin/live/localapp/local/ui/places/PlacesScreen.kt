@@ -52,6 +52,7 @@ import live.localapp.local.ui.common.CircleShape
 import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.input.nestedscroll.nestedScroll
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
@@ -66,6 +67,7 @@ import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.KeyboardArrowUp
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Search
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -84,6 +86,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import live.localapp.local.platform.AppBackHandler
+import live.localapp.local.platform.rememberInAppBrowser
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Rect
@@ -120,6 +124,7 @@ import live.localapp.local.domain.model.Event
 import live.localapp.local.snakeToTitleCase
 import live.localapp.local.domain.model.Venue
 import live.localapp.local.domain.repository.CategoryInfo
+import live.localapp.local.domain.repository.PlaceFacet
 import live.localapp.local.domain.repository.VenueWithMeta
 import live.localapp.local.domain.repository.VENUE_UPCOMING_EVENTS_CAP
 import live.localapp.local.domain.repository.CommunityInterestRepository
@@ -242,13 +247,18 @@ fun PlacesScreen(
                     categories = homeState.availableCategories.filterNot {
                         it.id.equals("experiences", ignoreCase = true)
                     },
-                    onSelectPreset = { viewModel.setDateFilter(it) },
-                    onCustomRangePicked = { start, end -> viewModel.setCustomDateRange(start, end) },
-                    onSelectCategory = { viewModel.setFilter(it) },
+                    onSelectPreset = { focusManager.clearFocus(); viewModel.setDateFilter(it) },
+                    onCustomRangePicked = { start, end -> focusManager.clearFocus(); viewModel.setCustomDateRange(start, end) },
+                    onSelectCategory = { focusManager.clearFocus(); viewModel.setFilter(it) },
                 )
-                SearchTab.PLACES -> PlaceSortRow(
-                    selected = state.placeSort,
-                    onSelect = { viewModel.setPlaceSort(it) },
+                SearchTab.PLACES -> PlacesCityCategoryRow(
+                    selectedCity = state.selectedCity,
+                    selectedVenueCategory = state.selectedVenueCategory,
+                    cityFacets = state.cityFacets,
+                    categoryFacets = state.categoryFacets,
+                    facetsLoading = state.isLoading,
+                    onSelectCity = { focusManager.clearFocus(); viewModel.setSelectedCity(it) },
+                    onSelectVenueCategory = { focusManager.clearFocus(); viewModel.setSelectedVenueCategory(it) },
                 )
             }
 
@@ -256,7 +266,22 @@ fun PlacesScreen(
             PullToRefreshBox(
                 isRefreshing = state.isRefreshing,
                 onRefresh = { viewModel.refresh() },
-                modifier = Modifier.weight(1f).nestedScroll(dismissKeyboardOnScroll),
+                modifier = Modifier.weight(1f).nestedScroll(dismissKeyboardOnScroll)
+                    // Also dismiss when the user taps a result card (event/place)
+                    // or any empty space in the results. Observes the initial-pass
+                    // press without consuming, so cards/scroll still work. Safe
+                    // here because the search field is above this container.
+                    .pointerInput(Unit) {
+                        awaitPointerEventScope {
+                            while (true) {
+                                val e = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                                if (e.type == androidx.compose.ui.input.pointer.PointerEventType.Press) {
+                                    focusManager.clearFocus()
+                                    keyboardController?.hide()
+                                }
+                            }
+                        }
+                    },
             ) {
                 when (state.activeTab) {
                     SearchTab.PLACES -> {
@@ -302,6 +327,8 @@ fun PlacesScreen(
                                         viewModel.toggleVenueFavorite(venue.venue.id, venue.primaryCategory)
                                     }
                                 },
+                                searchQuery = state.searchQuery,
+                                onClearSearch = { viewModel.setSearchQuery("") },
                                 scrollResetKey = state.placeSort,
                             )
                         }
@@ -341,6 +368,8 @@ fun PlacesScreen(
                                         viewModel.toggleEventFavorite(event.id, event.subcategory ?: event.category)
                                     }
                                 },
+                                searchQuery = state.searchQuery,
+                                onClearSearch = { viewModel.setSearchQuery("") },
                                 scrollResetKey = Triple(state.dateFilter, state.customStart, state.customEnd),
                             )
                         }
@@ -552,6 +581,58 @@ private fun ExploreEmptyState(
         onCta = onRetry,
         rotationKey = hasError,
     )
+}
+
+/**
+ * Inline "no matches" state shown *inside* the grid, beneath the Saved
+ * section. The full-screen [ExploreEmptyState] only fires when there's
+ * nothing at all (no results AND no saved items); but a search like
+ * "porch" that matches nothing still falls through to the grid because
+ * saved events/places always render. Without this, the area under the
+ * Saved carousel is silently blank. Lives in the LazyColumn so it scrolls
+ * with the saved section above it.
+ */
+@Composable
+private fun InlineSearchEmpty(
+    query: String,
+    noun: String,
+    onClear: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(top = 56.dp, bottom = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(
+            Icons.Outlined.Search,
+            contentDescription = null,
+            modifier = Modifier.size(34.dp),
+            tint = AppColors.Ink3,
+        )
+        Spacer(Modifier.height(12.dp))
+        Text(
+            if (query.isNotBlank()) "No $noun match “$query”" else "No $noun for these filters",
+            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = AppColors.Ink),
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (query.isNotBlank()) "Try a different spelling or a broader search." else "Try widening your filters.",
+            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Medium, fontSize = 14.sp, color = AppColors.Ink3),
+            textAlign = TextAlign.Center,
+        )
+        if (query.isNotBlank()) {
+            Spacer(Modifier.height(18.dp))
+            Text(
+                "Clear search",
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.White),
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(AppColors.Coral)
+                    .clickable { onClear() }
+                    .padding(horizontal = 22.dp, vertical = 10.dp),
+            )
+        }
+    }
 }
 
 @Composable
@@ -850,24 +931,163 @@ private fun formatDateRangeShort(start: LocalDate, end: LocalDate): String {
     }
 }
 
+/**
+ * Places filter — the SAME UX as the Events tab's date→category row
+ * ([EventDateFilterRow]), but for city→venue-type. No city selected → a
+ * scrollable row of city chips (all cities within 25 mi + home-state majors,
+ * density-ranked by the server; no selection = "all"). Pick a city → it pins to
+ * the left with an X to clear, a pipe separator, then the venue types of that
+ * city scroll behind it in a self-centering LazyRow. Re-tapping a type clears it.
+ */
 @Composable
-private fun PlaceSortRow(selected: PlaceSort, onSelect: (PlaceSort) -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(horizontal = 20.dp, vertical = 4.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        PlaceSort.entries.forEach { sort ->
-            FilterChip(
-                label = sort.label,
-                selected = selected == sort,
-                onClick = { onSelect(sort) },
-            )
+private fun PlacesCityCategoryRow(
+    selectedCity: String?,
+    selectedVenueCategory: String?,
+    cityFacets: List<PlaceFacet>,
+    categoryFacets: List<PlaceFacet>,
+    facetsLoading: Boolean,
+    onSelectCity: (String?) -> Unit,
+    onSelectVenueCategory: (String?) -> Unit,
+) {
+    val cityActive = selectedCity != null
+
+    // Cache the last non-null city so the AnimatedContent exit branch keeps
+    // rendering the pinned chip while it slides out after the user clears it
+    // (outer state flips to null immediately — see EventDateFilterRow).
+    var lastCity by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(selectedCity) { if (selectedCity != null) lastCity = selectedCity }
+
+    AnimatedContent(
+        targetState = cityActive,
+        transitionSpec = {
+            // Selecting → venue types slide in from the right, cities slide out
+            // to the left. Deselecting → mirror.
+            if (targetState) {
+                (slideInHorizontally(tween(220)) { it / 3 } + fadeIn(tween(180))) togetherWith
+                    (slideOutHorizontally(tween(220)) { -it / 3 } + fadeOut(tween(140)))
+            } else {
+                (slideInHorizontally(tween(220)) { -it / 3 } + fadeIn(tween(180))) togetherWith
+                    (slideOutHorizontally(tween(220)) { it / 3 } + fadeOut(tween(140)))
+            }
+        },
+        label = "PlacesCityCategorySwap",
+    ) { isActive ->
+        if (!isActive) {
+            // Default — all cities, scrollable. No "All" chip (no selection = all).
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 20.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                cityFacets.forEach { facet ->
+                    FilterChip(
+                        label = facet.name,
+                        selected = false,
+                        onClick = { onSelectCity(facet.name) },
+                    )
+                }
+            }
+        } else {
+            // City selected — pin it to the left, scroll venue types behind it.
+            // Read from the lastCity cache so this branch keeps rendering during
+            // the exit animation after outer state flipped to null on dismiss.
+            val effectiveCity = selectedCity ?: lastCity ?: return@AnimatedContent
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = 20.dp, top = 4.dp, bottom = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                FilterChip(
+                    label = effectiveCity,
+                    selected = true,
+                    onClick = { /* no-op — X clears */ },
+                    onDismiss = { onSelectCity(null) },
+                    dismissOnLeft = true,
+                )
+                Spacer(Modifier.width(14.dp))
+                Box(
+                    modifier = Modifier
+                        .height(22.dp)
+                        .width(1.5.dp)
+                        .background(AppColors.Ink3.copy(alpha = 0.35f))
+                )
+                Spacer(Modifier.width(14.dp))
+                // Sub-filter (venue-type) chips. While the newly-selected city's
+                // facets load, categoryFacets is empty (cleared in the VM on city
+                // change), so we show a skeleton instead of the previous city's
+                // stale, tappable chips — which otherwise let the user tap into a
+                // mismatched category before the new city's facets arrive.
+                if (categoryFacets.isEmpty() && facetsLoading) {
+                    CategoryChipsSkeleton(modifier = Modifier.weight(1f).padding(end = 20.dp))
+                } else {
+                    // Self-centering LazyRow — same idiom as the Events category row.
+                    val listState = rememberLazyListState()
+                    val selectedIndex = categoryFacets.indexOfFirst { it.name == selectedVenueCategory }
+                    LaunchedEffect(selectedIndex) {
+                        if (selectedIndex < 0) return@LaunchedEffect
+                        val info = listState.layoutInfo
+                        val viewport = info.viewportEndOffset - info.viewportStartOffset
+                        val visible = info.visibleItemsInfo.firstOrNull { it.index == selectedIndex }
+                        if (visible != null && viewport > 0) {
+                            val itemCenter = visible.offset + visible.size / 2
+                            val nudge = itemCenter - viewport / 2
+                            if (nudge != 0) listState.animateScrollBy(nudge.toFloat())
+                        } else if (viewport > 0) {
+                            listState.animateScrollToItem(selectedIndex)
+                        }
+                    }
+                    LazyRow(
+                        state = listState,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 20.dp),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        items(categoryFacets, key = { it.name }) { facet ->
+                            FilterChip(
+                                // Re-tap toggles off (VM setter handles the toggle).
+                                label = venueCategoryLabel(facet.name),
+                                selected = selectedVenueCategory == facet.name,
+                                onClick = { onSelectVenueCategory(facet.name) },
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }
+
+/** Shimmer placeholder chips shown in the sub-filter row while a newly-selected
+ *  city's venue-type facets load. Same shimmer idiom as [PlacesSkeletonLoader].
+ *  Non-interactive, so the user can't tap a stale/mismatched category. */
+@Composable
+private fun CategoryChipsSkeleton(modifier: Modifier = Modifier) {
+    val shimmerAlpha by animateFloatAsState(
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(tween(800, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
+    )
+    val c = AppColors.Pebble.copy(alpha = 0.3f + shimmerAlpha * 0.2f)
+    Row(
+        modifier = modifier,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        listOf(60.dp, 46.dp, 68.dp, 52.dp).forEach { w ->
+            Box(Modifier.height(32.dp).width(w).background(c, RoundedCornerShape(20.dp)))
+        }
+    }
+}
+
+/** "music_venue" → "Music Venue". */
+private fun venueCategoryLabel(raw: String): String =
+    raw.split('_', ' ')
+        .filter { it.isNotBlank() }
+        .joinToString(" ") { part -> part.replaceFirstChar { it.uppercase() } }
 
 @Composable
 private fun FilterChip(
@@ -978,6 +1198,8 @@ private fun VenueGrid(
     onLoadMore: () -> Unit = {},
     onVenueClick: (VenueWithMeta, Rect) -> Unit,
     onFavoriteToggle: (VenueWithMeta) -> Unit,
+    searchQuery: String,
+    onClearSearch: () -> Unit,
     /** When this changes, the list jumps to the top — pass the sort enum so
      *  switching sort doesn't strand the user mid-list. */
     scrollResetKey: Any? = null,
@@ -1000,6 +1222,14 @@ private fun VenueGrid(
                     onVenueClick = onVenueClick,
                     onFavoriteToggle = onFavoriteToggle,
                 )
+            }
+        }
+
+        // Saved places rendered above, but the live search matched nothing —
+        // show an inline empty state instead of blank space.
+        if (venues.isEmpty()) {
+            item {
+                InlineSearchEmpty(query = searchQuery, noun = "places", onClear = onClearSearch)
             }
         }
 
@@ -1421,7 +1651,12 @@ fun VenueDetailPage(
     val datePicker = rememberNativeDateRangePicker()
     val communityInterestRepo = remember { KoinPlatform.getKoin().get<CommunityInterestRepository>() }
     val uriHandler = LocalUriHandler.current
+    val inAppBrowser = rememberInAppBrowser()
     val v = venueWithMeta.venue
+    // Android predictive-back / system-back → dismiss the venue page (matches the
+    // swipe-back gesture). Disabled while the inner event dialog is open — that
+    // Dialog handles its own back. Inert on iOS (native detail handles edge-swipe).
+    AppBackHandler(enabled = selectedEvent == null, onBack = onBack)
 
     // Enter animation — approximates the iOS card-to-fullscreen morph
     // (EventDetailTransitionController.swift). Scale 0.92 -> 1, alpha 0 -> 1,
@@ -1498,13 +1733,18 @@ fun VenueDetailPage(
                     Icon(Icons.Outlined.IosShare, contentDescription = "Share", modifier = Modifier.size(18.dp), tint = AppColors.Ink)
                 }
                 Spacer(Modifier.width(6.dp))
-                // Favorite (save) — RIGHTmost
+                // Favorite (save) — RIGHTmost. On a shared deep link the heart IS
+                // the save action (records the favorite or stashes it for
+                // post-auth), matching the event detail + iOS; the old full-width
+                // "Add to Favorites" button that stacked this role was removed.
                 Box(
                     modifier = Modifier
                         .size(36.dp)
                         .background(AppColors.Snow, RoundedCornerShape(10.dp))
                         .clip(RoundedCornerShape(10.dp))
-                        .clickable(onClick = onFavoriteToggle),
+                        .clickable(onClick = {
+                            if (isShared && onSaveVenue != null) onSaveVenue() else onFavoriteToggle()
+                        }),
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
@@ -1581,7 +1821,7 @@ fun VenueDetailPage(
                     if (rating != null && rating > 0) {
                         val ratingText = listOfNotNull(
                             (kotlin.math.round(rating * 10) / 10.0).toString(),
-                            venueWithMeta.primaryCategory?.replaceFirstChar { it.uppercaseChar() },
+                            venueWithMeta.primaryCategory?.snakeToTitleCase(),
                         ).joinToString(" \u00B7 ")
                         VenueInfoChip(icon = Icons.Filled.Star, iconTint = AppColors.Sun, text = ratingText)
                         Spacer(Modifier.height(10.dp))
@@ -1722,9 +1962,9 @@ fun VenueDetailPage(
                     }
 
                     // Visit Website — bottom coral CTA, matching iOS
-                    // VenueDetailView ctaBar. Hidden in shared deep-link mode
-                    // (that surface shows "Add to Favorites" instead).
-                    if (!isShared && !v.website.isNullOrBlank()) {
+                    // VenueDetailView ctaBar. Shown in shared deep-link mode too
+                    // (saving moved to the hero heart), matching the event detail.
+                    if (!v.website.isNullOrBlank()) {
                         Spacer(Modifier.height(20.dp))
                         Row(
                             modifier = Modifier
@@ -1732,7 +1972,7 @@ fun VenueDetailPage(
                                 .height(50.dp)
                                 .background(AppColors.Coral, RoundedCornerShape(14.dp))
                                 .clip(RoundedCornerShape(14.dp))
-                                .clickable { uriHandler.openUri(v.website) }
+                                .clickable { inAppBrowser.open(v.website) }
                                 .padding(horizontal = 16.dp),
                             horizontalArrangement = Arrangement.Center,
                             verticalAlignment = Alignment.CenterVertically,
@@ -1749,33 +1989,10 @@ fun VenueDetailPage(
             }
         }
 
-        // "Add to Favorites" CTA for shared deep link mode
-        if (isShared && onSaveVenue != null) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomCenter)
-                    .fillMaxWidth()
-                    .background(
-                        Brush.verticalGradient(listOf(Color.Transparent, AppColors.Snow, AppColors.Snow)),
-                    )
-                    .padding(horizontal = 20.dp, vertical = 16.dp),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
-                        .background(AppColors.Coral)
-                        .clickable(onClick = onSaveVenue)
-                        .padding(vertical = 14.dp),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        "Add to Favorites",
-                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 16.sp, color = Color.White),
-                    )
-                }
-            }
-        }
+        // Shared deep-link mode shows the same Visit Website CTA as the normal
+        // view; saving happens via the hero heart (see onFavoriteToggle). The old
+        // full-width "Add to Favorites" button that lived here was removed to
+        // match the event detail and avoid a second stacked bottom action.
 
         // Event detail as bottom sheet
         if (selectedEvent != null) {
@@ -1897,7 +2114,7 @@ fun VenueDetailSheet(
                 )
                 Spacer(Modifier.height(4.dp))
                 val parts = buildList {
-                    venueWithMeta.primaryCategory?.let { add(it.replaceFirstChar { c -> c.uppercaseChar() }) }
+                    venueWithMeta.primaryCategory?.let { add(it.snakeToTitleCase()) }
                     add(v.city)
                     venueWithMeta.distanceMiles?.let { add(formatDistance(it)) }
                 }
@@ -2018,7 +2235,7 @@ private fun VenueEventListRow(event: Event, onClick: () -> Unit) {
                     style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 11.sp, color = AppColors.Ink3),
                 )
                 val rawCat = event.subcategory ?: event.category
-                val displayCat = if (rawCat.lowercase() == "always_on") "Event" else rawCat.replaceFirstChar { it.uppercaseChar() }
+                val displayCat = if (rawCat.lowercase() == "always_on") "Event" else rawCat.snakeToTitleCase()
                 Text(
                     displayCat,
                     style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Ink2),
@@ -2144,6 +2361,8 @@ private fun EventGrid(
     onLoadMore: () -> Unit,
     onEventClick: (live.localapp.local.domain.model.Event, Rect) -> Unit,
     onFavoriteToggle: (live.localapp.local.domain.model.Event) -> Unit,
+    searchQuery: String,
+    onClearSearch: () -> Unit,
     /** When this changes, the list jumps to the top — pass the date filter
      *  so switching filters doesn't strand the user mid-list. */
     scrollResetKey: Any? = null,
@@ -2183,6 +2402,13 @@ private fun EventGrid(
                     onEventClick = onEventClick,
                     onFavoriteToggle = onFavoriteToggle,
                 )
+            }
+        }
+        // Saved events rendered above, but the live search/filter matched
+        // nothing — show an inline empty state instead of blank space.
+        if (events.isEmpty()) {
+            item {
+                InlineSearchEmpty(query = searchQuery, noun = "events", onClear = onClearSearch)
             }
         }
         items(events.size, key = { events[it].id }) { i ->

@@ -94,6 +94,11 @@ fun VenuesScreen(
                 imageUrl = venue.photoUrl,
             )
         }
+            // Venue ids are name-slugs ("MASS MoCA" -> "mass-moca"), so two rows with
+            // the same name collide on one key and crash the LazyVerticalGrid
+            // ("Key \"mass-moca\" was already used") on scroll. Dedupe by slug — the
+            // list is already rank-sorted, so distinctBy keeps the best-ranked one.
+            .distinctBy { it.id }
     }
 
     val filtered = if (searchQuery.isBlank()) items

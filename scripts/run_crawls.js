@@ -1974,6 +1974,47 @@ async function detectAndCrawlPlatform(venue) {
   return null; // No platform detected pre-fetch
 }
 
+// ── Date-token expansion for month-paginated URLs ──
+
+const DATE_TOKEN_RE = /\{(YYYY-MM|YYYY\/MM|YYYY|YY|MMMM|MMM|mmmm|mmm|MM|M|DD|D)\}/;
+const DATE_MONTHS_AHEAD = parseInt(process.env.URL_DATE_MONTHS_AHEAD || "2", 10);
+
+function applyDateTokens(url, date) {
+  const yyyy = String(date.getFullYear());
+  const yy = yyyy.slice(2);
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const m = String(date.getMonth() + 1);
+  const dd = String(date.getDate()).padStart(2, "0");
+  const d = String(date.getDate());
+  const monthShort = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][date.getMonth()];
+  const monthLong = ["January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"][date.getMonth()];
+  return url
+    .replace(/\{YYYY-MM\}/g, `${yyyy}-${mm}`)
+    .replace(/\{YYYY\/MM\}/g, `${yyyy}/${mm}`)
+    .replace(/\{YYYY\}/g, yyyy)
+    .replace(/\{YY\}/g, yy)
+    .replace(/\{MMMM\}/g, monthLong)
+    .replace(/\{MMM\}/g, monthShort)
+    .replace(/\{mmmm\}/g, monthLong.toLowerCase())
+    .replace(/\{mmm\}/g, monthShort.toLowerCase())
+    .replace(/\{MM\}/g, mm)
+    .replace(/\{M\}/g, m)
+    .replace(/\{DD\}/g, dd)
+    .replace(/\{D\}/g, d);
+}
+
+function expandDateTokens(url) {
+  if (!DATE_TOKEN_RE.test(url)) return [url];
+  const today = new Date();
+  const out = [];
+  for (let offset = 0; offset <= DATE_MONTHS_AHEAD; offset++) {
+    const d = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+    out.push(applyDateTokens(url, d));
+  }
+  return [...new Set(out)];
+}
+
 // ── Crawl a single venue ──
 
 async function crawlVenue(venue) {
@@ -1981,19 +2022,39 @@ async function crawlVenue(venue) {
     return { venue: venue.name, events: 0, status: "skipped", reason: "no events_url" };
   }
 
-  // Support multiple URLs separated by commas
-  const urls = venue.events_url.split(",").map((u) => u.trim()).filter(Boolean);
+  // Support multiple URLs separated by commas, plus date-token expansion for
+  // month-paginated sites (TEC, custom calendars, etc.). Tokens supported:
+  //   {YYYY}  4-digit year       {YY}    2-digit year
+  //   {MM}    zero-padded month  {M}     un-padded month
+  //   {MMMM}  full month name    {MMM}   abbreviated month name
+  //   {mmmm}/{mmm}               lowercase variants
+  //   {DD}    zero-padded day    {D}     un-padded day
+  //   {YYYY-MM} / {YYYY/MM}      common combined forms
+  // Each token-bearing URL expands to current month + next 2 months. So a row
+  // like "https://brooklinebooksmith.com/events/{YYYY}/{MM}" stays valid
+  // forever instead of rotting when the month changes.
+  const rawUrls = venue.events_url.split(",").map((u) => u.trim()).filter(Boolean);
+  const urls = [...new Set(rawUrls.flatMap(expandDateTokens))];
   if (urls.length > 1) {
-    let totalEvents = 0;
+    const mergedRows = [];
     let anySuccess = false;
     for (const url of urls) {
       const subVenue = { ...venue, events_url: url };
       const result = await crawlVenue(subVenue);
       if (result.status?.startsWith("ok")) anySuccess = true;
-      totalEvents += result.events || 0;
+      // Collect the actual rows from each sub-URL — not just the count. Without
+      // this the caller's `results.flatMap(r => r.rows)` gets nothing for any
+      // multi-URL / date-token venue, so everything crawled here is silently
+      // dropped before the upsert (Brookline Booksmith extracted 59, saved 0).
+      if (result.rows?.length) mergedRows.push(...result.rows);
     }
     await updateVenueCrawlStatus(venue.id, anySuccess, venue.crawl_success_rate);
-    return { venue: venue.name, events: totalEvents, status: anySuccess ? "ok (multi-url)" : "error" };
+    return {
+      venue: venue.name,
+      events: mergedRows.length,
+      rows: mergedRows,
+      status: anySuccess ? "ok (multi-url)" : "error",
+    };
   }
 
   try {

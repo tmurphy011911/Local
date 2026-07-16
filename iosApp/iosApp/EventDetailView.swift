@@ -63,7 +63,7 @@ struct EventDetailData {
         // Genres the generic title-caser can't render correctly (acronyms, "&", etc.).
         let overrides = ["r&b": "R&B"]
         if let override = overrides[raw.lowercased()] { return override }
-        return raw.split(separator: "_").map { word in
+        return raw.split(whereSeparator: { $0 == "_" || $0 == "-" }).map { word in
             word.prefix(1).uppercased() + word.dropFirst().lowercased()
         }.joined(separator: " ")
     }
@@ -827,8 +827,9 @@ struct EventDetailView: View {
             // Primary CTA
             if event.ctaUrl != nil {
                 primaryButton(label: event.ctaLabel, isPrimary: event.ticketUrl != nil) {
-                    if let urlStr = event.ctaUrl, let url = URL(string: urlStr) {
-                        UIApplication.shared.open(url)
+                    if let urlStr = event.ctaUrl {
+                        // In-app webview (tickets / More Info) — stays in Local.
+                        InAppBrowserBridgeSetup.open(urlStr)
                     }
                 }
             }

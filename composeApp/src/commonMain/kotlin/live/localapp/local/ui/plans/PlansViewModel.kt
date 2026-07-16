@@ -16,6 +16,7 @@ import live.localapp.local.data.sync.PlanReconciler
 import live.localapp.local.data.sync.PlanSyncer
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.model.Plan
+import live.localapp.local.domain.model.isLastDayPast
 import live.localapp.local.domain.model.PlanDay
 import live.localapp.local.domain.model.PlanSlot
 import live.localapp.local.domain.model.ReservationState
@@ -146,8 +147,10 @@ class PlansViewModel(
             }.collect { reconciled ->
                 _uiState.update {
                     it.copy(
-                        upcomingPlans = reconciled.filter { p -> !p.isPast }.sortedBy { p -> p.createdAt },
-                        pastPlans = reconciled.filter { p -> p.isPast }.sortedByDescending { p -> p.createdAt },
+                        // Past = last day before today (computed from day labels;
+                        // the DB is_past flag is never maintained). See Plan.isLastDayPast.
+                        upcomingPlans = reconciled.filter { p -> !p.isLastDayPast() }.sortedBy { p -> p.createdAt },
+                        pastPlans = reconciled.filter { p -> p.isLastDayPast() }.sortedByDescending { p -> p.createdAt },
                     )
                 }
             }
@@ -414,12 +417,11 @@ class PlansViewModel(
                 val eventIds = communityInterestRepository.getFavoriteEventIds(userId)
                 val venueIds = communityInterestRepository.getFavoriteVenueIds(userId)
 
-                val now = kotlin.time.Clock.System.now().toString()
+                // Drop past events so they fall out of Saved Events once their
+                // date passes. isUpcoming parses the timestamp (never a raw ISO
+                // string compare, which breaks on offset/precision differences).
                 val events = if (eventIds.isNotEmpty()) {
-                    eventRepository.getEventsByIds(eventIds).filter {
-                        val startAt = it.startAt ?: return@filter true
-                        startAt >= now
-                    }
+                    eventRepository.getEventsByIds(eventIds).filter { it.isUpcoming }
                 } else emptyList()
                 val venues = if (venueIds.isNotEmpty()) venueRepository.getVenuesByIds(venueIds) else emptyList()
 

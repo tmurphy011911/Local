@@ -139,7 +139,6 @@ fun App() {
         var authFirstName by remember { mutableStateOf("") }
         var authLastName by remember { mutableStateOf("") }
         var authPhone by remember { mutableStateOf("") }
-        var authEmail by remember { mutableStateOf("") }
         var authUserId by remember { mutableStateOf("") }
 
         // If a deep link resolves while the user is logged out (on splash or the
@@ -373,25 +372,25 @@ fun App() {
                 }
                 PhoneAuthScreen(
                     viewModel = viewModel,
-                    onAuthComplete = { isNewUser, firstName, lastName, phone, email, userId ->
+                    onAuthComplete = { isNewUser, firstName, lastName, phone, userId ->
                         authUserId = userId
                         if (isNewUser) {
                             authFirstName = firstName
                             authLastName = lastName
                             authPhone = phone
-                            authEmail = email
                             appState = AppState.ONBOARDING
                         } else {
                             appState = AppState.HOME
                         }
                     },
-                    // The X-close affordance on PhoneAuthScreen would otherwise
-                    // let an unauthenticated user reach HOME with authUserId=""
-                    // and silently RLS-fail every query. We only expose it under
-                    // the test-bypass flag so the bypass is impossible in prod.
-                    onSkip = if (live.localapp.local.Config.testAuthBypassActive) {
-                        { appState = AppState.HOME }
-                    } else null,
+                    // Guest mode: dismissing the auth screen drops the user on HOME
+                    // unauthenticated (authUserId=""). Browsing is anon-safe (the
+                    // carousel feed runs anon), and authed surfaces are protected —
+                    // plans/progress refreshes are isLoggedIn-guarded and every gated
+                    // action routes the guest back to sign-in (showPaywallGate in
+                    // AppNavigation). So a guest never silently RLS-fails into a
+                    // broken authed query; they're sent to sign-in the moment they act.
+                    onSkip = { appState = AppState.HOME },
                 )
             }
 
@@ -401,7 +400,6 @@ fun App() {
                         if (authFirstName.isNotEmpty()) vm.updateFirstName(authFirstName)
                         if (authLastName.isNotEmpty()) vm.updateLastName(authLastName)
                         if (authPhone.isNotEmpty()) vm.updatePhoneNumber(authPhone)
-                        if (authEmail.isNotEmpty()) vm.updateEmail(authEmail)
                         if (authUserId.isNotEmpty()) vm.setAuthUserId(authUserId)
                     }
                 }

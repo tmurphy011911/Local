@@ -2,6 +2,7 @@ package live.localapp.local.platform
 
 actual val hasNativeHeroTransition: Boolean = false
 actual val hasNativeTabBar: Boolean = false
+actual val isIOS: Boolean = false
 actual fun notifyTabChanged(tabIndex: Int) {}
 actual fun setTabBarUserInitial(initial: String) {}
 actual fun setupNativeTabBarCallbacks(onTabSelected: (Int) -> Unit, onChatTapped: () -> Unit) {}

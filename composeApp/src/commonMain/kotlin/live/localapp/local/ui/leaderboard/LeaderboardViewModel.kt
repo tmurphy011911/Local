@@ -8,33 +8,46 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import live.localapp.local.data.remote.dto.LeaderboardDto
-import live.localapp.local.data.remote.dto.LeaderboardEntryDto
+import live.localapp.local.domain.repository.ChangeHomeCityResult
 import live.localapp.local.domain.repository.LeaderboardRepository
 import live.localapp.local.domain.repository.LeaderboardScope
+import live.localapp.local.domain.repository.UserPreferencesRepository
+import live.localapp.local.domain.repository.UsernameUpdateResult
+import live.localapp.local.domain.service.BadgeService
 
 /**
- * Drives both the home CTA (always STATE scope) and the leaderboard sheet (the
- * user-toggled scope). Per-scope results are cached for the session in
- * [UiState.byScope] so flipping the segmented control is instant after first load.
+ * Drives the leaderboard entry CTA + the sheet. Per-scope results are cached for
+ * the session in [UiState.byScope] so the CTA's country→state→city cascade and
+ * flipping the segmented control are instant after first load.
+ *
+ * Cached scopes are re-fetched whenever FOMO is earned: we observe
+ * [BadgeService.dataChanged] (emitted after the badge insert that fires the
+ * fomo_total trigger), so the board updates live instead of going stale until the
+ * app is relaunched.
  */
 class LeaderboardViewModel(
     private val repo: LeaderboardRepository,
+    badgeService: BadgeService,
+    private val userPrefsRepo: UserPreferencesRepository,
 ) : ViewModel() {
 
+    init {
+        loadProfile()
+        viewModelScope.launch {
+            badgeService.dataChanged.collect { refresh(); loadProfile() }
+        }
+    }
+
     data class UiState(
-        // Home CTA — the caller's own row at STATE scope.
-        val ctaLoading: Boolean = true,
-        val cta: LeaderboardEntryDto? = null,
-        val stateLabel: String? = null,
-        // Two-letter state code (e.g. "MA") — the compact CTA uses this to stay
-        // single-line, while the sheet title uses the full stateLabel.
-        val stateCode: String? = null,
-        // Sheet.
         val scope: LeaderboardScope = LeaderboardScope.STATE,
         val byScope: Map<LeaderboardScope, LeaderboardDto> = emptyMap(),
         // Scopes we've finished a fetch for (success or failure) — lets the UI
         // tell "still loading" apart from "loaded, genuinely empty".
         val attempted: Set<LeaderboardScope> = emptySet(),
+        // Current user's profile bits used by the own-row + header.
+        val username: String? = null,
+        val usernameIsCustom: Boolean = false,
+        val homeCity: String? = null,
     ) {
         val current: LeaderboardDto? get() = byScope[scope]
         val sheetLoading: Boolean get() = scope !in attempted
@@ -43,27 +56,43 @@ class LeaderboardViewModel(
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
-    /** Load the STATE scope for the home CTA. Cheap; safe to call on each Home open. */
-    fun loadCta() {
+    private fun loadProfile() {
         viewModelScope.launch {
-            _uiState.update { it.copy(ctaLoading = true) }
-            val dto = repo.getLeaderboard(LeaderboardScope.STATE)
-            _uiState.update { s ->
-                s.copy(
-                    ctaLoading = false,
-                    cta = dto?.me ?: s.cta,
-                    stateLabel = dto?.location ?: s.stateLabel,
-                    stateCode = dto?.locationCode ?: s.stateCode,
-                    byScope = if (dto != null) s.byScope + (LeaderboardScope.STATE to dto) else s.byScope,
-                    attempted = s.attempted + LeaderboardScope.STATE,
-                )
+            val uid = userPrefsRepo.getLocalUserId() ?: return@launch
+            val p = userPrefsRepo.loadPreferences(uid) ?: return@launch
+            _uiState.update {
+                it.copy(username = p.username, usernameIsCustom = p.usernameIsCustom, homeCity = p.hometownName)
             }
         }
     }
 
-    /** Fetch a scope once if we haven't already; never re-fetches a cached scope. */
-    private fun ensure(scope: LeaderboardScope) {
-        if (scope in _uiState.value.attempted) return
+    /** Change home city; on success reloads the profile + leaderboard so everything re-scopes. */
+    fun changeHomeCity(name: String, lat: Double, lng: Double, placeId: String?, onResult: (ChangeHomeCityResult) -> Unit) {
+        viewModelScope.launch {
+            val res = repo.changeHomeCity(name, lat, lng, placeId)
+            if (res is ChangeHomeCityResult.Success) {
+                loadProfile()
+                // Home location moved → every scope's membership changes. Drop the
+                // cache so the sheet re-fetches against the new home.
+                _uiState.update { it.copy(byScope = emptyMap(), attempted = emptySet()) }
+            }
+            onResult(res)
+        }
+    }
+
+    /** Set a custom username; on success reloads the profile + leaderboard so the own row updates. */
+    fun saveUsername(name: String, onResult: (UsernameUpdateResult) -> Unit) {
+        viewModelScope.launch {
+            val uid = userPrefsRepo.getLocalUserId()
+            if (uid == null) { onResult(UsernameUpdateResult.Error); return@launch }
+            val res = userPrefsRepo.updateUsername(uid, name.trim())
+            if (res == UsernameUpdateResult.Success) { loadProfile(); refresh() }
+            onResult(res)
+        }
+    }
+
+    /** Fetch a scope and store the result (force — overwrites any cached value). */
+    private fun fetch(scope: LeaderboardScope) {
         viewModelScope.launch {
             val dto = repo.getLeaderboard(scope)
             _uiState.update { s ->
@@ -73,6 +102,17 @@ class LeaderboardViewModel(
                 )
             }
         }
+    }
+
+    /** Fetch a scope once if we haven't already; never re-fetches a cached scope. */
+    private fun ensure(scope: LeaderboardScope) {
+        if (scope in _uiState.value.attempted) return
+        fetch(scope)
+    }
+
+    /** Re-fetch every already-loaded scope (e.g. after FOMO is earned). */
+    private fun refresh() {
+        _uiState.value.attempted.forEach { fetch(it) }
     }
 
     /** Switch the visible scope (serves cache immediately, fetches if cold). */

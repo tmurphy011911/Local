@@ -70,6 +70,9 @@ final class PlacesAutocompleteBridgeSetup: NSObject {
                 "formattedAddress": formatted,
                 "lat": coord.latitude,
                 "lng": coord.longitude,
+                // City/town (e.g. "Perkasie") for hometown display — `name` is the
+                // street address on a precise pick.
+                "locality": placemark.locality ?? "",
             ]
             onResult(jsonString(from: json))
         }

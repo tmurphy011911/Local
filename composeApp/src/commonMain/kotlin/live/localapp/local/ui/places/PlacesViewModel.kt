@@ -20,6 +20,7 @@ import live.localapp.local.domain.repository.CommunityInterestRepository
 import live.localapp.local.domain.repository.EventPage
 import live.localapp.local.domain.repository.EventRepository
 import live.localapp.local.domain.repository.ExploreRepository
+import live.localapp.local.domain.repository.PlaceFacet
 import live.localapp.local.domain.repository.PlacePage
 import live.localapp.local.domain.repository.InteractionType
 import live.localapp.local.domain.repository.UserPreferences
@@ -98,6 +99,14 @@ data class PlacesUiState(
     val hasEventsOnly: Boolean = false,
     // Places tab — client-side sort over the loaded venue list.
     val placeSort: PlaceSort = PlaceSort.POPULAR,
+    // Places tab — two-tier geo→type filter. selectedCity is the raw venue.city
+    // (null = all cities in radius); selectedVenueCategory is the raw
+    // venue.category slug within that city (null = all types). The facet lists
+    // drive the chip rows; category names are raw slugs (title-case in UI).
+    val selectedCity: String? = null,
+    val selectedVenueCategory: String? = null,
+    val cityFacets: List<PlaceFacet> = emptyList(),
+    val categoryFacets: List<PlaceFacet> = emptyList(),
     val favoriteVenueIds: Set<String> = emptySet(),
     val favoriteEventIds: Set<String> = emptySet(),
     val savedEvents: List<Event> = emptyList(),
@@ -163,7 +172,7 @@ class PlacesViewModel(
     private fun PlacesUiState.placesCacheKey(): String = listOf(
         userLat?.toString() ?: "", userLng?.toString() ?: "",
         userPreferences?.id ?: "anon",
-        searchQuery, selectedFilter, placeSort.slug,
+        searchQuery, selectedFilter, selectedCity ?: "", selectedVenueCategory ?: "", placeSort.slug,
         hasEventsOnly.toString(), radiusFilter?.toString() ?: "",
     ).joinToString("|")
 
@@ -290,10 +299,23 @@ class PlacesViewModel(
         // Switching away from CUSTOM clears the picked range; the next CUSTOM
         // tap will re-open the picker fresh.
         _uiState.update { state ->
-            if (filter == EventDateFilter.CUSTOM) {
-                state.copy(dateFilter = filter)
-            } else {
-                state.copy(dateFilter = filter, customStart = null, customEnd = null)
+            when {
+                filter == EventDateFilter.CUSTOM -> state.copy(dateFilter = filter)
+                // Removing the date filter also drops the category. Category
+                // chips are a sub-filter that only renders in the "date active"
+                // mode of EventDateFilterRow — leaving that mode (date -> null)
+                // hides them, so a still-applied category would keep filtering
+                // results with no visible chip to remove it. Reset it here in
+                // the same atomic update so the one reload below uses the
+                // cleared category.
+                filter == null -> state.copy(
+                    dateFilter = null,
+                    customStart = null,
+                    customEnd = null,
+                    selectedFilter = "All",
+                    selectedSubFilter = null,
+                )
+                else -> state.copy(dateFilter = filter, customStart = null, customEnd = null)
             }
         }
         // Don't optimistically narrow the visible list — loadEvents() clears
@@ -332,6 +354,30 @@ class PlacesViewModel(
         loadPlaces(reset = true)
     }
 
+    /** Top-level city chip. Tapping the active city clears it (back to "all
+     *  cities in radius"); switching cities resets the venue-type drill-down. */
+    fun setSelectedCity(city: String?) {
+        val next = if (city == _uiState.value.selectedCity) null else city
+        // Drop the previous city's sub-filter (venue-type) chips immediately so
+        // they can't linger — or be tapped into a mismatched state — while the
+        // new city's facets load. loadPlaces repopulates them: instantly on a
+        // cache hit, or after the skeleton on a real fetch. Only cleared here
+        // (city change), NOT in setSelectedVenueCategory / search / sort, so
+        // the chip row doesn't skeleton-flicker on same-city refetches.
+        _uiState.update {
+            it.copy(selectedCity = next, selectedVenueCategory = null, categoryFacets = emptyList())
+        }
+        loadPlaces(reset = true)
+    }
+
+    /** Second-tier venue-type chip (raw venue.category slug). Tapping the
+     *  active type clears it (back to "all types in this city"). */
+    fun setSelectedVenueCategory(category: String?) {
+        val next = if (category == _uiState.value.selectedVenueCategory) null else category
+        _uiState.update { it.copy(selectedVenueCategory = next) }
+        loadPlaces(reset = true)
+    }
+
     private var searchDebounceJob: Job? = null
     fun setSearchQuery(query: String) {
         _uiState.update { it.copy(searchQuery = query) }
@@ -361,6 +407,8 @@ class PlacesViewModel(
                         venues = hit.page.items,
                         venueCursor = hit.page.cursor,
                         hasMore = hit.page.hasMore,
+                        cityFacets = hit.page.cityFacets,
+                        categoryFacets = hit.page.categoryFacets,
                         isLoading = false,
                         isRefreshing = false,
                         error = null,
@@ -393,8 +441,10 @@ class PlacesViewModel(
                 val lat = state.userLat ?: METRO_LAT
                 val lng = state.userLng ?: METRO_LNG
                 val cursor = if (reset) null else state.venueCursor
-                val category = state.selectedFilter.takeIf { it != "All" }
-                    ?.let { filterToServerCategory(it) }
+                // The two-tier venue-type drill-down (raw slug from the facet)
+                // takes precedence; fall back to the legacy selectedFilter map.
+                val category = state.selectedVenueCategory
+                    ?: state.selectedFilter.takeIf { it != "All" }?.let { filterToServerCategory(it) }
 
                 val page = exploreRepository.fetchPlaces(
                     userLat = lat,
@@ -402,6 +452,7 @@ class PlacesViewModel(
                     userId = state.userPreferences?.id,
                     query = state.searchQuery,
                     category = category,
+                    city = state.selectedCity,
                     radiusMiles = state.radiusFilter,
                     hasEventsOnly = state.hasEventsOnly,
                     sort = state.placeSort.slug,
@@ -416,6 +467,10 @@ class PlacesViewModel(
                         venues = merged,
                         venueCursor = page.cursor,
                         hasMore = page.hasMore,
+                        // Facets are computed over the full scored list, so
+                        // they're identical across pages — safe to set always.
+                        cityFacets = page.cityFacets,
+                        categoryFacets = page.categoryFacets,
                         isLoading = false,
                         isRefreshing = false,
                         error = null,
@@ -723,7 +778,9 @@ class PlacesViewModel(
             // Hydrate the saved carousels from the full favorite sets,
             // independent of the active filters — by-id fetches surface saved
             // items even when they fall outside the current page.
-            val savedEvents = if (eventIds.isEmpty()) emptyList() else eventRepository.getEventsByIds(eventIds)
+            // Drop past events so Saved Events sheds them once their date passes.
+            val savedEvents = if (eventIds.isEmpty()) emptyList()
+                else eventRepository.getEventsByIds(eventIds).filter { it.isUpcoming }
             val savedVenues = if (venueIds.isEmpty()) {
                 emptyList()
             } else {

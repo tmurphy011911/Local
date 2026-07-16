@@ -57,6 +57,24 @@ enum AnalyticsBridge {
                 options.enableAppHangTracking = true
                 options.appHangTimeoutInterval = 2.0
 
+                // Drop EXPECTED control-flow exceptions (paywall / re-auth / stale
+                // OTP / coroutine cancellation) so they don't bury real crashes.
+                // Mirrors the Android beforeSend filter. Never drops crashes or App
+                // Hangs — those carry no matching exception value, so they pass through.
+                options.beforeSend = { event in
+                    let parts = (event.exceptions?.map { "\($0.type) \($0.value)" } ?? [])
+                        + [event.message?.formatted ?? ""]
+                    let blob = parts.joined(separator: " ").lowercased()
+                    if blob.contains("local pro required")
+                        || blob.contains("boentitlementrequiredexception")
+                        || blob.contains("otp_expired")
+                        || blob.contains("cancellationexception")
+                        || (blob.contains("token has expired") && blob.contains("refresh")) {
+                        return nil
+                    }
+                    return event
+                }
+
                 #if DEBUG
                 options.environment = "dev"
                 #else

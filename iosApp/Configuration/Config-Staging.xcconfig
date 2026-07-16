@@ -1,0 +1,24 @@
+// Staging configuration — the side-by-side "Local (Dev)" app.
+//
+// Same as the base config except: a distinct bundle id so it installs ALONGSIDE
+// the real app, and IS_STAGING=YES so the KMP layer locks the backend to dev
+// (Config.backendEnv → DEV) and turns on dev-auth. Release-signed/archivable for
+// TestFlight + Play internal testing, but can never touch the prod backend.
+//
+// Wire this up in Xcode: add a build configuration named "Staging" (duplicate of
+// Release) and set its baseConfigurationReference to THIS file. See RELEASE.md.
+
+#include "Config.xcconfig"
+
+PRODUCT_BUNDLE_IDENTIFIER=live.localapp.local.dev
+IS_STAGING=YES
+BUNDLE_DISPLAY_NAME=Local Dev
+
+// The KMP `embedAndSignAppleFrameworkForXcode` task only auto-detects the
+// Kotlin framework build type for the stock Debug/Release configurations. This
+// is a custom "Staging" config (a duplicate of Release), so it MUST be set
+// explicitly or the build fails with "Unable to detect Kotlin framework build
+// type for CONFIGURATION=Staging". Debug for the simulator (fast dev loop);
+// release for device/archive (optimized for TestFlight/Play internal).
+KOTLIN_FRAMEWORK_BUILD_TYPE = release
+KOTLIN_FRAMEWORK_BUILD_TYPE[sdk=iphonesimulator*] = debug

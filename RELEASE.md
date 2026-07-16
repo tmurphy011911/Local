@@ -143,3 +143,152 @@ supabase migration list          # re-run until Local and Remote agree
 Run the reconcile against **prod first** (it's the source of truth for what's
 live), then **dev**. Treat the prod reconcile as a gated DB op — dry-run / review
 each unapplied migration before pushing it. See `/db-op`.
+
+---
+
+## App releases & branching (hotfix safety)
+
+The client (iOS/Android) ships on a branch model so an urgent fix to the LIVE
+app never drags in unfinished work.
+
+```
+main      = EXACTLY what's live in the stores. Tagged at every release.
+develop   = the next release in progress. Feature branches merge here.
+feature/* = one in-progress feature, branched off develop.
+hotfix/*  = branched off the LIVE tag (main) when prod is on fire.
+```
+
+> **Two independent dials — don't conflate them.**
+> - **Which code** (features, version, your change) = the **git branch**. A change
+>   lives only on the branch you commit it to. This is what isolates 1.1.0 work
+>   from the live 1.0.0 line.
+> - **Which backend + separate install** = the **build type** (debug / staging
+>   "Local Dev" / release). All three compile the *same* source from the current
+>   branch; they only differ in which DB they hit and that staging installs as a
+>   separate `.dev` app.
+>
+> So a code change shows up in **every** build type built from that branch — build
+> type does NOT hide code. Switch **branches** to compare code with/without a
+> change; switch the **backend menu** to compare dev vs prod data with the same
+> code.
+
+### THE iron rule: never archive from a dirty tree
+A store build must be reproducible from git. Before you Archive (Xcode) or build
+a release AAB:
+1. Commit everything. `git status` is clean.
+2. Bump the build number (`CURRENT_PROJECT_VERSION` in `iosApp/Configuration/Config.xcconfig`; Android `versionCode`).
+3. `git tag vX.Y.Z` and note the iOS build number in the tag message.
+4. THEN Archive / build the release.
+
+If you archive from uncommitted changes, there is no commit that equals your live
+app — and you cannot cleanly branch a hotfix from it. (This happened with 1.0.0:
+build 102 was archived from an uncommitted tree, so no commit reproduces it.)
+
+### Release schedule — the bi-weekly train
+Submit a new build **every other Wednesday**; each scheduled release is a **minor**
+bump (`vX.Y.0`). Anchor: `v1.1.0` = **Wed 2026-07-08**, then +14 days / +0.1.0:
+
+| Version | Submit (Wed) |
+|---------|--------------|
+| v1.1.0  | 2026-07-08   |
+| v1.2.0  | 2026-07-22   |
+| v1.3.0  | 2026-08-05   |
+| v1.4.0  | 2026-08-19   |
+| …       | +14 days each |
+
+Each cycle ≈ 2 weeks on `develop`. Hotfixes (`vX.Y.Z` patch) ship off-schedule,
+any day, off the live tag.
+
+### Releasing the next version (feature release)
+`develop` → finish + test → bump build number → commit → `git tag vX.Y.0` →
+merge to `main` → Archive from `main` → upload. Promote any backend changes per
+the dev→prod steps above (additive-only).
+
+### Hotfix to the live app (the "prod is on fire while mid-feature" case)
+```bash
+git checkout vX.Y.Z                 # the live tag — NOT develop
+git checkout -b hotfix/X.Y.(Z+1)
+# fix ONLY the bug; bump the build number
+git commit -am "Fix <bug>"
+git tag vX.Y.(Z+1)
+# Archive from this branch → upload to App Store / Play  (carries ZERO develop WIP)
+git checkout main    && git merge hotfix/X.Y.(Z+1)   # main = new live
+git checkout develop && git merge hotfix/X.Y.(Z+1)   # develop gets the fix too
+```
+Your in-progress features live on `develop` and are never part of the hotfix
+build — that isolation is the whole point.
+
+> Backend note: a hotfix's backend must stay additive/back-compatible with the
+> live clients (same rule as any prod promotion). A client-only hotfix needs no
+> migration.
+
+---
+
+## Submitting to the App Store & Play
+
+Run this once you're on the release commit (`main` for a feature release, or the
+`hotfix/*` branch) — committed clean and `git tag`-ged.
+
+### Pre-submit checklist (both platforms)
+- [ ] Working tree clean and tagged `vX.Y.Z` (never archive dirty).
+- [ ] **Build numbers bumped and STRICTLY INCREASING** — iOS `CURRENT_PROJECT_VERSION` and Android `versionCode` (both in lockstep, currently 102). App Store Connect and Play both reject a build number ≤ the last uploaded one for the same marketing version.
+- [ ] Marketing version set — iOS `MARKETING_VERSION`, Android `versionName` (`iosApp/Configuration/Config.xcconfig`, `composeApp/build.gradle.kts`).
+- [ ] `Config.TEST_AUTH_BYPASS = false` and `REVIEW_BUILD_BYPASS = false` (the latter only `true` for a closed review track, never a prod submission).
+- [ ] `Config.FEATURE_*` flags set as intended for this release.
+- [ ] Sanity: a release build resolves to **prod** (no DEV badge). It's structural, but eyeball it.
+
+### iOS → App Store Connect / TestFlight
+1. **Quit the iOS Simulator first.** The K/N Release link runs in the Gradle daemon at 8g; daemon + Xcode + Simulator oversubscribes a 16GB Mac and OOMs. Cold link is ~11 min.
+2. Xcode: destination **Any iOS Device (arm64)** → **Product → Archive**.
+3. Organizer → **Distribute App → App Store Connect → Upload**. Team `2BGU22C396`.
+4. The **"Upload Symbols Failed — no dSYM for Sentry.framework"** warning is **NOT a blocker** — your own code symbolicates via `Local.app.dSYM`; ship it.
+5. App Store Connect (build appears after ~5–15 min processing): add it to a **TestFlight** group for testers, or attach it to the App Store version and **Submit for Review**.
+
+### Android → Play Console
+1. Build a **signed release AAB**: Android Studio → **Build → Generate Signed Bundle/APK → Android App Bundle**, using your upload keystore. (No gradle `signingConfig`, so this is the GUI path; Play App Signing re-signs server-side.)
+2. Play Console → app → **Testing** (internal/closed) for testers, or **Production** → create release → upload the AAB → roll out (consider a staged % rollout for prod).
+3. The **"missing native debug symbols"** warning (Sentry's `.so`) is **safe to ignore** — documented in `composeApp/build.gradle.kts`; Sentry symbolicates via its own pipeline.
+
+### After both are live
+- Confirm `main` points at the tagged release commit; `git push origin main --tags`.
+- If this was a hotfix, you've already merged it back into `develop`.
+
+---
+
+## Staging build — the side-by-side "Local (Dev)" app
+
+A separate app (`live.localapp.local.dev`, labeled "Local (Dev)") that installs
+ALONGSIDE the real app. Use it to run an in-progress branch next to the live app,
+and to distribute test builds via TestFlight / Play internal testing. Its backend
+is **switchable** at runtime (tap the logo → Dev/Prod), defaulting to **dev** —
+so you can point the `.dev` app at dev for safe testing, or at prod to validate
+against live data, all without touching the real app. When it's on dev, dev-auth
+is on (any OTP, phone→dev account); on prod it uses real auth. Only the plain
+`release` build of the real app is hard-locked to prod.
+
+### Android — ready now
+- **Local side-by-side:** `./gradlew :composeApp:installStaging` → installs "Local (Dev)" next to "Local". (Debug-signed, so no keystore needed.)
+- **Distribute via Play:** Android Studio → Build → Generate Signed Bundle (AAB), select the **staging** build type, sign with your upload key → upload to the `.dev` app's internal-testing track in Play Console.
+
+### iOS — one-time Xcode wiring (GUI; the files are already in place)
+Files committed: `Config-Staging.xcconfig` (bundle id `.dev` + `IS_STAGING=YES`),
+`IS_STAGING` key in `Info.plist`, `IS_STAGING=NO` default in `Config.xcconfig`.
+In Xcode:
+1. Project → **Info** tab → **Configurations** → duplicate **Release** → name it **Staging**.
+2. For the **Staging** row, set the project's config file to **Config-Staging.xcconfig** (Set "Based on Configuration File" for the iosApp target/project → Config-Staging).
+3. **Product → Scheme → Manage Schemes** → duplicate the `iosApp` scheme → name it **"Local Dev"**. Edit it so **Run** and **Archive** use the **Staging** configuration.
+4. Run/Archive the **Local Dev** scheme → installs/archives the `.dev` app pointed at dev.
+
+### Accounts (only when distributing to others)
+- **Apple:** register bundle id `live.localapp.local.dev`; create its App Store Connect app record; let Xcode make the provisioning profile. Archive the "Local Dev" scheme → upload → TestFlight.
+- **Google:** create the `.dev` app (or just an internal-testing track) in Play Console; upload the signed staging AAB.
+
+### Backend mapping
+```
+debug build    → switchable (Local-logo menu), default DEV
+staging build  → switchable (Local-logo menu), default DEV   app id .dev
+release build  → PROD, hard-locked, no switch                the real store app
+```
+`isStagingBuild` (Android `BuildConfig.IS_STAGING`, iOS Info.plist `IS_STAGING=YES`)
++ `isDebugBuild` define `Config.backendSwitchable`; only a plain release is locked.
+A DEV/PROD badge by the logo shows the live choice on any switchable build.

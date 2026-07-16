@@ -133,10 +133,10 @@ class PremiumGate {
 
     /** Get the reward description for a tier (for display). */
     fun rewardForTier(tier: StatusTier): String? = when (tier) {
-        StatusTier.INSIDER -> "$10 Ticketmaster Gift Card"
-        StatusTier.TOWNIE -> "$25 Ticketmaster Gift Card"
-        StatusTier.LOCAL -> "$250 Ticketmaster Gift Card"
-        StatusTier.LOCAL_LEGEND -> "$500 Ticketmaster Gift Card"
+        StatusTier.TOWNIE -> "$10 Ticketmaster Gift Card"
+        StatusTier.LOCAL -> "$25 Ticketmaster Gift Card"
+        StatusTier.LOCAL_LEGEND -> "$250 Ticketmaster Gift Card"
+        StatusTier.MAYOR -> "$500 Ticketmaster Gift Card"
         else -> null
     }
 

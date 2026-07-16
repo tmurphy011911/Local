@@ -30,6 +30,9 @@ struct ComposeView: UIViewControllerRepresentable {
         // Wire the Kotlin ↔ Swift native venue detail bridge
         setupVenueDetailBridge(composeVC: vc)
 
+        // Wire the Kotlin ↔ Swift native home-city editor (leaderboard)
+        setupHomeCityEditBridge(composeVC: vc)
+
         // Wire chat sheet background animation
         setupChatSheetBridge(composeVC: vc)
 
@@ -53,6 +56,7 @@ struct ComposeView: UIViewControllerRepresentable {
         NativeTimePickerBridgeSetup.register()
         PlacesAutocompleteBridgeSetup.register()
         NativeDateRangePickerBridgeSetup.register()
+        InAppBrowserBridgeSetup.register()
 
         return vc
     }
@@ -102,6 +106,37 @@ struct ComposeView: UIViewControllerRepresentable {
     }
 
     // MARK: - Native Event Detail Wiring
+
+    private func setupHomeCityEditBridge(composeVC: UIViewController) {
+        HomeCityEditBridge.shared.present = {
+            DispatchQueue.main.async {
+                guard let window = composeVC.view.window ?? UIApplication.shared.connectedScenes
+                    .compactMap({ $0 as? UIWindowScene })
+                    .flatMap({ $0.windows })
+                    .first(where: { $0.isKeyWindow })
+                else { return }
+
+                weak var weakVC: UIHostingController<HomeCityEditView>?
+                let view = HomeCityEditView(
+                    onConfirm: { name, lat, lng, completion in
+                        HomeCityEditBridge.shared.onConfirm?(name, KotlinDouble(value: lat), KotlinDouble(value: lng), nil) { ok, rateLimited, nextAllowedAt in
+                            completion(ok.boolValue, rateLimited.boolValue, nextAllowedAt)
+                            return KotlinUnit()
+                        }
+                    },
+                    onDismiss: { weakVC?.dismiss(animated: true) }
+                )
+                let hostingVC = UIHostingController(rootView: view)
+                weakVC = hostingVC
+                hostingVC.modalPresentationStyle = .pageSheet
+                if let sheet = hostingVC.sheetPresentationController {
+                    sheet.detents = [.large()]
+                    sheet.prefersGrabberVisible = true
+                }
+                topPresentedViewController(in: window)?.present(hostingVC, animated: true)
+            }
+        }
+    }
 
     private func setupEventDetailBridge(composeVC: UIViewController) {
         let detailBridge = EventDetailBridge.shared
@@ -161,11 +196,22 @@ struct ComposeView: UIViewControllerRepresentable {
                 // When opened from chat plan cards, coords are all zero —
                 // use a bottom-slide modal instead of the hero transition.
                 if cardFrame.width == 0 && cardFrame.height == 0 {
+                    // Fire onDismissed exactly once, from whichever path closes
+                    // the sheet: the back button (programmatic dismiss, below) or
+                    // an interactive swipe-down (the presentation delegate). The
+                    // two are mutually exclusive in UIKit, but the flag guards
+                    // against any future overlap. Without the swipe path, a
+                    // deep-linked event's onDismissed never fired and the app was
+                    // stranded on a blank surface.
+                    var didFireDismiss = false
+                    let fireDismiss = {
+                        if didFireDismiss { return }
+                        didFireDismiss = true
+                        detailBridge.onDismissed?()
+                    }
                     weak var weakHostingVC: UIHostingController<EventDetailView>?
                     let detailView = EventDetailView(event: event, onDismiss: {
-                        weakHostingVC?.dismiss(animated: true) {
-                            detailBridge.onDismissed?()
-                        }
+                        weakHostingVC?.dismiss(animated: true) { fireDismiss() }
                     })
                     let hostingVC = UIHostingController(rootView: detailView)
                     weakHostingVC = hostingVC
@@ -174,6 +220,12 @@ struct ComposeView: UIViewControllerRepresentable {
                         sheet.detents = [.large()]
                         sheet.prefersGrabberVisible = true
                     }
+                    // Swipe-to-dismiss doesn't call the dismiss completion above,
+                    // so a delegate relays the interactive dismissal. Retained on
+                    // the transition controller (presentationController is weak).
+                    let dismissDelegate = SheetDismissDelegate { fireDismiss() }
+                    transition.sheetDismissDelegate = dismissDelegate
+                    hostingVC.presentationController?.delegate = dismissDelegate
                     // Walk to the actual top — events triggered from a slot
                     // tap inside PlanDetail (itself a sheet, possibly over
                     // ChatSheet) need this deep walk; the prior shallow

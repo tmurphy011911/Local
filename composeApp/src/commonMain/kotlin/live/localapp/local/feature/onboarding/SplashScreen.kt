@@ -137,11 +137,11 @@ private const val REEL_FAST_STEP_MS = 45            // top speed (very fast)
 private const val REEL_SLOW_STEPS = 5               // slow words held up front
 private const val REEL_RAMP_STEPS = 6               // steps to accelerate slow → top speed
 private const val REEL_LANDING_DELAY_MS = 80
-// Landing on "event": carry well PAST center, then slam back down hard with a
-// double-thud haptic and a punch-then-recoil scale. Dialed up for drama.
-private const val REEL_OVERSHOOT_DP = 26
-private const val REEL_OVERSHOOT_MS = 130           // glide further past resting spot
-private const val REEL_SLAM_MS = 85                 // sharper, faster return — the "hit"
+// Landing on "event": glide just slightly PAST center, then gently fall back
+// into place. Soft single tick + a faint scale settle — no hard impact.
+private const val REEL_OVERSHOOT_DP = 10
+private const val REEL_OVERSHOOT_MS = 200           // ease softly past the resting spot
+private const val REEL_SLAM_MS = 380                // gentle fall back into place
 
 private const val TAGLINE_DELAY_AFTER_REEL_MS = 250L
 private const val TAGLINE_FADE_MS = 480
@@ -159,9 +159,10 @@ private const val WORDMARK_TRAVEL_DP = 53
 
 private val WORDMARK_EASING = CubicBezierEasing(0.2f, 0.9f, 0.25f, 1.15f)
 private val REEL_CYCLE_EASING = CubicBezierEasing(0.4f, 0.05f, 0.55f, 0.95f)
-private val REEL_LANDING_EASING = CubicBezierEasing(0.18f, 0.9f, 0.3f, 1.08f)
-// Accelerate into the stop so the return reads as an impact, not a glide.
-private val REEL_SLAM_EASING = CubicBezierEasing(0.6f, 0f, 1f, 1f)
+private val REEL_LANDING_EASING = CubicBezierEasing(0.18f, 0.9f, 0.3f, 1.0f)
+// Glide past, then decelerate softly into the resting spot — a gentle fall, not a hit.
+private val REEL_OVERSHOOT_EASING = CubicBezierEasing(0.25f, 0.6f, 0.35f, 1f)
+private val REEL_SLAM_EASING = CubicBezierEasing(0.25f, 0.1f, 0.25f, 1f)
 private val TAGLINE_EASING = CubicBezierEasing(0.2f, 0.85f, 0.3f, 1.05f)
 private val ACCENT_EASING = CubicBezierEasing(0.2f, 0.85f, 0.3f, 1.1f)
 
@@ -836,9 +837,8 @@ private fun Eyebrow(visible: Boolean) {
     Text(
         text = "Every",
         style = TextStyle(
-            fontFamily = AppFonts.Heading,
-            fontWeight = FontWeight.Medium,
-            fontStyle = FontStyle.Italic,
+            fontFamily = AppFonts.Body,
+            fontWeight = FontWeight.ExtraBold,
             fontSize = 30.sp,
             color = AppColors.Ink2,
         ),
@@ -881,27 +881,24 @@ private fun Reel(index: Int, landed: Boolean, reduceMotion: Boolean) {
         }
         val isLanding = index == items.lastIndex
         if (isLanding) {
-            // Stay fast into the final word: carry well PAST the resting spot,
-            // then slam back down with a hard double-thud + scale punch.
+            // Carry just slightly PAST the resting spot, decelerating as it goes,
+            // then gently fall back into place — a soft settle, not a slam.
             val overshootPx = with(density) { REEL_OVERSHOOT_DP.dp.toPx() }
             translate.animateTo(
                 targetValue = target - overshootPx,
-                animationSpec = tween(REEL_OVERSHOOT_MS, easing = LinearEasing),
+                animationSpec = tween(REEL_OVERSHOOT_MS, easing = REEL_OVERSHOOT_EASING),
             )
             translate.animateTo(
                 targetValue = target,
                 animationSpec = tween(REEL_SLAM_MS, easing = REEL_SLAM_EASING),
             )
-            // Hard hit on impact — a heavy double-thud reads weightier than one.
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-            // Punch big, recoil (squash), then settle — a real impact.
+            // One soft tick as it settles — gentle, not a heavy thud.
+            haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+            // Faint scale settle as it falls into place.
             launch {
-                landingScale.snapTo(1.24f)
-                landingScale.animateTo(0.96f, animationSpec = tween(90, easing = LinearEasing))
-                landingScale.animateTo(1f, animationSpec = tween(260, easing = REEL_LANDING_EASING))
+                landingScale.snapTo(1.05f)
+                landingScale.animateTo(1f, animationSpec = tween(REEL_SLAM_MS, easing = REEL_LANDING_EASING))
             }
-            delay(45)
-            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
         } else {
             val nextGap = if (index == 0) {
                 REEL_FAST_STEP_MS
@@ -962,11 +959,10 @@ private fun Reel(index: Int, landed: Boolean, reduceMotion: Boolean) {
                 Text(
                     text = item.word,
                     style = TextStyle(
-                        fontFamily = AppFonts.Heading,
-                        fontWeight = FontWeight.Bold,
-                        fontStyle = FontStyle.Italic,
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.Black,
                         fontSize = 44.sp,
-                        letterSpacing = (-1.1).sp,
+                        letterSpacing = (-0.5).sp,
                         color = item.color,
                     ),
                 )
@@ -1023,9 +1019,8 @@ private fun Tagline(visible: Boolean) {
     Text(
         text = "all in one place",
         style = TextStyle(
-            fontFamily = AppFonts.Heading,
-            fontWeight = FontWeight.Medium,
-            fontStyle = FontStyle.Italic,
+            fontFamily = AppFonts.Body,
+            fontWeight = FontWeight.Bold,
             fontSize = 26.sp,
             color = AppColors.Ink,
         ),

@@ -11,3 +11,14 @@ package live.localapp.local.platform
  * dead-code elimination drop the guarded path entirely.
  */
 expect val isDebugBuild: Boolean
+
+/**
+ * True for the STAGING build — the separate `.dev` app (Android `staging` build
+ * type / iOS `Staging` configuration) that installs alongside the real app and is
+ * locked to the dev backend, for side-by-side testing and TestFlight/Play internal
+ * distribution. False for normal debug and release builds.
+ *
+ * Android: `BuildConfig.IS_STAGING`. iOS: the `IS_STAGING` Info.plist key (set to
+ * `YES` only by the Staging configuration's xcconfig).
+ */
+expect val isStagingBuild: Boolean

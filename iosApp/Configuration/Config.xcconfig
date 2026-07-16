@@ -2,7 +2,18 @@ TEAM_ID=2BGU22C396
 
 PRODUCT_NAME=Local
 PRODUCT_BUNDLE_IDENTIFIER=live.localapp.local
+// Home-screen name. Overridden to "Local Dev" by the Staging config so the dev
+// app is distinguishable from the real one. (CFBundleDisplayName in Info.plist.)
+BUNDLE_DISPLAY_NAME=Local
 
-CURRENT_PROJECT_VERSION=3.6
-MARKETING_VERSION=1.0
+// Internal build number — integer scheme (was decimal 3.7). Must strictly increase
+// per marketing version on App Store Connect. Jumped to 100 to clear the messy
+// 3.x/4 history; 101 = iPhone-only rebuild (TARGETED_DEVICE_FAMILY 1,2 -> 1).
+CURRENT_PROJECT_VERSION=200
+MARKETING_VERSION=1.1.0
+
+// Default = real app. The Staging configuration (Config-Staging.xcconfig)
+// overrides this to YES; surfaced into Info.plist (IS_STAGING) and read by
+// the KMP isStagingBuild actual to lock the build to the dev backend.
+IS_STAGING=NO
 

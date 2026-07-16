@@ -24,7 +24,11 @@ import androidx.compose.material.icons.outlined.Warning
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import live.localapp.local.Config
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -70,6 +74,13 @@ fun AppHeader(
     bottomPadding: Boolean = true,
     extraContent: @Composable (() -> Unit)? = null,
 ) {
+    // Backend switcher, opened by tapping the logo. Available on switchable
+    // builds (debug + staging); never on a plain release (the real store app).
+    var showDebugMenu by remember { mutableStateOf(false) }
+    if (Config.backendSwitchable && showDebugMenu) {
+        DebugMenuSheet(onDismiss = { showDebugMenu = false })
+    }
+
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -106,9 +117,34 @@ fun AppHeader(
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                        onClick = onLogoClick,
+                        onClick = {
+                            // On switchable builds (debug + staging) the logo opens
+                            // the backend switcher. Plain release keeps the existing
+                            // (no-op) onLogoClick — no switcher on the real app.
+                            if (Config.backendSwitchable) showDebugMenu = true else onLogoClick()
+                        },
                     ),
             )
+
+            // Backend badge on switchable builds — DEV (coral) or PROD (plum) — so
+            // it's never ambiguous which backend this build is talking to. The real
+            // release app is not switchable, so it shows no badge.
+            if (Config.backendSwitchable) {
+                val onDev = Config.backendEnv == Config.BackendEnv.DEV
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    if (onDev) "DEV" else "PROD",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 9.sp,
+                        color = AppColors.White,
+                    ),
+                    modifier = Modifier
+                        .background(if (onDev) AppColors.Coral else AppColors.Plum, AppShapes.Pill)
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                )
+            }
 
             // Push pill + streak + avatar to the right edge — pill now lives next
             // to the avatar so users always know where the location lives.

@@ -4,6 +4,8 @@ import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.query.Order
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
@@ -92,20 +94,31 @@ class EventRepositoryImpl(
 
     override suspend fun getEventsByIds(ids: List<String>): List<Event> {
         if (ids.isEmpty()) return emptyList()
-        // Supabase `isIn` has practical limits; paginate in chunks of 100.
-        val raw = ids.chunked(100).flatMap { chunk ->
-            supabaseClient.from("events")
-                .select {
-                    filter { isIn("id", chunk) }
-                }
-                .decodeList<EventDto>()
-                .map { it.toDomain() }
+        // Deserialize + map off the main thread: decodeList + the per-event
+        // toDomain() (decodeHtmlEntities) over a large id set is CPU-heavy, and
+        // this is called from Main-scoped callers (plan slots / saved events) —
+        // running it inline hung the UI. The network calls suspend fine here too.
+        return withContext(Dispatchers.Default) {
+            // Chunk small: this is `select *`, so each row drags every column
+            // (description, venue_description, …). A single request for ~50 ids was
+            // hitting the 20s client timeout when the DB was under IO load (Sentry:
+            // HttpRequestTimeoutException on /events?id=in.(…)&select=*). Smaller
+            // chunks keep every request comfortably under the timeout. Sequential
+            // (flatMap) — NOT parallel — to avoid Postgres connection-pool queueing.
+            val raw = ids.chunked(25).flatMap { chunk ->
+                supabaseClient.from("events")
+                    .select {
+                        filter { isIn("id", chunk) }
+                    }
+                    .decodeList<EventDto>()
+                    .map { it.toDomain() }
+            }
+            // Same hydration pass searchEvents runs — fills in missing event
+            // imageUrl from the matching venue's photo_url. Without this, plan
+            // slots built from getEventsByIds end up with blank image tiles even
+            // when the venue has a perfectly good Google Places photo on file.
+            hydrateVenueImages(raw)
         }
-        // Same hydration pass searchEvents runs — fills in missing event
-        // imageUrl from the matching venue's photo_url. Without this, plan
-        // slots built from getEventsByIds end up with blank image tiles even
-        // when the venue has a perfectly good Google Places photo on file.
-        return hydrateVenueImages(raw)
     }
 
     override suspend fun getEventsByCategory(city: String, category: String): List<Event> {
@@ -121,6 +134,25 @@ class EventRepositoryImpl(
             .map { it.toDomain() }
     }
 
+    override suspend fun getVenueRanks(venueNames: List<String>): Map<String, Int> {
+        val names = venueNames.mapNotNull { it.trim().takeIf { n -> n.isNotBlank() } }.distinct()
+        if (names.isEmpty()) return emptyMap()
+        return try {
+            val out = mutableMapOf<String, Int>()
+            names.chunked(200).forEach { batch ->
+                val rows = supabaseClient.from("venues")
+                    .select(io.github.jan.supabase.postgrest.query.Columns.list("name", "public_interest_rank")) {
+                        filter { isIn("name", batch) }
+                    }
+                    .decodeList<VenueRankRow>()
+                for (r in rows) { r.rank?.let { out[r.name.lowercase().trim()] = it } }
+            }
+            out
+        } catch (_: Exception) {
+            emptyMap()
+        }
+    }
+
     override suspend fun searchEvents(
         location: String?,
         category: String?,
@@ -132,6 +164,7 @@ class EventRepositoryImpl(
         userLat: Double?,
         userLng: Double?,
         radiusMiles: Double?,
+        useRadiusBbox: Boolean,
     ): List<Event> {
         val now = kotlin.time.Clock.System.now()
         val nowIso = now.toString()
@@ -180,7 +213,16 @@ class EventRepositoryImpl(
                 DateWindow("${friday}T00:00:00Z", "${monday}T00:00:00Z")
             }
             "next_weekend" -> {
-                val nextFriday = todayLocal.date.plus(daysUntilFriday(), DateTimeUnit.DAY)
+                // The weekend AFTER this one. `daysUntilFriday()` gives *this*
+                // coming Friday for Mon-Thu (and already next Friday for
+                // Sat/Sun), so anchor on this weekend's Friday, then +7.
+                val thisWeekendFriday = when (todayDow) {
+                    DayOfWeek.FRIDAY -> todayLocal.date
+                    DayOfWeek.SATURDAY -> todayLocal.date.plus(-1, DateTimeUnit.DAY)
+                    DayOfWeek.SUNDAY -> todayLocal.date.plus(-2, DateTimeUnit.DAY)
+                    else -> todayLocal.date.plus(daysUntilFriday(), DateTimeUnit.DAY)
+                }
+                val nextFriday = thisWeekendFriday.plus(7, DateTimeUnit.DAY)
                 val nextMonday = nextFriday.plus(3, DateTimeUnit.DAY)
                 DateWindow("${nextFriday}T00:00:00Z", "${nextMonday}T00:00:00Z")
             }
@@ -222,6 +264,16 @@ class EventRepositoryImpl(
                     }
                     if (userLat == null && !location.isNullOrBlank()) {
                         ilike("venue_city", "%${location}%")
+                    }
+                    // Radius bbox (chat comprehensive fill) — keeps results local
+                    // so a high limit doesn't truncate to out-of-area rows.
+                    if (useRadiusBbox && userLat != null && userLng != null && radiusMiles != null) {
+                        val latD = radiusMiles / 69.0
+                        val lngD = radiusMiles / (69.0 * kotlin.math.cos(userLat * kotlin.math.PI / 180.0))
+                        gte("venue_lat", userLat - latD)
+                        lte("venue_lat", userLat + latD)
+                        gte("venue_lng", userLng - lngD)
+                        lte("venue_lng", userLng + lngD)
                     }
                     if (!category.isNullOrBlank()) {
                         or {
@@ -524,4 +576,10 @@ private data class VenueCoordRow(
     val name: String,
     val latitude: Double? = null,
     val longitude: Double? = null,
+)
+
+@kotlinx.serialization.Serializable
+private data class VenueRankRow(
+    val name: String,
+    @kotlinx.serialization.SerialName("public_interest_rank") val rank: Int? = null,
 )

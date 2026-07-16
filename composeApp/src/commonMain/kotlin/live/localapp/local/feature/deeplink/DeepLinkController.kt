@@ -65,7 +65,14 @@ class DeepLinkController(
     // Lives for the whole process — the controller is a Koin singleton with no
     // lifecycle of its own. A late Universal Link can fire long after any one
     // screen's coroutine scope is gone, so resolution must not be tied to one.
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    //
+    // Runs on Default, NOT Main: the deferred check reads the clipboard / Play
+    // install-referrer and resolve() does a Supabase fetch + JSON decode. On
+    // Main (the old default) those inherit the UI thread and can freeze the
+    // first frame into an ANR on a fresh install that has a share link queued.
+    // `_pending` is a MutableStateFlow (thread-safe) and Compose marshals the
+    // value back to the UI thread on collect, so off-main is safe here.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val _pending = MutableStateFlow<DeepLinkContent?>(null)
     val pending: StateFlow<DeepLinkContent?> = _pending.asStateFlow()

@@ -191,11 +191,18 @@ jobs:
     # instead of being killed mid-probe (which used to skip the downstream sync).
     #
     # Bumped from 30→60: high-WAF tourism domains routed through Scrapfly
-    # (asp+render_js) routinely sit at 30–35s per probe; one slow probe
-    # straddling the 22m budget check pushed wall-clock past 30m before the
-    # script could exit cleanly. 60m cap + DISCOVER_MAX_MINUTES=50 gives ~10m
-    # of safety while letting many more candidates probe per run.
+    # (asp+render_js) routinely sit at 30–35s per probe. The budget is checked
+    # once per city, but a single city fires many sequential probes, so one slow
+    # city near the mark can overshoot ~10m. 50m budget under a 60m cap left only
+    # ~10m headroom → ~2/9 runs still tripped the cap. DISCOVER_MAX_MINUTES=45
+    # widens that to ~15m so the script exits 0 (green) on its own; the
+    # continue-on-error below is the final backstop.
     timeout-minutes: 60
+    # Best-effort: discover upserts feeds as it goes and resumes uncovered
+    # cities next run, so a straddled budget check that trips the 60m hard cap
+    # (~2/9 runs) must NOT red the whole daily crawl. Downstream already runs
+    # via if:!cancelled()/always(); this drops the timeout from the run outcome.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -205,7 +212,7 @@ jobs:
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          DISCOVER_MAX_MINUTES: '50'
+          DISCOVER_MAX_MINUTES: '45'
         run: node discover_municipal_feeds.js
 
   sync-municipal-feeds:
@@ -221,6 +228,10 @@ jobs:
     needs: discover-municipal-feeds
     if: ${{ always() }}
     timeout-minutes: 30
+    # Best-effort backstop: the SYNC_MAX_MINUTES budget already exits this green,
+    # but in case a slow feed straddles the budget check and trips the 30m cap,
+    # don't let it red the daily crawl. Stalest feeds resume next run.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -230,6 +241,10 @@ jobs:
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # Self-limit under the 30m hard cap so the job exits green and defers
+          # the stalest feeds to the next daily run (ordered last_synced_at.asc).
+          # ~6m of headroom below timeout-minutes: 30. Mirrors DISCOVER_MAX_MINUTES.
+          SYNC_MAX_MINUTES: '24'
         run: node sync_municipal_feeds.js
 
   split-aggregator-events:
@@ -289,6 +304,59 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
         run: node backfill_city_photos.js
+
+  # Detect venues that SILENTLY went dark — reliably carried upcoming events and
+  # collapsed to ~none without any hard crawl error (e.g. ICA Boston, whose
+  # calendar moved to a JS widget so the crawl still 200s but yields nothing).
+  # Runs AFTER dedupe-pass so counts reflect this run's fully-attributed events.
+  # Weekly (run_heavy) only — snapshots the crawl's own output, so it must ride
+  # the same Sunday gate as the crawl chain. Emails a digest ONLY when a venue
+  # newly goes dark; needs ~2 weekly runs of history before it flags anything.
+  venue-health:
+    runs-on: ubuntu-latest
+    needs: [dedupe-pass, compute-states]
+    if: ${{ !cancelled() && needs.compute-states.outputs.run_heavy == 'true' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Snapshot venue health + detect silent failures
+        id: detect
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          MIN_RANK: '25'
+        run: node venue_health_snapshot.js
+      - name: Email the silent-failure digest (Resend)
+        if: ${{ steps.detect.outputs.has_alerts == 'true' }}
+        working-directory: scripts
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+        run: |
+          if [ -z "$RESEND_API_KEY" ]; then
+            echo "RESEND_API_KEY not set; skipping email (full report is in the run summary)."
+            exit 0
+          fi
+          if [ ! -f venue_alert_email.html ]; then
+            echo "No email body produced; skipping."
+            exit 0
+          fi
+          TO="${ALERT_EMAIL_TO:-tom@localapp.live}"
+          SUBJECT="$(cat venue_alert_subject.txt)"
+          jq -n \
+            --arg from "Local Alerts <onboarding@resend.dev>" \
+            --arg to "$TO" \
+            --arg subject "$SUBJECT" \
+            --rawfile html venue_alert_email.html \
+            '{from:$from, to:[$to], subject:$subject, html:$html}' \
+          | curl -sf -X POST "https://api.resend.com/emails" \
+              -H "Authorization: Bearer $RESEND_API_KEY" \
+              -H "Content-Type: application/json" \
+              --data @- \
+          && echo "Silent-failure digest emailed to $TO."
 
   # Independent of the crawl→classify chain: the adapter writes fully-classified
   # rows (category=always_on, subcategory=farmers-market, tags set), so it needs

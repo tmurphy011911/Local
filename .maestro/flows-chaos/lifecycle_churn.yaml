@@ -1,0 +1,32 @@
+# CHAOS — lifecycle interruption. Backgrounds and re-foregrounds the app
+# repeatedly, often MID-ANIMATION (right after a tab swap kicks a reload),
+# stressing onStop/onResume, warm-start delivery, and the RevenueCat re-sync +
+# carousel-cache hydration that run on resume.
+#
+# Targets:
+#   - DeepLinkHandler warm-delivery race (pendingPath vs callback registration)
+#   - launchMode=singleTask onNewIntent path
+#   - first-frame work that assumes a cold start but now runs on a warm one
+#   - the UIPasteboard / deep-link main-thread reads that hang the watchdog
+#
+# `pressKey: Home` + `launchApp` are both cross-platform (Android + iOS sim).
+# Tolerant: tab taps are optional; the background/foreground cycle itself never
+# asserts. chaos.sh owns the crash/hang verdict.
+# Fixed inner repeat; chaos.sh scales intensity via outer passes (see nav_churn).
+appId: live.localapp.local
+---
+- runFlow: ../subflows/ensure_home.yaml
+
+- repeat:
+    times: 30
+    commands:
+      - tapOn: { text: "Explore", optional: true }   # start a reload...
+      - pressKey: Home                                # ...yank to background mid-flight
+      - launchApp                                     # ...warm resume
+      - tapOn: { text: "Plans", optional: true }
+      - pressKey: Home
+      - launchApp
+      - tapOn: { id: "home_concierge_input", optional: true }  # sheet opening...
+      - pressKey: Home                                # ...backgrounded mid-present
+      - launchApp
+      - tapOn: { text: "Home", optional: true }

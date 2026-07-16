@@ -31,6 +31,7 @@ import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import live.localapp.local.snakeToTitleCase
 import live.localapp.local.ui.common.CircleShape
 import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -67,6 +68,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import live.localapp.local.platform.AppBackHandler
+import live.localapp.local.platform.rememberInAppBrowser
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.draw.clip
@@ -86,6 +89,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import live.localapp.local.domain.model.Plan
+import live.localapp.local.domain.model.isLastDayPast
 import live.localapp.local.domain.model.PlanAttendee
 import live.localapp.local.domain.model.PlanDay
 import live.localapp.local.domain.model.PlanSlot
@@ -155,12 +159,19 @@ fun PlanDetailScreen(
     userLat: Double? = null,
     userLng: Double? = null,
 ) {
+    // Android predictive-back / system-back → dismiss (matches the swipe-back
+    // gesture). Inert on iOS, where the native detail view handles edge-swipe.
+    AppBackHandler(enabled = true, onBack = onBack)
     // Only the creator can edit — attendees always see a read-only plan.
     // The previous attendeesCanEdit escape hatch was removed; the creator
     // is now the single source of truth for plan edits.
     val canEdit = isCreator
     val readOnly = !canEdit || isShared
-    val past = plan.isPast
+    // Computed from the day labels (the DB is_past flag is never maintained) so
+    // this matches the list's Upcoming/Past split. Surfaces PastPlanBanner and
+    // makes a plan whose last day has passed read-only. "Today" plans stay
+    // editable (strictly-before-today).
+    val past = plan.isLastDayPast()
     val firstImageUrl = plan.days.flatMap { it.slots }.firstNotNullOfOrNull { it.imageUrl }
 
     var showEditNameDialog by remember { mutableStateOf(false) }
@@ -1915,7 +1926,7 @@ private fun isRestaurantSlot(slot: PlanSlot): Boolean {
 
 private fun slotKind(slot: PlanSlot): String {
     if (isRestaurantSlot(slot)) return inferMealType(slot.time).ifBlank { "Dining" }
-    if (slot.venueCategory != null) return slot.venueCategory.replaceFirstChar { it.uppercase() }
+    if (slot.venueCategory != null) return slot.venueCategory.snakeToTitleCase()
     return ""
 }
 
@@ -2210,7 +2221,7 @@ private fun SlotCtas(
     onOpenReservation: () -> Unit,
     onOpenTickets: () -> Unit,
 ) {
-    val uriHandler = LocalUriHandler.current
+    val inAppBrowser = rememberInAppBrowser()
     val hasLocation = slot.venueLat != null && slot.venueLng != null
     val isRestaurant = isRestaurantSlot(slot)
     val isTicketed = slot.eventId != null && !slot.ticketUrl.isNullOrBlank()
@@ -2263,7 +2274,7 @@ private fun SlotCtas(
         }
         // Info chip — only when no primary chip occupied the slot (iOS parity).
         if (!hasPrimaryChip && infoUrl != null) {
-            ActionChip(label = "Info", icon = Icons.Outlined.Public, onClick = { uriHandler.openUri(infoUrl) })
+            ActionChip(label = "Info", icon = Icons.Outlined.Public, onClick = { inAppBrowser.open(infoUrl) })
         }
         if (hasLocation) {
             ActionChip(label = "Directions", icon = Icons.Outlined.Place, onClick = onDirections)
@@ -2408,7 +2419,7 @@ private fun ReservationSheet(
     onAlreadyBooked: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val uriHandler = LocalUriHandler.current
+    val inAppBrowser = rememberInAppBrowser()
     val reservationUrl = slot.venueWebsite?.takeIf { it.isNotBlank() }
         ?: slot.reservationUrl?.takeIf { it.isNotBlank() }
     ModalBottomSheet(
@@ -2424,7 +2435,7 @@ private fun ReservationSheet(
             title = "Reservation at ${slot.name}",
             subtitle = "Book your table, or save a reservation you've already made.",
             primary = StopAction("Make reservation", Icons.Outlined.Place) {
-                reservationUrl?.let { uriHandler.openUri(it) }
+                reservationUrl?.let { inAppBrowser.open(it) }
                 onDismiss()
             },
             secondaries = listOf(
@@ -2443,7 +2454,7 @@ private fun TicketsSheet(
     onAlreadyBought: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val uriHandler = LocalUriHandler.current
+    val inAppBrowser = rememberInAppBrowser()
     val ticketUrl = slot.ticketUrl?.takeIf { it.isNotBlank() }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -2458,7 +2469,7 @@ private fun TicketsSheet(
             title = "Tickets for ${slot.name}",
             subtitle = "Grab your tickets, or save the ones you've already bought.",
             primary = StopAction("Get tickets", Icons.Outlined.AutoAwesome) {
-                if (ticketUrl != null) uriHandler.openUri(ticketUrl)
+                if (ticketUrl != null) inAppBrowser.open(ticketUrl)
                 onDismiss()
             },
             secondaries = listOf(

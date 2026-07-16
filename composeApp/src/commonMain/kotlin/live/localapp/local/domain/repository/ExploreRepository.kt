@@ -35,6 +35,8 @@ interface ExploreRepository {
         userId: String? = null,
         query: String? = null,
         category: String? = null,
+        /** Top-level city filter (raw venue.city). Null = all cities in radius. */
+        city: String? = null,
         radiusMiles: Double? = null,
         /** If true, server excludes venues with zero upcoming events. */
         hasEventsOnly: Boolean = false,
@@ -57,4 +59,14 @@ data class PlacePage(
     val cursor: String?,
     val hasMore: Boolean,
     val total: Int,
+    /** Two-tier filter facets. [name] is the raw value to echo back as the
+     *  city/category filter; [count] is how many venues match in the current
+     *  scope. Category names are raw slugs ("music_venue") — title-case for UI. */
+    val cityFacets: List<PlaceFacet> = emptyList(),
+    val categoryFacets: List<PlaceFacet> = emptyList(),
+)
+
+data class PlaceFacet(
+    val name: String,
+    val count: Int,
 )

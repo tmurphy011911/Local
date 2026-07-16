@@ -114,7 +114,10 @@ import local.composeapp.generated.resources.Res
 import local.composeapp.generated.resources.bo_tiny
 import org.jetbrains.compose.resources.painterResource
 import live.localapp.local.platform.MapHeroStop
+import live.localapp.local.platform.PlaceSuggestion
 import live.localapp.local.platform.PlanMapHero
+import live.localapp.local.platform.rememberInAppBrowser
+import live.localapp.local.platform.rememberPlacesAutocomplete
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 import live.localapp.local.ui.theme.AppShapes
@@ -144,6 +147,13 @@ fun ChatScreen(
     var selectedEvent by remember { mutableStateOf<live.localapp.local.domain.model.Event?>(null) }
     var selectedVenueName by remember { mutableStateOf<String?>(null) }
     var selectedVenue by remember { mutableStateOf<live.localapp.local.domain.model.Venue?>(null) }
+    // Events the user dismissed (✕) from results — view-only filter across all
+    // suggestion trays this session. Reset when the chat resets (state.messages
+    // empties on Start over).
+    var dismissedEventIds by remember { mutableStateOf(setOf<String>()) }
+    LaunchedEffect(state.messages.isEmpty()) {
+        if (state.messages.isEmpty()) dismissedEventIds = emptySet()
+    }
 
     // Inline "Find more" state for SuggestionTray carousels. Keyed by
     // "$messageId|$groupKey". A group is loading from the moment the user taps
@@ -430,6 +440,13 @@ fun ChatScreen(
         }
     }
 
+    // Intent picker on open — REMOVED for parity with iOS (commit 26cab9d):
+    // "What are you looking to do?" was redundant with Bo's greeting, which
+    // already asks the same looking-to-do / exploring / just-browsing question.
+    // boIntent now stays null (the SESSION GOAL steer's null/else branch = no
+    // steer); BoIntentPicker.kt is left unused, matching iOS's retained-but-
+    // unused BoIntentSheet.
+
     // Airbnb-style scale-in: on iOS the background view scales to 0.92 when
     // the chat sheet opens. We can't reach the host view from here, so we
     // approximate the depth cue by scaling the sheet's own content from
@@ -481,8 +498,10 @@ fun ChatScreen(
                 currentLng = state.currentLng,
                 currentRadiusMiles = state.searchRadiusMiles,
                 onDismiss = { locationEditorOpen = false },
-                onConfirm = { name, radius ->
-                    viewModel.setChatSearchScope(name, radius)
+                onConfirm = { name, lat, lng, radius ->
+                    // Picked a Places suggestion → real coords; free-typed → NaN
+                    // so the VM falls back to its in-memory geocoder.
+                    viewModel.setChatSearchScopeWithCoords(name, lat ?: Double.NaN, lng ?: Double.NaN, radius)
                     locationEditorOpen = false
                 },
             )
@@ -650,6 +669,11 @@ fun ChatScreen(
                                 viewModel.sendDraftTrayChip(footerActionToIntent(action))
                             },
                             onScopeChip = { intent -> viewModel.sendDraftTrayChip(intent) },
+                            isDismissed = { id -> id in dismissedEventIds },
+                            onDismiss = { id ->
+                                dismissedEventIds = dismissedEventIds + id
+                                viewModel.removeFromDraftTray(id)
+                            },
                             isGroupLoading = { groupKey -> loadingGroups["$structMsgId|$groupKey"] == true },
                             isGroupExhausted = { groupKey -> exhaustedGroups["$structMsgId|$groupKey"] == true },
                             onFindMore = { dayKey, categoryKey ->
@@ -684,10 +708,15 @@ fun ChatScreen(
         if (state.draftTray.isNotEmpty()) {
             DraftPlanTray(
                 tray = state.draftTray,
-                chips = state.draftTrayChips,
                 onRemove = { id -> viewModel.removeFromDraftTray(id) },
-                onChipTap = { chip -> viewModel.sendDraftTrayChip(chip.intent) },
-                onBuild = { viewModel.buildFromDraftTray() },
+                onSaveEvents = {
+                    val ids = state.draftTray.map { it.eventId }
+                    viewModel.saveEventsFromSelections(ids)
+                    viewModel.clearDraftTray()
+                },
+                onCreatePlan = { viewModel.buildPlanFromSelections(state.draftTray.map { it.eventId }) },
+                // "Add to Plan" once Bo has an active plan in this chat (mirrors iOS).
+                addingToPlan = state.days.isNotEmpty(),
             )
         }
 
@@ -859,10 +888,28 @@ private fun LocationEditorSheet(
     currentLng: Double?,
     currentRadiusMiles: Double,
     onDismiss: () -> Unit,
-    onConfirm: (String, Double) -> Unit,
+    onConfirm: (name: String, lat: Double?, lng: Double?, radius: Double) -> Unit,
 ) {
+    val places = rememberPlacesAutocomplete()
+    val scope = rememberCoroutineScope()
     var text by remember(current) { mutableStateOf(current) }
     var radius by remember(currentRadiusMiles) { mutableStateOf(currentRadiusMiles.toFloat().coerceIn(1f, 50f)) }
+    // Coords for the chosen scope: seeded from the current scope, replaced when the
+    // user picks a Places suggestion, cleared to null when they free-type (so the VM
+    // falls back to its geocoder). This is the fix for Android, where there was no
+    // autocomplete and the in-memory geocoder couldn't resolve most towns.
+    var pickedLat by remember(current) { mutableStateOf(currentLat) }
+    var pickedLng by remember(current) { mutableStateOf(currentLng) }
+    var suggestions by remember { mutableStateOf<List<PlaceSuggestion>>(emptyList()) }
+    var justPicked by remember { mutableStateOf(false) }
+
+    LaunchedEffect(text) {
+        if (justPicked) { justPicked = false; suggestions = emptyList(); return@LaunchedEffect }
+        // Don't surface suggestions for the unchanged prefilled value.
+        if (text == current || text.trim().length < 2) { suggestions = emptyList(); return@LaunchedEffect }
+        delay(250)
+        suggestions = runCatching { places.query(text.trim(), currentLat, currentLng) }.getOrDefault(emptyList())
+    }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
@@ -887,7 +934,7 @@ private fun LocationEditorSheet(
             Spacer(Modifier.height(20.dp))
             TextField(
                 value = text,
-                onValueChange = { text = it },
+                onValueChange = { text = it; pickedLat = null; pickedLng = null },
                 placeholder = { Text("e.g. Brookline, Cambridge, Hyannis") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
@@ -900,8 +947,47 @@ private fun LocationEditorSheet(
                 textStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 15.sp, color = AppColors.Ink),
             )
 
-            // Live map preview of the current scope center.
-            if (currentLat != null && currentLng != null) {
+            // Google Places autocomplete suggestions.
+            if (suggestions.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 220.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(AppColors.White),
+                ) {
+                    items(suggestions, key = { it.id }) { s ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    scope.launch {
+                                        val d = runCatching { places.resolve(s) }.getOrNull()
+                                        justPicked = true
+                                        text = s.primaryText
+                                        pickedLat = d?.lat
+                                        pickedLng = d?.lng
+                                        suggestions = emptyList()
+                                    }
+                                }
+                                .padding(horizontal = 14.dp, vertical = 11.dp),
+                        ) {
+                            Column {
+                                Text(s.primaryText, style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Ink))
+                                if (s.secondaryText.isNotBlank()) {
+                                    Text(s.secondaryText, style = TextStyle(fontFamily = AppFonts.Body, fontSize = 12.sp, color = AppColors.Ink3))
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Live map preview of the chosen scope center.
+            val previewLat = pickedLat ?: currentLat
+            val previewLng = pickedLng ?: currentLng
+            if (previewLat != null && previewLng != null) {
                 Spacer(Modifier.height(16.dp))
                 Box(
                     modifier = Modifier
@@ -910,7 +996,7 @@ private fun LocationEditorSheet(
                         .clip(RoundedCornerShape(16.dp)),
                 ) {
                     PlanMapHero(
-                        stops = listOf(MapHeroStop(currentLat, currentLng, current)),
+                        stops = listOf(MapHeroStop(previewLat, previewLng, text.ifBlank { current })),
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -951,7 +1037,7 @@ private fun LocationEditorSheet(
                     .clip(RoundedCornerShape(50))
                     .background(AppColors.Coral)
                     .graphicsLayer { alpha = if (canSet) 1f else 0.3f }
-                    .then(if (canSet) Modifier.clickable { onConfirm(text.trim(), radius.toDouble()) } else Modifier),
+                    .then(if (canSet) Modifier.clickable { onConfirm(text.trim(), pickedLat, pickedLng, radius.toDouble()) } else Modifier),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
@@ -1834,7 +1920,7 @@ private fun SlotCard(
     dateLabel: String = "",
     onEventClick: () -> Unit = {},
 ) {
-    val uriHandler = LocalUriHandler.current
+    val inAppBrowser = rememberInAppBrowser()
     val hasImage = slot.imageUrl != null
     val cardShape = RoundedCornerShape(13.dp)
 
@@ -1925,7 +2011,7 @@ private fun SlotCard(
                     Text(
                         "Reserve",
                         modifier = Modifier.clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {
-                            uriHandler.openUri(slot.venueWebsite?.takeIf { it.isNotBlank() } ?: slot.reservationUrl)
+                            inAppBrowser.open(slot.venueWebsite?.takeIf { it.isNotBlank() } ?: slot.reservationUrl)
                         },
                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 10.sp, color = if (hasImage) AppColors.White else AppColors.Coral),
                     )
@@ -2950,6 +3036,8 @@ private fun StructuredResponseRenderer(
     onOpenEvent: (live.localapp.local.domain.model.Event) -> Unit,
     onFooterAction: (live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action) -> Unit,
     onScopeChip: (String) -> Unit,
+    isDismissed: (String) -> Boolean = { false },
+    onDismiss: (String) -> Unit = {},
     isGroupLoading: (String) -> Boolean = { false },
     isGroupExhausted: (String) -> Boolean = { false },
     onFindMore: (dayKey: String?, categoryKey: String?) -> Unit = { _, _ -> },
@@ -2957,7 +3045,11 @@ private fun StructuredResponseRenderer(
     val trayIds = remember(tray) { tray.map { it.eventId }.toSet() }
     when (response) {
         is live.localapp.local.domain.model.BoStructuredResponse.Suggestions ->
-            SuggestionTray(
+            // Android Bo results now render the map component (BoResultsMap),
+            // parity with the iOS SwiftUI/MapKit BoResultsMapView. Falls back to
+            // the SuggestionTray list internally when a group has no plottable
+            // coords, and offers a map/list toggle.
+            BoResultsMap(
                 messageId = messageId,
                 suggestions = response,
                 eventsById = hydratedEvents,
@@ -2965,6 +3057,8 @@ private fun StructuredResponseRenderer(
                 onOpenEvent = onOpenEvent,
                 onFooterAction = onFooterAction,
                 isInTray = { id -> id in trayIds },
+                isDismissed = isDismissed,
+                onDismiss = onDismiss,
                 isGroupLoading = isGroupLoading,
                 isGroupExhausted = isGroupExhausted,
                 onFindMore = onFindMore,

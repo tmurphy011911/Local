@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import live.localapp.local.ui.common.CircleShape
 import live.localapp.local.ui.common.RoundedCornerShape
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -32,6 +33,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
@@ -40,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
+import live.localapp.local.ui.theme.AppShapes
 
 data class SelectionItem(
     val id: String,
@@ -326,7 +330,11 @@ fun SlimSelectionCard(
     }
 }
 
-/** Standard chunky onboarding button with drop shadow */
+/**
+ * Standard chunky onboarding CTA. Matches the event-detail primary CTA style:
+ * a depth shadow the face sinks onto when pressed, a 2dp border in the shadow
+ * color, a press scale-down, and a haptic tap on click.
+ */
 @Composable
 fun OnboardingButton(
     text: String,
@@ -334,6 +342,7 @@ fun OnboardingButton(
     shadowColor: Color,
     onClick: () -> Unit,
     enabled: Boolean = true,
+    isLoading: Boolean = false,
     textColor: Color = AppColors.White,
 ) {
     val interactionSource = remember { MutableInteractionSource() }
@@ -342,45 +351,64 @@ fun OnboardingButton(
         targetValue = if (isPressed) 4f else 0f,
         animationSpec = tween(80),
     )
+    val scale by animateFloatAsState(
+        targetValue = if (isPressed) 0.97f else 1f,
+        animationSpec = tween(80),
+    )
+    val haptic = LocalHapticFeedback.current
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .graphicsLayer {
                 translationY = offsetY * density
+                scaleX = scale
+                scaleY = scale
                 alpha = if (enabled) 1f else 0.45f
             },
     ) {
-        // Shadow
+        // Depth shadow — sits 4dp below, rising to 1dp as the face is pressed down.
         Box(
             modifier = Modifier
                 .matchParentSize()
-                .offset(y = if (!isPressed) 4.dp else 0.dp)
-                .background(shadowColor, RoundedCornerShape(14.dp)),
+                .offset(y = if (!isPressed) 4.dp else 1.dp)
+                .background(shadowColor, AppShapes.CardSmall),
         )
 
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(52.dp)
-                .background(color, RoundedCornerShape(14.dp))
+                .background(color, AppShapes.CardSmall)
+                .border(2.dp, shadowColor, AppShapes.CardSmall)
+                .clip(AppShapes.CardSmall)
                 .then(
-                    if (enabled) {
+                    if (enabled && !isLoading) {
                         Modifier.clickable(
                             interactionSource = interactionSource,
                             indication = null,
-                            onClick = onClick,
+                            onClick = {
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                onClick()
+                            },
                         )
                     } else Modifier
-                ),
+                )
+                .padding(vertical = 16.dp),
             contentAlignment = Alignment.Center,
         ) {
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(22.dp),
+                    color = textColor,
+                    strokeWidth = 2.5.dp,
+                )
+            } else
             Text(
                 text,
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
                     fontWeight = FontWeight.ExtraBold,
-                    fontSize = 15.sp,
+                    fontSize = 16.sp,
                     color = textColor,
                 ),
             )

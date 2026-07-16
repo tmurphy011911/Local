@@ -45,7 +45,7 @@ private class IosPlacesAutocomplete : PlacesAutocompleteController {
     private fun parseDetails(json: String): PlaceDetails? = try {
         if (json.isBlank()) null
         else Json { ignoreUnknownKeys = true }.decodeFromString<DetailsDto>(json).let {
-            PlaceDetails(it.name, it.formattedAddress, it.lat, it.lng)
+            PlaceDetails(it.name, it.formattedAddress, it.lat, it.lng, it.locality?.takeIf { l -> l.isNotBlank() })
         }
     } catch (_: Throwable) {
         null
@@ -65,6 +65,7 @@ private data class DetailsDto(
     val formattedAddress: String,
     val lat: Double? = null,
     val lng: Double? = null,
+    val locality: String? = null,
 )
 
 object PlacesAutocompleteBridge {

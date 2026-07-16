@@ -1,32 +1,47 @@
 /**
- * Source module: California Department of Food & Agriculture (CDFA) certified
- * farmers' market directory.
+ * Source module: California certified farmers markets (CDFA).
  *
- * STATUS: stub. The real CDFA directory is the canonical source for CA markets
- * but pulling it requires fetching their interactive directory (see
- * https://www.cdfa.ca.gov/is/i_&_c/cfm.html) and the corresponding county-level
- * pages, then parsing. That implementation is not yet written.
+ * Reads a committed JSON snapshot (scripts/data/ca_cdfa_markets.json) produced
+ * periodically by build_ca_cdfa_markets.py from the authoritative CDFA PDF
+ * (https://www.cdfa.ca.gov/is/docs/CurrentMrktsCounty.pdf). The PDF has no clean
+ * Node table parser and geocoding 700+ addresses every week would be wasteful,
+ * so coords are baked into the snapshot. CA markets are stable — re-run the
+ * Python step when CDFA publishes a new PDF.
  *
- * Returning [] keeps `sync_farmers_markets.js` healthy (it previously failed
- * with `Cannot find module './lib/farmers_markets/ca_cdfa'` because this file
- * was referenced before it existed). Once CA goes live in production and we
- * actually want California farmers' markets surfaced, replace this stub with a
- * real fetchMarkets implementation modeled after marketspread.js / visitri.js.
- *
- * Required output shape (per sync_farmers_markets.js builder) — for the eventual
- * implementation:
- *   {
- *     dedupePrefix, source, sourceId, tz,
- *     name, lat, lng, address, city, state: "CA", zip,
- *     website, bio, imageUrl, programTags, occurrences,
- *   }
- *
- * CA is Pacific (tz America/Los_Angeles).
+ * Times are Pacific (the shared builder stamps America/Los_Angeles via `tz`).
  */
 
+const fs = require("fs");
+const path = require("path");
+
+const DATA = path.join(__dirname, "..", "..", "data", "ca_cdfa_markets.json");
+
 async function fetchMarkets() {
-  // Intentional no-op until the CDFA directory crawler is implemented.
-  return [];
+  if (!fs.existsSync(DATA)) {
+    console.error(`  CA CDFA: ${DATA} missing — run build_ca_cdfa_markets.py first.`);
+    return [];
+  }
+  const markets = JSON.parse(fs.readFileSync(DATA, "utf8"));
+  return markets
+    .filter((m) => m.lat != null && m.lng != null)
+    .map((m) => ({
+      dedupePrefix: "ca_cdfa",
+      source: "ca_cdfa_farmers_market",
+      sourceId: m.id,
+      tz: "America/Los_Angeles",
+      name: m.name,
+      lat: m.lat,
+      lng: m.lng,
+      address: m.address || null,
+      city: m.city || null,
+      state: "CA",
+      zip: m.zip || null,
+      website: null,
+      bio: m.county ? `${m.county} County certified farmers market.` : null,
+      imageUrl: null,
+      programTags: [],
+      occurrences: m.occurrences || [],
+    }));
 }
 
-module.exports = { fetchMarkets, label: "ca_cdfa (CA, stub)" };
+module.exports = { fetchMarkets, label: "CDFA (CA)" };

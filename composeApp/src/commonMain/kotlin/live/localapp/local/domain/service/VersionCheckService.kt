@@ -4,6 +4,7 @@ import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import live.localapp.local.platform.getMarketingVersion
 
 @Serializable
 private data class AppConfigRow(val key: String, val value: String)
@@ -24,8 +25,11 @@ class VersionCheckService(
     private val supabaseClient: SupabaseClient,
 ) {
     companion object {
-        // Current app version — update on each release
-        const val CURRENT_VERSION = "1.0"
+        // Fallback only. The running version is read at runtime from the
+        // platform build (getMarketingVersion) so the check tracks the real
+        // shipped marketing version; this constant is used only if that read
+        // returns blank. Keep it at the current release.
+        const val CURRENT_VERSION = "1.1.0"
 
         const val IOS_STORE_URL = "https://apps.apple.com/app/local/id6761425705"
         const val ANDROID_STORE_URL = "https://play.google.com/store/apps/details?id=live.localapp.local"
@@ -41,16 +45,22 @@ class VersionCheckService(
                 }
                 .decodeList<AppConfigRow>()
 
+            // The version we compare is the REAL shipped marketing version
+            // (iOS CFBundleShortVersionString / Android versionName), falling
+            // back to the constant only if the platform read comes back blank.
+            val currentVersion = runCatching { getMarketingVersion() }
+                .getOrDefault("").ifBlank { CURRENT_VERSION }
+
             val configMap = configs.associate { it.key to it.value }
             val minVersion = configMap["min_version"] ?: "1.0"
-            val latestVersion = configMap["latest_version"] ?: CURRENT_VERSION
+            val latestVersion = configMap["latest_version"] ?: currentVersion
             val forceMessage = configMap["force_message"] ?: "Please update Local to continue."
 
             when {
-                compareVersions(CURRENT_VERSION, minVersion) < 0 -> {
+                compareVersions(currentVersion, minVersion) < 0 -> {
                     VersionCheckResult(VersionStatus.FORCE_UPDATE, forceMessage)
                 }
-                compareVersions(CURRENT_VERSION, latestVersion) < 0 -> {
+                compareVersions(currentVersion, latestVersion) < 0 -> {
                     VersionCheckResult(VersionStatus.UPDATE_AVAILABLE, "A new version of Local is available.")
                 }
                 else -> {

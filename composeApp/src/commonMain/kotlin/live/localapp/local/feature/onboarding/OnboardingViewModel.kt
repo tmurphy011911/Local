@@ -80,19 +80,25 @@ data class OnboardingState(
     val categoryPhotos: Map<String, String> = emptyMap(),
     val isLoadingData: Boolean = false,
 ) {
-    /** Tracker fills: 3 segments [Location, Preferences, Notifications] each 0f..1f */
+    /**
+     * Tracker fills: 2 segments [Location, Notifications] each 0f..1f, matching the
+     * shortened flow (LOCATION → NOTIFICATIONS). The SUCCESS + preference steps are
+     * skipped in first-run onboarding (retained for a future lobby CTA), so their
+     * branches here are dead — kept exhaustive, given mid-flow values in case they're
+     * ever resurfaced inline.
+     */
     val trackerFills: List<Float>?
         get() = when (currentStep) {
             OnboardingStep.SPLASH -> null
-            OnboardingStep.LOCATION -> listOf(0.5f, 0f, 0f)
-            OnboardingStep.MANUAL_ADDRESS -> listOf(0.75f, 0f, 0f)
-            OnboardingStep.SUCCESS -> listOf(1f, 0f, 0f)
-            OnboardingStep.NEIGHBOURHOODS -> listOf(1f, 0.25f, 0f)
-            OnboardingStep.VENUES -> listOf(1f, 0.5f, 0f)
-            OnboardingStep.CATEGORIES -> listOf(1f, 0.75f, 0f)
-            OnboardingStep.FAVOURITES -> listOf(1f, 1f, 0f)
-            OnboardingStep.NOTIFICATIONS -> listOf(1f, 1f, 0.5f)
-            OnboardingStep.PHONE -> listOf(1f, 1f, 1f)
+            OnboardingStep.LOCATION -> listOf(0.5f, 0f)
+            OnboardingStep.MANUAL_ADDRESS -> listOf(1f, 0f)
+            OnboardingStep.SUCCESS -> listOf(1f, 0f)
+            OnboardingStep.NEIGHBOURHOODS -> listOf(1f, 0.25f)
+            OnboardingStep.VENUES -> listOf(1f, 0.5f)
+            OnboardingStep.CATEGORIES -> listOf(1f, 0.75f)
+            OnboardingStep.FAVOURITES -> listOf(1f, 0.9f)
+            OnboardingStep.NOTIFICATIONS -> listOf(1f, 1f)
+            OnboardingStep.PHONE -> listOf(1f, 1f)
         }
 
     val categoriesValid: Boolean get() = selectedCategories.size >= 2
@@ -128,11 +134,16 @@ class OnboardingViewModel(
      * the actual GPS coordinates arrive. Coords will be wired in via [onAllowLocation].
      */
     fun onLocationPregranted() {
+        // Shortened onboarding: skip SUCCESS + the preference steps
+        // (NEIGHBOURHOODS/VENUES/CATEGORIES/FAVOURITES) and go straight to
+        // NOTIFICATIONS. Those screens are retained for a future lobby CTA;
+        // they're just no longer part of the first-run flow. Coords still
+        // arrive via onAllowLocation while the user is on NOTIFICATIONS.
         _state.update {
             it.copy(
                 locationGranted = true,
                 locationMode = "current",
-                currentStep = OnboardingStep.SUCCESS,
+                currentStep = OnboardingStep.NOTIFICATIONS,
             )
         }
     }
@@ -147,10 +158,12 @@ class OnboardingViewModel(
                 userLng = lng,
                 userCity = city,
                 locationMode = "current",
-                currentStep = OnboardingStep.SUCCESS,
+                // Shortened onboarding — straight to NOTIFICATIONS (skip SUCCESS
+                // + preference steps, kept for a future lobby CTA). No need to
+                // pre-load the picker data (the slow venues/events fetch).
+                currentStep = OnboardingStep.NOTIFICATIONS,
             )
         }
-        loadOnboardingData()
     }
 
     fun onDenyLocation() {
@@ -165,10 +178,11 @@ class OnboardingViewModel(
                 userLng = lng,
                 userCity = resolvedCity,
                 locationMode = "manual",
-                currentStep = OnboardingStep.SUCCESS,
+                // Shortened onboarding — straight to NOTIFICATIONS (skip SUCCESS
+                // + preference steps, kept for a future lobby CTA).
+                currentStep = OnboardingStep.NOTIFICATIONS,
             )
         }
-        loadOnboardingData()
     }
 
     fun onSuccessComplete() {
@@ -268,7 +282,16 @@ class OnboardingViewModel(
     }
 
     fun onBackFromNotifications() {
-        _state.update { it.copy(currentStep = OnboardingStep.CATEGORIES) }
+        // Shortened flow: NOTIFICATIONS' previous step is now the location step,
+        // not the (skipped) preference screens. Manual users go back to the
+        // address entry; GPS users to the permission ask (which no longer
+        // auto-skips on back — see OnboardingScreen's pregrantSkipped guard).
+        val target = if (_state.value.locationMode == "manual") {
+            OnboardingStep.MANUAL_ADDRESS
+        } else {
+            OnboardingStep.LOCATION
+        }
+        _state.update { it.copy(currentStep = target) }
     }
 
     fun onBackFromPhone() {

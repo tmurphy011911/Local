@@ -45,3 +45,8 @@ scripts/.manifests/
 
 # Sentry dSYM upload secrets (token must never be committed)
 iosApp/scripts/sentry.env
+
+# Pipeline run logs + one-off working artifacts (do not commit)
+local_discovery_logs/
+scripts/_tmp_*
+scripts/venues_boston.csv

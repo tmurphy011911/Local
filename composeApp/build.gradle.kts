@@ -41,6 +41,7 @@ kotlin {
         androidMain.dependencies {
             implementation(libs.compose.uiToolingPreview)
             implementation(libs.androidx.activity.compose)
+            implementation(libs.androidx.browser)
             implementation(libs.ktor.client.okhttp)
             implementation("androidx.core:core-splashscreen:1.0.1")
             implementation("com.google.android.play:review-ktx:2.0.2")
@@ -116,12 +117,23 @@ android {
         applicationId = "live.localapp.local"
         minSdk = libs.versions.android.minSdk.get().toInt()
         targetSdk = libs.versions.android.targetSdk.get().toInt()
-        versionCode = 7
-        versionName = "1.0.2"
+        // Aligned with the iOS build number scheme so the two platforms don't
+        // drift. Play requires versionCode to strictly increase per upload.
+        // 102 = clean rebuild after pulling 101 (deep-link ANR fix + native
+        // debug symbols). 104 = 1.1.0 test builds (clears iOS hotfix build 103).
+        // 105 = creator collab reward surfacing fix (toast + REWARDS counts).
+        // 200 = v1.1.0 submission build (round number for the store cut).
+        versionCode = 200
+        versionName = "1.1.0"
         // Used by AndroidManifest's <meta-data android:value="${MAPS_API_KEY}" />
         // and read at runtime by the Directions API client.
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
         buildConfigField("String", "MAPS_API_KEY", "\"$mapsApiKey\"")
+        // App display name — overridden by the staging build type so the dev app
+        // reads "Local (Dev)" next to the real "Local".
+        manifestPlaceholders["appLabel"] = "Local"
+        // Default: not the staging (.dev) build. Overridden in the staging type.
+        buildConfigField("boolean", "IS_STAGING", "false")
     }
     buildFeatures {
         buildConfig = true
@@ -134,6 +146,26 @@ android {
     buildTypes {
         getByName("release") {
             isMinifyEnabled = false
+            // NOTE: Play warns about missing native debug symbols for the .so
+            // libs (Sentry's libsentry.so etc.). We don't set ndk.debugSymbolLevel
+            // because that requires the NDK to be installed and would fail the
+            // build. Those native libs are Sentry's, symbolicated via Sentry's
+            // own pipeline — so Play's symbol warning is safe to ignore.
+        }
+        // Staging: the side-by-side dev app. Release-like, but its own app id
+        // (live.localapp.local.dev) so it installs ALONGSIDE the real app, and
+        // locked to the dev backend (IS_STAGING=true → Config.backendEnv=DEV).
+        // Debug-signed so `installStaging` works on a device without the upload
+        // keystore; for Play internal-testing, generate a signed bundle via the
+        // Android Studio GUI selecting this build type.
+        create("staging") {
+            initWith(getByName("release"))
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            manifestPlaceholders["appLabel"] = "Local (Dev)"
+            buildConfigField("boolean", "IS_STAGING", "true")
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
         }
     }
     compileOptions {

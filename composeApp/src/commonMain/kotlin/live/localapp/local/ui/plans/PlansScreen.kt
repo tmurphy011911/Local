@@ -37,7 +37,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import live.localapp.local.ui.common.CircleShape
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Brush
 import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -65,6 +64,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import live.localapp.local.platform.rememberInAppBrowser
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
@@ -125,6 +125,12 @@ fun PlansScreen(
 ) {
     val state by viewModel.uiState.collectAsState()
     val currentUserId = remember { viewModel.currentUserId() }
+
+    // "Past Plans" section is tucked behind a collapsible, collapsed by default,
+    // so the list always leads with what's upcoming. Hoisted above the LazyColumn
+    // so the toggle survives scroll/recomposition (resets to collapsed on tab
+    // switch, which is the intended default).
+    var pastPlansExpanded by remember { mutableStateOf(false) }
 
     // Refresh plans + attendee counts whenever the app comes back to the
     // foreground. Without realtime, this is the cheapest way to make the
@@ -273,15 +279,37 @@ fun PlansScreen(
                 }
             }
 
-            // Past plans — dimmed, slim rows
+            // Past plans — tucked behind a collapsible header (collapsed by
+            // default) so the list leads with what's upcoming. Same CompactPlanRow
+            // design as the active list; the header toggles visibility. Sits above
+            // the Saved Events / Places sections below.
             if (state.pastPlans.isNotEmpty()) {
-                item {
+                item(key = "past_plans_header") {
                     Spacer(Modifier.height(4.dp))
-                    Text("Past Plans", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = AppColors.Ink3))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(10.dp))
+                            .pressable(onClick = { pastPlansExpanded = !pastPlansExpanded })
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Text(
+                            "Past Plans (${state.pastPlans.size})",
+                            style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = AppColors.Ink3),
+                        )
+                        Icon(
+                            if (pastPlansExpanded) Icons.Outlined.KeyboardArrowUp else Icons.Outlined.KeyboardArrowDown,
+                            contentDescription = if (pastPlansExpanded) "Collapse past plans" else "Expand past plans",
+                            tint = AppColors.Ink3,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
                 }
-                items(state.pastPlans, key = { it.id }) { plan ->
-                    SwipeToRevealDelete(onDelete = { viewModel.deletePlan(plan.id) }) {
-                        Box(modifier = Modifier.alpha(0.5f)) {
+                if (pastPlansExpanded) {
+                    items(state.pastPlans, key = { it.id }) { plan ->
+                        SwipeToRevealDelete(onDelete = { viewModel.deletePlan(plan.id) }) {
                             CompactPlanRow(
                                 plan = plan,
                                 onClick = { bounds -> onPlanClick(plan, bounds) },
@@ -1387,27 +1415,27 @@ private fun TimelineView(
                             Spacer(Modifier.height(6.dp))
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 if (slot.reservationUrl != null) {
-                                    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                                    val inAppBrowser = rememberInAppBrowser()
                                     Text(
                                         "Reserve",
                                         modifier = Modifier
                                             .background(AppColors.CoralLt, RoundedCornerShape(6.dp))
                                             .border(1.dp, AppColors.Coral.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
                                             .clickable {
-                                                uriHandler.openUri(slot.venueWebsite?.takeIf { it.isNotBlank() } ?: slot.reservationUrl)
+                                                inAppBrowser.open(slot.venueWebsite?.takeIf { it.isNotBlank() } ?: slot.reservationUrl)
                                             }
                                             .padding(horizontal = 8.dp, vertical = 3.dp),
                                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Coral),
                                     )
                                 }
                                 if (slot.ticketUrl != null) {
-                                    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                                    val inAppBrowser = rememberInAppBrowser()
                                     Text(
                                         "Tickets",
                                         modifier = Modifier
                                             .background(AppColors.CoralLt, RoundedCornerShape(6.dp))
                                             .border(1.dp, AppColors.Coral.copy(alpha = 0.3f), RoundedCornerShape(6.dp))
-                                            .clickable { uriHandler.openUri(slot.ticketUrl) }
+                                            .clickable { inAppBrowser.open(slot.ticketUrl) }
                                             .padding(horizontal = 8.dp, vertical = 3.dp),
                                         style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 9.sp, color = AppColors.Coral),
                                     )

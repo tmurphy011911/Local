@@ -110,6 +110,7 @@ async function fetchVenues(
   query: string | null,
   category: string | null,
   radiusMiles: number,
+  city: string | null,
 ): Promise<VenueRow[]> {
   const latDelta = radiusMiles / 55;
   const lngDelta = radiusMiles / 45;
@@ -142,6 +143,19 @@ async function fetchVenues(
   }
   if (category) {
     q = q.eq("category", category);
+  }
+  // City drill-down is applied IN-QUERY (not post-fetch) so it runs before the
+  // .limit(500) rank cut. Without this, a mid-rank venue in a smaller city
+  // (e.g. Gore Place, rank 45 in Waltham) is crowded out of the top-500 by
+  // higher-ranked venues across the whole radius and vanishes under the city
+  // filter — even though it's active and in that city. ilike = case-insensitive
+  // exact match on the raw city string the client echoes back from cityFacets.
+  if (city && city.trim()) {
+    // Strip LIKE wildcards (as the query path above does for %) so a city
+    // string never widens the match; ilike keeps the case-insensitive
+    // semantics the post-cache city filter already uses.
+    const safeCity = city.trim().replace(/[%_]/g, "");
+    if (safeCity) q = q.ilike("city", safeCity);
   }
 
   const { data, error } = await q;
@@ -186,39 +200,54 @@ async function fetchEventsByVenue(
   const lngDelta = radiusMiles / 45;
   const nowIso = new Date().toISOString();
 
-  // Page through ALL future active events in the bbox. Deterministic
-  // start_at order so we keep the soonest events when capping per venue.
+  // Compute per-venue upcoming-event counts + inline events by scanning the
+  // future active events in the bbox. A dense metro bbox holds ~11k events, so
+  // the old SEQUENTIAL 12-page loop cost 3-9s — the "Places tab never loads"
+  // bug. Now: one cheap COUNT (indexed, ~0.3s) to learn the page count, then
+  // fetch every page in PARALLEL (wall-clock ≈ one page, not the sum).
   const pageSize = 1000;
-  let offset = 0;
-  const buckets: Record<string, VenueEvents> = {};
-  for (let page = 0; page < 20; page++) {
-    const { data } = await supabase
-      .from("events")
-      .select(
-        "id,title,description,category,subcategory,start_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,source_url",
-      )
-      .eq("is_active", true)
-      // Exclude events flagged "no-public-interest" BUT keep events with
-      // null subcategory. PostgREST `.neq(col, x)` translates to SQL
-      // `col <> x`, which evaluates to NULL (not TRUE) when col IS NULL —
-      // so it silently dropped every event without a subcategory. That's
-      // most crawler-sourced events, including all of Sellersville Theater,
-      // Brookline Booksmith, Gore Place, etc. Result: their venue cards
-      // showed 0 events even though the Events tab found dozens.
+  const MAX_PAGES = 20;
+
+  // Shared bbox filter. NOTE on `.or(...)`: exclude no-public-interest but KEEP
+  // null-subcategory rows — a bare `.neq` drops NULLs (they evaluate to NULL,
+  // not TRUE), which silently zeroed most crawler venues (Sellersville, Gore
+  // Place, etc.) on their cards even though the Events tab found dozens.
+  const applyBbox = (qb: any) =>
+    qb.eq("is_active", true)
       .or("subcategory.is.null,subcategory.neq.no-public-interest")
       .gte("start_at", nowIso)
       .gte("venue_lat", lat - latDelta)
       .lte("venue_lat", lat + latDelta)
       .gte("venue_lng", lng - lngDelta)
-      .lte("venue_lng", lng + lngDelta)
-      .order("start_at", { ascending: true })
-      .order("id", { ascending: true })
-      .range(offset, offset + pageSize - 1);
-    const rows: InlineEventRow[] = (data ?? []) as InlineEventRow[];
-    for (const row of rows) {
+      .lte("venue_lng", lng + lngDelta);
+
+  const { count } = await applyBbox(
+    supabase.from("events").select("id", { count: "exact", head: true }),
+  );
+  // If the count is unavailable, fall back to firing the full page budget.
+  const total = count == null ? pageSize * MAX_PAGES : Math.min(count, pageSize * MAX_PAGES);
+  const numPages = Math.max(1, Math.ceil(total / pageSize));
+
+  const pageResults = await Promise.all(
+    Array.from({ length: numPages }, (_, p) =>
+      applyBbox(
+        supabase.from("events").select(
+          "id,title,description,category,subcategory,start_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,source_url",
+        ),
+      )
+        .order("start_at", { ascending: true })
+        .order("id", { ascending: true })
+        .range(p * pageSize, p * pageSize + pageSize - 1),
+    ),
+  );
+
+  // Merge pages IN ORDER (page 0 = soonest) so the per-venue cap keeps the
+  // soonest events.
+  const buckets: Record<string, VenueEvents> = {};
+  for (const { data } of pageResults) {
+    for (const row of ((data ?? []) as InlineEventRow[])) {
       // Match normalized key — "The Brattle Theatre" and "Brattle Theatre"
-      // collapse to the same bucket so venue.name and event.venue_name
-      // reliably join.
+      // collapse to the same bucket so venue.name and event.venue_name join.
       const key = normalizeVenueName(row.venue_name ?? "");
       if (!key) continue;
       const bucket = buckets[key] ?? { count: 0, events: [] };
@@ -226,8 +255,6 @@ async function fetchEventsByVenue(
       if (bucket.events.length < MAX_EVENTS_PER_VENUE) bucket.events.push(row);
       buckets[key] = bucket;
     }
-    if (rows.length < pageSize) break;
-    offset += pageSize;
   }
   return buckets;
 }
@@ -416,6 +443,11 @@ Deno.serve(async (req) => {
     const lng = parseFloat(url.searchParams.get("lng") ?? "-71.0589");
     const userId = url.searchParams.get("user_id");
     const query = url.searchParams.get("query");
+    // City (top-level filter) and category (venue-type drill-down) are applied
+    // POST-cache over the full scored list — so one cached list per
+    // lat/lng/radius/user serves every city+category slice AND lets us compute
+    // facet counts across the whole set. Neither is in the cache key.
+    const city = url.searchParams.get("city");
     const category = url.searchParams.get("category");
     const radiusMiles = Math.min(parseFloat(url.searchParams.get("radius") ?? "100"), 150);
     const hasEventsOnly = url.searchParams.get("has_events") === "true";
@@ -432,7 +464,7 @@ Deno.serve(async (req) => {
       Math.round(lat * 10) / 10,
       Math.round(lng * 10) / 10,
       (query ?? "").trim().toLowerCase(),
-      category ?? "",
+      (city ?? "").trim().toLowerCase(),
       radiusMiles,
       userId ?? "anon",
     ].join("|");
@@ -443,7 +475,12 @@ Deno.serve(async (req) => {
       scored = cached.scored;
     } else {
       const [rawVenues, eventBuckets, prefs, affinityMap] = await Promise.all([
-        fetchVenues(supabase, lat, lng, query, category, radiusMiles),
+        // category stays null so the scored list is category-complete within
+        // its scope (category drill-down + its facet counts are computed
+        // post-fetch). city IS pushed down so a city-filtered list is COMPLETE,
+        // not a post-hoc slice of the top-500 (which dropped mid-rank venues in
+        // smaller cities). city is in the cache key below to match.
+        fetchVenues(supabase, lat, lng, query, null, radiusMiles, city),
         fetchEventsByVenue(supabase, lat, lng, radiusMiles),
         userId ? fetchUserPrefs(supabase, userId) : Promise.resolve(null),
         fetchCategoryAffinity(supabase, userId),
@@ -481,7 +518,26 @@ Deno.serve(async (req) => {
     // dataset (not just the popularity top-50 the client happens to hold).
     // Sort runs post-cache so the cache key stays sort-agnostic.
     const sortedAll = sortScored(scored, sort);
-    const filtered = hasEventsOnly ? sortedAll.filter((x) => x.eventCount > 0) : sortedAll;
+
+    // ── Two-tier facets ──────────────────────────────────────────────────
+    // City row is computed from the FULL scored list (independent of the
+    // current city/category selection) so it stays stable as the user drills.
+    // Category row reflects the selected city.
+    const userState = inferUserState(scored);
+    const cityFacets = buildCityFacets(scored, userState);
+
+    const cityNorm = (city ?? "").trim().toLowerCase();
+    const cityScoped = cityNorm
+      ? sortedAll.filter((x) => (x.v.city ?? "").trim().toLowerCase() === cityNorm)
+      : sortedAll;
+    const categoryFacets = buildCategoryFacets(cityScoped);
+
+    const catNorm = (category ?? "").trim().toLowerCase();
+    const catScoped = catNorm
+      ? cityScoped.filter((x) => (x.v.category ?? "").trim().toLowerCase() === catNorm)
+      : cityScoped;
+
+    const filtered = hasEventsOnly ? catScoped.filter((x) => x.eventCount > 0) : catScoped;
     const page = filtered.slice(offset, offset + limit);
     const hasMore = filtered.length > offset + limit;
 
@@ -531,6 +587,10 @@ Deno.serve(async (req) => {
         cursor: hasMore ? encodeCursor(offset + limit) : null,
         hasMore,
         total: filtered.length,
+        // Two-tier filter facets. `name` is the RAW value the client sends back
+        // as ?city= / ?category= ; the client title-cases category for display.
+        cityFacets,
+        categoryFacets,
       },
       { extraHeaders: { "Cache-Control": "public, max-age=60" } },
     );
@@ -549,4 +609,73 @@ function toTitleCase(s: string): string {
     .split(/[\s_]+/)
     .map((w) => (w ? w[0].toUpperCase() + w.slice(1).toLowerCase() : ""))
     .join(" ");
+}
+
+interface Facet {
+  name: string;
+  count: number;
+}
+
+/** User's home state ≈ the most common state among venues within 25 mi. Used
+ *  to decide which FAR (>25 mi) cities are worth showing as "major in-state
+ *  metros" vs. dropping (far out-of-state cities). */
+function inferUserState(scored: ScoredVenue[]): string | null {
+  const counts: Record<string, number> = {};
+  for (const s of scored) {
+    if (s.dist <= 25 && s.v.state) counts[s.v.state] = (counts[s.v.state] ?? 0) + 1;
+  }
+  let best: string | null = null;
+  let bestN = 0;
+  for (const [st, n] of Object.entries(counts)) {
+    if (n > bestN) {
+      best = st;
+      bestN = n;
+    }
+  }
+  return best;
+}
+
+/** Top-level city chips: every city with a venue within 25 mi, PLUS the major
+ *  cities of the user's home state beyond 25 mi (density-ranked). Near cities
+ *  sort first, then far in-state majors; capped so the row stays usable. */
+function buildCityFacets(scored: ScoredVenue[], userState: string | null): Facet[] {
+  const NEAR_MI = 25;
+  const MIN_IN_STATE_COUNT = 3; // a far city needs real density to count as "major"
+  const MAX_CITIES = 24;
+  const g: Record<string, { count: number; minDist: number; state: string | null }> = {};
+  for (const s of scored) {
+    const cityName = (s.v.city ?? "").trim();
+    if (!cityName) continue;
+    const e = g[cityName] ?? { count: 0, minDist: Infinity, state: s.v.state ?? null };
+    e.count += 1;
+    if (s.dist < e.minDist) e.minDist = s.dist;
+    g[cityName] = e;
+  }
+  return Object.entries(g)
+    .filter(([, e]) =>
+      e.minDist <= NEAR_MI ||
+      (userState != null && e.state === userState && e.count >= MIN_IN_STATE_COUNT)
+    )
+    .sort((a, b) => {
+      const aNear = a[1].minDist <= NEAR_MI ? 0 : 1;
+      const bNear = b[1].minDist <= NEAR_MI ? 0 : 1;
+      if (aNear !== bNear) return aNear - bNear; // near cities first
+      return b[1].count - a[1].count; // then by density
+    })
+    .slice(0, MAX_CITIES)
+    .map(([name, e]) => ({ name, count: e.count }));
+}
+
+/** Second-tier chips: venue categories present in the (city-scoped) set,
+ *  density-ranked. `name` is the raw venue.category the client sends back. */
+function buildCategoryFacets(scored: ScoredVenue[]): Facet[] {
+  const g: Record<string, number> = {};
+  for (const s of scored) {
+    const cat = (s.v.category ?? "").trim();
+    if (!cat) continue;
+    g[cat] = (g[cat] ?? 0) + 1;
+  }
+  return Object.entries(g)
+    .map(([name, count]) => ({ name, count }))
+    .sort((a, b) => b.count - a.count);
 }

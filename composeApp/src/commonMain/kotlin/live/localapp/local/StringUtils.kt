@@ -48,29 +48,39 @@ private val namedEntities = mapOf(
  */
 fun String.decodeHtmlEntities(): String {
     var result = this
-    for (i in 0 until 5) {
-        val before = result
-        // 1. Decode numeric entities (e.g. &#8220; \u2192 ")
-        result = htmlEntityRegex.replace(result) { match ->
-            val code = match.groupValues[1].toIntOrNull()
-            if (code != null && code in 0..0xFFFF) code.toChar().toString() else match.value
+    // Entity decoding (the multi-pass numeric/hex/named replaces) only does
+    // anything when there's an '&'. Skip it entirely otherwise \u2014 the vast
+    // majority of titles have none, and running ~2 passes of regex + 15 string
+    // replaces per string across a whole carousel payload on the main thread was
+    // hanging the app (decodeHtmlEntities ran inside ServerCarouselRepository's
+    // map). Named entities are also case-sensitive per spec, so the replaces use
+    // case-sensitive matching (the old ignoreCase=true forced a much slower scan).
+    if (result.indexOf('&') >= 0) {
+        for (i in 0 until 5) {
+            val before = result
+            // 1. Decode numeric entities (e.g. &#8220; \u2192 ")
+            result = htmlEntityRegex.replace(result) { match ->
+                val code = match.groupValues[1].toIntOrNull()
+                if (code != null && code in 0..0xFFFF) code.toChar().toString() else match.value
+            }
+            // 2. Decode hex entities (e.g. &#x201C; \u2192 ")
+            result = htmlHexEntityRegex.replace(result) { match ->
+                val code = match.groupValues[1].toIntOrNull(16)
+                if (code != null && code in 0..0xFFFF) code.toChar().toString() else match.value
+            }
+            // 3. Decode named entities
+            for ((entity, replacement) in namedEntities) {
+                result = result.replace(entity, replacement)
+            }
+            // Fixed point reached \u2014 no more entities decoded this pass.
+            if (result == before) break
         }
-        // 2. Decode hex entities (e.g. &#x201C; \u2192 ")
-        result = htmlHexEntityRegex.replace(result) { match ->
-            val code = match.groupValues[1].toIntOrNull(16)
-            if (code != null && code in 0..0xFFFF) code.toChar().toString() else match.value
-        }
-        // 3. Decode named entities
-        for ((entity, replacement) in namedEntities) {
-            result = result.replace(entity, replacement, ignoreCase = true)
-        }
-        // Fixed point reached \u2014 no more entities decoded this pass.
-        if (result == before) break
     }
-    // 4. Strip HTML tags (<span class="title-light">, </span>, <i>, <br/>, etc.)
-    //    Crawlers occasionally leave markup in title fields when the source
-    //    venue's events page mixes inline styling into the event name.
-    result = htmlTagRegex.replace(result, "")
+    // 4. Strip HTML tags (<span class="title-light">, </span>, <i>, <br/>, etc.).
+    //    Only relevant when markup is actually present.
+    if (result.indexOf('<') >= 0) {
+        result = htmlTagRegex.replace(result, "")
+    }
     // 5. Collapse whitespace and trim \u2014 tag stripping can leave extra spaces.
     result = multiSpaceRegex.replace(result, " ").trim()
     return result

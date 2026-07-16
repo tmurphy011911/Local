@@ -15,21 +15,10 @@ import live.localapp.local.domain.repository.UserPreferencesRepository
 import live.localapp.local.observability.Analytics
 import live.localapp.local.observability.AnalyticsEvent
 
-enum class AuthStep { PHONE, OTP, EMAIL }
-
-/** Minimal RFC-pragmatic email check: non-empty local part, "@", domain with a dot. */
-fun isValidEmail(value: String): Boolean {
-    val trimmed = value.trim()
-    val at = trimmed.indexOf('@')
-    if (at <= 0 || at != trimmed.lastIndexOf('@')) return false
-    val domain = trimmed.substring(at + 1)
-    return domain.contains('.') && !domain.startsWith('.') && !domain.endsWith('.') &&
-        !trimmed.contains(' ')
-}
+enum class AuthStep { PHONE, OTP }
 
 data class PhoneAuthUiState(
     val phone: String = "",
-    val email: String = "",
     val otpCode: String = "",
     val firstName: String = "",
     val lastName: String = "",
@@ -55,10 +44,6 @@ class PhoneAuthViewModel(
         _state.update { it.copy(phone = digits, error = null) }
     }
 
-    fun updateEmail(value: String) {
-        _state.update { it.copy(email = value, error = null) }
-    }
-
     fun updateOtpCode(value: String) {
         val digits = value.filter { it.isDigit() }.take(6)
         _state.update { it.copy(otpCode = digits, error = null) }
@@ -72,8 +57,8 @@ class PhoneAuthViewModel(
             return
         }
 
-        if (live.localapp.local.Config.testAuthBypassActive) {
-            // Test mode: skip SMS, go straight to OTP entry
+        if (live.localapp.local.Config.devAuthActive || live.localapp.local.Config.testAuthBypassActive) {
+            // Dev-auth / test mode: no real SMS, go straight to OTP entry.
             _state.update { it.copy(step = AuthStep.OTP) }
             return
         }
@@ -105,6 +90,39 @@ class PhoneAuthViewModel(
             return
         }
 
+        if (live.localapp.local.Config.devAuthActive) {
+            // Dev-auth (debug + dev backend): any 6-digit code works. Each phone
+            // number maps to its own persisted dev account, signed-in if it exists
+            // or signed-up on first use. We then reuse the SAME profile-check +
+            // routing as the real OTP path, so a brand-new phone runs onboarding
+            // (and is recognized as existing next time), while a pre-seeded number
+            // (Config.DEV_EXISTING_USER_PHONE) goes straight to home.
+            viewModelScope.launch {
+                _state.update { it.copy(isLoading = true, error = null) }
+                try {
+                    devAuthSignInOrSignUp()
+                    val userId = supabaseClient.auth.currentSessionOrNull()?.user?.id
+                        ?: throw IllegalStateException("No session after dev-auth sign-in")
+                    val hasProfile = userPreferencesRepository.profileExistsForAuthId(userId)
+                    Analytics.identify(userId = userId)
+                    if (hasProfile) {
+                        userPreferencesRepository.recoverProfileByAuthId(userId)
+                        _state.update {
+                            it.copy(isLoading = false, isExistingUser = true, authComplete = true, authUserId = userId)
+                        }
+                    } else {
+                        _state.update {
+                            it.copy(isLoading = false, authComplete = true, authUserId = userId)
+                        }
+                    }
+                } catch (e: Exception) {
+                    println("DEBUG: dev-auth sign-in failed: ${e::class.simpleName}: ${e.message}")
+                    _state.update { it.copy(isLoading = false, error = "Dev sign-in failed: ${e.message}") }
+                }
+            }
+            return
+        }
+
         if (live.localapp.local.Config.testAuthBypassActive) {
             // Test mode: any 6-digit code works. We IGNORE the entered code but
             // still establish a REAL Supabase session by signing into the canned
@@ -132,7 +150,7 @@ class PhoneAuthViewModel(
                         }
                     } else {
                         _state.update {
-                            it.copy(isLoading = false, step = AuthStep.EMAIL, authUserId = userId)
+                            it.copy(isLoading = false, authComplete = true, authUserId = userId)
                         }
                     }
                 } catch (e: Exception) {
@@ -176,12 +194,12 @@ class PhoneAuthViewModel(
                         )
                     }
                 } else {
-                    // New user: collect email before onboarding
+                    // New user: straight to onboarding (email step removed)
                     Analytics.track(AnalyticsEvent.signedUp(method = "phone_otp", entryPoint = "organic"))
                     _state.update {
                         it.copy(
                             isLoading = false,
-                            step = AuthStep.EMAIL,
+                            authComplete = true,
                             authUserId = userId,
                         )
                     }
@@ -190,13 +208,24 @@ class PhoneAuthViewModel(
                 e.printStackTrace()
                 val fullError = "${e::class.simpleName}: ${e.message}"
                 println("DEBUG: OTP verification error: $fullError")
-                Analytics.recordError(e, message = "otp_verify_failed")
+                val msg = e.message.orEmpty()
+                // Expired / invalid codes are ordinary user error (wrong or stale OTP),
+                // not app failures. Show inline guidance but DON'T report them to
+                // Sentry — they were dominating the error feed as otp_verify_failed
+                // noise. Only genuinely unexpected verify failures get recorded.
+                val expectedUserError = msg.contains("expired", ignoreCase = true) ||
+                    msg.contains("invalid", ignoreCase = true) ||
+                    msg.contains("otp_expired", ignoreCase = true) ||
+                    msg.contains("Token", ignoreCase = true)
+                if (!expectedUserError) {
+                    Analytics.recordError(e, message = "otp_verify_failed")
+                }
                 val message = when {
-                    e.message?.contains("expired", ignoreCase = true) == true ->
+                    msg.contains("expired", ignoreCase = true) ->
                         "Code expired. Please request a new one."
-                    e.message?.contains("invalid", ignoreCase = true) == true ->
+                    msg.contains("invalid", ignoreCase = true) ->
                         "Invalid code. Please check and try again."
-                    e.message?.contains("Token", ignoreCase = true) == true ->
+                    msg.contains("Token", ignoreCase = true) ->
                         "Invalid code. Please try again."
                     else -> fullError
                 }
@@ -217,6 +246,38 @@ class PhoneAuthViewModel(
      * — any failure (account missing/unconfirmed, wrong password) propagates to
      * the caller as a clean error instead of looping into a dead sign-up path.
      */
+    /**
+     * Dev-auth account resolution (debug + dev backend only). Maps the entered
+     * phone to `dev+<digits>@localapp.live` and signs in; if no such account
+     * exists yet, signs up (first use of that number). The dev project has email
+     * auto-confirm ON, so the sign-up returns an active session immediately —
+     * giving each phone its own persisted user that onboarding then completes.
+     */
+    private suspend fun devAuthSignInOrSignUp() {
+        val email = live.localapp.local.Config.devAuthEmailFor(_state.value.phone)
+        val password = live.localapp.local.Config.TEST_AUTH_PASSWORD
+        try {
+            supabaseClient.auth.signInWith(Email) {
+                this.email = email
+                this.password = password
+            }
+        } catch (e: Exception) {
+            // No account for this phone yet → create it (first onboarding run).
+            supabaseClient.auth.signUpWith(Email) {
+                this.email = email
+                this.password = password
+            }
+            // Some supabase-kt paths don't leave an active session after sign-up;
+            // ensure one exists (auto-confirm makes this immediate on dev).
+            if (supabaseClient.auth.currentSessionOrNull() == null) {
+                supabaseClient.auth.signInWith(Email) {
+                    this.email = email
+                    this.password = password
+                }
+            }
+        }
+    }
+
     private suspend fun signInTestUser() {
         // Multi-account bypass keyed on the PHONE number — the only field entered
         // before OTP, which is when this sign-in fires (email is now collected on
@@ -240,16 +301,6 @@ class PhoneAuthViewModel(
     fun resendOtp() {
         _state.update { it.copy(otpCode = "", error = null) }
         sendOtp()
-    }
-
-    fun submitEmail() {
-        val s = _state.value
-        if (!isValidEmail(s.email)) {
-            _state.update { it.copy(error = "Please enter a valid email address") }
-            return
-        }
-        // Email captured — signal ready for onboarding
-        _state.update { it.copy(authComplete = true) }
     }
 
     fun goBackToPhone() {
