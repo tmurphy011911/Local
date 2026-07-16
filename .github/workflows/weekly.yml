@@ -196,6 +196,11 @@ jobs:
     # script could exit cleanly. 60m cap + DISCOVER_MAX_MINUTES=50 gives ~10m
     # of safety while letting many more candidates probe per run.
     timeout-minutes: 60
+    # Best-effort: discover upserts feeds as it goes and resumes uncovered
+    # cities next run, so a straddled budget check that trips the 60m hard cap
+    # (~2/9 runs) must NOT red the whole daily crawl. Downstream already runs
+    # via if:!cancelled()/always(); this drops the timeout from the run outcome.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -221,6 +226,10 @@ jobs:
     needs: discover-municipal-feeds
     if: ${{ always() }}
     timeout-minutes: 30
+    # Best-effort backstop: the SYNC_MAX_MINUTES budget already exits this green,
+    # but in case a slow feed straddles the budget check and trips the 30m cap,
+    # don't let it red the daily crawl. Stalest feeds resume next run.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
