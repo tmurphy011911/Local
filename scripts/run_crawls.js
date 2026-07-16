@@ -20,6 +20,35 @@ const MODEL = "claude-haiku-4-5-20251001";
 const MAX_HTML_CHARS = 50_000;
 
 let ANTHROPIC_API_KEY, SUPABASE_SERVICE_KEY, SCRAPFLY_API_KEY;
+
+// ── Test / dry-run mode (opt-in; used by the local crawl console) ──
+// When enabled, upsertEvents() and updateVenueCrawlStatus() perform NO writes;
+// extracted rows are captured in-memory so a caller can preview exactly what a
+// real crawl WOULD save. Off by default, so the scheduled CLI crawl is
+// completely unchanged.
+let DRY_RUN = false;
+let _capturedRows = [];
+function setDryRun(v) {
+  DRY_RUN = !!v;
+  if (!DRY_RUN) _capturedRows = [];
+}
+function drainCapturedRows() {
+  const c = _capturedRows;
+  _capturedRows = [];
+  return c;
+}
+
+// Populate the module-level API keys the same way main() does, so another
+// entrypoint (the crawl-console server) can call crawlVenue() without running
+// the full CLI. Idempotent — safe to await more than once.
+async function initSecrets() {
+  const secrets = await getSecrets(["ANTHROPIC_API_KEY", "SCRAPFLY_API_KEY"]);
+  ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
+  SUPABASE_SERVICE_KEY = secrets.SUPABASE_SERVICE_KEY;
+  SCRAPFLY_API_KEY = secrets.SCRAPFLY_API_KEY || null;
+  return { scrapfly: !!SCRAPFLY_API_KEY, supabaseUrl: SUPABASE_URL };
+}
+
 const CATEGORY_FILTER = process.env.CATEGORY
   ? process.env.CATEGORY.split(",").map((s) => s.trim())
   : null;
@@ -364,6 +393,15 @@ module.exports = module.exports || {};
 module.exports.extractDescriptionFromHtml = extractDescriptionFromHtml;
 module.exports.enrichEventDescription = enrichEventDescription;
 module.exports.enrichDescriptions = enrichDescriptions;
+// Crawl-console entrypoints — these drive the SAME crawlVenue() the scheduled
+// crawl uses, so "works in the console" == "works next crawl". crawlVenue,
+// upsertEvents are function declarations (hoisted), safe to reference here.
+module.exports.crawlVenue = crawlVenue;
+module.exports.upsertEvents = upsertEvents;
+module.exports.initSecrets = initSecrets;
+module.exports.setDryRun = setDryRun;
+module.exports.drainCapturedRows = drainCapturedRows;
+module.exports.SUPABASE_URL = SUPABASE_URL;
 
 // ── Category mapping from venue category to event category ──
 
@@ -764,6 +802,7 @@ function normalizeEvent(event, venue) {
 // ── Update venue crawl metadata ──
 
 async function updateVenueCrawlStatus(venueId, success, currentRate) {
+  if (DRY_RUN) return; // test mode: never touch venue crawl stats
   const newRate = success
     ? Math.min(1.0, currentRate * 0.8 + 0.2)
     : Math.max(0.0, currentRate * 0.8);
@@ -868,6 +907,12 @@ async function filterDateOnlyShadows(batch) {
 }
 
 async function upsertEvents(rows) {
+  if (DRY_RUN) {
+    // Test mode: capture the exact rows a real crawl WOULD upsert, write nothing.
+    const deduped = [...new Map(rows.map((r) => [r.dedupe_hash, r])).values()];
+    _capturedRows.push(...deduped);
+    return { inserted: deduped.length, errors: 0, dryRun: true };
+  }
   const url = `${SUPABASE_URL}/rest/v1/events?on_conflict=dedupe_hash`;
   const batchSize = 50;
   let inserted = 0;
@@ -2226,10 +2271,7 @@ async function crawlWithConcurrency(venues, concurrency) {
 // ── Main ──
 
 async function main() {
-  const secrets = await getSecrets(["ANTHROPIC_API_KEY", "SCRAPFLY_API_KEY"]);
-  ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
-  SUPABASE_SERVICE_KEY = secrets.SUPABASE_SERVICE_KEY;
-  SCRAPFLY_API_KEY = secrets.SCRAPFLY_API_KEY || null;
+  await initSecrets();
   console.log(`Scrapfly: ${SCRAPFLY_API_KEY ? "available — needs_stealth venues will JS-render" : "NOT configured — needs_stealth venues will fall back to direct fetch"}`);
 
   console.log("=== Venue-Driven Event Crawls ===\n");
