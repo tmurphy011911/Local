@@ -141,8 +141,9 @@ const CAROUSEL_DISPLAY_LIMIT = 25;
 // gives the diversity gate room to surface 5+ distinct categories.
 const HERO_CAROUSEL_DISPLAY_LIMIT = 40;
 const MIN_CAROUSEL_SIZE = 15;
-const METRO_CENTER_LAT = 42.3601;
-const METRO_CENTER_LNG = -71.0589;
+// Scoring reach is density-adaptive (see adaptiveRadiusMiles / weightsForUser),
+// derived from the actual local event supply rather than distance to any
+// hardcoded metro center — so it scales to every current and future market.
 
 // Absolute distance ceiling. No event may appear in any carousel if it is
 // more than this many miles from the user's location (manual or GPS). This is
@@ -712,27 +713,23 @@ function withDistance(event: ProcessedEvent, userLat: number, userLng: number): 
 // Scoring
 // ════════════════════════════════════════════════════════════════
 
-function weightsForUser(userLat: number, userLng: number, radiusMiles: number): ScoreWeights {
-  const milesFromMetro = distanceMiles(userLat, userLng, METRO_CENTER_LAT, METRO_CENTER_LNG);
+// The scoring weights key off `effectiveRadius` — the density-adaptive reach
+// computed in adaptiveRadiusMiles(), NOT a hardcoded metro distance. A tight
+// reach means the user sits in a dense supply of nearby events, so proximity
+// carries most of the weight and decays fast; a wide reach means events are
+// sparse, so we lean less on proximity (there isn't much nearby to prefer) and
+// let relevance / venue-rank / date matter more. This replaced a metro-center
+// heuristic (distance to a hardcoded Boston-then-list of points) that didn't
+// scale: it mis-classified every non-listed metro as "far" and inflated the
+// radius to the 100mi ceiling, flooding dense metros with 40–75mi events.
+function weightsForUser(effectiveRadius: number): ScoreWeights {
   let proxWeight: number;
   let decay: number;
-  // Proximity weight raised across all tiers (2026-07 tuning): far events
-  // (70+ mi) were floating into "Picked for You" for metro users because
-  // proximity counted for only 0.25 of the score. Raising proxWeight also
-  // shrinks the relevance / venue-rank / date weights (they share 1-proxWeight),
-  // so a distant event's strong-venue advantage is down-weighted too; steeper
-  // decay on the near tiers makes the proximity score fall off faster with miles.
-  if (milesFromMetro <= 12.0) { proxWeight = 0.42; decay = 4.0; }
-  else if (milesFromMetro <= 25.0) { proxWeight = 0.52; decay = 3.0; }
-  else if (milesFromMetro <= 45.0) { proxWeight = 0.64; decay = 1.8; }
+  if (effectiveRadius <= 20.0) { proxWeight = 0.42; decay = 4.0; }
+  else if (effectiveRadius <= 40.0) { proxWeight = 0.52; decay = 3.0; }
+  else if (effectiveRadius <= 60.0) { proxWeight = 0.64; decay = 1.8; }
   else { proxWeight = 0.72; decay = 1.0; }
 
-  // Far-from-metro users get a widened radius so they still see metro events,
-  // but never beyond the hard ceiling.
-  const effectiveRadius = Math.min(
-    Math.max(radiusMiles, milesFromMetro + 25.0),
-    MAX_EVENT_DISTANCE_MILES,
-  );
   const remaining = 1.0 - proxWeight;
   return {
     relevance: remaining * (40.0 / 80.0),
@@ -742,6 +739,27 @@ function weightsForUser(userLat: number, userLng: number, radiusMiles: number): 
     decayDivisor: decay,
     maxEventRadius: effectiveRadius,
   };
+}
+
+// ── Density-adaptive reach ────────────────────────────────────────────────
+// Reach only as far as needed to gather enough events for a full, diverse
+// feed. Dense metros (Philadelphia: ~130 events within 10mi) settle at the
+// floor and never surface the Jersey Shore / NYC; genuinely sparse areas keep
+// widening — up to whatever was fetched — so they still see something. Purely
+// supply-driven: no metro list, no per-city tuning, scales to any new market.
+const ADAPTIVE_RADIUS_FLOOR_MILES = 15;  // always show a full-city view
+const ADAPTIVE_FEED_TARGET = 120;        // events wanted for a diverse feed
+function adaptiveRadiusMiles(events: ProcessedEvent[], fetchRadiusMiles: number): number {
+  const ds = events
+    .map(e => e.distance_miles)
+    .filter((d): d is number => d != null)
+    .sort((a, b) => a - b);
+  // Fewer events available than we want → reach as wide as we fetched.
+  if (ds.length <= ADAPTIVE_FEED_TARGET) return fetchRadiusMiles;
+  // Otherwise reach exactly far enough to include the target-th nearest event,
+  // clamped so we never go tighter than a full-city view nor wider than fetched.
+  const needed = ds[ADAPTIVE_FEED_TARGET - 1];
+  return Math.min(Math.max(needed, ADAPTIVE_RADIUS_FLOOR_MILES), fetchRadiusMiles);
 }
 
 function startDateProximityScore(startAt: string | null): number {
@@ -914,9 +932,21 @@ function rankForColdStart(
   maxResults: number,
   affinityMap: Map<string, number>,
 ): ProcessedEvent[] {
+  // Proximity is a first-class ranking signal here, not just an eligibility
+  // gate. coldStartScore alone (venue prestige + category prefs + affinity) let
+  // far, high-rank venues — Citi Field, Barclays, Prudential Center — outrank a
+  // nearby modest venue in "Picked for You," so a Philadelphia user saw 55–89 mi
+  // events above the 1.4 mi Penn Museum. The topical rails already fold in
+  // proximity via scoreForSort; the hero rail did not. Add a decaying proximity
+  // boost so nearby events lead while a genuinely great far event can still land.
+  // decay=8 mi: 1.4 mi → +0.51, 15 mi → +0.26, 55 mi → +0.08, 89 mi → +0.05.
+  const HERO_PROX_WEIGHT = 0.6;
+  const HERO_PROX_DECAY = 8.0;
+  const proximityBoost = (e: ProcessedEvent): number =>
+    HERO_PROX_WEIGHT * (1.0 / (1.0 + (e.distance_miles ?? 50.0) / HERO_PROX_DECAY));
   const scored = events.map(e => ({
     event: e,
-    score: coldStartScore(e, prefs, affinityMap),
+    score: coldStartScore(e, prefs, affinityMap) + proximityBoost(e),
   })).sort((a, b) => b.score - a.score);
 
   // ── Single-category fast path ─────────────────────────────────────
@@ -3236,12 +3266,25 @@ Deno.serve(async (req) => {
         _filterForFetch.type === "category" && _filterForFetch.value !== "sports"
           ? _filterForFetch.value
           : null;
-      const [rawEvents, venues, cityPhotos, config] = await Promise.all([
+      const [probeEvents, venues, cityPhotos, config] = await Promise.all([
         fetchAllEvents(supabase, lat, lng, radiusMiles, subcategoryFocus),
         fetchVenueCacheLite(supabase),
         fetchCityPhotoCache(supabase),
         fetchCarouselsConfig(supabase, lat, lng),
       ]);
+      // Densify the near pool. mv_events_for_geo returns a rank-stratified
+      // sample capped at ~900 rows, so a wide fetch (the client's "Any" radius
+      // arrives as 200 → clamped to 100) spends most of that budget on far
+      // events — a Manayunk request got only ~130 of 900 rows within 15mi, the
+      // rest on NYC/DC venues, starving the topical rails. Measure reach from
+      // the wide probe, then, for dense metros that tighten, re-fetch
+      // concentrated on that reach so the whole 900-row budget lands nearby
+      // (~715 rows within 15mi for Manayunk). Sparse areas don't tighten, so
+      // they skip the second call and keep the wide probe.
+      const probeRadius = adaptiveRadiusMiles(probeEvents, radiusMiles);
+      const rawEvents = probeRadius < radiusMiles
+        ? await fetchAllEvents(supabase, lat, lng, probeRadius, subcategoryFocus)
+        : probeEvents;
       const deduped = deduplicateCrossSource(rawEvents);
       allEvents = cleanEvents(deduped, venues, cityPhotos);
       // Sports rail derived from fetchAllEvents result. Same row set the
@@ -3281,7 +3324,12 @@ Deno.serve(async (req) => {
       fetchCategoryAffinity(supabase, userId),
     ]);
 
-    const weights = weightsForUser(lat, lng, radiusMiles);
+    // Reach adapts to how many events are actually near this user: dense metros
+    // tighten to the floor (excluding far-metro spillover), sparse areas keep
+    // the fetched width. Computed from the full fetched pool before any rail
+    // filtering so every rail shares one consistent, supply-driven radius.
+    const effectiveRadius = adaptiveRadiusMiles(allEvents, radiusMiles);
+    const weights = weightsForUser(effectiveRadius);
     const nearestCity = locationName || nearestCityName(lat, lng);
 
     // City-scoped pool for the neighborhood rails. Fetched per-request (NOT in
