@@ -167,13 +167,22 @@ async function crawlRssFeed(venue, rawHtml) {
     return null;
   }
 
+  return crawlFeedXml(venue, feedXml, feedUrl);
+}
+
+// Parse an already-fetched RSS/Atom document into events, then upsert. Shared by
+// crawlRssFeed (feed discovered via a <link rel=alternate> in the page head) and
+// the direct-feed path in crawlVenue (events_url points straight at a feed that
+// isn't advertised in any <head>, e.g. a WordPress /events/feed/). `sourceLabel`
+// is only used for logging.
+async function crawlFeedXml(venue, feedXml, sourceLabel) {
   const items = parseFeedItems(feedXml);
   if (items.length === 0) {
-    console.log(`    RSS feed parsed but has 0 items (${feedUrl})`);
+    console.log(`    RSS feed parsed but has 0 items (${sourceLabel})`);
     return null;
   }
 
-  console.log(`    📡 RSS: ${items.length} items from ${feedUrl}`);
+  console.log(`    📡 RSS: ${items.length} items from ${sourceLabel}`);
 
   // Per-item strategy: fetch each detail page and try JSON-LD Event schema first
   // (reliable, fast, no Claude). RSS pubDate is WHEN THE ITEM WAS POSTED, not the
@@ -2071,6 +2080,18 @@ async function crawlVenue(venue) {
     if (cleanedHtml.length < 100) {
       await updateVenueCrawlStatus(venue.id, false, venue.crawl_success_rate);
       return { venue: venue.name, events: 0, status: "empty", reason: "page too short" };
+    }
+
+    // Direct feed URL: some venues expose a clean events feed that isn't
+    // advertised via a <link rel=alternate> in any HTML <head> (e.g. a WordPress
+    // /events/feed/). If events_url points straight at an RSS/Atom document,
+    // parse it directly instead of hunting for a feed link in a page head.
+    // (An XHTML page can also start with <?xml; harmless — parseFeedItems finds
+    // no <item>/<entry>, returns null, and we fall through to normal detection.)
+    const rawTrimmed = rawHtml.trimStart();
+    if (rawTrimmed.startsWith("<?xml") || /^<(rss|feed)\b/i.test(rawTrimmed)) {
+      const directFeed = await crawlFeedXml(venue, rawHtml, venue.events_url);
+      if (directFeed) return directFeed;
     }
 
     // Post-fetch platform detection — try structured APIs before Claude
