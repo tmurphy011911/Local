@@ -19,6 +19,10 @@ private data class CommunityInteractionDto(
     @SerialName("item_type") val itemType: String,
     @SerialName("interaction_type") val interactionType: String,
     @SerialName("category") val category: String? = null,
+    // Taste graph (spec §5.4): the user's active/set location at interaction
+    // time. Nullable so pre-migration inserts and location-unknown cases work.
+    @SerialName("actor_lat") val actorLat: Double? = null,
+    @SerialName("actor_lng") val actorLng: Double? = null,
 )
 
 class CommunityInterestRepositoryImpl(
@@ -27,6 +31,13 @@ class CommunityInterestRepositoryImpl(
 ) : CommunityInterestRepository {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    // User's active/set location (GPS or manual), pushed in by the location
+    // chokepoint (HomeViewModel.setUserLocation) and stamped onto each
+    // interaction. Plain vars (no @Volatile to stay KMP-portable) — location
+    // changes slowly so a rare stale read across threads is harmless.
+    private var activeLat: Double? = null
+    private var activeLng: Double? = null
 
     // Personal interaction maps (current user only)
     private val personalClicks = mutableMapOf<String, Int>()
@@ -178,6 +189,11 @@ class CommunityInterestRepositoryImpl(
         persistInteraction(id, type, "plan_add", category)
     }
 
+    override fun setActiveLocation(lat: Double?, lng: Double?) {
+        activeLat = lat
+        activeLng = lng
+    }
+
     private fun trackCategoryWeight(category: String?, weight: Double) {
         if (category != null) {
             val cat = category.lowercase()
@@ -249,6 +265,8 @@ class CommunityInterestRepositoryImpl(
                         },
                         interactionType = interaction,
                         category = category,
+                        actorLat = activeLat,
+                        actorLng = activeLng,
                     )
                 )
                 println("persistInteraction: SUCCESS $interaction $itemId for user $userId")

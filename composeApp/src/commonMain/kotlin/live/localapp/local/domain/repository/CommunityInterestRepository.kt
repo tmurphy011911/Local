@@ -18,6 +18,14 @@ interface CommunityInterestRepository {
     /** Call when a user adds an event or place to their plan. */
     fun recordPlanAdd(id: String, type: InteractionType, category: String? = null)
 
+    /**
+     * Set the user's current ACTIVE location (live GPS or manually-set) so it is
+     * stamped onto every subsequent interaction. This powers travel-propensity
+     * learning (spec §5.4): distance is measured from where the user actually
+     * was at interaction time — NOT their home. Pass null to clear.
+     */
+    fun setActiveLocation(lat: Double?, lng: Double?)
+
     /** Current user's weighted score for an item. */
     fun personalRawScore(id: String): Double
 
