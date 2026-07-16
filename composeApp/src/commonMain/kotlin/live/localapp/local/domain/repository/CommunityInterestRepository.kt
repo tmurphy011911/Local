@@ -15,6 +15,14 @@ interface CommunityInterestRepository {
     /** Remove a favorite. */
     fun removeFavorite(id: String, type: InteractionType)
 
+    /**
+     * Call when the user explicitly marks an item "not interested". A soft
+     * NEGATIVE signal (interaction_type='not_interested') the recommender uses
+     * to down-weight similar items. Distinct from [removeFavorite], which is an
+     * undo that just deletes the positive row.
+     */
+    fun recordNotInterested(id: String, type: InteractionType, category: String? = null)
+
     /** Call when a user adds an event or place to their plan. */
     fun recordPlanAdd(id: String, type: InteractionType, category: String? = null)
 

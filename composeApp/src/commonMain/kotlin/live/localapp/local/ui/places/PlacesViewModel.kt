@@ -20,6 +20,8 @@ import live.localapp.local.domain.repository.CommunityInterestRepository
 import live.localapp.local.domain.repository.EventPage
 import live.localapp.local.domain.repository.EventRepository
 import live.localapp.local.domain.repository.ExploreRepository
+import live.localapp.local.domain.repository.ImpressionItem
+import live.localapp.local.domain.repository.ImpressionRepository
 import live.localapp.local.domain.repository.PlaceFacet
 import live.localapp.local.domain.repository.PlacePage
 import live.localapp.local.domain.repository.InteractionType
@@ -132,6 +134,7 @@ class PlacesViewModel(
     private val exploreRepository: ExploreRepository,
     private val eventRepository: EventRepository,
     private val badgeService: BadgeService,
+    private val impressionRepository: ImpressionRepository,
 ) : ViewModel() {
 
     /** Set by the host (AppNavigation) to route a logged-out save to the
@@ -625,6 +628,58 @@ class PlacesViewModel(
         val state = _uiState.value
         if (!state.eventsHasMore || state.eventCursor == null) return
         loadEvents(reset = false)
+    }
+
+    // ══════ Recommender signals (taste graph) ══════
+
+    /**
+     * Log an impression for the currently-displayed ranked list (spec §4.2 —
+     * the "shown but skipped" denominator). Called from the UI when results
+     * settle; the repo dedups per session so re-invoking on scroll/recompose
+     * is safe.
+     */
+    fun onResultsDisplayed(tab: SearchTab) {
+        val s = _uiState.value
+        when (tab) {
+            SearchTab.EVENTS -> impressionRepository.recordImpressions(
+                s.filteredEvents.mapIndexed { i, e -> ImpressionItem(e.id, InteractionType.EVENT, i) },
+                surface = "explore_events",
+                actorLat = s.userLat,
+                actorLng = s.userLng,
+            )
+            SearchTab.PLACES -> impressionRepository.recordImpressions(
+                s.filteredVenues.mapIndexed { i, v -> ImpressionItem(v.venue.id, InteractionType.PLACE, i) },
+                surface = "explore_places",
+                actorLat = s.userLat,
+                actorLng = s.userLng,
+            )
+        }
+    }
+
+    /** User marked an event "not interested" — soft negative + hide it locally. */
+    fun markEventNotInterested(event: Event) {
+        communityInterestRepository.recordNotInterested(
+            event.id, InteractionType.EVENT, event.subcategory ?: event.category,
+        )
+        _uiState.update {
+            it.copy(
+                filteredEvents = it.filteredEvents.filterNot { e -> e.id == event.id },
+                events = it.events.filterNot { e -> e.id == event.id },
+            )
+        }
+    }
+
+    /** User marked a place "not interested" — soft negative + hide it locally. */
+    fun markVenueNotInterested(venue: VenueWithMeta) {
+        communityInterestRepository.recordNotInterested(
+            venue.venue.id, InteractionType.PLACE, venue.primaryCategory,
+        )
+        _uiState.update {
+            it.copy(
+                filteredVenues = it.filteredVenues.filterNot { v -> v.venue.id == venue.venue.id },
+                venues = it.venues.filterNot { v -> v.venue.id == venue.venue.id },
+            )
+        }
     }
 
     // ══════ Venue detail ══════

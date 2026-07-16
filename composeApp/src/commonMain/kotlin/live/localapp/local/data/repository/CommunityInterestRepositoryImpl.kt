@@ -141,6 +141,7 @@ class CommunityInterestRepositoryImpl(
         "favorite" -> 2.0
         "share" -> 4.0
         "plan_add" -> 6.0
+        "not_interested" -> -3.0
         else -> 1.0
     }
 
@@ -187,6 +188,12 @@ class CommunityInterestRepositoryImpl(
         personalPlanAdds[id] = (personalPlanAdds[id] ?: 0) + 1
         trackCategoryWeight(category, 6.0)
         persistInteraction(id, type, "plan_add", category)
+    }
+
+    override fun recordNotInterested(id: String, type: InteractionType, category: String?) {
+        // Soft negative: pull the category weight down and record server-side.
+        trackCategoryWeight(category, -3.0)
+        persistInteraction(id, type, "not_interested", category)
     }
 
     override fun setActiveLocation(lat: Double?, lng: Double?) {
