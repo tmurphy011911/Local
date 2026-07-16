@@ -19,8 +19,8 @@
  *
  * Output:
  *   - Rich Markdown to $GITHUB_STEP_SUMMARY (shows on the Actions run page).
- *   - A compact plain-text digest to stdout AND to ./sotu_sms.txt, which the
- *     monthly workflow texts via Twilio.
+ *   - An HTML digest (./sotu_email.html) + subject (./sotu_subject.txt), which
+ *     the monthly workflow emails via Resend (same path as the venue-health alert).
  *
  * Usage:
  *   SUPABASE_SERVICE_KEY=ey... node scripts/venue_state_of_the_union.js
@@ -153,30 +153,52 @@ async function main() {
   }
   console.log("\n" + markdown);
 
-  // ── Compact SMS digest ──
-  const sms = [];
-  sms.push(`🏛 Venue State of the Union (${TODAY})`);
-  sms.push(`${comma(totalVenues)} active venues`);
-  sms.push(
-    "By state: " +
-      states.map(([code, s]) => `${code} ${pct(s.total, totalVenues)}% (${comma(s.total)})`).join(" · ")
-  );
-  sms.push("");
-  for (const [code, s] of states) {
-    sms.push(`${code} (${comma(s.total)}):`);
-    sms.push(
-      `  10+ev ${pct(s.ge10, s.total)}% (${comma(s.ge10)}) · ` +
-        `1+ ${pct(s.ge1, s.total)}% (${comma(s.ge1)}) · ` +
-        `0ev ${pct(s.eq0, s.total)}% (${comma(s.eq0)})`
-    );
-    sms.push(
-      `  noURL ${pct(s.noUrl, s.total)}% (${comma(s.noUrl)}) · ` +
-        `URL+0ev ${pct(s.urlButZero, s.total)}% (${comma(s.urlButZero)})`
-    );
-  }
-  const smsText = sms.join("\n");
-  fs.writeFileSync("sotu_sms.txt", smsText);
-  console.log("\n----- SMS digest (written to sotu_sms.txt) -----\n" + smsText);
+  // ── HTML email digest (emailed via Resend by the workflow) ──
+  const esc = (v) => String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const th = 'style="padding:6px 10px;text-align:right;border-bottom:2px solid #d0d7de;font-size:13px;color:#57606a"';
+  const thL = 'style="padding:6px 10px;text-align:left;border-bottom:2px solid #d0d7de;font-size:13px;color:#57606a"';
+  const td = 'style="padding:6px 10px;text-align:right;border-bottom:1px solid #eaeef2;font-size:14px"';
+  const tdL = 'style="padding:6px 10px;text-align:left;border-bottom:1px solid #eaeef2;font-size:14px"';
+
+  const byStateRows = states
+    .map(
+      ([code, s]) =>
+        `<tr><td ${tdL}>${esc(label(code))} (${code})</td><td ${td}>${comma(s.total)}</td><td ${td}>${pct(s.total, totalVenues)}%</td></tr>`
+    )
+    .join("");
+
+  const coverageRows = states
+    .map(
+      ([code, s]) =>
+        `<tr><td ${tdL}>${esc(label(code))} (${code})</td>` +
+        `<td ${td}>${comma(s.total)}</td>` +
+        `<td ${td}>${pct(s.ge10, s.total)}% (${comma(s.ge10)})</td>` +
+        `<td ${td}>${pct(s.ge1, s.total)}% (${comma(s.ge1)})</td>` +
+        `<td ${td}>${pct(s.eq0, s.total)}% (${comma(s.eq0)})</td>` +
+        `<td ${td}>${pct(s.noUrl, s.total)}% (${comma(s.noUrl)})</td>` +
+        `<td ${td}>${pct(s.urlButZero, s.total)}% (${comma(s.urlButZero)})</td></tr>`
+    )
+    .join("");
+
+  const html =
+    `<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;color:#1a1a1a;max-width:720px">` +
+    `<h2 style="margin:0 0 4px">🏛 Venue State of the Union</h2>` +
+    `<p style="margin:0 0 20px;color:#57606a">${esc(TODAY)} · <strong>${comma(totalVenues)}</strong> active venues across ${states.length} states</p>` +
+    `<h3 style="margin:0 0 8px">Venues by state</h3>` +
+    `<table style="border-collapse:collapse;margin-bottom:24px"><thead><tr>` +
+    `<th ${thL}>State</th><th ${th}>Venues</th><th ${th}>Share</th></tr></thead><tbody>${byStateRows}</tbody></table>` +
+    `<h3 style="margin:0 0 4px">Per-state coverage</h3>` +
+    `<p style="margin:0 0 8px;color:#57606a;font-size:13px">Event match is by venue name within state; “URL + 0 events” = a crawl target that yields nothing (the content gap).</p>` +
+    `<table style="border-collapse:collapse"><thead><tr>` +
+    `<th ${thL}>State</th><th ${th}>Venues</th><th ${th}>10+ events</th><th ${th}>1+ events</th>` +
+    `<th ${th}>0 events</th><th ${th}>No events URL</th><th ${th}>URL + 0 events</th></tr></thead><tbody>${coverageRows}</tbody></table>` +
+    `</div>`;
+
+  const subject = `🏛 Venue State of the Union — ${TODAY} · ${comma(totalVenues)} venues`;
+
+  fs.writeFileSync("sotu_email.html", html);
+  fs.writeFileSync("sotu_subject.txt", subject);
+  console.log(`\nEmail digest written (sotu_email.html, sotu_subject.txt): "${subject}"`);
 }
 
 main().catch((e) => {
