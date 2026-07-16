@@ -55,6 +55,9 @@ const TEAM_NAME_BACKFILL = process.env.TEAM_NAME_BACKFILL === "1";
 // have sub_subcategory/tags still go through Claude. Used to repair events
 // stuck at invalid parent categories like "other".
 const ONLY_CATEGORY = process.env.ONLY_CATEGORY || null;
+// Cap the number of events sent to Claude in one run. Use for cheap eyeball
+// test passes (e.g. MAX_EVENTS=30 FORCE=1) before a full backfill. 0 = no cap.
+const MAX_EVENTS = parseInt(process.env.MAX_EVENTS || "0", 10);
 // Events deliberately tagged subcategory="no-public-interest" are hidden from
 // every user-facing surface (carousels filter them out). They carry subcategory
 // but NOT sub_subcategory/tags, so the "unclassified" filter below would
@@ -556,9 +559,13 @@ async function main() {
       // RECLASSIFY_EXCLUDED above). Applies in FORCE/ONLY_CATEGORY too.
       (RECLASSIFY_EXCLUDED || e.subcategory !== "no-public-interest"),
   );
-  const toClassify = (FORCE || ONLY_CATEGORY)
+  let toClassify = (FORCE || ONLY_CATEGORY)
     ? remaining
     : remaining.filter((e) => !e.sub_subcategory && (!e.tags || e.tags.length === 0));
+  if (MAX_EVENTS && toClassify.length > MAX_EVENTS) {
+    console.log(`MAX_EVENTS=${MAX_EVENTS} — capping run to first ${MAX_EVENTS} of ${toClassify.length} events\n`);
+    toClassify = toClassify.slice(0, MAX_EVENTS);
+  }
   console.log(`${toClassify.length} events need Claude classification${FORCE ? " (forced)" : ONLY_CATEGORY ? ` (scoped to category=${ONLY_CATEGORY})` : ""}\n`);
   if (toClassify.length === 0) return;
 
