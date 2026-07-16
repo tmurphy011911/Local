@@ -2,6 +2,8 @@ package live.localapp.local.ui.dailyquiz
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -30,9 +32,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.BiasAlignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
@@ -49,9 +53,11 @@ import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import live.localapp.local.data.remote.dto.QuizBreakdownDto
 import live.localapp.local.data.remote.dto.QuizQuestionDto
 import live.localapp.local.ui.character.Bo
+import live.localapp.local.ui.common.pressable
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 
@@ -131,6 +137,8 @@ private fun QuestionStage(
 ) {
     var remainingMs by remember(question.id) { mutableStateOf(QUESTION_MS) }
     var live by remember(question.id) { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
+    val scope = rememberCoroutineScope()
 
     // Per question: a 2s "read up" delay, THEN the clock drains.
     LaunchedEffect(question.id, revealing) {
@@ -193,7 +201,16 @@ private fun QuestionStage(
                     i == revealSelectedIndex -> PillState.WRONG
                     else -> PillState.DIM
                 },
-                onClick = { onAnswer(i, remainingMs.toInt()) },
+                onClick = {
+                    // One crisp hit on tap; a second, slightly-delayed hit only when
+                    // the tapped answer is the correct one (correctness is known
+                    // client-side from the DTO, so it lands immediately).
+                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                    if (i == correctIndex) {
+                        scope.launch { delay(90); haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
+                    }
+                    onAnswer(i, remainingMs.toInt())
+                },
             )
             Spacer(Modifier.height(10.dp))
         }
@@ -218,9 +235,14 @@ private fun AnswerPill(text: String, enabled: Boolean, state: PillState, onClick
         PillState.IDLE -> AppColors.Ink
     }
     Box(
-        Modifier.fillMaxWidth().height(56.dp).clip(RoundedCornerShape(14.dp)).background(bg)
+        // pressable (scale press, NO ripple) instead of clickable — the default
+        // clickable indication paints an unbounded ripple that reads as the whole
+        // sheet shimmering on CMP iOS. Haptic is driven at the call site, so the
+        // press's own haptic is disabled here.
+        Modifier.fillMaxWidth()
+            .pressable(onClick = onClick, scale = 0.97f, haptic = false, enabled = enabled)
+            .height(56.dp).clip(RoundedCornerShape(14.dp)).background(bg)
             .border(1.5.dp, if (state == PillState.IDLE || state == PillState.DIM) AppColors.Ink3 else Color.Transparent, RoundedCornerShape(14.dp))
-            .then(if (enabled) Modifier.clickable(onClick = onClick) else Modifier)
             .padding(horizontal = 18.dp),
         contentAlignment = Alignment.CenterStart,
     ) {
@@ -247,10 +269,12 @@ private fun ResultsStage(
     }
 
     val r = s.result ?: return
+    // Fresh submit → play the reveal; re-opening a played quiz → show it resolved.
+    val animate = s.animateResults
     // Bo + Share stay hidden while the rows reveal. Once the postcard finishes,
-    // Bo floats up and types; then Share floats up.
-    var rowsDone by remember(r) { mutableStateOf(false) }
-    var shareVisible by remember(r) { mutableStateOf(false) }
+    // Bo floats up and types; then Share floats up. Stored view starts done.
+    var rowsDone by remember(r) { mutableStateOf(!animate) }
+    var shareVisible by remember(r) { mutableStateOf(!animate) }
     val floatUp = slideInVertically(spring(dampingRatio = 0.8f)) { it / 2 } + fadeIn()
     // No Bo line → reveal Share as soon as the rows finish.
     LaunchedEffect(rowsDone) { if (rowsDone && r.boMessage.isBlank()) shareVisible = true }
@@ -261,13 +285,14 @@ private fun ResultsStage(
             breakdown = r.breakdown,
             bestAllTime = r.bestAllTime,
             isFirst = r.isFirst,
+            animate = animate,
             onRevealComplete = { rowsDone = true },
         )
 
         AnimatedVisibility(visible = rowsDone && r.boMessage.isNotBlank(), enter = floatUp) {
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                 Spacer(Modifier.height(16.dp))
-                BoReaction(r.boMessage, onTypingDone = { shareVisible = true })
+                BoReaction(r.boMessage, animate = animate, onTypingDone = { shareVisible = true })
             }
         }
 
@@ -283,28 +308,46 @@ private fun ResultsStage(
 /** Bo types out a reaction line, then signals completion so Share can follow.
  *  Mounts only after the rows have revealed, so it types immediately. */
 @Composable
-private fun BoReaction(message: String, onTypingDone: () -> Unit) {
-    var shown by remember(message) { mutableStateOf(0) }
+private fun BoReaction(message: String, animate: Boolean = true, onTypingDone: () -> Unit) {
+    // Matches the iOS recap: Bo starts centred, floats to the top-left (the full
+    // line laid out invisibly so it doesn't reflow), then types once it has landed.
+    var placed by remember(message) { mutableStateOf(!animate) }
+    var shown by remember(message) { mutableStateOf(if (animate) 0 else message.length) }
     LaunchedEffect(message) {
+        if (!animate) { onTypingDone(); return@LaunchedEffect }
+        delay(350)                 // Bo holds centre a beat
+        placed = true              // float to the left
+        delay(600)                 // wait out the float before typing
         for (i in 1..message.length) { shown = i; delay(22) }
         delay(300)
         onTypingDone()
     }
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Top) {
-        Bo(size = 40.dp, showShadow = false, showSparkles = false)
-        Spacer(Modifier.width(10.dp))
-        Text(
-            // Lay out the FULL message (fixed line breaks + height) and hide the
-            // untyped tail with a transparent span, so revealing more characters
-            // never re-wraps — no line jumps as a word crosses the boundary.
-            buildAnnotatedString {
-                append(message)
-                if (shown < message.length) {
-                    addStyle(SpanStyle(color = Color.Transparent), shown, message.length)
-                }
-            },
-            modifier = Modifier.padding(top = 6.dp),
-            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink2),
+    // Bo glides from centre (0f) to start (-1f); the line only reveals after.
+    val boBias by animateFloatAsState(
+        if (placed) -1f else 0f,
+        spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessMediumLow),
+        label = "boBias",
+    )
+    Box(Modifier.fillMaxWidth()) {
+        if (placed) {
+            Text(
+                // Lay out the FULL message (fixed line breaks + height) and hide the
+                // untyped tail with a transparent span, so revealing more characters
+                // never re-wraps — no line jumps as a word crosses the boundary.
+                buildAnnotatedString {
+                    append(message)
+                    if (shown < message.length) {
+                        addStyle(SpanStyle(color = Color.Transparent), shown, message.length)
+                    }
+                },
+                // 26.dp Bo + 10.dp gap → the line sits in the column to Bo's right.
+                modifier = Modifier.align(Alignment.TopStart).padding(start = 36.dp, top = 3.dp),
+                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink2),
+            )
+        }
+        Bo(
+            size = 26.dp, showShadow = false, showSparkles = false,
+            modifier = Modifier.align(BiasAlignment(boBias, -1f)),
         )
     }
 }
@@ -318,16 +361,26 @@ private fun SharePostcard(
     breakdown: List<QuizBreakdownDto>,
     bestAllTime: Int,
     isFirst: Boolean,
+    animate: Boolean = true,
     onRevealComplete: () -> Unit = {},
 ) {
-    var rowsShown by remember { mutableStateOf(0) }
-    var total by remember { mutableStateOf(0) }
-    val rowProg = remember { mutableStateListOf(0f, 0f, 0f) }
-    val rowRevealed = remember { mutableStateListOf(false, false, false) }
+    // Stored view: start fully resolved (final total, every row revealed) so the
+    // recap shows at once instead of replaying the tally.
+    val finalTotal = breakdown.filter { it.correct }.sumOf { it.points }
+    var rowsShown by remember { mutableStateOf(if (animate) 0 else breakdown.size) }
+    var total by remember { mutableStateOf(if (animate) 0 else finalTotal) }
+    val rowProg = remember { mutableStateListOf(if (animate) 0f else 1f, if (animate) 0f else 1f, if (animate) 0f else 1f) }
+    val rowRevealed = remember { mutableStateListOf(!animate, !animate, !animate) }
     val rowBlinkOp = remember { mutableStateListOf(1f, 1f, 1f) }
+    // The theoretical max ("/600" for the standard easy/medium/hard set), shown
+    // beside the score once the rows finish tallying (just before Bo types).
+    val maxScore = breakdown.sumOf { 100 * diffMult(it.difficulty) }
+    var revealComplete by remember { mutableStateOf(!animate) }
+    val maxAlpha by animateFloatAsState(if (revealComplete) 1f else 0f, tween(300), label = "maxAlpha")
     val haptic = LocalHapticFeedback.current
 
     LaunchedEffect(Unit) {
+        if (!animate) { onRevealComplete(); return@LaunchedEffect }
         for (i in breakdown.indices) {
             delay(400)
             rowsShown = i + 1
@@ -347,6 +400,7 @@ private fun SharePostcard(
                 delay(450)
             }
         }
+        revealComplete = true
         onRevealComplete()
     }
 
@@ -362,7 +416,11 @@ private fun SharePostcard(
         Column(Modifier.padding(20.dp)) {
             Text("DAILY LOCAL", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 13.sp, color = AppColors.SunDk, letterSpacing = 1.sp))
             Spacer(Modifier.height(10.dp))
-            Text("$total", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 52.sp, color = AppColors.Ink))
+            Row {
+                Text("$total", modifier = Modifier.alignByBaseline(), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 52.sp, color = AppColors.Ink))
+                Spacer(Modifier.width(6.dp))
+                Text("/$maxScore", modifier = Modifier.alignByBaseline().alpha(maxAlpha), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 22.sp, color = AppColors.Ink3))
+            }
             Text(
                 if (isFirst) "FOMO EARNED TODAY" else "FOMO EARNED TODAY · BEST ALL TIME $bestAllTime",
                 style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = AppColors.Ink3, letterSpacing = 0.5.sp),

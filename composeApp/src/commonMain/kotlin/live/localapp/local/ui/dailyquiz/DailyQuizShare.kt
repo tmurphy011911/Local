@@ -34,6 +34,8 @@ fun dailyQuizShareText(c: QuizCompletionDto): String {
         sb.append("Personal Best: ${c.bestAllTime} points\n\n")
     }
 
-    sb.append("Get Local → localapp.live/dl")   // → , BMP arrow
+    // Full https:// scheme so every messaging client linkifies it into a tappable
+    // link — a bare "localapp.live/dl" renders as dead plain text in most apps.
+    sb.append("Get Local → https://localapp.live/dl")   // → , BMP arrow
     return sb.toString()
 }
