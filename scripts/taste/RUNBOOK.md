@@ -67,7 +67,35 @@ FORCE=1 \
 node scripts/classify_events.js
 ```
 
-## 6. Prod promotion — later, on the release train
+## 6. Build taste profiles (Phase 2 — after tagging exists)
+
+Once events carry tags/entities (steps 3–5) and `community_interactions` has some
+`actor_lat/lng` (needs a client build with the Phase-0 capture), build the
+per-user taste summaries. Pure aggregation — service key only, no Anthropic.
+
+```bash
+# migration for the table (additive)
+supabase db push          # picks up 20260716150000_user_taste_summary.sql
+
+# dry run first — computes + prints a sample, writes nothing
+SUPABASE_URL=https://xbyqwekcanrzovytxmdv.supabase.co \
+SUPABASE_SERVICE_KEY=<DEV_SERVICE_KEY> \
+DRY_RUN=1 MAX_USERS=10 \
+node scripts/taste/build_taste_profiles.js
+
+# real run (writes user_taste_summary)
+SUPABASE_URL=https://xbyqwekcanrzovytxmdv.supabase.co \
+SUPABASE_SERVICE_KEY=<DEV_SERVICE_KEY> \
+node scripts/taste/build_taste_profiles.js
+```
+
+The math is unit-tested offline: `node scripts/taste/taste_model.test.js`.
+Inspect: `select user_id, interest_1, interest_2, interest_3, travel_propensity,
+typical_travel_miles, interaction_count from user_taste_summary limit 20;`
+
+Wire it to run nightly (GitHub Actions / pg_cron) once validated.
+
+## 7. Prod promotion — later, on the release train
 
 Migrations + classifier promote dev→prod via the normal train (see `RELEASE.md` /
 `/change`). The classifier already degrades gracefully if the new columns are
