@@ -78,9 +78,12 @@ fun CreatePlanButton(
     val scale = remember { Animatable(1f) }
     val scope = rememberCoroutineScope()
 
+    // Chunky 3D "Duolingo" edge — deeper than the gradient's CoralDk so the
+    // 4.dp lip reads as depth beneath the coral-glow face.
+    val edge = Color(0xFFC94A4A)
     Box(
         modifier = modifier
-            .height(52.dp)
+            .height(52.dp) // 48 face + 4 lip
             // Pinned to the old "Create Plan" footprint so the shorter "Ask Bo"
             // label doesn't shrink the pill (the left chat pill reserves room
             // for this width).
@@ -89,23 +92,6 @@ fun CreatePlanButton(
                 scaleX = scale.value
                 scaleY = scale.value
             }
-            .shadow(
-                elevation = 12.dp,
-                shape = RoundedCornerShape(26.dp),
-                ambientColor = AppColors.Coral,
-                spotColor = AppColors.Coral,
-            )
-            .background(
-                Brush.linearGradient(
-                    colors = listOf(
-                        Color(0xFFFF8A8A),
-                        AppColors.Coral,
-                        AppColors.CoralDk,
-                    ),
-                ),
-                RoundedCornerShape(26.dp),
-            )
-            .clip(RoundedCornerShape(26.dp))
             .pointerInput(Unit) {
                 detectTapGestures(
                     onPress = {
@@ -130,30 +116,61 @@ fun CreatePlanButton(
                     },
                 )
             }
-            .padding(horizontal = 14.dp)
             .testTag("plan_create_btn"),
-        contentAlignment = Alignment.Center,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            // Bo character as the icon — matches the "Ask Bo" hero card and the
-            // old Create Plan menu's "Ask Bo" item.
-            live.localapp.local.ui.character.Bo(
-                size = 34.dp,
-                level = live.localapp.local.ui.character.cachedBoLevel(),
-                showSparkles = false,
-                showShadow = false,
-                modifier = Modifier.size(34.dp),
-            )
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "Ask Bo",
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 15.sp,
-                    color = Color.White,
-                ),
-            )
+        // 3D lip — behind the face, peeking 4.dp below it.
+        Box(
+            Modifier.fillMaxWidth().height(48.dp).align(Alignment.BottomCenter)
+                .clip(RoundedCornerShape(26.dp)).background(edge),
+        )
+        // Face — coral glow + gradient, sitting 4.dp above the lip.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .align(Alignment.TopCenter)
+                .shadow(
+                    elevation = 12.dp,
+                    shape = RoundedCornerShape(26.dp),
+                    ambientColor = AppColors.Coral,
+                    spotColor = AppColors.Coral,
+                )
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color(0xFFFF8A8A),
+                            AppColors.Coral,
+                            AppColors.CoralDk,
+                        ),
+                    ),
+                    RoundedCornerShape(26.dp),
+                )
+                .border(1.5.dp, edge, RoundedCornerShape(26.dp))
+                .clip(RoundedCornerShape(26.dp))
+                .padding(horizontal = 14.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Bo character as the icon — matches the "Ask Bo" hero card and the
+                // old Create Plan menu's "Ask Bo" item.
+                live.localapp.local.ui.character.Bo(
+                    size = 34.dp,
+                    level = live.localapp.local.ui.character.cachedBoLevel(),
+                    showSparkles = false,
+                    showShadow = false,
+                    modifier = Modifier.size(34.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "Ask Bo",
+                    style = TextStyle(
+                        fontFamily = AppFonts.Body,
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 15.sp,
+                        color = Color.White,
+                    ),
+                )
+            }
         }
     }
 }

@@ -16,9 +16,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.repository.CommunityInterestRepository
@@ -348,6 +350,21 @@ class OnboardingViewModel(
     /** Save all onboarding selections to Supabase + local cache. */
     fun saveOnboardingPreferences(onSaved: () -> Unit) {
         viewModelScope.launch {
+            // The shortened flow can reach "save" (via onLocationPregranted) before
+            // onAllowLocation has delivered the GPS coords. Persisting a coordless
+            // current-location profile makes the server's home_state resolver fall
+            // through to resolve_state_code(null, null, city): for a non-metro city
+            // like "Waltham" that returns NULL, so home_state is never set — which
+            // silently hides Daily Local (get_daily_quiz -> no_home_state) and mis-
+            // scopes the leaderboard. Wait briefly for the coords to land first. On
+            // timeout we still save: userCity stays blank -> "boston" -> MA, a valid
+            // (if generic) home_state, never null. Manual-address users already carry
+            // coords + geocoded_state, so this only gates the GPS path.
+            if (_state.value.locationMode == "current" && _state.value.userLat == null) {
+                withTimeoutOrNull(4000) {
+                    _state.first { it.userLat != null && it.userLng != null }
+                }
+            }
             try {
                 val s = _state.value
 

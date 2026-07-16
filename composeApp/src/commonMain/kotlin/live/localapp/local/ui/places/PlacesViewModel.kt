@@ -329,20 +329,6 @@ class PlacesViewModel(
                     isRefreshing = false,
                 )
             }
-
-            val toast = when {
-                failed -> "Couldn't refresh — tap to retry"
-                before.activeTab == SearchTab.EVENTS -> when (newEventIds.size) {
-                    0 -> "You're all caught up"
-                    else -> "${newEventIds.size} new event${if (newEventIds.size == 1) "" else "s"}" +
-                        (st.locationName.takeIf { it.isNotBlank() }?.let { " near $it" } ?: " nearby")
-                }
-                else -> when (newPlaceIds.size) {
-                    0 -> "You're all caught up"
-                    else -> "${newPlaceIds.size} new place${if (newPlaceIds.size == 1) "" else "s"} near you"
-                }
-            }
-            badgeService.emitInfoToast(toast, star = !failed)
         }
     }
 

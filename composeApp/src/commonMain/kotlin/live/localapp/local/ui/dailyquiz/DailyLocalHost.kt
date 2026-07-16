@@ -47,6 +47,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.time.Clock
+import kotlin.time.Instant
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.domain.repository.LeaderboardScope
@@ -63,10 +64,24 @@ import live.localapp.local.ui.theme.AppFonts
 import live.localapp.local.ui.theme.AppType
 import org.koin.mp.KoinPlatform
 
-/** "Xh Ym" until local midnight, for the "resets in …" copy on the done card. */
-private fun resetInLabel(): String {
-    val now = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
-    val minsLeft = (24 * 60) - (now.hour * 60 + now.minute)
+/**
+ * "Xh Ym" until the next reset, for the "play again in …" copy on the done card.
+ * Counts down to the server-provided [resetsAtIso] (the home-state local midnight,
+ * correct even when the device tz differs); falls back to the device's local
+ * midnight if the field is absent (older server / parse failure).
+ */
+private fun resetInLabel(resetsAtIso: String?): String {
+    val minsLeft = resetsAtIso?.let { iso ->
+        runCatching {
+            // Postgres renders timestamptz with a "+00:00" offset (UTC session);
+            // normalize to "Z" for the parser.
+            val secs = (Instant.parse(iso.replace("+00:00", "Z")) - Clock.System.now()).inWholeSeconds
+            (secs / 60).toInt().coerceAtLeast(0)
+        }.getOrNull()
+    } ?: run {
+        val now = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
+        (24 * 60) - (now.hour * 60 + now.minute)
+    }
     val h = minsLeft / 60
     val m = minsLeft % 60
     return if (h > 0) "${h}h ${m}m" else "${m}m"
@@ -110,7 +125,7 @@ fun DailyLocalHost(
     // restart. Re-fetch whenever the lobby (re)enters the Home screen. Also warm
     // the leaderboard here (not just inside its card) so we know whether it has
     // anything to show BEFORE deciding to give it a carousel slot.
-    LaunchedEffect(Unit) { quizVm.refresh(); leaderboardVm.prefetchAll() }
+    LaunchedEffect(Unit) { quizVm.refresh(); leaderboardVm.prefetchAll(); leaderboardVm.reloadProfile() }
 
     val startQuiz = {
         pendingQuizToast = true
@@ -163,6 +178,7 @@ fun DailyLocalHost(
                     streak = s.streak,
                     score = s.quiz?.completion?.score ?: 0,
                     correctCount = s.quiz?.completion?.correctCount ?: 0,
+                    resetsAt = s.quiz?.resetsAt,
                     onTap = {
                         if (s.alreadyCompleted) {
                             quizVm.viewStoredResults(); showSheet = true
@@ -264,7 +280,7 @@ fun DailyLocalHost(
  * "done" (score pill + streak + reset countdown).
  */
 @Composable
-private fun DailyLocalCard(played: Boolean, streak: Int, score: Int, correctCount: Int, onTap: () -> Unit) {
+private fun DailyLocalCard(played: Boolean, streak: Int, score: Int, correctCount: Int, resetsAt: String?, onTap: () -> Unit) {
     Row(
         modifier = Modifier
             .padding(horizontal = 20.dp, vertical = 6.dp)
@@ -295,7 +311,7 @@ private fun DailyLocalCard(played: Boolean, streak: Int, score: Int, correctCoun
                 style = AppType.Logo.copy(fontSize = 20.sp, color = AppColors.Ink),
             )
             val subtitle = when {
-                played -> "$correctCount/3 · Play again in ${resetInLabel()}"
+                played -> "$correctCount/3 · Play again in ${resetInLabel(resetsAt)}"
                 streak > 0 -> "Extend streak to ${streak + 1} days"
                 else -> "3 questions · 30 seconds · Start your streak"
             }

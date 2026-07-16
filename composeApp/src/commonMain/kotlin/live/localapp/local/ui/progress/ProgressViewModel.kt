@@ -54,12 +54,6 @@ sealed interface CelebrationEvent {
         val title: String,
         val points: Int,
     ) : CelebrationEvent
-
-    /** Neutral dark-pill toast (Bo pull-to-refresh result). */
-    data class InfoToast(
-        val message: String,
-        val star: Boolean,
-    ) : CelebrationEvent
 }
 
 // ── UI State ──
@@ -145,10 +139,6 @@ class ProgressViewModel(
                         title = celebration.title,
                         points = celebration.points,
                     )
-                    is BadgeCelebration.InfoToast -> CelebrationEvent.InfoToast(
-                        message = celebration.message,
-                        star = celebration.star,
-                    )
                 }
                 _uiState.update { state ->
                     if (state.celebration == null) {
@@ -225,15 +215,11 @@ class ProgressViewModel(
     }
 
     fun refresh() {
-        val before = _uiState.value.totalPoints
         _uiState.update { it.copy(isRefreshing = true, refreshFailed = false) }
         viewModelScope.launch {
             val jobs = listOf(loadStats(), loadBadgeData())
             jobs.joinAll()
-            val delta = _uiState.value.totalPoints - before
             _uiState.update { it.copy(isRefreshing = false) }
-            val toast = if (delta > 0) "+$delta FOMO earned" else "You're all caught up"
-            badgeService.emitInfoToast(toast)
         }
     }
 

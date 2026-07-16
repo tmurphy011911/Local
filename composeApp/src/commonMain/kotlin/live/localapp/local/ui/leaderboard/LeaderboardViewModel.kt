@@ -70,6 +70,18 @@ class LeaderboardViewModel(
         refresh()
     }
 
+    /**
+     * Re-read just the profile bits (username/prefs flags + home city). Called
+     * whenever the lobby (re)enters Home, so `profileLoaded` self-heals if this
+     * app-scoped singleton's one-shot `init` load ran before the local user id
+     * was persisted (fresh signup) or missed the just-created row (read-after-
+     * write). Without this the username + preferences lobby CTAs stay hidden for
+     * the whole session — the fix for a brand-new account seeing an empty lobby.
+     */
+    fun reloadProfile() {
+        loadProfile()
+    }
+
     private fun loadProfile() {
         viewModelScope.launch {
             val uid = userPrefsRepo.getLocalUserId() ?: return@launch

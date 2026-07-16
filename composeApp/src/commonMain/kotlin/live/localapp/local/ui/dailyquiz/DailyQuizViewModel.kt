@@ -52,6 +52,10 @@ class DailyQuizViewModel(
         val revealSelectedIndex: Int? = null,
         val result: QuizCompletionDto? = null,
         val submitError: Boolean = false,
+        // True only for a just-submitted run, so the results recap plays its
+        // tally/typing reveal. Re-opening a played quiz shows the recap resolved
+        // (no replay).
+        val animateResults: Boolean = false,
         // City rank/percentile for the results postcard (from the leaderboard RPC).
         val rankLocation: String? = null,
         val rank: Int = 0,
@@ -219,7 +223,7 @@ class DailyQuizViewModel(
             val res = repo.submitQuiz(_uiState.value.answers)
             if (res != null) {
                 badgeService.notifyDataChanged()   // let the leaderboard refresh live
-                _uiState.update { it.copy(phase = Phase.RESULTS, result = res, submitError = false) }
+                _uiState.update { it.copy(phase = Phase.RESULTS, result = res, submitError = false, animateResults = true) }
                 fetchRank()                        // city rank/percentile for the postcard
                 refresh()                          // reload meta -> card flips to "done" state
             } else {
@@ -241,7 +245,7 @@ class DailyQuizViewModel(
     /** Re-open the results recap for a quiz already played today. */
     fun viewStoredResults() {
         val comp = _uiState.value.quiz?.completion ?: return
-        _uiState.update { it.copy(phase = Phase.RESULTS, result = comp, submitError = false) }
+        _uiState.update { it.copy(phase = Phase.RESULTS, result = comp, submitError = false, animateResults = false) }
         if (_uiState.value.rank == 0) fetchRank()
     }
 

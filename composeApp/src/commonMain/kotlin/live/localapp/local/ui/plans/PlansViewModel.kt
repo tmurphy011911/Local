@@ -19,7 +19,6 @@ import live.localapp.local.data.sync.PlanSyncer
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.model.Plan
 import live.localapp.local.domain.model.isLastDayPast
-import live.localapp.local.domain.service.BadgeService
 import live.localapp.local.domain.model.PlanDay
 import live.localapp.local.domain.model.PlanSlot
 import live.localapp.local.domain.model.ReservationState
@@ -75,7 +74,6 @@ class PlansViewModel(
     private val mutationLog: MutationLog,
     private val syncer: PlanSyncer,
     private val realtime: PlanRealtimeWatcher,
-    private val badgeService: BadgeService,
 ) : ViewModel() {
 
     /**
@@ -224,9 +222,6 @@ class PlansViewModel(
                 addAll(st.savedVenues.map { it.id })
             } - oldIds
             _uiState.update { it.copy(isRefreshing = false, newItemIds = newIds) }
-            badgeService.emitInfoToast(
-                if (newIds.isEmpty()) "You're all caught up" else "Bo found more nearby",
-            )
         }
     }
 

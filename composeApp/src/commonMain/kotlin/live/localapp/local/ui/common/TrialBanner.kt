@@ -3,6 +3,7 @@ package live.localapp.local.ui.common
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -68,18 +69,27 @@ fun TrialCountdownBanner(
             ),
             modifier = Modifier.weight(1f),
         )
-        Text(
-            "Upgrade Now",
-            style = TextStyle(
-                fontFamily = AppFonts.Body,
-                fontWeight = FontWeight.ExtraBold,
-                fontSize = 11.sp,
-                color = Color.White,
-            ),
-            modifier = Modifier
-                .background(AppColors.Coral, RoundedCornerShape(8.dp))
-                .padding(horizontal = 10.dp, vertical = 5.dp),
-        )
+        // Chunky 3D "Duolingo" pill — a deeper-coral edge peeks 3.dp below the
+        // face, the shared house-style depth scaled down for this inline pill.
+        Box {
+            Box(
+                Modifier.matchParentSize()
+                    .background(Color(0xFFC94A4A), RoundedCornerShape(9.dp)),
+            )
+            Text(
+                "Upgrade Now",
+                style = TextStyle(
+                    fontFamily = AppFonts.Body,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    color = Color.White,
+                ),
+                modifier = Modifier
+                    .padding(bottom = 3.dp)
+                    .background(AppColors.Coral, RoundedCornerShape(9.dp))
+                    .padding(horizontal = 10.dp, vertical = 5.dp),
+            )
+        }
         if (dismissible) {
             Spacer(Modifier.width(8.dp))
             Icon(

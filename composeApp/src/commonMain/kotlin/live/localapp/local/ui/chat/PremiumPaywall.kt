@@ -206,37 +206,48 @@ fun PremiumPaywall(
 
             Spacer(Modifier.height(16.dp))
 
-            // Subscribe CTA
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(16.dp))
-                    .background(
-                        Brush.linearGradient(listOf(AppColors.Coral, Color(0xFFE85D5D))),
-                    )
-                    .then(
-                        if (isPurchasing) Modifier
-                        else Modifier.pressable(onClick = { onSubscribe(isAnnual) })
-                    )
-                    .padding(vertical = 16.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (isPurchasing) {
-                    CircularProgressIndicator(
-                        color = Color.White,
-                        strokeWidth = 2.5.dp,
-                        modifier = Modifier.size(22.dp),
-                    )
-                } else {
-                    Text(
-                        if (isAnnual) "Start Local Pro" else if (hasIntro) "Try for $displayMonthly" else "Start Local Pro",
-                        style = TextStyle(
-                            fontFamily = AppFonts.Body,
-                            fontWeight = FontWeight.Black,
-                            fontSize = 16.sp,
-                            color = Color.White,
+            // Subscribe CTA — chunky 3D "Duolingo" style: a deeper-coral edge
+            // peeks 4.dp below the gradient face with a matching stroke, the
+            // shared house-style depth (see DuoButton / the username Save CTA).
+            val ctaEdge = Color(0xFFC94A4A)
+            Box(Modifier.fillMaxWidth().height(60.dp)) {
+                // 3D lip — behind the face, peeking 4.dp below it.
+                Box(
+                    Modifier.fillMaxWidth().height(56.dp).align(Alignment.BottomCenter)
+                        .clip(RoundedCornerShape(16.dp)).background(ctaEdge),
+                )
+                // Face.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth().height(56.dp).align(Alignment.TopCenter)
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(
+                            Brush.linearGradient(listOf(AppColors.Coral, Color(0xFFE85D5D))),
+                        )
+                        .border(1.5.dp, ctaEdge, RoundedCornerShape(16.dp))
+                        .then(
+                            if (isPurchasing) Modifier
+                            else Modifier.pressable(onClick = { onSubscribe(isAnnual) })
                         ),
-                    )
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (isPurchasing) {
+                        CircularProgressIndicator(
+                            color = Color.White,
+                            strokeWidth = 2.5.dp,
+                            modifier = Modifier.size(22.dp),
+                        )
+                    } else {
+                        Text(
+                            if (isAnnual) "Start Local Pro" else if (hasIntro) "Try for $displayMonthly" else "Start Local Pro",
+                            style = TextStyle(
+                                fontFamily = AppFonts.Body,
+                                fontWeight = FontWeight.Black,
+                                fontSize = 16.sp,
+                                color = Color.White,
+                            ),
+                        )
+                    }
                 }
             }
 

@@ -589,7 +589,9 @@ internal fun UsernameSheet(
     var text by remember { mutableStateOf(initial) }
     var error by remember { mutableStateOf<String?>(null) }
     var saving by remember { mutableStateOf(false) }
-    val canSave = !saving && text.trim().length >= 2
+    // Require an actual change from the pre-filled handle — otherwise Save is a
+    // no-op that still fires the first-time FOMO award.
+    val canSave = !saving && text.trim().length >= 2 && text.trim() != initial.trim()
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,

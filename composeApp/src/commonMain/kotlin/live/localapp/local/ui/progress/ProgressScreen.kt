@@ -1895,8 +1895,12 @@ private fun stateAbbrevToFull(abbrev: String): String = when (abbrev.uppercase()
 // ═══════════════════════════════════════════════════════════════════
 
 /**
- * Days left on the app-side Local Pro trial (server-owned `trial_ends_at`),
- * rounded up. Null when there's no trial, it's unparseable, or it's expired.
+ * Days left on the app-side Local Pro trial (server-owned `trial_ends_at`).
+ * Null when there's no trial, it's unparseable, or it's expired.
+ *
+ * Nearest-day rounding, floored at 1 while active (matches HomeScreen's
+ * trialDaysRemaining) — ceil against the device clock overstated a
+ * server-anchored N-day trial as N+1 under sub-day clock skew.
  */
 private fun subscriptionTrialDaysRemaining(trialEndsAt: String?): Int? {
     if (trialEndsAt.isNullOrBlank()) return null
@@ -1905,7 +1909,7 @@ private fun subscriptionTrialDaysRemaining(trialEndsAt: String?): Int? {
     } catch (_: Exception) { return null }
     val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
     if (endMs <= nowMs) return null
-    return kotlin.math.ceil((endMs - nowMs) / 1000.0 / 86_400.0).toInt()
+    return kotlin.math.max(1, kotlin.math.round((endMs - nowMs) / 1000.0 / 86_400.0).toInt())
 }
 
 @Composable
@@ -1980,16 +1984,27 @@ private fun SubscriptionSection(trialEndsAt: String?, onUpgrade: () -> Unit) {
                 style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
             )
             Spacer(Modifier.height(10.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(AppColors.Coral)
-                    .clickable(onClick = onUpgrade)
-                    .padding(vertical = 12.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("Upgrade to Local Pro", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = Color.White))
+            // Chunky 3D "Duolingo" CTA — a deeper-coral edge peeks 4.dp below the
+            // face with a matching stroke, the shared house-style depth.
+            val upgradeEdge = Color(0xFFC94A4A)
+            Box(Modifier.fillMaxWidth().height(52.dp)) {
+                // 3D lip — behind the face, peeking 4.dp below it.
+                Box(
+                    Modifier.fillMaxWidth().height(48.dp).align(Alignment.BottomCenter)
+                        .clip(RoundedCornerShape(12.dp)).background(upgradeEdge),
+                )
+                // Face.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth().height(48.dp).align(Alignment.TopCenter)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(AppColors.Coral)
+                        .border(1.5.dp, upgradeEdge, RoundedCornerShape(12.dp))
+                        .clickable(onClick = onUpgrade),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("Upgrade to Local Pro", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = Color.White))
+                }
             }
         } else {
             Text("Free Plan", style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 16.sp, color = AppColors.Ink))
@@ -1999,16 +2014,27 @@ private fun SubscriptionSection(trialEndsAt: String?, onUpgrade: () -> Unit) {
                 style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 12.sp, color = AppColors.Ink3),
             )
             Spacer(Modifier.height(10.dp))
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(AppColors.Coral)
-                    .clickable(onClick = onUpgrade)
-                    .padding(vertical = 12.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("Upgrade to Local Pro", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = Color.White))
+            // Chunky 3D "Duolingo" CTA — a deeper-coral edge peeks 4.dp below the
+            // face with a matching stroke, the shared house-style depth.
+            val upgradeEdge = Color(0xFFC94A4A)
+            Box(Modifier.fillMaxWidth().height(52.dp)) {
+                // 3D lip — behind the face, peeking 4.dp below it.
+                Box(
+                    Modifier.fillMaxWidth().height(48.dp).align(Alignment.BottomCenter)
+                        .clip(RoundedCornerShape(12.dp)).background(upgradeEdge),
+                )
+                // Face.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth().height(48.dp).align(Alignment.TopCenter)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(AppColors.Coral)
+                        .border(1.5.dp, upgradeEdge, RoundedCornerShape(12.dp))
+                        .clickable(onClick = onUpgrade),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("Upgrade to Local Pro", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 14.sp, color = Color.White))
+                }
             }
         }
     }

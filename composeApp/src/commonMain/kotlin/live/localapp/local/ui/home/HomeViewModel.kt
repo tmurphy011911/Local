@@ -717,10 +717,6 @@ class HomeViewModel(
             }.toSet()
             val failed = st.error != null
             _uiState.update { it.copy(isRefreshing = false, newItemIds = newIds, refreshFailed = failed) }
-            badgeService.emitInfoToast(
-                if (failed) "Couldn't refresh — tap to retry" else "Fresh picks, just for you",
-                star = !failed,
-            )
         }
     }
 

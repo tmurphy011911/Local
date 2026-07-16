@@ -69,6 +69,10 @@ data class DailyQuizDto(
     @SerialName("quiz_date") val quizDate: String? = null,
     val state: String? = null,
     val streak: Int = 0,                        // current consecutive-day streak
+    // Exact instant of the next reset (home-state local midnight, ISO-8601 UTC).
+    // The client counts down to this so the "play again in" copy is correct even
+    // when the device tz differs from the home state's.
+    @SerialName("resets_at") val resetsAt: String? = null,
     @SerialName("already_completed") val alreadyCompleted: Boolean = false,
     val completion: QuizCompletionDto? = null,  // present iff already played today
     val questions: List<QuizQuestionDto> = emptyList(),

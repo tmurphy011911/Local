@@ -6,6 +6,8 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,21 +22,27 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import live.localapp.local.feature.onboarding.CategoriesScreen
 import live.localapp.local.feature.onboarding.NeighbourhoodsScreen
 import live.localapp.local.feature.onboarding.OnboardingStep
 import live.localapp.local.feature.onboarding.OnboardingViewModel
 import live.localapp.local.feature.onboarding.VenuesScreen
 import live.localapp.local.ui.theme.AppColors
+import live.localapp.local.ui.theme.AppFonts
 
 /**
  * The lobby-launched preferences flow — the existing onboarding pick screens
@@ -57,11 +65,17 @@ fun PreferencesFlowContent(
     val s by vm.state.collectAsState()
     LaunchedEffect(Unit) { vm.beginPreferencesOnly() }
 
+    // "Completing" (save + flip preferences_completed + award FOMO) only counts
+    // if the user actually picked something. Clicking straight through every step
+    // with nothing selected closes without completing, so the CTA stays.
+    val hasSelection = s.selectedNeighbourhoods.isNotEmpty() ||
+        s.selectedVenues.isNotEmpty() || s.selectedCategories.isNotEmpty()
+
     Box(modifier.fillMaxSize()) {
         when (s.currentStep) {
             OnboardingStep.NEIGHBOURHOODS ->
                 if (s.neighborhoods.isEmpty() && s.isLoadingData) {
-                    PreferencesSkeleton()
+                    PreferencesSkeleton(onSkipAll = onClose)
                 } else {
                     NeighbourhoodsScreen(
                         neighborhoods = s.neighborhoods,
@@ -86,7 +100,9 @@ fun PreferencesFlowContent(
                 categoryPhotos = s.categoryPhotos,
                 selected = s.selectedCategories,
                 onToggle = vm::toggleCategory,
-                onNext = { vm.savePreferencesOnly { onComplete() } },
+                // Continue completes only if something was picked; otherwise it's
+                // a skip-through, so close without awarding.
+                onNext = { if (hasSelection) vm.savePreferencesOnly { onComplete() } else onClose() },
                 onSkip = onClose,
                 isValid = s.categoriesValid,
                 onBack = { vm.onBackFromCategories() },
@@ -97,7 +113,7 @@ fun PreferencesFlowContent(
                 LaunchedEffect(Unit) { onClose() }
             // Transient default (SPLASH/LOCATION) before beginPreferencesOnly
             // lands on NEIGHBOURHOODS.
-            else -> PreferencesSkeleton()
+            else -> PreferencesSkeleton(onSkipAll = onClose)
         }
     }
 }
@@ -108,7 +124,7 @@ fun PreferencesFlowContent(
  * real content doesn't reflow. Shimmers via an animated placeholder alpha.
  */
 @Composable
-private fun PreferencesSkeleton() {
+private fun PreferencesSkeleton(onSkipAll: () -> Unit) {
     val shimmer by animateFloatAsState(
         targetValue = 1f,
         animationSpec = infiniteRepeatable(tween(800, easing = LinearEasing), repeatMode = RepeatMode.Reverse),
@@ -127,7 +143,16 @@ private fun PreferencesSkeleton() {
                 Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.End,
             ) {
-                Box(Modifier.width(56.dp).height(12.dp).clip(RoundedCornerShape(6.dp)).background(c))
+                // Real, tappable escape hatch during a slow load — matches the
+                // "Skip all →" affordance on the loaded screen so the user is
+                // never trapped waiting.
+                Text(
+                    "Skip all →",
+                    modifier = Modifier
+                        .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = onSkipAll)
+                        .padding(4.dp),
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, color = AppColors.Ink3),
+                )
             }
             Column(Modifier.padding(horizontal = 20.dp)) {
                 Spacer(Modifier.height(8.dp))

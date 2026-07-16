@@ -580,14 +580,27 @@ private fun ExploreEmptyState(
     hasError: Boolean,
     onRetry: () -> Unit,
 ) {
-    // Bank 2 — Bo empty state. Same component for the error path; the bank
-    // copy is friendly enough to read either way without needing two banks.
-    live.localapp.local.ui.emptystate.BoEmptyState(
-        bank = live.localapp.local.ui.emptystate.EmptyStateCopy.NO_PLACES,
-        ctaLabel = "Refresh",
-        onCta = onRetry,
-        rotationKey = hasError,
-    )
+    // Host the empty state in a single full-height LazyColumn item. A plain
+    // centered column dispatches no scroll, so pull-to-refresh never engages on
+    // an empty tab (the gesture needs a scrollable child to produce overscroll).
+    // fillParentMaxSize keeps the Bo art centred while the list stays pullable.
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        item {
+            Box(
+                modifier = Modifier.fillParentMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                // Bank 2 — Bo empty state. Same component for the error path; the
+                // bank copy is friendly enough to read either way.
+                live.localapp.local.ui.emptystate.BoEmptyState(
+                    bank = live.localapp.local.ui.emptystate.EmptyStateCopy.NO_PLACES,
+                    ctaLabel = "Refresh",
+                    onCta = onRetry,
+                    rotationKey = hasError,
+                )
+            }
+        }
+    }
 }
 
 /**
