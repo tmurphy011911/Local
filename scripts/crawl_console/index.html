@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Crawl Console — Local</title>
+<style>
+  :root {
+    --bg:#f6f7f9; --panel:#fff; --line:#e3e6ea; --ink:#1a1f24; --muted:#6b7580;
+    --accent:#2563eb; --good:#0f9d58; --bad:#d23f31; --warn:#c77700;
+    --chip:#eef2f7;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;
+         color:var(--ink); background:var(--bg); }
+  header { padding:12px 18px; background:var(--panel); border-bottom:1px solid var(--line);
+           display:flex; align-items:center; gap:14px; flex-wrap:wrap; position:sticky; top:0; z-index:5; }
+  header h1 { font-size:15px; margin:0; font-weight:650; }
+  header h1 small { color:var(--muted); font-weight:400; }
+  .filters { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .filters label { color:var(--muted); font-size:12px; display:flex; flex-direction:column; gap:2px; }
+  select, input[type=number], input[type=text] {
+    font:inherit; padding:6px 8px; border:1px solid var(--line); border-radius:6px; background:#fff; color:var(--ink); }
+  input[type=text] { width:100%; }
+  button { font:inherit; padding:7px 13px; border:1px solid var(--line); border-radius:6px;
+           background:#fff; color:var(--ink); cursor:pointer; font-weight:550; }
+  button.primary { background:var(--accent); color:#fff; border-color:var(--accent); }
+  button.good { background:var(--good); color:#fff; border-color:var(--good); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .wrap { display:grid; grid-template-columns:minmax(420px,1.1fr) minmax(420px,1fr); gap:0; height:calc(100vh - 58px); }
+  .left { overflow:auto; border-right:1px solid var(--line); }
+  .right { overflow:auto; padding:18px; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { position:sticky; top:0; background:var(--panel); font-size:11px; text-transform:uppercase;
+       letter-spacing:.03em; color:var(--muted); z-index:1; }
+  tbody tr { cursor:pointer; }
+  tbody tr:hover { background:#eef4ff; }
+  tbody tr.sel { background:#e0ebff; }
+  td.name { white-space:normal; font-weight:550; }
+  .pill { display:inline-block; padding:1px 7px; border-radius:20px; font-size:12px; font-weight:600; }
+  .pill.zero { background:#fde8e6; color:var(--bad); }
+  .pill.some { background:#e7f6ec; color:var(--good); }
+  .u-yes { color:var(--good); } .u-no { color:var(--bad); }
+  .muted { color:var(--muted); }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:16px; margin-bottom:14px; }
+  .card h2 { margin:0 0 4px; font-size:16px; }
+  .field { margin:12px 0; }
+  .field > span { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .status { font-weight:650; }
+  .status.ok { color:var(--good); } .status.bad { color:var(--bad); } .status.warn { color:var(--warn); }
+  .events { margin-top:12px; }
+  .ev { padding:8px 10px; border:1px solid var(--line); border-radius:8px; margin-bottom:6px; background:#fafbfc; }
+  .ev .t { font-weight:600; }
+  .ev .m { color:var(--muted); font-size:12px; margin-top:2px; }
+  .ev a { color:var(--accent); text-decoration:none; }
+  .empty { color:var(--muted); padding:40px 18px; text-align:center; }
+  .spin { color:var(--muted); }
+  .banner { padding:10px 12px; border-radius:8px; margin-bottom:12px; font-weight:550; }
+  .banner.ok { background:#e7f6ec; color:#0b6b3a; }
+  .banner.bad { background:#fde8e6; color:#a3271c; }
+  code { background:var(--chip); padding:1px 5px; border-radius:4px; font-size:12px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🕷 Crawl Console <small>— test a URL against the real crawler, then persist it</small></h1>
+  <div class="filters">
+    <label>State
+      <select id="f-state">
+        <option value="">All</option>
+        <option>CA</option><option>MA</option><option>NJ</option>
+        <option>NY</option><option>PA</option><option>RI</option>
+      </select>
+    </label>
+    <label>Min PIR (&gt;)
+      <input id="f-pir" type="number" value="70" style="width:80px" />
+    </label>
+    <label>Coverage
+      <select id="f-cov">
+        <option value="zero">0 events</option>
+        <option value="lt2">&lt; 2 events</option>
+        <option value="nourl">No URL</option>
+        <option value="all">All</option>
+      </select>
+    </label>
+    <button class="primary" id="f-load">Load venues</button>
+    <span id="f-count" class="muted"></span>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="left">
+    <table>
+      <thead>
+        <tr><th>Venue</th><th>City</th><th>PIR</th><th>Events</th><th>URL</th><th>Last crawl</th></tr>
+      </thead>
+      <tbody id="rows"><tr><td colspan="6" class="empty">Set filters and hit “Load venues”.</td></tr></tbody>
+    </table>
+  </div>
+
+  <div class="right" id="editor">
+    <div class="empty">Select a venue on the left to test a crawl.</div>
+  </div>
+</div>
+
+<script>
+const $ = (s) => document.querySelector(s);
+let venues = [];
+let selected = null;
+
+function fmtDays(iso) {
+  if (!iso) return "never";
+  const d = Math.floor((Date.now() - Date.parse(iso)) / 86400000);
+  return d <= 0 ? "today" : d + "d";
+}
+
+async function loadVenues() {
+  const state = $("#f-state").value;
+  const pir = $("#f-pir").value || "0";
+  const cov = $("#f-cov").value;
+  $("#f-count").textContent = "loading…";
+  $("#rows").innerHTML = '<tr><td colspan="6" class="empty spin">Loading…</td></tr>';
+  try {
+    const r = await fetch(`/api/venues?state=${state}&minPir=${pir}&coverage=${cov}`);
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || "load failed");
+    venues = j.venues;
+    $("#f-count").textContent = `${j.count} venue${j.count === 1 ? "" : "s"}`;
+    renderRows();
+  } catch (e) {
+    $("#f-count").textContent = "";
+    $("#rows").innerHTML = `<tr><td colspan="6" class="empty">⚠ ${e.message}</td></tr>`;
+  }
+}
+
+function renderRows() {
+  if (!venues.length) {
+    $("#rows").innerHTML = '<tr><td colspan="6" class="empty">No venues match.</td></tr>';
+    return;
+  }
+  $("#rows").innerHTML = venues.map((v, i) => `
+    <tr data-i="${i}" class="${selected && selected.id === v.id ? "sel" : ""}">
+      <td class="name">${esc(v.name)}</td>
+      <td>${esc(v.city)}</td>
+      <td>${v.pir ?? "—"}</td>
+      <td><span class="pill ${v.event_count ? "some" : "zero"}">${v.event_count}</span></td>
+      <td class="${v.events_url ? "u-yes" : "u-no"}">${v.events_url ? "✓" : "—"}</td>
+      <td class="muted">${fmtDays(v.last_crawled_at)}</td>
+    </tr>`).join("");
+  document.querySelectorAll("#rows tr[data-i]").forEach((tr) =>
+    tr.addEventListener("click", () => selectVenue(venues[+tr.dataset.i])));
+}
+
+function selectVenue(v) {
+  selected = v;
+  renderRows();
+  $("#editor").innerHTML = `
+    <div class="card">
+      <h2>${esc(v.name)}</h2>
+      <div class="muted">${esc(v.city)}${v.city ? ", " : ""}${esc(v.state)} · PIR ${v.pir ?? "—"} ·
+        currently <b class="${v.event_count ? "u-yes" : "u-no"}">${v.event_count} events</b> ·
+        last crawl ${fmtDays(v.last_crawled_at)} ·
+        success ${v.crawl_success_rate == null ? "—" : v.crawl_success_rate}</div>
+
+      <div class="field">
+        <span>Events URL (comma-separate multiple; <code>{YYYY}</code>/<code>{MM}</code> date tokens supported)</span>
+        <input id="e-url" type="text" value="${esc(v.events_url)}" placeholder="https://venue.org/events" />
+      </div>
+      <div class="row">
+        <label class="row" style="gap:6px"><input id="e-stealth" type="checkbox" ${v.needs_stealth ? "checked" : ""}/> JS render (stealth / Scrapfly)</label>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="e-test">Test crawl (no writes)</button>
+        <button class="good" id="e-commit" disabled>Save URL &amp; crawl for real</button>
+      </div>
+    </div>
+    <div id="result"></div>`;
+
+  $("#e-test").addEventListener("click", testCrawl);
+  $("#e-commit").addEventListener("click", commit);
+  $("#e-url").addEventListener("input", () => { $("#e-commit").disabled = true; });
+}
+
+async function testCrawl() {
+  const url = $("#e-url").value.trim();
+  if (!url) { $("#result").innerHTML = `<div class="banner bad">Enter a URL first.</div>`; return; }
+  const needsStealth = $("#e-stealth").checked;
+  $("#e-test").disabled = true;
+  $("#result").innerHTML = `<div class="card spin">Running the real crawler against <code>${esc(url)}</code>… this can take 10–40s.</div>`;
+  try {
+    const r = await fetch("/api/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ venueId: selected.id, url, needsStealth }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || "test failed");
+    renderResult(j, false);
+    $("#e-commit").disabled = j.count === 0;
+  } catch (e) {
+    $("#result").innerHTML = `<div class="banner bad">⚠ ${esc(e.message)}</div>`;
+  } finally {
+    $("#e-test").disabled = false;
+  }
+}
+
+async function commit() {
+  const url = $("#e-url").value.trim();
+  const needsStealth = $("#e-stealth").checked;
+  if (!confirm(`Save this URL to “${selected.name}” and crawl for real now?\n\n${url}`)) return;
+  $("#e-commit").disabled = true;
+  $("#result").innerHTML = `<div class="card spin">Saving URL and crawling for real…</div>`;
+  try {
+    const r = await fetch("/api/commit", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ venueId: selected.id, url, needsStealth }),
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || "commit failed");
+    $("#result").innerHTML =
+      `<div class="banner ok">✓ Saved <code>${esc(url)}</code> and upserted <b>${j.saved}</b> events (status: ${esc(j.status)}).
+       The next scheduled crawl will keep this venue updated automatically.</div>`;
+    // reflect locally
+    selected.events_url = url;
+    selected.event_count = j.saved;
+    selected.needs_stealth = needsStealth;
+    selected.last_crawled_at = new Date().toISOString();
+    renderRows();
+  } catch (e) {
+    $("#result").innerHTML = `<div class="banner bad">⚠ ${esc(e.message)}</div>`;
+    $("#e-commit").disabled = false;
+  }
+}
+
+function renderResult(j, committed) {
+  const okish = j.count > 0;
+  const cls = okish ? "ok" : (String(j.status).match(/error|empty/) ? "bad" : "warn");
+  const events = (j.events || []).map((e) => `
+    <div class="ev">
+      <div class="t">${esc(e.title)}</div>
+      <div class="m">${esc(e.start_at || "no date")}${e.category ? " · " + esc(e.category) : ""}${e.venue_name ? " · " + esc(e.venue_name) : ""}
+        ${e.source_url ? ` · <a href="${esc(e.source_url)}" target="_blank" rel="noopener">source ↗</a>` : ""}</div>
+    </div>`).join("");
+  $("#result").innerHTML = `
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <div class="status ${cls}">${okish ? "✓" : "✗"} ${j.count} event${j.count === 1 ? "" : "s"} extracted</div>
+        <div class="muted">status: <code>${esc(j.status)}</code>${j.reason ? " · " + esc(j.reason) : ""}</div>
+      </div>
+      ${okish
+        ? `<div class="muted" style="margin-top:6px">Looks good — hit <b>Save URL &amp; crawl for real</b> to persist. Showing up to 50:</div>`
+        : `<div class="muted" style="margin-top:6px">Nothing extracted. Try a different events URL (deeper calendar page), or toggle <b>JS render</b> for Squarespace/Cloudflare/SPA sites.</div>`}
+      <div class="events">${events}</div>
+    </div>`;
+}
+
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"]/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+$("#f-load").addEventListener("click", loadVenues);
+$("#f-pir").addEventListener("keydown", (e) => { if (e.key === "Enter") loadVenues(); });
+</script>
+</body>
+</html>
