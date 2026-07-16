@@ -944,7 +944,11 @@ const PARSERS = {
 // ── Supabase I/O ──
 
 async function fetchEnabledFeeds() {
-  const url = `${SUPABASE_URL}/rest/v1/municipal_feeds?enabled=eq.true&select=*`;
+  // Stalest-first: under a per-run time budget (SYNC_MAX_MINUTES) we may not
+  // reach every feed in one run. Ordering by last_synced_at ascending (never-
+  // synced first) guarantees each feed refreshes within a few runs instead of
+  // the tail perpetually starving.
+  const url = `${SUPABASE_URL}/rest/v1/municipal_feeds?enabled=eq.true&select=*&order=last_synced_at.asc.nullsfirst`;
   const res = await fetch(url, {
     headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` },
   });
@@ -1067,9 +1071,27 @@ async function main() {
   }
   console.log(`Municipal Feed Sync — ${feeds.length} enabled feed(s)\n`);
 
+  // Self-imposed time budget so the job exits 0 (green) instead of being killed
+  // at the GitHub `timeout-minutes` hard cap — which marks the whole daily-crawl
+  // run as failed. Feeds not reached this run are the stalest, so the next run
+  // (ordered last_synced_at.asc) picks them up first. Mirrors DISCOVER_MAX_MINUTES
+  // in discover_municipal_feeds.js. Unset (0) in local/manual runs = sync all.
+  const MAX_MINUTES = parseFloat(process.env.SYNC_MAX_MINUTES || "0");
+  const startedAt = Date.now();
+
   let totalFetched = 0, totalUpserted = 0, totalErrors = 0;
+  let processed = 0;
 
   for (const feed of feeds) {
+    if (MAX_MINUTES > 0 && (Date.now() - startedAt) / 60000 >= MAX_MINUTES) {
+      const remaining = feeds.length - processed;
+      console.log(
+        `\n⏱ Time budget of ${MAX_MINUTES}m reached — synced ${processed}/${feeds.length} feed(s); ` +
+          `${remaining} stalest deferred to next run (they sync first next time).`
+      );
+      break;
+    }
+    processed++;
     console.log(`━━━ ${feed.name} (${feed.type}, ${feed.city}, ${feed.state}) ━━━`);
     const parser = PARSERS[feed.type];
     if (!parser) {
@@ -1099,6 +1121,7 @@ async function main() {
   }
 
   console.log("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
+  console.log(`Processed ${processed}/${feeds.length} feed(s) in ${((Date.now() - startedAt) / 60000).toFixed(1)}m`);
   console.log(`Total:  ${totalFetched} fetched, ${totalUpserted} upserted, ${totalErrors} errors, ${TOTAL_DROPPED} dropped (no confident location)`);
 }
 
