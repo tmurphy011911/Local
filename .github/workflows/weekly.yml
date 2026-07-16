@@ -191,10 +191,12 @@ jobs:
     # instead of being killed mid-probe (which used to skip the downstream sync).
     #
     # Bumped from 30→60: high-WAF tourism domains routed through Scrapfly
-    # (asp+render_js) routinely sit at 30–35s per probe; one slow probe
-    # straddling the 22m budget check pushed wall-clock past 30m before the
-    # script could exit cleanly. 60m cap + DISCOVER_MAX_MINUTES=50 gives ~10m
-    # of safety while letting many more candidates probe per run.
+    # (asp+render_js) routinely sit at 30–35s per probe. The budget is checked
+    # once per city, but a single city fires many sequential probes, so one slow
+    # city near the mark can overshoot ~10m. 50m budget under a 60m cap left only
+    # ~10m headroom → ~2/9 runs still tripped the cap. DISCOVER_MAX_MINUTES=45
+    # widens that to ~15m so the script exits 0 (green) on its own; the
+    # continue-on-error below is the final backstop.
     timeout-minutes: 60
     # Best-effort: discover upserts feeds as it goes and resumes uncovered
     # cities next run, so a straddled budget check that trips the 60m hard cap
@@ -210,7 +212,7 @@ jobs:
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          DISCOVER_MAX_MINUTES: '50'
+          DISCOVER_MAX_MINUTES: '45'
         run: node discover_municipal_feeds.js
 
   sync-municipal-feeds:
