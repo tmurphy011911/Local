@@ -2023,6 +2023,8 @@ async function detectAndCrawlPlatform(venue) {
 
 const DATE_TOKEN_RE = /\{(YYYY-MM|YYYY\/MM|YYYY|YY|MMMM|MMM|mmmm|mmm|MM|M|DD|D)\}/;
 const DATE_MONTHS_AHEAD = parseInt(process.env.URL_DATE_MONTHS_AHEAD || "2", 10);
+const DATE_DAYS_AHEAD = parseInt(process.env.URL_DATE_DAYS_AHEAD || "14", 10);
+const DAY_TOKEN_RE = /\{(DD|D)\}/;
 
 function applyDateTokens(url, date) {
   const yyyy = String(date.getFullYear());
@@ -2053,9 +2055,21 @@ function expandDateTokens(url) {
   if (!DATE_TOKEN_RE.test(url)) return [url];
   const today = new Date();
   const out = [];
-  for (let offset = 0; offset <= DATE_MONTHS_AHEAD; offset++) {
-    const d = new Date(today.getFullYear(), today.getMonth() + offset, 1);
-    out.push(applyDateTokens(url, d));
+  if (DAY_TOKEN_RE.test(url)) {
+    // Day-granular URL (e.g. a cinema's ?date=YYYY-MM-DD, one page per day).
+    // Monthly stepping would only hit the 1st of each month, so walk the next
+    // DATE_DAYS_AHEAD days instead — that's how showtimes / box-office
+    // calendars paginate.
+    for (let offset = 0; offset <= DATE_DAYS_AHEAD; offset++) {
+      const d = new Date(today.getFullYear(), today.getMonth(), today.getDate() + offset);
+      out.push(applyDateTokens(url, d));
+    }
+  } else {
+    // Month-granular URL: current month + next DATE_MONTHS_AHEAD months.
+    for (let offset = 0; offset <= DATE_MONTHS_AHEAD; offset++) {
+      const d = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+      out.push(applyDateTokens(url, d));
+    }
   }
   return [...new Set(out)];
 }
