@@ -50,8 +50,6 @@ const CORS_HEADERS = {
   "Access-Control-Allow-Headers": "Content-Type, Authorization",
 };
 
-// In-memory cache of the FULLY-SCORED sorted list. Per-request only slices
-// for pagination — no re-scoring → refresh returns identical order inside TTL.
 interface ScoredVenue {
   v: VenueRow;
   dist: number;
@@ -61,22 +59,46 @@ interface ScoredVenue {
   events: InlineEventRow[];
   score: number;
 }
-interface CacheEntry {
-  scored: ScoredVenue[];
+
+// ── Caches (three tiers, widest-shared first) ─────────────────────────────
+// The Places feed's dominant cost is fetchEventsByVenue — a scan of every
+// future active event in the bbox (up to ~20k rows) just to compute per-venue
+// counts + inline events. That work is entirely USER-INDEPENDENT, yet the old
+// single cache keyed the whole scored list by user_id, so every user (and
+// every user again after the 10-min TTL / on any isolate restart) re-paid the
+// full 20k-row transfer — the "Places tab takes forever to load" bug.
+//
+// Split the cache so the heavy DB work is reused as widely as possible:
+//   • eventBucketsCache — key: lat|lng|radius  (NO user, NO query/city). The
+//     bbox event scan; shared by every user, search keystroke, city/category
+//     drill and sort at that location.
+//   • venuesCache       — key: + query|city.   The (cheaper) venue fetch+dedup.
+//   • scoredCache       — key: + user_id.       The per-user scored/sorted list.
+// A scored-cache miss now only re-scores in memory (~500 venues, sub-ms) plus
+// the two cheap per-user lookups (prefs + affinity), as long as the shared
+// tiers are warm — instead of re-hitting the DB for tens of thousands of rows.
+const CACHE_TTL_MS = 10 * 60 * 1000;
+
+interface Cached<T> {
+  value: T;
   timestamp: number;
 }
-const CACHE_TTL_MS = 10 * 60 * 1000;
-const cache = new Map<string, CacheEntry>();
-
-function getCached(key: string): CacheEntry | null {
-  const hit = cache.get(key);
+function cacheGet<T>(m: Map<string, Cached<T>>, key: string): T | null {
+  const hit = m.get(key);
   if (!hit) return null;
   if (Date.now() - hit.timestamp > CACHE_TTL_MS) {
-    cache.delete(key);
+    m.delete(key);
     return null;
   }
-  return hit;
+  return hit.value;
 }
+function cacheSet<T>(m: Map<string, Cached<T>>, key: string, value: T): void {
+  m.set(key, { value, timestamp: Date.now() });
+}
+
+const eventBucketsCache = new Map<string, Cached<Record<string, VenueEvents>>>();
+const venuesCache = new Map<string, Cached<VenueRow[]>>(); // deduped
+const scoredCache = new Map<string, Cached<ScoredVenue[]>>();
 
 // ── Geo ──
 
@@ -457,36 +479,55 @@ Deno.serve(async (req) => {
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
-    // Cache key includes user_id so taste-influenced ordering is stable per
-    // user. hasEventsOnly is applied AFTER the cache read so it doesn't split
-    // the cache (the scored list holds eventCount; toggling just filters).
-    const cacheKey = [
+    // Tiered cache keys (see the cache declarations up top). The scored list is
+    // still per-user (taste-influenced ordering); the event scan and venue fetch
+    // that feed it are shared across users. hasEventsOnly / sort / category are
+    // applied AFTER the cache read so they don't split any tier.
+    const geoKey = [
       Math.round(lat * 10) / 10,
       Math.round(lng * 10) / 10,
+      radiusMiles,
+    ].join("|");
+    const venuesKey = [
+      geoKey,
       (query ?? "").trim().toLowerCase(),
       (city ?? "").trim().toLowerCase(),
-      radiusMiles,
-      userId ?? "anon",
     ].join("|");
+    const scoredKey = [venuesKey, userId ?? "anon"].join("|");
 
-    let scored: ScoredVenue[];
-    const cached = getCached(cacheKey);
-    if (cached) {
-      scored = cached.scored;
-    } else {
-      const [rawVenues, eventBuckets, prefs, affinityMap] = await Promise.all([
-        // category stays null so the scored list is category-complete within
-        // its scope (category drill-down + its facet counts are computed
-        // post-fetch). city IS pushed down so a city-filtered list is COMPLETE,
-        // not a post-hoc slice of the top-500 (which dropped mid-rank venues in
-        // smaller cities). city is in the cache key below to match.
-        fetchVenues(supabase, lat, lng, query, null, radiusMiles, city),
-        fetchEventsByVenue(supabase, lat, lng, radiusMiles),
+    let scored = cacheGet(scoredCache, scoredKey);
+    if (!scored) {
+      // Reuse the shared, user-independent tiers when warm.
+      let eventBuckets = cacheGet(eventBucketsCache, geoKey);
+      let venues = cacheGet(venuesCache, venuesKey);
+
+      // Fetch only the cold tiers. The event scan (the dominant cost) and the
+      // venue fetch are skipped when a prior request already warmed them; the
+      // per-user prefs + affinity are always fetched (single-row / small RPC,
+      // cheap). category stays null in fetchVenues so the scored list is
+      // category-complete within scope (drill-down + facets are post-fetch);
+      // city IS pushed down so a city-filtered list is COMPLETE, not a slice of
+      // the top-500 (which dropped mid-rank venues in smaller cities).
+      const [fetchedBuckets, fetchedRawVenues, prefs, affinityMap] = await Promise.all([
+        eventBuckets
+          ? Promise.resolve(eventBuckets)
+          : fetchEventsByVenue(supabase, lat, lng, radiusMiles),
+        venues
+          ? Promise.resolve<VenueRow[] | null>(null)
+          : fetchVenues(supabase, lat, lng, query, null, radiusMiles, city),
         userId ? fetchUserPrefs(supabase, userId) : Promise.resolve(null),
         fetchCategoryAffinity(supabase, userId),
       ]);
+
+      if (!eventBuckets) {
+        eventBuckets = fetchedBuckets;
+        cacheSet(eventBucketsCache, geoKey, eventBuckets);
+      }
       const counts = countsFromBuckets(eventBuckets);
-      const venues = dedupVenues(rawVenues, counts);
+      if (!venues) {
+        venues = dedupVenues(fetchedRawVenues!, counts);
+        cacheSet(venuesCache, venuesKey, venues);
+      }
       const maxRank = venues.reduce((m, v) => Math.max(m, v.public_interest_rank ?? 0), 0);
 
       scored = venues
@@ -494,7 +535,7 @@ Deno.serve(async (req) => {
         .map((v) => {
           const dist = distanceMiles(lat, lng, v.lat!, v.lng!);
           const key = normalizeVenueName(v.name);
-          const bucket = eventBuckets[key];
+          const bucket = eventBuckets![key];
           const eventCount = bucket?.count ?? 0;
           const events = bucket?.events ?? [];
           return {
@@ -510,7 +551,7 @@ Deno.serve(async (req) => {
         // calls even when two venues score identically.
         .sort((a, b) => b.score - a.score || a.v.id.localeCompare(b.v.id));
 
-      cache.set(cacheKey, { scored, timestamp: Date.now() });
+      cacheSet(scoredCache, scoredKey, scored);
     }
 
     // Apply user-selected sort over the FULL scored list before paginating,
