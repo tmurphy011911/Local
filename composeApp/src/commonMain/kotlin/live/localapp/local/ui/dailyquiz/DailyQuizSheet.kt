@@ -10,7 +10,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -421,10 +420,15 @@ private fun SharePostcard(
                 Spacer(Modifier.width(6.dp))
                 Text("/$maxScore", modifier = Modifier.alignByBaseline().alpha(maxAlpha), style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 22.sp, color = AppColors.Ink3))
             }
-            Text(
-                if (isFirst) "FOMO EARNED TODAY" else "FOMO EARNED TODAY · BEST ALL TIME $bestAllTime",
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = AppColors.Ink3, letterSpacing = 0.5.sp),
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                val subtitleStyle = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 11.sp, color = AppColors.Ink3, letterSpacing = 0.5.sp)
+                Text("FOMO EARNED TODAY", style = subtitleStyle)
+                if (!isFirst) {
+                    // Best-all-time fades in with the score's "/maxScore" once the
+                    // tally lands — hidden until the total is actually revealed.
+                    Text(" · BEST ALL TIME $bestAllTime", modifier = Modifier.alpha(maxAlpha), style = subtitleStyle)
+                }
+            }
             Spacer(Modifier.height(18.dp))
             breakdown.forEachIndexed { i, b ->
                 if (i < rowsShown) {
@@ -497,10 +501,14 @@ private fun PrimaryButton(text: String, onClick: () -> Unit) {
         // Darker base peeking 4.dp below = the hard "3D" shadow.
         Box(Modifier.fillMaxWidth().height(52.dp).align(Alignment.BottomCenter).clip(RoundedCornerShape(14.dp)).background(AppColors.SunDk))
         Box(
-            Modifier.fillMaxWidth().height(52.dp).align(Alignment.TopCenter).clip(RoundedCornerShape(14.dp))
+            // pressable (scale press, no ripple) so the face compresses on tap like
+            // the app's other CTAs — the default clickable ripple flashed the whole
+            // full-width button.
+            Modifier.fillMaxWidth().height(52.dp).align(Alignment.TopCenter)
+                .pressable(onClick = onClick, scale = 0.97f)
+                .clip(RoundedCornerShape(14.dp))
                 .background(AppColors.Sun)
-                .border(2.dp, AppColors.SunDk, RoundedCornerShape(14.dp))
-                .clickable(onClick = onClick),
+                .border(2.dp, AppColors.SunDk, RoundedCornerShape(14.dp)),
             contentAlignment = Alignment.Center,
         ) {
             Text(text, style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 16.sp, color = AppColors.Ink))

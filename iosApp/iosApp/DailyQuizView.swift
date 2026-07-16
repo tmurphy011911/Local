@@ -112,12 +112,15 @@ struct DailyQuizView: View {
     private let questionMs: Double = 10_000
     private let revealHold: Double = 1.1
 
+    @Namespace private var boGeo   // lets Bo glide between its centred + top-left slots
+
     @State private var quiz: DailyQuizJson?
     @State private var phase: Phase = .question
     @State private var questionIndex = 0
     @State private var recorded: [AnswerOut] = []
     @State private var live = false            // true only once the clock is running
     @State private var intro: IntroStep = .boBig
+    @State private var questionPlaced = false  // Bo has floated to its top-left slot
     @State private var streamedCount = 0       // chars of the question revealed
     @State private var readInSecs = 2
     @State private var deadline = Date()
@@ -134,11 +137,14 @@ struct DailyQuizView: View {
     @State private var rowRevealed: [Bool] = [false, false, false]
     @State private var rowBlinkOp: [Double] = [1, 1, 1]  // wrong-answer "0" blink opacity
     @State private var boStreamed = 0                    // chars of Bo's reaction revealed
+    @State private var boPlaced = false                  // recap Bo has floated to its top-left slot
     @State private var rowsDone = false                  // all rows revealed → float Bo up
     @State private var shareVisible = false              // Bo finished typing → float Share up
 
     private let ticker = Timer.publish(every: 0.05, on: .main, in: .common).autoconnect()
     private let tick = UIImpactFeedbackGenerator(style: .light)
+    // Answer-tap feedback: one hit on selection, a second if the pick is correct.
+    private let answerTap = UIImpactFeedbackGenerator(style: .medium)
 
     private var remainingMs: Double {
         live ? max(0, deadline.timeIntervalSince(now) * 1000) : questionMs
@@ -198,17 +204,30 @@ struct DailyQuizView: View {
             }
             .padding(.bottom, 16)
 
-            // Bo types the question: sits to the LEFT of the first line and shrinks
-            // in place from big. Keeps the question compact vertically.
-            HStack(alignment: .top, spacing: 12) {
-                Image("BoDefaultClean").resizable().scaledToFit()
-                    .frame(width: intro == .boBig ? 96 : 38, height: intro == .boBig ? 96 : 38)
-                if intro != .boBig {
-                    Text(typed(q.question, streamedCount)).font(F.heading(23, .bold)).foregroundColor(C.ink)
-                        .fixedSize(horizontal: false, vertical: true)
+            // Bo enters big + dead-centred, shrinks in place, then FLOATS to the
+            // top-left. One matched Bo (`boGeo`) glides between the two slots so the
+            // move is smooth, not a jump. The question's full line is laid out
+            // (invisible) the moment Bo starts floating, so it doesn't reflow; the
+            // characters only begin revealing AFTER Bo lands (see beginQuestion).
+            // phaseKey: 0 (big/centred) → 1 (shrunk/centred) → 2 (placed) animates
+            // each transition once.
+            let phaseKey = intro == .boBig ? 0 : (questionPlaced ? 2 : 1)
+            Group {
+                if !questionPlaced {
+                    boImage(intro == .boBig ? 96 : 30)
+                        .matchedGeometryEffect(id: "bo", in: boGeo)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                } else {
+                    HStack(alignment: .top, spacing: 12) {
+                        boImage(30).matchedGeometryEffect(id: "bo", in: boGeo)
+                        Text(typed(q.question, streamedCount))
+                            .font(F.heading(23, .bold)).foregroundColor(C.ink)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Spacer(minLength: 0)
+                    }
                 }
-                Spacer(minLength: 0)
             }
+            .animation(.spring(response: 0.55, dampingFraction: 0.82), value: phaseKey)
             .padding(.bottom, 10)
 
             if intro == .readIn {
@@ -279,7 +298,7 @@ struct DailyQuizView: View {
             .clipShape(RoundedRectangle(cornerRadius: 14))
             .animation(.easeInOut(duration: 0.22), value: state)
         }
-        .buttonStyle(.plain)
+        .buttonStyle(QuizPressStyle())
         .disabled(!enabled)
     }
 
@@ -327,9 +346,29 @@ struct DailyQuizView: View {
             }.frame(height: 6)
             VStack(alignment: .leading, spacing: 0) {
                 Text("DAILY LOCAL").font(F.heading(13, .black)).foregroundColor(C.amberDk).tracking(1)
-                Text("\(score)").font(F.heading(52, .black)).foregroundColor(C.ink).padding(.top, 10)
-                Text(r.is_first ? "FOMO EARNED TODAY" : "FOMO EARNED TODAY · BEST ALL TIME \(r.best_all_time)")
-                    .font(F.body(11, .bold)).foregroundColor(C.ink3).tracking(0.5)
+                // Score, with the theoretical max ("/600" for the standard easy/
+                // medium/hard set) fading in beside it once the rows finish tallying
+                // — just before Bo types.
+                let maxScore = r.breakdown.reduce(0) { $0 + 100 * diffMult($1.difficulty) }
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    Text("\(score)").font(F.heading(52, .black)).foregroundColor(C.ink)
+                    if full || rowsDone {
+                        Text("/\(maxScore)").font(F.heading(22, .black)).foregroundColor(C.ink3)
+                            .transition(.opacity)
+                    }
+                }
+                .padding(.top, 10)
+                // Best-all-time fades in with the "/maxScore" once the rows finish
+                // tallying — hidden until the total score is actually revealed.
+                HStack(spacing: 0) {
+                    Text("FOMO EARNED TODAY")
+                        .font(F.body(11, .bold)).foregroundColor(C.ink3).tracking(0.5)
+                    if !r.is_first && (full || rowsDone) {
+                        Text(" · BEST ALL TIME \(r.best_all_time)")
+                            .font(F.body(11, .bold)).foregroundColor(C.ink3).tracking(0.5)
+                            .transition(.opacity)
+                    }
+                }
                 VStack(spacing: 12) {
                     ForEach(Array(r.breakdown.enumerated()), id: \.offset) { i, b in
                         if full || i < rowsShown {
@@ -393,22 +432,37 @@ struct DailyQuizView: View {
         }
     }
 
-    /// Bo appears beneath the results and types out his reaction line.
+    /// Bo appears beneath the results and types out his reaction line. Same matched
+    /// float as the questions: Bo starts centred, floats to the top-left (the full
+    /// line laid out invisibly so it doesn't reflow), then types once landed —
+    /// driven by `boPlaced` (see runResults). Not a centre→disappear→left jump.
     private func boReaction(_ r: QuizResultJson) -> some View {
-        HStack(alignment: .top, spacing: 10) {
-            Image("BoDefaultClean").resizable().scaledToFit().frame(width: 40, height: 40)
-            Text(typed(r.bo_message, boStreamed))
-                .font(F.body(14, .semibold)).foregroundColor(C.ink2)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 4)
-            Spacer(minLength: 0)
+        Group {
+            if !boPlaced {
+                boImage(26)
+                    .matchedGeometryEffect(id: "bo", in: boGeo)
+                    .frame(maxWidth: .infinity, alignment: .center)
+            } else {
+                HStack(alignment: .top, spacing: 10) {
+                    boImage(26).matchedGeometryEffect(id: "bo", in: boGeo)
+                    Text(typed(r.bo_message, boStreamed))
+                        .font(F.body(14, .semibold)).foregroundColor(C.ink2)
+                        .fixedSize(horizontal: false, vertical: true)
+                    Spacer(minLength: 0)
+                }
+            }
         }
+        .animation(.spring(response: 0.55, dampingFraction: 0.82), value: boPlaced)
     }
 
-    /// Reveals a streaming string without reflow: the FULL text is always laid
-    /// out (so line breaks + height are fixed from the first frame), and only the
-    /// not-yet-typed tail is made transparent. Revealing more characters never
-    /// re-wraps, so no line ever jumps as a word crosses the line boundary.
+    private func boImage(_ size: CGFloat) -> some View {
+        Image("BoDefaultClean").resizable().scaledToFit().frame(width: size, height: size)
+    }
+
+    /// Reveals a streaming string WITHOUT reflow: the full line is always laid out
+    /// (so wrap points + height are fixed from the first frame), and only the
+    /// not-yet-typed tail is painted clear. Revealing more characters never
+    /// re-wraps, so lines never jump mid-read as a word crosses the boundary.
     private func typed(_ full: String, _ shown: Int) -> AttributedString {
         var a = AttributedString(full)
         let n = max(0, min(shown, full.count))
@@ -450,7 +504,7 @@ struct DailyQuizView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 14))
                 .overlay(RoundedRectangle(cornerRadius: 14).stroke(C.amberDk, lineWidth: 2))
                 .shadow(color: C.amberDk.opacity(0.4), radius: 0, x: 0, y: 4)
-        }.buttonStyle(.plain)
+        }.buttonStyle(QuizPressStyle())
     }
 
     private func secondaryButton(_ title: String, _ action: @escaping () -> Void) -> some View {
@@ -458,7 +512,7 @@ struct DailyQuizView: View {
             Text(title).font(F.body(16, .bold)).foregroundColor(C.amberDk)
                 .frame(maxWidth: .infinity, minHeight: 52)
                 .overlay(RoundedRectangle(cornerRadius: 16).stroke(C.amber, lineWidth: 1.5))
-        }.buttonStyle(.plain)
+        }.buttonStyle(QuizPressStyle())
     }
 
     // MARK: Logic
@@ -473,14 +527,23 @@ struct DailyQuizView: View {
     private func beginQuestion() {
         live = false
         intro = .boBig
+        questionPlaced = false
         streamedCount = 0
         readInSecs = 2
         now = Date()
-        // Bo lands big, then shrinks to the corner as the question streams in.
+        // Choreography: Bo lands big + centred → shrinks in place → floats to the
+        // top-left → (only once it's landed) the question types in.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
             guard phase == .question, !revealing else { return }
-            withAnimation(.spring(response: 0.5, dampingFraction: 0.72)) { intro = .streaming }
-            streamQuestion()
+            intro = .streaming                                  // shrink at centre
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45) {
+                guard intro == .streaming, phase == .question, !revealing else { return }
+                withAnimation(.spring(response: 0.55, dampingFraction: 0.82)) { questionPlaced = true }  // float left
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {   // wait out the float
+                    guard questionPlaced, intro == .streaming, phase == .question, !revealing else { return }
+                    streamQuestion()                            // now type
+                }
+            }
         }
     }
 
@@ -523,6 +586,12 @@ struct DailyQuizView: View {
 
     private func handleAnswer(_ i: Int) {
         guard phase == .question, live, !revealing, let q = quiz?.questions[questionIndex] else { return }
+        // One crisp hit on tap; a second, slightly-delayed hit when the tapped
+        // answer is the correct one (correctness is known client-side).
+        answerTap.impactOccurred()
+        if q.answers.indices.contains(i), q.answers[i].correct {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.09) { answerTap.impactOccurred() }
+        }
         recorded.append(AnswerOut(question_id: q.id, selected_index: i, ms_remaining: Int(remainingMs)))
         reveal(selected: i)
     }
@@ -584,6 +653,7 @@ struct DailyQuizView: View {
         rowsDone = false
         shareVisible = false
         boStreamed = 0
+        boPlaced = false
         tick.prepare()
         var t = 0.4
         for i in 0..<r.breakdown.count {
@@ -607,22 +677,26 @@ struct DailyQuizView: View {
             }
             t = revealAt + (b.correct ? 0.7 : 1.0)
         }
-        // Sequence the after-reveal beats: rows finish → Bo floats up → Bo types
-        // → Share floats up.
+        // Sequence the after-reveal beats: rows finish → Bo appears centred →
+        // Bo floats to the top-left → (once landed) Bo types → Share floats up.
         let boText = r.bo_message
         let hasBo = !boText.isEmpty
-        // 1) Bo floats up once every row has revealed.
+        // 1) Bo appears (centred) once every row has revealed.
         DispatchQueue.main.asyncAfter(deadline: .now() + t + 0.2) {
             withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) { rowsDone = true }
         }
-        // 2) Bo types his line.
-        let boStart = t + 0.55
+        // 2) Bo floats to the top-left, then types AFTER the float lands.
+        let boFloatAt = t + 0.55
+        let boTypeAt = boFloatAt + 0.6
         if hasBo {
-            DispatchQueue.main.asyncAfter(deadline: .now() + boStart) { streamBo(boText) }
+            DispatchQueue.main.asyncAfter(deadline: .now() + boFloatAt) {
+                withAnimation(.spring(response: 0.55, dampingFraction: 0.82)) { boPlaced = true }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + boTypeAt) { streamBo(boText) }
         }
         // 3) Share floats up after Bo finishes typing (or right after Bo appears
         //    if there's no line).
-        let shareAt = hasBo ? boStart + 0.025 * Double(boText.count) + 0.4 : t + 0.6
+        let shareAt = hasBo ? boTypeAt + 0.025 * Double(boText.count) + 0.4 : t + 0.6
         DispatchQueue.main.asyncAfter(deadline: .now() + shareAt) {
             withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) { shareVisible = true }
         }
@@ -659,6 +733,18 @@ struct DailyQuizView: View {
             .first(where: { $0.isKeyWindow }) else { return }
         let vc = UIActivityViewController(activityItems: [r.share_text], applicationActivities: nil)
         window.rootViewController?.topMostPresented().present(vc, animated: true)
+    }
+}
+
+/// Slight press-shrink for the quiz's buttons (answer pills, Share/Retry/Close),
+/// matching the app's PressableCardStyle. Drives isPressed via ButtonStyle so the
+/// scale flips on touch-down with no default full-width highlight flash — the
+/// plain style's press-dim on a maxWidth button read as the whole sheet reacting.
+private struct QuizPressStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.97 : 1.0)
+            .animation(.spring(response: 0.28, dampingFraction: 0.7), value: configuration.isPressed)
     }
 }
 
