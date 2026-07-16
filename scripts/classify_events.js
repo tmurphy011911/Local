@@ -31,6 +31,7 @@
  */
 
 const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
+const { TAG_VOCAB_VERSION, TAG_MIN, TAG_MAX, TAG_FACETS, ALL_TAGS } = require("./taste/tag_vocabulary");
 const MODEL = "claude-haiku-4-5-20251001";
 const API_BASE = "https://api.anthropic.com/v1";
 
@@ -409,27 +410,32 @@ const VALID_SUB_SUBCATEGORIES = [
   "meetup", "open-house", "volunteer", "fundraiser",
 ];
 
-const VALID_TAGS = [
-  // audience
-  "family-friendly", "kids", "adults-only", "date-night", "solo-friendly",
-  "group-activity", "seniors", "teens", "21+",
-  // vibe
-  "chill", "high-energy", "intimate", "epic", "quirky", "romantic",
-  "educational", "competitive", "nostalgic", "spooky",
-  // format
-  "recurring", "one-time", "outdoor", "indoor", "virtual", "livestream",
-  "free", "cheap", "splurge",
-  // interest
-  "live-music", "local-artist", "touring-act", "pro-sports", "college-sports",
-  "film-screening", "art-exhibit", "craft-beer", "wine", "foodie",
-  "literary", "history", "science", "wellness", "fitness",
-  "comedy-show", "open-mic", "trivia", "drag-show", "dance-party",
-  "theatre", "musical", "opera", "classical-music",
-  "walking-tour", "food-tour", "boat-tour", "ghost-tour",
-  "farmers-market", "holiday-event", "festival",
-  "community-event", "fundraiser", "networking",
-  "boston-essential", "hidden-gem",
-];
+// Tags come from the faceted controlled vocabulary
+// (scripts/taste/tag_vocabulary.js). VALID_TAGS is kept as an alias so the
+// rest of this file is unchanged; VALID_TAGS_SET is O(1) for validation.
+const VALID_TAGS = ALL_TAGS;
+const VALID_TAGS_SET = new Set(ALL_TAGS);
+
+// High-cardinality entities (performers, brands) are canonicalized to
+// lowercase underscore slugs and capped, so "Shane Gillis" and "SHANE GILLIS!"
+// collapse to the same feature. Kept OUT of the tag vocabulary on purpose.
+function sanitizeEntities(arr, max = 6) {
+  if (!Array.isArray(arr)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of arr) {
+    if (typeof raw !== "string") continue;
+    const slug = raw.trim().toLowerCase()
+      .replace(/&/g, " and ")
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    if (slug.length < 2 || slug.length > 60 || seen.has(slug)) continue;
+    seen.add(slug);
+    out.push(slug);
+    if (out.length >= max) break;
+  }
+  return out;
+}
 
 // ── Prompt builder ──
 
@@ -440,7 +446,10 @@ For each event below, determine:
 1. The correct **category** (parent type — one of: ${VALID_PARENT_CATEGORIES.join(", ")})
 2. The correct **subcategory** (one of: ${VALID_SUBCATEGORIES.join(", ")})
 3. An optional **sub_subcategory** for deeper personalization (one of: ${VALID_SUB_SUBCATEGORIES.join(", ")}, or null)
-4. Up to 5 **tags** from this list: ${VALID_TAGS.join(", ")}
+4. Between ${TAG_MIN} and ${TAG_MAX} **tags** describing the event, chosen ONLY from the faceted vocabulary below. Never invent tags. Pick the most specific applicable token from as many facets as fit — include at least one from audience, setting, format, vibe, and commitment whenever they apply:
+${Object.entries(TAG_FACETS).map(([facet, toks]) => `   • ${facet}: ${toks.join(", ")}`).join("\n")}
+5. **performers**: canonical names of any headlining people, acts, artists, or teams named in the title (e.g. "Matt Maeson", "Shane Gillis", "Boston Bruins"). Empty array if none. Do NOT include the venue.
+6. **brands**: canonical names of any festival, series, tour, or promoter brand (e.g. "Boston Calling", "Restaurant Week", "First Fridays"). Empty array if none.
 
 CATEGORY RULES (this is the most important classification):
 - **upcoming**: Events with a specific scheduled date that customers would NOT expect to see repeating regularly. Concerts, one-off shows, specific game days, special exhibits, festivals, galas, etc.
@@ -485,7 +494,9 @@ Respond with a JSON array. Each element must have:
 - "subcategory": one of the valid subcategories (string)
 - "sub_subcategory": deeper classification or null (string or null)
 - "team_name": for sports events, the team name exactly as commonly known — pro, college, or minor-league — in the metro the event belongs to (e.g. "Boston Bruins", "Philadelphia Eagles", "Northeastern Huskies", "Worcester Red Sox", "Lehigh Valley IronPigs"). Use the canonical "City Nickname" form. null for non-sports events or sports events not tied to a specific team (string or null)
-- "tags": array of tag strings (max 5)
+- "tags": array of ${TAG_MIN}-${TAG_MAX} tag strings, each from the faceted vocabulary above
+- "performers": array of performer/act/artist/team names (strings), or [] if none
+- "brands": array of festival/series/promoter brand names (strings), or [] if none
 
 ONLY output the JSON array, no other text.
 
@@ -706,7 +717,10 @@ async function processResults(batchId, chunks, allEvents) {
         subcategory: c.subcategory && VALID_SUBCATEGORIES.includes(c.subcategory) ? c.subcategory : null,
         sub_subcategory: c.sub_subcategory && VALID_SUB_SUBCATEGORIES.includes(c.sub_subcategory) ? c.sub_subcategory : null,
         team_name: c.team_name || null,
-        tags: Array.isArray(c.tags) ? c.tags.filter(t => VALID_TAGS.includes(t)).slice(0, 5) : [],
+        tags: Array.isArray(c.tags) ? [...new Set(c.tags.filter(t => VALID_TAGS_SET.has(t)))].slice(0, TAG_MAX) : [],
+        performers: sanitizeEntities(c.performers),
+        brands: sanitizeEntities(c.brands),
+        tag_vocab_version: TAG_VOCAB_VERSION,
       };
 
       if (!validated.category || !validated.subcategory) continue;
@@ -717,7 +731,8 @@ async function processResults(batchId, chunks, allEvents) {
       const changed = original.category !== validated.category ||
                       original.subcategory !== validated.subcategory;
 
-      if (changed || validated.tags.length > 0 || validated.sub_subcategory) {
+      if (changed || validated.tags.length > 0 || validated.sub_subcategory ||
+          validated.performers.length > 0 || validated.brands.length > 0) {
         updates.push(validated);
         if (changed) batchChanges++;
       }
@@ -840,6 +855,18 @@ async function writeUpdates(updates, originalEvents) {
         body.tags = u.tags;
       }
 
+      // Taste-graph entity features (may not exist on prod until the
+      // 20260716140000 migration lands — the retry below handles that).
+      if (u.performers && u.performers.length > 0) {
+        body.performers = u.performers;
+      }
+      if (u.brands && u.brands.length > 0) {
+        body.brands = u.brands;
+      }
+      if (u.tag_vocab_version) {
+        body.tag_vocab_version = u.tag_vocab_version;
+      }
+
       const res = await fetch(url, {
         method: "PATCH",
         headers: {
@@ -854,7 +881,7 @@ async function writeUpdates(updates, originalEvents) {
       if (!res.ok) {
         const errBody = await res.text();
         // If new columns don't exist yet, retry with just category/subcategory
-        if (errBody.includes("original_category") || errBody.includes("tags") || errBody.includes("sub_subcategory")) {
+        if (errBody.includes("original_category") || errBody.includes("tags") || errBody.includes("sub_subcategory") || errBody.includes("performers") || errBody.includes("brands") || errBody.includes("tag_vocab_version")) {
           const fallback = {
             category: u.category,
             subcategory: u.subcategory,
