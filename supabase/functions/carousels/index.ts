@@ -3078,16 +3078,47 @@ async function fetchCategoryAffinity(
   userId: string | null,
 ): Promise<Map<string, number>> {
   if (!userId) return new Map();
+  const map = new Map<string, number>();
+
   const { data, error } = await supabase
     .rpc("get_category_affinity", { p_user_id: userId });
-  if (error || !data) return new Map();
-  // Normalize to 0-1 by dividing by max
-  const entries = (data as CategoryAffinity[]);
-  const maxWeight = Math.max(...entries.map(e => e.weight), 1);
-  const map = new Map<string, number>();
-  for (const entry of entries) {
-    map.set(entry.category.toLowerCase(), Math.min(entry.weight / maxWeight, 1.0));
+  if (!error && data) {
+    // Normalize to 0-1 by dividing by max
+    const entries = (data as CategoryAffinity[]);
+    const maxWeight = Math.max(...entries.map(e => e.weight), 1);
+    for (const entry of entries) {
+      map.set(entry.category.toLowerCase(), Math.min(entry.weight / maxWeight, 1.0));
+    }
   }
+
+  // Taste graph (spec §6): blend the richer per-user subcategory taste from
+  // user_taste_summary into the affinity map, so the For-You feed reflects the
+  // taste vector (coldStartScore already reads this map — no threading needed).
+  // Graceful: absent table / no row / cold-start (<3 interactions) leaves the
+  // map untouched, so behavior is unchanged until profiles are built.
+  try {
+    const { data: t } = await (supabase as any)
+      .from("user_taste_summary")
+      .select("subcategory_scores,interaction_count")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (t && (t.interaction_count ?? 0) >= 3 && t.subcategory_scores) {
+      const sc = t.subcategory_scores as Record<string, number>;
+      const vals = Object.values(sc).filter((v) => v > 0);
+      if (vals.length > 0) {
+        const max = Math.max(...vals);
+        for (const [k, v] of Object.entries(sc)) {
+          if (v > 0) {
+            const key = k.toLowerCase();
+            map.set(key, Math.max(map.get(key) ?? 0, v / max));
+          }
+        }
+      }
+    }
+  } catch {
+    // leave map as-is — taste blend is best-effort
+  }
+
   return map;
 }
 
