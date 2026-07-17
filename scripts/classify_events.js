@@ -452,7 +452,7 @@ For each event below, determine:
 4. Between ${TAG_MIN} and ${TAG_MAX} **tags** describing the event, chosen ONLY from the faceted vocabulary below. Never invent tags. Pick the most specific applicable token from as many facets as fit — include at least one from audience, setting, format, vibe, and commitment whenever they apply:
 ${Object.entries(TAG_FACETS).map(([facet, toks]) => `   • ${facet}: ${toks.join(", ")}`).join("\n")}
 5. **performers**: canonical names of any headlining people, acts, artists, or teams named in the title (e.g. "Matt Maeson", "Shane Gillis", "Boston Bruins"). Empty array if none. Do NOT include the venue.
-6. **brands**: canonical names of any festival, series, tour, or promoter brand (e.g. "Boston Calling", "Restaurant Week", "First Fridays"). Empty array if none.
+6. **brands**: canonical names of a recurring event BRAND only — a festival, series, tour, or promoter (e.g. "Boston Calling", "Restaurant Week", "First Fridays"). Do NOT put the venue, host organization, library, museum, studio, or business name here — that is captured separately. Most events have NO brand; return [] unless there is a clear festival/series/tour name.
 
 CATEGORY RULES (this is the most important classification):
 - **upcoming**: Events with a specific scheduled date that customers would NOT expect to see repeating regularly. Concerts, one-off shows, specific game days, special exhibits, festivals, galas, etc.
