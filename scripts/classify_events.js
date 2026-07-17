@@ -810,7 +810,7 @@ async function fetchAllEvents() {
     // If new columns don't exist yet, retry without them
     if (!res.ok) {
       const errText = await res.text();
-      if (errText.includes("original_category") || errText.includes("sub_subcategory") || errText.includes("tags")) {
+      if (errText.includes("original_category") || errText.includes("sub_subcategory") || errText.includes("tags") || errText.includes("tag_vocab_version") || errText.includes("performers") || errText.includes("brands")) {
         selectCols = "id,title,description,category,subcategory,venue_name,venue_city,is_free,source,start_at";
         url = `${SUPABASE_URL}/rest/v1/events?start_at=${cmp}.${encodeURIComponent(cursor)}${baseScope}&select=${selectCols}&order=start_at.asc&limit=${pageSize}`;
         res = await fetch(url, {
@@ -828,6 +828,14 @@ async function fetchAllEvents() {
     const rows = await res.json();
     allEvents.push(...rows);
     process.stdout.write(`  fetched ${allEvents.length}\r`);
+
+    // MAX_EVENTS cap: stop paging once we have plenty to satisfy the cap after
+    // filtering (5× buffer for no-public-interest / already-tagged rows that get
+    // dropped). Avoids paging the entire corpus for a capped/test run.
+    if (MAX_EVENTS > 0 && allEvents.length >= MAX_EVENTS * 5) {
+      process.stdout.write(`  fetched ${allEvents.length} (capped early for MAX_EVENTS=${MAX_EVENTS})\n`);
+      break;
+    }
 
     if (rows.length < pageSize) break;
     // Advance the cursor to the last row's start_at. If a cluster of rows
