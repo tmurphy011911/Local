@@ -95,6 +95,24 @@ typical_travel_miles, interaction_count from user_taste_summary limit 20;`
 
 Wire it to run nightly (GitHub Actions / pg_cron) once validated.
 
+## 6b. Prod rollout sequencing (what backfills vs. what's forward-only)
+
+Order matters when running against prod:
+
+1. **Tag events FIRST** (steps 3/5) — then **build profiles** (step 6). The
+   interest richness (tag/entity scores) comes from the events' features, so
+   profiles built before tagging get only subcategory-level interests.
+2. **Interests backfill retroactively.** `build_taste_profiles.js` aggregates
+   historical `community_interactions`, so existing users get real
+   `interest_1..5` / subcategory / tag / entity scores from day one — no waiting
+   for new activity. Interactions on still-existing (even deactivated) event rows
+   resolve; interactions on deleted events are skipped.
+3. **Travel propensity is FORWARD-ONLY.** It needs `actor_lat/lng` (active
+   location at interaction time), a new column the shipped client only stamps
+   going forward. Historical rows have it null → `travel_propensity` is null for
+   everyone until location-stamped interactions accumulate post-launch. Same for
+   `event_impressions` and `not_interested` — all forward-only. This is expected.
+
 ## 7. Prod promotion — later, on the release train
 
 Migrations + classifier promote dev→prod via the normal train (see `RELEASE.md` /
