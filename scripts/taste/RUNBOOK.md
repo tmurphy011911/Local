@@ -58,7 +58,23 @@ Check: 6–15 tags per event, spread across facets; performers/brands populated 
 named acts/teams; no junk tokens. Adjust `scripts/taste/tag_vocabulary.js` and
 re-run step 3 if needed (bump `TAG_VOCAB_VERSION` when the vocab changes).
 
-## 5. Full dev backfill (only after step 4 looks right)
+## 5. Full backfill — pick the mode
+
+**TAGS_ONLY (recommended for PROD — preserves taxonomy):** enriches existing rows
+with the new tags + performers/brands and leaves category/subcategory untouched.
+Idempotent (skips rows already on the current vocab). New events keep getting full
+classification via the normal weekly run — this is only for the existing backlog.
+
+```bash
+SUPABASE_URL=<dev-or-prod-url> \
+SUPABASE_SERVICE_KEY=<SERVICE_KEY> \
+TAGS_ONLY=1 \
+node scripts/classify_events.js
+```
+
+**FORCE (full re-classification — dev only / deliberate):** re-derives
+category/subcategory/tags for everything. Do NOT run on prod casually — it can flip
+existing (good) classifications. Keeps `original_category` for revert.
 
 ```bash
 SUPABASE_URL=https://xbyqwekcanrzovytxmdv.supabase.co \
@@ -66,6 +82,8 @@ SUPABASE_SERVICE_KEY=<DEV_SERVICE_KEY> \
 FORCE=1 \
 node scripts/classify_events.js
 ```
+
+Both scope to active + upcoming events. Add `MAX_EVENTS=30` for a capped test run.
 
 ## 6. Build taste profiles (Phase 2 — after tagging exists)
 
