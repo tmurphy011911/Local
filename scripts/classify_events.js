@@ -58,6 +58,11 @@ const ONLY_CATEGORY = process.env.ONLY_CATEGORY || null;
 // Cap the number of events sent to Claude in one run. Use for cheap eyeball
 // test passes (e.g. MAX_EVENTS=30 FORCE=1) before a full backfill. 0 = no cap.
 const MAX_EVENTS = parseInt(process.env.MAX_EVENTS || "0", 10);
+// TAGS_ONLY: enrich rows with the new tag vocabulary + performers/brands WITHOUT
+// touching category/subcategory/sub_subcategory/team_name. Safe for a prod
+// backfill — the working taxonomy is preserved. Targets rows not yet on the
+// current TAG_VOCAB_VERSION. The fetch already scopes to active + upcoming events.
+const TAGS_ONLY = process.env.TAGS_ONLY === "1";
 // Events deliberately tagged subcategory="no-public-interest" are hidden from
 // every user-facing surface (carousels filter them out). They carry subcategory
 // but NOT sub_subcategory/tags, so the "unclassified" filter below would
@@ -534,14 +539,17 @@ async function main() {
   //    sports, civic board meetings, etc. Deterministic, cheap, no Claude call.
   //    Runs against ALL future events (not just unclassified) so backfills
   //    already-misclassified events as well.
-  const autoExcludedIds = await applyAutoExclusions(events);
+  // TAGS_ONLY preserves taxonomy: skip the pattern passes, which WRITE
+  // subcategory/category directly. Auto-exclusion / reclassification belong to a
+  // normal run, not a tags-only enrichment.
+  const autoExcludedIds = TAGS_ONLY ? new Set() : await applyAutoExclusions(events);
 
   // 3. Pattern-based reclassification — fixes obvious category mistakes
   //    like speaker series at sports_venues inheriting "sports". Also runs
   //    on already-classified events so it backfills stale data. Skip any
   //    events that auto-exclusion just tagged as no-public-interest —
   //    otherwise reclassifier patterns like "info session" would undo it.
-  const reclassifiedIds = await applyReclassifications(events, autoExcludedIds);
+  const reclassifiedIds = TAGS_ONLY ? new Set() : await applyReclassifications(events, autoExcludedIds);
 
   if (PREFILTER_ONLY) {
     console.log("PREFILTER_ONLY=1 — skipping Claude batch\n");
@@ -559,14 +567,20 @@ async function main() {
       // RECLASSIFY_EXCLUDED above). Applies in FORCE/ONLY_CATEGORY too.
       (RECLASSIFY_EXCLUDED || e.subcategory !== "no-public-interest"),
   );
-  let toClassify = (FORCE || ONLY_CATEGORY)
-    ? remaining
-    : remaining.filter((e) => !e.sub_subcategory && (!e.tags || e.tags.length === 0));
+  let toClassify;
+  if (TAGS_ONLY) {
+    // Only rows not yet tagged under the current vocab — idempotent across re-runs.
+    toClassify = remaining.filter((e) => e.tag_vocab_version !== TAG_VOCAB_VERSION);
+  } else if (FORCE || ONLY_CATEGORY) {
+    toClassify = remaining;
+  } else {
+    toClassify = remaining.filter((e) => !e.sub_subcategory && (!e.tags || e.tags.length === 0));
+  }
   if (MAX_EVENTS && toClassify.length > MAX_EVENTS) {
     console.log(`MAX_EVENTS=${MAX_EVENTS} — capping run to first ${MAX_EVENTS} of ${toClassify.length} events\n`);
     toClassify = toClassify.slice(0, MAX_EVENTS);
   }
-  console.log(`${toClassify.length} events need Claude classification${FORCE ? " (forced)" : ONLY_CATEGORY ? ` (scoped to category=${ONLY_CATEGORY})` : ""}\n`);
+  console.log(`${toClassify.length} events need Claude classification${TAGS_ONLY ? " (TAGS-ONLY — taxonomy preserved)" : FORCE ? " (forced)" : ONLY_CATEGORY ? ` (scoped to category=${ONLY_CATEGORY})` : ""}\n`);
   if (toClassify.length === 0) return;
 
   // 3. Build batch requests — one per chunk of BATCH_SIZE events
@@ -779,7 +793,7 @@ async function fetchAllEvents() {
   let firstPage = true;
 
   while (true) {
-    let selectCols = "id,title,description,category,subcategory,sub_subcategory,tags,venue_name,venue_city,is_free,source,original_category,original_subcategory,start_at";
+    let selectCols = "id,title,description,category,subcategory,sub_subcategory,tags,tag_vocab_version,venue_name,venue_city,is_free,source,original_category,original_subcategory,start_at";
     // strict `gt` for subsequent pages so we don't re-fetch the cursor row;
     // first page uses `gte` so events starting exactly at the script start
     // time still get picked up.
@@ -839,21 +853,23 @@ async function writeUpdates(updates, originalEvents) {
       const original = originalEvents.find(e => e.id === u.id);
       const url = `${SUPABASE_URL}/rest/v1/events?id=eq.${u.id}`;
 
-      const body = {
+      // TAGS_ONLY: write only tag/entity fields, never the taxonomy — the
+      // existing category/subcategory/sub_subcategory/team_name are preserved.
+      const body = TAGS_ONLY ? {} : {
         category: u.category,
         subcategory: u.subcategory,
       };
 
-      if (u.sub_subcategory) {
+      if (!TAGS_ONLY && u.sub_subcategory) {
         body.sub_subcategory = u.sub_subcategory;
       }
 
-      if (u.team_name) {
+      if (!TAGS_ONLY && u.team_name) {
         body.team_name = u.team_name;
       }
 
       // Preserve original values for revert — only set if not already saved
-      if (original && !original.original_category) {
+      if (!TAGS_ONLY && original && !original.original_category) {
         body.original_category = original.category;
         body.original_subcategory = original.subcategory || null;
       }
@@ -889,6 +905,13 @@ async function writeUpdates(updates, originalEvents) {
         const errBody = await res.text();
         // If new columns don't exist yet, retry with just category/subcategory
         if (errBody.includes("original_category") || errBody.includes("tags") || errBody.includes("sub_subcategory") || errBody.includes("performers") || errBody.includes("brands") || errBody.includes("tag_vocab_version")) {
+          // In TAGS_ONLY the tag columns are the whole point — if they're
+          // missing there's nothing safe to write (and we must NOT touch
+          // taxonomy). Skip rather than fall back to a category write.
+          if (TAGS_ONLY) {
+            console.error(`  Skipped ${u.id}: tag columns missing (run the migration first)`);
+            return;
+          }
           const fallback = {
             category: u.category,
             subcategory: u.subcategory,
