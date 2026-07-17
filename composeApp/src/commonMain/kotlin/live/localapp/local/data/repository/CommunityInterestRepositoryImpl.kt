@@ -19,8 +19,20 @@ private data class CommunityInteractionDto(
     @SerialName("item_type") val itemType: String,
     @SerialName("interaction_type") val interactionType: String,
     @SerialName("category") val category: String? = null,
-    // Taste graph (spec §5.4): the user's active/set location at interaction
-    // time. Nullable so pre-migration inserts and location-unknown cases work.
+)
+
+// Minimal shape to read back the inserted interaction's id.
+@Serializable
+private data class InsertedInteraction(
+    @SerialName("id") val id: String,
+)
+
+// Actor location lives in the own-RLS interaction_context table (spec §5.4),
+// NEVER on the broadly-readable community_interactions row.
+@Serializable
+private data class InteractionContextDto(
+    @SerialName("community_interaction_id") val communityInteractionId: String,
+    @SerialName("user_id") val userId: String,
     @SerialName("actor_lat") val actorLat: Double? = null,
     @SerialName("actor_lng") val actorLng: Double? = null,
 )
@@ -260,9 +272,11 @@ class CommunityInterestRepositoryImpl(
             println("persistInteraction: SKIPPED — no userId")
             return
         }
+        val lat = activeLat
+        val lng = activeLng
         scope.launch {
             try {
-                supabaseClient.from("community_interactions").insert(
+                val inserted = supabaseClient.from("community_interactions").insert(
                     CommunityInteractionDto(
                         userId = userId,
                         itemId = itemId,
@@ -272,10 +286,27 @@ class CommunityInterestRepositoryImpl(
                         },
                         interactionType = interaction,
                         category = category,
-                        actorLat = activeLat,
-                        actorLng = activeLng,
                     )
-                )
+                ) {
+                    select()
+                }.decodeSingle<InsertedInteraction>()
+
+                // Actor location goes to the own-RLS interaction_context table so
+                // it never lands on the broadly-readable community_interactions row.
+                if (lat != null && lng != null) {
+                    try {
+                        supabaseClient.from("interaction_context").insert(
+                            InteractionContextDto(
+                                communityInteractionId = inserted.id,
+                                userId = userId,
+                                actorLat = lat,
+                                actorLng = lng,
+                            )
+                        )
+                    } catch (_: Exception) {
+                        // Location capture is best-effort — never fail the interaction.
+                    }
+                }
                 println("persistInteraction: SUCCESS $interaction $itemId for user $userId")
             } catch (e: Exception) {
                 println("persistInteraction: FAILED $interaction $itemId — ${e.message}")

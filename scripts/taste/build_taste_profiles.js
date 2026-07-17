@@ -36,7 +36,7 @@ async function fetchInteractions() {
   while (true) {
     const url = `${SUPABASE_URL}/rest/v1/community_interactions` +
       `?created_at=gte.${sinceIso}&item_type=eq.event` +
-      `&select=user_id,item_id,interaction_type,created_at,actor_lat,actor_lng` +
+      `&select=id,user_id,item_id,interaction_type,created_at` +
       `&order=created_at.desc&limit=${pageSize}&offset=${offset}`;
     const res = await fetch(url, { headers: headers() });
     if (!res.ok) throw new Error(`interactions ${res.status}: ${await res.text()}`);
@@ -71,6 +71,24 @@ async function fetchEventFeatures(ids) {
   return map;
 }
 
+// Actor location lives in the own-RLS interaction_context table (read here via
+// the service role). Map community_interaction_id -> {lat, lng}.
+async function fetchContextLocations(interactionIds) {
+  const map = new Map();
+  const chunk = 150;
+  for (let i = 0; i < interactionIds.length; i += chunk) {
+    const inList = interactionIds.slice(i, i + chunk).join(",");
+    const url = `${SUPABASE_URL}/rest/v1/interaction_context` +
+      `?community_interaction_id=in.(${inList})&select=community_interaction_id,actor_lat,actor_lng`;
+    const res = await fetch(url, { headers: headers() });
+    if (!res.ok) throw new Error(`interaction_context ${res.status}: ${await res.text()}`);
+    for (const r of await res.json()) {
+      map.set(r.community_interaction_id, { lat: r.actor_lat, lng: r.actor_lng });
+    }
+  }
+  return map;
+}
+
 async function upsert(rows) {
   const url = `${SUPABASE_URL}/rest/v1/user_taste_summary?on_conflict=user_id`;
   const res = await fetch(url, {
@@ -96,13 +114,19 @@ async function main() {
   const featById = await fetchEventFeatures(ids);
   console.log(`  resolved features for ${featById.size}/${ids.length} live events`);
 
+  const ctxByInteraction = await fetchContextLocations(
+    interactions.map((r) => r.id).filter((id) => UUID_RE.test(id)),
+  );
+  console.log(`  actor location for ${ctxByInteraction.size} interactions`);
+
   const byUser = new Map();
   for (const r of interactions) {
+    const loc = ctxByInteraction.get(r.id);
     const it = {
       interactionType: r.interaction_type,
       createdAt: r.created_at,
-      actorLat: r.actor_lat,
-      actorLng: r.actor_lng,
+      actorLat: loc?.lat ?? null,
+      actorLng: loc?.lng ?? null,
       event: featById.get(r.item_id) || {},
     };
     if (!byUser.has(r.user_id)) byUser.set(r.user_id, []);
