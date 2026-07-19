@@ -1660,6 +1660,9 @@ function buildCarousels(
   // Fetched directly since this band reaches beyond the metro-wide MV sample.
   // Empty off the For-You path.
   getawayEvents: ProcessedEvent[] = [],
+  // Per-entity event groups for the "If You Like <X>" taste rails (performers/
+  // brands from the taste graph). Empty off For-You / until profiles are built.
+  tasteEntityGroups: { entity: string; events: ProcessedEvent[] }[] = [],
 ): CarouselSection[] {
   const filter = resolveFilter(category);
   if (filter.type === "empty") return [];
@@ -1954,6 +1957,32 @@ function buildCarousels(
       };
     })();
 
+    // Taste entity rails — "If You Like Shane Gillis". One rail per top entity
+    // (performer/brand) the user gravitates to; the fetch already scoped events
+    // to that entity, so here we just apply radius + rank + a min-count gate.
+    const entityRails: CarouselSection[] = tasteEntityGroups
+      .map((group) => {
+        const events = group.events
+          .map(e => withDistance(e, userLat, userLng))
+          .filter(e => maxRadius === Infinity || (e.distance_miles ?? 999) <= maxRadius)
+          .sort(sortFn)
+          .slice(0, CAROUSEL_DISPLAY_LIMIT);
+        if (events.length < 3) return null;
+        const label = group.entity
+          .split(/[_-]+/)
+          .filter(Boolean)
+          .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(" ");
+        return {
+          slug: `taste-entity-${group.entity}`,
+          title: `If You Like ${label}`,
+          subtitle: null,
+          filter_type: "taste_entity",
+          events,
+        } as CarouselSection;
+      })
+      .filter((c): c is CarouselSection => c !== null);
+
     // Pool: Popular
     const popularEvents = filtered
       .filter(e => totalSaves(e.id, communityScores) > 10)
@@ -1994,6 +2023,10 @@ function buildCarousels(
         events: personalizedEvents,
       });
     }
+
+    // Taste entity rails ("If You Like Shane Gillis") — placed right after
+    // Picked for You; they're the strongest personal hook the feed has.
+    for (const rail of entityRails) addCarousel(rail);
 
     // 2. Weekend Lineup
     if (weekendEvents.length > 0) {
@@ -2770,6 +2803,67 @@ async function fetchGetawayEvents(
   return [...byId.values()];
 }
 
+// Top entities (performers/brands) the user gravitates to, from the taste graph
+// (user_taste_summary). Drives the "If You Like <X>" rails. Empty until the
+// nightly profile build has run.
+async function fetchTasteEntities(
+  supabase: ReturnType<typeof createClient>,
+  userId: string | null,
+): Promise<string[]> {
+  if (!userId) return [];
+  try {
+    const { data } = await (supabase as any)
+      .from("user_taste_summary")
+      .select("top_entities,interaction_count")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (!data || (data.interaction_count ?? 0) < 3) return [];
+    return ((data.top_entities ?? []) as string[]).slice(0, 3);
+  } catch {
+    return [];
+  }
+}
+
+// Per-entity direct fetch for the "If You Like <X>" rails: events whose
+// performers OR brands array contains the entity, within radius. GIN-indexed
+// (idx_events_performers_gin / _brands_gin). Empty per-entity if the columns
+// aren't present yet — graceful pre-backfill.
+async function fetchEntityEvents(
+  supabase: ReturnType<typeof createClient>,
+  lat: number,
+  lng: number,
+  radiusMiles: number,
+  entities: string[],
+): Promise<{ entity: string; rows: EventRow[] }[]> {
+  if (entities.length === 0) return [];
+  const latDelta = radiusMiles / 69.0;
+  const lngDelta = radiusMiles / 50.0;
+  const minLat = lat - latDelta, maxLat = lat + latDelta;
+  const minLng = lng - lngDelta, maxLng = lng + lngDelta;
+  const startFrom = nowIso();
+  const startTo = daysFromNowIso(90);
+  return await Promise.all(entities.map(async (entity) => {
+    const { data, error } = await supabase
+      .from("events")
+      .select("*")
+      .eq("is_active", true)
+      .or(`performers.cs.{${entity}},brands.cs.{${entity}}`)
+      .gte("start_at", startFrom)
+      .lte("start_at", startTo)
+      .gte("venue_lat", minLat)
+      .lte("venue_lat", maxLat)
+      .gte("venue_lng", minLng)
+      .lte("venue_lng", maxLng)
+      .order("start_at", { ascending: true })
+      .limit(40);
+    if (error) {
+      console.error(`[carousels] fetchEntityEvents(${entity}) failed:`, error);
+      return { entity, rows: [] as EventRow[] };
+    }
+    return { entity, rows: (data ?? []) as EventRow[] };
+  }));
+}
+
 // Farmers markets are always_on, and the always_on slow-path fetch is capped
 // at 3 pages × 1000 ordered by title — in a dense metro there are ~5k always_on
 // rows, so every market alphabetically past the cutoff (e.g. "Waltham") is
@@ -3452,6 +3546,7 @@ Deno.serve(async (req) => {
     let restaurantWeekEvents: ProcessedEvent[] = [];
     let curatedEvents: ProcessedEvent[] = [];
     let getawayEvents: ProcessedEvent[] = [];
+    let tasteEntityGroups: { entity: string; events: ProcessedEvent[] }[] = [];
     // Restaurant Weeks rail builds on For You AND the Food tab; the Must-Know rail
     // is For-You only. Both are state-scoped, so resolve the state once.
     {
@@ -3484,22 +3579,29 @@ Deno.serve(async (req) => {
       for (const [c, score] of affinityMap) {
         if (score >= 0.4) railSubcats.add(c.toLowerCase());
       }
+      // Top entities (taste graph) drive the "If You Like <X>" rails — read
+      // first so the entity-events fetch can run in the parallel batch below.
+      const tasteEntities = await fetchTasteEntities(supabase, userId);
       // Parallel: city-scoped pool (neighborhood rails) + venue-scoped pool
       // (fav-venue rails) + subcategory-scoped pool (topical fav-cat/affinity
       // rails). All three bypass the rank-stratified MV's metro-wide sampling so
       // the named city/venue/subcategory's full slate is available per-request.
-      const [cityRows, venueRows, subcatRows, farmersMarketRows, getawayRows] = await Promise.all([
+      const [cityRows, venueRows, subcatRows, farmersMarketRows, getawayRows, entityGroupRows] = await Promise.all([
         fetchCityEvents(supabase, lat, lng, radiusMiles, targetCities),
         fetchVenueEvents(supabase, lat, lng, radiusMiles, userPreferences?.selected_venues ?? []),
         fetchSubcategoryEvents(supabase, lat, lng, radiusMiles, [...railSubcats]),
         fetchFarmersMarketEvents(supabase, lat, lng, radiusMiles),
         fetchGetawayEvents(supabase, lat, lng, [...railSubcats]),
+        fetchEntityEvents(supabase, lat, lng, radiusMiles, tasteEntities),
       ]);
       cityEvents = cleanEvents(deduplicateCrossSource(cityRows), venueCache, cityPhotoCache);
       venueEvents = cleanEvents(deduplicateCrossSource(venueRows), venueCache, cityPhotoCache);
       subcatEvents = cleanEvents(deduplicateCrossSource(subcatRows), venueCache, cityPhotoCache);
       farmersMarketEvents = cleanEvents(deduplicateCrossSource(farmersMarketRows), venueCache, cityPhotoCache);
       getawayEvents = cleanEvents(deduplicateCrossSource(getawayRows), venueCache, cityPhotoCache);
+      tasteEntityGroups = entityGroupRows
+        .map(g => ({ entity: g.entity, events: cleanEvents(deduplicateCrossSource(g.rows), venueCache, cityPhotoCache) }))
+        .filter(g => g.events.length > 0);
     }
 
     const carouselSections = buildCarousels(
@@ -3507,6 +3609,7 @@ Deno.serve(async (req) => {
       lat, lng, userPreferences, nearestCity,
       weights, venueCache, communityScores, affinityMap, cityEvents, venueEvents, subcatEvents,
       farmersMarketEvents, restaurantWeekEvents, radiusMiles, curatedEvents, getawayEvents,
+      tasteEntityGroups,
     );
 
     const categories = buildCategories(allEvents, userPreferences);
