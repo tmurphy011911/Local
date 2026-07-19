@@ -1911,9 +1911,15 @@ function buildCarousels(
     const favCatSlugs = new Set(favCatCarousels.map(c => c.slug));
     const sortedAffinity = [...affinityMap.entries()].sort((a, b) => b[1] - a[1]);
     let affinityCount = 0;
+    // Taste-graph era: give engaged users a rail per genuine interest. The old
+    // gate (score >= 0.4 of top, cap 6) throttled heavy users to ~2 rails when
+    // one category dominated (arts=1.0 => museums/comedy/baseball all < 0.4).
+    // Lower the relative floor to surface the long tail and raise the cap; the
+    // empty-events skip below is the natural quality floor (no rail without a
+    // populated slate). Numbers are tunable on real data.
     for (const [cat, score] of sortedAffinity) {
-      if (score < 0.4) break;
-      if (affinityCount >= 6) break;
+      if (score < 0.15) break;
+      if (affinityCount >= 20) break;
       if (skipCategories.has(cat.toLowerCase())) continue;
       if (favCatSlugs.has(`fav-cat-${cat.toLowerCase()}`)) continue;
       const affinityEvents = topicalPool
