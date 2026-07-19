@@ -1805,8 +1805,20 @@ function buildCarousels(
     // when the hero ate the rest. Now each rail just shows its top matches.
     const weekendStart = startOfNextFridayIso();
     const weekendEnd = endOfNextSundayIso();
-    const weekendEvents = filtered
-      .filter(e => { const s = e.start_at ?? ""; return s >= weekendStart && s < weekendEnd; });
+    // OVERLAP test (mirrors the Must-Know rail above), not start_at-in-window.
+    // The old test kept only events whose start_at landed inside Fri-Sun, which
+    // silently dropped every multi-day / all-day / festival event that STARTS
+    // before Friday but RUNS THROUGH the weekend (its start_at is < Friday) —
+    // exactly the richest "this weekend" content, and the same start_at-vs-end_at
+    // bug class as the in-progress-festival incident. Lookback bound stops a
+    // long-running exhibit (started weeks ago) from leaking in.
+    const weekendLookback = daysFromNowIso(-14);
+    const weekendEvents = filtered.filter(e => {
+      const s = e.start_at ?? "";
+      if (!s || s >= weekendEnd) return false;            // no start, or starts after the window
+      const end = e.end_at ?? s;                          // point event ends at its start
+      return end >= weekendStart && s >= weekendLookback; // overlaps the window, started recently
+    });
 
     // Source pool for the topical favorite-category + affinity rails. Same
     // rationale as favVenuePool / neighborhoodPool below: the rank-stratified
