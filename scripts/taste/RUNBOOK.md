@@ -113,6 +113,25 @@ typical_travel_miles, interaction_count from user_taste_summary limit 20;`
 
 Wire it to run nightly (GitHub Actions / pg_cron) once validated.
 
+## 6c. Build the collaborative feature-affinity matrix (powers "If You Like <X>")
+
+After profiles exist, build the co-occurrence matrix that enriches the entity
+rails ("Shane Gillis fans also like Bill Burr"). Needs the `feature_affinity`
+migration (`20260717130000`) applied. Pure aggregation, service key only.
+
+```bash
+# dry run — prints sample seeds -> related
+SUPABASE_URL=<dev-or-prod-url> SUPABASE_SERVICE_KEY=<KEY> DRY_RUN=1 \
+  node scripts/taste/build_feature_affinity.js
+
+# real run (rebuilds feature_affinity)
+SUPABASE_URL=<dev-or-prod-url> SUPABASE_SERVICE_KEY=<KEY> \
+  node scripts/taste/build_feature_affinity.js
+```
+
+Math is unit-tested: `node scripts/taste/feature_affinity_model.test.js`.
+Run order on prod: tag events → build profiles → build feature affinity.
+
 ## 6b. Prod rollout sequencing (what backfills vs. what's forward-only)
 
 Order matters when running against prod:
