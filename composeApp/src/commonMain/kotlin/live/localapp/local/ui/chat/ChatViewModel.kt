@@ -48,6 +48,7 @@ import live.localapp.local.domain.repository.PlanRepository
 import live.localapp.local.domain.service.BadgeService
 import live.localapp.local.domain.repository.UserPreferences
 import live.localapp.local.domain.repository.UserPreferencesRepository
+import live.localapp.local.domain.repository.InterestSummary
 import live.localapp.local.domain.repository.TasteRepository
 import live.localapp.local.domain.repository.VenueRepository
 import io.ktor.client.HttpClient
@@ -426,6 +427,9 @@ class ChatViewModel(
     /** Cached taste profile — loaded at init, refreshed after plan approvals. */
     private var tasteProfile: TasteProfile? = null
 
+    /** Server-built interest summary (user_taste_summary) — loaded at init. */
+    private var interestSummary: InterestSummary? = null
+
     private val weatherService = WeatherService()
 
     /** Update current location (called from AppNavigation when location changes). */
@@ -690,6 +694,8 @@ class ChatViewModel(
                 }
                 // Load taste profile for personalized recommendations
                 try { tasteProfile = tasteRepo.getTasteProfile(userId) } catch (_: Throwable) {}
+                // Load the server-built interest summary (taste graph) for Bo.
+                try { interestSummary = tasteRepo.getInterestSummary(userId) } catch (_: Throwable) {}
                 // Load saved-events so already-favorited results show a filled ❤️.
                 try {
                     val favs = communityInterestRepository.getFavoriteEventIds(userId).toSet()
@@ -5814,6 +5820,27 @@ Weight these but still surprise them occasionally.
             """.trimIndent()
         } ?: ""
 
+        // Taste graph (spec §9): richer server-built interests + entities. Biases
+        // Bo toward what they love; NEVER filters — if they ask for something
+        // off-taste, Bo still delivers it.
+        val interestContext = interestSummary?.let { s ->
+            if (s.interactionCount < 3 || s.interests.isEmpty()) return@let ""
+            val interests = s.interests.joinToString(", ")
+            val entities = s.topEntities.take(5)
+                .joinToString(", ") { slug ->
+                    slug.split('_', '-').joinToString(" ") { w -> w.replaceFirstChar { c -> c.uppercase() } }
+                }
+            val travel = when {
+                (s.travelPropensity ?: 0.0) >= 0.66 -> "They'll travel for the right event.\n"
+                (s.travelPropensity != null && s.travelPropensity <= 0.33) -> "They prefer things close by.\n"
+                else -> ""
+            }
+            """
+THEIR TOP INTERESTS: $interests${if (entities.isNotEmpty()) "\nActs/venues they gravitate to: $entities" else ""}
+${travel}Lean into these when recommending, and it's fine to surface something adjacent they'd love. Never let this filter out what they explicitly ask for.
+            """.trimIndent()
+        } ?: ""
+
         return """
 You are Bo, an AI assistant inside a local events and dining app called Local. Be warm, opinionated, decisive. If a user calls you "Yocal", just continue — that was the previous name.
 
@@ -5985,6 +6012,8 @@ $intentContext
 $prefsContext
 
 $tasteContext
+
+$interestContext
 
 $anchorContext
 

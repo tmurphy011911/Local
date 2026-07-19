@@ -274,42 +274,59 @@ class CommunityInterestRepositoryImpl(
         }
         val lat = activeLat
         val lng = activeLng
+        val itemTypeStr = when (type) {
+            InteractionType.EVENT -> "event"
+            InteractionType.PLACE -> "place"
+        }
         scope.launch {
+            // Critical path: record the interaction with a PLAIN insert (no
+            // returning/decode that could throw AFTER the row is already saved).
+            // Favoriting / clicks / plan-adds must never break because of the
+            // taste-graph location capture below.
             try {
-                val inserted = supabaseClient.from("community_interactions").insert(
+                supabaseClient.from("community_interactions").insert(
                     CommunityInteractionDto(
                         userId = userId,
                         itemId = itemId,
-                        itemType = when (type) {
-                            InteractionType.EVENT -> "event"
-                            InteractionType.PLACE -> "place"
-                        },
+                        itemType = itemTypeStr,
                         interactionType = interaction,
                         category = category,
                     )
-                ) {
-                    select()
-                }.decodeSingle<InsertedInteraction>()
-
-                // Actor location goes to the own-RLS interaction_context table so
-                // it never lands on the broadly-readable community_interactions row.
-                if (lat != null && lng != null) {
-                    try {
-                        supabaseClient.from("interaction_context").insert(
-                            InteractionContextDto(
-                                communityInteractionId = inserted.id,
-                                userId = userId,
-                                actorLat = lat,
-                                actorLng = lng,
-                            )
-                        )
-                    } catch (_: Exception) {
-                        // Location capture is best-effort — never fail the interaction.
-                    }
-                }
+                )
                 println("persistInteraction: SUCCESS $interaction $itemId for user $userId")
             } catch (e: Exception) {
                 println("persistInteraction: FAILED $interaction $itemId — ${e.message}")
+                return@launch
+            }
+
+            // Best-effort, FULLY ISOLATED: stamp the user's active location into
+            // the own-RLS interaction_context table, linked to the row we just
+            // wrote. Anything failing here has ZERO effect on the interaction.
+            if (lat != null && lng != null) {
+                try {
+                    val row = supabaseClient.from("community_interactions")
+                        .select {
+                            filter {
+                                eq("user_id", userId)
+                                eq("item_id", itemId)
+                                eq("interaction_type", interaction)
+                                eq("item_type", itemTypeStr)
+                            }
+                            order("created_at", io.github.jan.supabase.postgrest.query.Order.DESCENDING)
+                            limit(1)
+                        }
+                        .decodeSingle<InsertedInteraction>()
+                    supabaseClient.from("interaction_context").insert(
+                        InteractionContextDto(
+                            communityInteractionId = row.id,
+                            userId = userId,
+                            actorLat = lat,
+                            actorLng = lng,
+                        )
+                    )
+                } catch (_: Exception) {
+                    // Location capture is best-effort — never affects the interaction.
+                }
             }
         }
     }
