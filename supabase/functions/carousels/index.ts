@@ -1656,6 +1656,10 @@ function buildCarousels(
   // Curated "25 Must-Know" editorial picks (from the curated_events table) for
   // the user's state — drives the state-scoped Must-Know rail. Empty off For-You.
   curatedEvents: ProcessedEvent[] = [],
+  // Preference-matched events 50-200 mi out (the "Get Away a Little Bit" rail).
+  // Fetched directly since this band reaches beyond the metro-wide MV sample.
+  // Empty off the For-You path.
+  getawayEvents: ProcessedEvent[] = [],
 ): CarouselSection[] {
   const filter = resolveFilter(category);
   if (filter.type === "empty") return [];
@@ -1926,6 +1930,30 @@ function buildCarousels(
       affinityCount++;
     }
 
+    // Pool: Get Away — preference-matched events 50-200 mi out. A "little
+    // roadtrip" discovery rail. The fetch already matched the user's preferred
+    // subcategories; here we enforce the distance band and rank by taste.
+    const getawayRail: CarouselSection | null = (() => {
+      if (getawayEvents.length === 0) return null;
+      const events = getawayEvents
+        .filter(isGeneralFeedEvent)
+        .map(e => withDistance(e, userLat, userLng))
+        .filter(e => {
+          const d = e.distance_miles ?? 0;
+          return d > 50 && d <= 200;
+        })
+        .sort(sortFn)
+        .slice(0, CAROUSEL_DISPLAY_LIMIT);
+      if (events.length < 3) return null;
+      return {
+        slug: "get-away",
+        title: "Get Away a Little Bit",
+        subtitle: null,
+        filter_type: "getaway",
+        events,
+      };
+    })();
+
     // Pool: Popular
     const popularEvents = filtered
       .filter(e => totalSaves(e.id, communityScores) > 10)
@@ -2074,6 +2102,10 @@ function buildCarousels(
         }
       }
     }
+
+    // Get Away — preference-matched roadtrip rail (50-200 mi), placed after the
+    // primary personalized rails.
+    if (getawayRail) addCarousel(getawayRail);
 
     // Interleave any remaining — round-robin across pools so no type clusters
     let hasMore = true;
@@ -2684,6 +2716,51 @@ async function fetchSubcategoryEvents(
       .limit(PER_SUBCAT);
     if (error) {
       console.error(`[carousels] fetchSubcategoryEvents(${subcat}) failed:`, error);
+      return [];
+    }
+    return (data ?? []) as EventRow[];
+  }));
+  const byId = new Map<string, EventRow>();
+  for (const row of pages.flat()) byId.set(row.id, row);
+  return [...byId.values()];
+}
+
+// Get Away — preference-matched events out to 200 mi so buildCarousels can show
+// a "little roadtrip" rail. The 50-mi LOWER bound (excluding local events) is
+// applied in buildCarousels, since a bbox can't express a min-radius. One query
+// per preferred subcategory so no single category starves the wider band.
+async function fetchGetawayEvents(
+  supabase: ReturnType<typeof createClient>,
+  lat: number,
+  lng: number,
+  subcategories: string[],
+): Promise<EventRow[]> {
+  if (subcategories.length === 0) return [];
+  const radiusMiles = 200;
+  const latDelta = radiusMiles / 69.0;
+  const lngDelta = radiusMiles / 50.0;
+  const minLat = lat - latDelta, maxLat = lat + latDelta;
+  const minLng = lng - lngDelta, maxLng = lng + lngDelta;
+  const startFrom = nowIso();
+  const startTo = daysFromNowIso(90);
+  const PER_SUBCAT = 60;
+
+  const pages = await Promise.all(subcategories.map(async (subcat) => {
+    const { data, error } = await supabase
+      .from("events")
+      .select("*")
+      .eq("is_active", true)
+      .ilike("subcategory", subcat)
+      .gte("start_at", startFrom)
+      .lte("start_at", startTo)
+      .gte("venue_lat", minLat)
+      .lte("venue_lat", maxLat)
+      .gte("venue_lng", minLng)
+      .lte("venue_lng", maxLng)
+      .order("start_at", { ascending: true })
+      .limit(PER_SUBCAT);
+    if (error) {
+      console.error(`[carousels] fetchGetawayEvents(${subcat}) failed:`, error);
       return [];
     }
     return (data ?? []) as EventRow[];
@@ -3374,6 +3451,7 @@ Deno.serve(async (req) => {
     let farmersMarketEvents: ProcessedEvent[] = [];
     let restaurantWeekEvents: ProcessedEvent[] = [];
     let curatedEvents: ProcessedEvent[] = [];
+    let getawayEvents: ProcessedEvent[] = [];
     // Restaurant Weeks rail builds on For You AND the Food tab; the Must-Know rail
     // is For-You only. Both are state-scoped, so resolve the state once.
     {
@@ -3410,23 +3488,25 @@ Deno.serve(async (req) => {
       // (fav-venue rails) + subcategory-scoped pool (topical fav-cat/affinity
       // rails). All three bypass the rank-stratified MV's metro-wide sampling so
       // the named city/venue/subcategory's full slate is available per-request.
-      const [cityRows, venueRows, subcatRows, farmersMarketRows] = await Promise.all([
+      const [cityRows, venueRows, subcatRows, farmersMarketRows, getawayRows] = await Promise.all([
         fetchCityEvents(supabase, lat, lng, radiusMiles, targetCities),
         fetchVenueEvents(supabase, lat, lng, radiusMiles, userPreferences?.selected_venues ?? []),
         fetchSubcategoryEvents(supabase, lat, lng, radiusMiles, [...railSubcats]),
         fetchFarmersMarketEvents(supabase, lat, lng, radiusMiles),
+        fetchGetawayEvents(supabase, lat, lng, [...railSubcats]),
       ]);
       cityEvents = cleanEvents(deduplicateCrossSource(cityRows), venueCache, cityPhotoCache);
       venueEvents = cleanEvents(deduplicateCrossSource(venueRows), venueCache, cityPhotoCache);
       subcatEvents = cleanEvents(deduplicateCrossSource(subcatRows), venueCache, cityPhotoCache);
       farmersMarketEvents = cleanEvents(deduplicateCrossSource(farmersMarketRows), venueCache, cityPhotoCache);
+      getawayEvents = cleanEvents(deduplicateCrossSource(getawayRows), venueCache, cityPhotoCache);
     }
 
     const carouselSections = buildCarousels(
       allEvents, rawSportsEvents, carouselsConfig, category,
       lat, lng, userPreferences, nearestCity,
       weights, venueCache, communityScores, affinityMap, cityEvents, venueEvents, subcatEvents,
-      farmersMarketEvents, restaurantWeekEvents, radiusMiles, curatedEvents,
+      farmersMarketEvents, restaurantWeekEvents, radiusMiles, curatedEvents, getawayEvents,
     );
 
     const categories = buildCategories(allEvents, userPreferences);
