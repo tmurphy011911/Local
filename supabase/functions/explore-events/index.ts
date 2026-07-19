@@ -178,7 +178,12 @@ function resolveDateWindow(
   dateStart: string | null = null,
   dateEnd: string | null = null,
   tzOffsetMin: number = 0,
-): { startIso: string; endIso: string } {
+): { startIso: string; endIso: string; floorIso: string } {
+  // startIso  — clamped window start (>= now); used for the "still-upcoming" bound.
+  // floorIso  — the window's start-of-day, NOT clamped to now; used only as the
+  //             lower bound for open-ended (null end_at) rows so an all-day event
+  //             that started earlier today stays visible for the rest of the day.
+  // endIso    — exclusive upper bound on start_at.
   const now = Date.now();
   const DAY = 24 * 60 * 60 * 1000;
   const offsetMs = tzOffsetMin * 60 * 1000;
@@ -197,12 +202,17 @@ function resolveDateWindow(
       return {
         startIso: new Date(Math.max(now, startOfTodayUtcMs)).toISOString(),
         endIso: new Date(end).toISOString(),
+        floorIso: new Date(startOfTodayUtcMs).toISOString(),
       };
     }
     case "tomorrow": {
       const start = startOfTodayUtcMs + DAY;
       const end = start + DAY;
-      return { startIso: new Date(start).toISOString(), endIso: new Date(end).toISOString() };
+      return {
+        startIso: new Date(start).toISOString(),
+        endIso: new Date(end).toISOString(),
+        floorIso: new Date(start).toISOString(),
+      };
     }
     case "this_week": {
       // Now through the end of the current week — i.e. up to the upcoming
@@ -214,6 +224,7 @@ function resolveDateWindow(
       return {
         startIso: new Date(Math.max(now, startOfTodayUtcMs)).toISOString(),
         endIso: new Date(mon).toISOString(),
+        floorIso: new Date(startOfTodayUtcMs).toISOString(),
       };
     }
     case "this_weekend": {
@@ -226,6 +237,7 @@ function resolveDateWindow(
       return {
         startIso: new Date(Math.max(now, fri)).toISOString(),
         endIso: new Date(mon).toISOString(),
+        floorIso: new Date(fri).toISOString(),
       };
     }
     case "next_weekend": {
@@ -237,6 +249,7 @@ function resolveDateWindow(
       return {
         startIso: new Date(fri).toISOString(),
         endIso: new Date(mon).toISOString(),
+        floorIso: new Date(fri).toISOString(),
       };
     }
     case "next_30_days": {
@@ -244,6 +257,7 @@ function resolveDateWindow(
       return {
         startIso: new Date(Math.max(now, startOfTodayUtcMs)).toISOString(),
         endIso: new Date(end).toISOString(),
+        floorIso: new Date(startOfTodayUtcMs).toISOString(),
       };
     }
     case "custom": {
@@ -259,13 +273,22 @@ function resolveDateWindow(
         return {
           startIso: new Date(Math.max(now, startMs)).toISOString(),
           endIso: new Date(endMs + DAY).toISOString(),
+          floorIso: new Date(startMs).toISOString(),
         };
       }
       // Bad/missing range — fall through to the default window.
-      return { startIso: new Date(now).toISOString(), endIso: new Date(now + 60 * DAY).toISOString() };
+      return {
+        startIso: new Date(now).toISOString(),
+        endIso: new Date(now + 60 * DAY).toISOString(),
+        floorIso: new Date(startOfTodayUtcMs).toISOString(),
+      };
     }
     default:
-      return { startIso: new Date(now).toISOString(), endIso: new Date(now + 60 * DAY).toISOString() };
+      return {
+        startIso: new Date(now).toISOString(),
+        endIso: new Date(now + 60 * DAY).toISOString(),
+        floorIso: new Date(startOfTodayUtcMs).toISOString(),
+      };
   }
 }
 
@@ -284,7 +307,7 @@ async function fetchEvents(
   // Generous bbox prefilter — tighter radius applied post-fetch.
   const latDelta = radiusMiles / 55;
   const lngDelta = radiusMiles / 45;
-  const { startIso: nowIso, endIso } = resolveDateWindow(dateFilter, dateStart, dateEnd, tzOffsetMin);
+  const { startIso: nowIso, endIso, floorIso } = resolveDateWindow(dateFilter, dateStart, dateEnd, tzOffsetMin);
 
   let q = supabase
     .from("events")
@@ -292,7 +315,13 @@ async function fetchEvents(
       "id,title,description,category,subcategory,start_at,end_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,venue_lat,venue_lng,event_city,event_state,event_lat,event_lng,source_url,city",
     )
     .eq("is_active", true)
-    .gte("start_at", nowIso)
+    // Keep events that OVERLAP the window, not just those that START inside it.
+    // An in-progress event (started before `now`, still running) must survive —
+    // otherwise an all-day festival vanished from Explore the moment it began,
+    // even while it was still happening. Mirrors the home-feed logic in
+    // carousels/index.ts: still-running rows (end_at >= now) stay; open-ended
+    // rows (null end_at) stay for the whole day they start on (start_at >= floor).
+    .or(`end_at.gte.${nowIso},and(end_at.is.null,start_at.gte.${floorIso})`)
     // Upper bound is EXCLUSIVE: events at exactly the next-local-midnight
     // belong to the following day's bucket. With `.lte` they were leaking
     // into both today's and tomorrow's filter.
