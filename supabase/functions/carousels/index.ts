@@ -2824,6 +2824,34 @@ async function fetchTasteEntities(
   }
 }
 
+// Collaborative adjacency (feature_affinity): for each seed entity, the top
+// related ENTITIES the user base also engages ("Shane Gillis fans also like
+// Bill Burr"). Enriches the "If You Like <X>" rail with adjacent acts without
+// flooding it (entity-scoped, unlike a broad subcategory). Empty until the
+// matrix job has run — then the rail falls back to exact matches.
+async function fetchFeatureAffinity(
+  supabase: ReturnType<typeof createClient>,
+  seeds: string[],
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  if (seeds.length === 0) return out;
+  try {
+    const { data } = await (supabase as any)
+      .from("feature_affinity")
+      .select("seed,related,weight")
+      .in("seed", seeds)
+      .eq("related_type", "entity")
+      .order("weight", { ascending: false });
+    for (const row of ((data ?? []) as { seed: string; related: string }[])) {
+      const arr = out.get(row.seed) ?? [];
+      if (arr.length < 6) { arr.push(row.related); out.set(row.seed, arr); }
+    }
+  } catch {
+    // feature_affinity absent / not built yet — rails fall back to exact matches.
+  }
+  return out;
+}
+
 // Per-entity direct fetch for the "If You Like <X>" rails: events whose
 // performers OR brands array contains the entity, within radius. GIN-indexed
 // (idx_events_performers_gin / _brands_gin). Empty per-entity if the columns
@@ -2834,6 +2862,7 @@ async function fetchEntityEvents(
   lng: number,
   radiusMiles: number,
   entities: string[],
+  relatedBySeed: Map<string, string[]>,
 ): Promise<{ entity: string; rows: EventRow[] }[]> {
   if (entities.length === 0) return [];
   const latDelta = radiusMiles / 69.0;
@@ -2843,11 +2872,17 @@ async function fetchEntityEvents(
   const startFrom = nowIso();
   const startTo = daysFromNowIso(90);
   return await Promise.all(entities.map(async (entity) => {
+    // Exact seed + collaborative related acts — all entity-scoped, so adjacency
+    // enriches the rail without flooding it with generic same-subcategory events.
+    const conds = [`performers.cs.{${entity}}`, `brands.cs.{${entity}}`];
+    for (const rel of relatedBySeed.get(entity) ?? []) {
+      conds.push(`performers.cs.{${rel}}`, `brands.cs.{${rel}}`);
+    }
     const { data, error } = await supabase
       .from("events")
       .select("*")
       .eq("is_active", true)
-      .or(`performers.cs.{${entity}},brands.cs.{${entity}}`)
+      .or(conds.join(","))
       .gte("start_at", startFrom)
       .lte("start_at", startTo)
       .gte("venue_lat", minLat)
@@ -2855,7 +2890,7 @@ async function fetchEntityEvents(
       .gte("venue_lng", minLng)
       .lte("venue_lng", maxLng)
       .order("start_at", { ascending: true })
-      .limit(40);
+      .limit(60);
     if (error) {
       console.error(`[carousels] fetchEntityEvents(${entity}) failed:`, error);
       return { entity, rows: [] as EventRow[] };
@@ -3582,6 +3617,8 @@ Deno.serve(async (req) => {
       // Top entities (taste graph) drive the "If You Like <X>" rails — read
       // first so the entity-events fetch can run in the parallel batch below.
       const tasteEntities = await fetchTasteEntities(supabase, userId);
+      // Collaborative adjacency for those seeds ("SG fans also like Bill Burr").
+      const relatedBySeed = await fetchFeatureAffinity(supabase, tasteEntities);
       // Parallel: city-scoped pool (neighborhood rails) + venue-scoped pool
       // (fav-venue rails) + subcategory-scoped pool (topical fav-cat/affinity
       // rails). All three bypass the rank-stratified MV's metro-wide sampling so
@@ -3592,7 +3629,7 @@ Deno.serve(async (req) => {
         fetchSubcategoryEvents(supabase, lat, lng, radiusMiles, [...railSubcats]),
         fetchFarmersMarketEvents(supabase, lat, lng, radiusMiles),
         fetchGetawayEvents(supabase, lat, lng, [...railSubcats]),
-        fetchEntityEvents(supabase, lat, lng, radiusMiles, tasteEntities),
+        fetchEntityEvents(supabase, lat, lng, radiusMiles, tasteEntities, relatedBySeed),
       ]);
       cityEvents = cleanEvents(deduplicateCrossSource(cityRows), venueCache, cityPhotoCache);
       venueEvents = cleanEvents(deduplicateCrossSource(venueRows), venueCache, cityPhotoCache);
