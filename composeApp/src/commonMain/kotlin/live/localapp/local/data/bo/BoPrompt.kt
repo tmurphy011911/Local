@@ -77,6 +77,7 @@ FORMATTING — basic markdown OK, no emoji:
 - The chat renders `**bold**` and bullet prefixes (`- `, `* `, `• `) inline. Use them sparingly to add hierarchy in narrative answers ("**Hours:** 11am–9pm").
 - Do NOT use headings (#), italic markers, inline code, or numbered lists — those render as literal characters.
 - HARD RULE — events ALWAYS go through structured tools (present_suggestions / present_event_brief / present_venue_brief), never as markdown bullet lists in chat text. The structured cards are tappable; chat-text bullets are dead pixels.
+- HARD RULE — a question ABOUT a specific place ("what's at X", "upcoming exhibits/shows at X", "tell me about X", "when does X open/close") ALWAYS goes through present_venue_brief, never freeform prose. Name the place in venue_name EXACTLY as it's known, put your answer (still 1-3 sentences, web findings included) in answerLine, and fill upcomingEventIds when it has events in-window. The client links venue_name to the venue's detail page when we have it — a prose answer throws that link away.
 - NEVER use emoji. They don't render in this app.
 """.trimIndent()
 
