@@ -211,6 +211,86 @@ private func formatDate(_ isoDate: String, timeKnown: Bool) -> String {
     return "\(month) \(day), \(year) \u{00B7} \(hour12):\(minuteStr) \(amPm)"
 }
 
+/// Same output style as `formatDate` but for a computed `Date` (local tz),
+/// used for recurring events' next-occurrence line.
+private func formatDateValue(_ date: Date, timeKnown: Bool) -> String {
+    let months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"]
+    let cal = Calendar.current
+    if !timeKnown {
+        let comps = cal.dateComponents([.year, .month, .day], from: date)
+        let month = months[(comps.month ?? 1) - 1]
+        return "\(month) \(comps.day ?? 1), \(comps.year ?? 2026)"
+    }
+    let comps = cal.dateComponents([.year, .month, .day, .hour, .minute], from: date)
+    let month = months[(comps.month ?? 1) - 1]
+    let day = comps.day ?? 1
+    let year = comps.year ?? 2026
+    let hour = comps.hour ?? 0
+    let minute = comps.minute ?? 0
+    let amPm = hour < 12 ? "AM" : "PM"
+    let hour12 = hour == 0 ? 12 : (hour > 12 ? hour - 12 : hour)
+    let minuteStr = String(format: "%02d", minute)
+    return "\(month) \(day), \(year) \u{00B7} \(hour12):\(minuteStr) \(amPm)"
+}
+
+/// The true next occurrence to display for a recurring event. The stored
+/// `start_at` is a one-time crawl date that nothing rolls forward, so it drifts
+/// into the past (the "Next: <past date>" bug). When the recurrence names a
+/// weekday ("Happens Every Wednesday") we return the soonest upcoming date for
+/// that weekday at the event's original local time-of-day; "Happens Daily"
+/// resolves to today (or tomorrow if the time already passed). Returns nil for
+/// cadence-less recurrences ("Recurring Event", "Available Anytime", "Happens
+/// Weekly/Monthly" with no concrete day), so the caller omits the date line
+/// entirely rather than surfacing a stale date.
+private func nextRecurrenceText(label: String, startAt: String?, timeKnown: Bool) -> String? {
+    let weekdayMap: [String: Int] = [
+        "Happens Every Sunday": 1, "Happens Every Monday": 2, "Happens Every Tuesday": 3,
+        "Happens Every Wednesday": 4, "Happens Every Thursday": 5, "Happens Every Friday": 6,
+        "Happens Every Saturday": 7,
+    ]
+    let cal = Calendar.current
+    let now = Date()
+
+    // Original time-of-day (local), when the source published a real time.
+    var hour = 0, minute = 0
+    if timeKnown, let s = startAt {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let parsed = f.date(from: s) ?? {
+            let f2 = ISO8601DateFormatter(); f2.formatOptions = [.withInternetDateTime]
+            return f2.date(from: s)
+        }()
+        if let d = parsed {
+            let c = cal.dateComponents([.hour, .minute], from: d)
+            hour = c.hour ?? 0; minute = c.minute ?? 0
+        }
+    }
+
+    var target: Date?
+    if let wd = weekdayMap[label] {
+        // Soonest date at/after the start of today whose weekday == wd.
+        let searchFrom = cal.startOfDay(for: now).addingTimeInterval(-1)
+        target = cal.nextDate(
+            after: searchFrom,
+            matching: DateComponents(hour: hour, minute: minute, weekday: wd),
+            matchingPolicy: .nextTime
+        )
+        // If it resolved to today but the time already passed, roll one week.
+        if let t = target, cal.isDateInToday(t), timeKnown, t < now {
+            target = cal.date(byAdding: .day, value: 7, to: t)
+        }
+    } else if label == "Happens Daily" {
+        var t = cal.date(bySettingHour: hour, minute: minute, second: 0, of: now) ?? now
+        if timeKnown, t < now { t = cal.date(byAdding: .day, value: 1, to: t) ?? t }
+        target = t
+    } else {
+        return nil
+    }
+
+    guard let date = target else { return nil }
+    return formatDateValue(date, timeKnown: timeKnown)
+}
+
 // MARK: - Recurrence Detection
 
 private func detectRecurrence(title: String, description: String?, category: String, startAt: String?) -> String? {
@@ -395,7 +475,13 @@ struct EventDetailView: View {
                             systemName: isFavorited ? "heart.fill" : "heart",
                             tint: isFavorited ? AppColor.coral : AppColor.ink
                         ) {
+                            let wasFavorited = isFavorited
                             isFavorited.toggle()
+                            // Confirm the save with a tap of haptic feedback,
+                            // matching the Compose EventDetailScreen heart.
+                            if !wasFavorited {
+                                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            }
                             onFavorite?(event.id)
                         }
                     }
@@ -513,16 +599,28 @@ struct EventDetailView: View {
                 Spacer().frame(height: 10)
             }
 
-            // Date — show for all events including recurring (next occurrence).
-            // Date-only events (timeKnown=false) show JUST the date — no
-            // "Time TBD" suffix. Many crawl sources (libraries, museums,
-            // community calendars) are date-only by design; appending TBD
-            // makes the app feel broken when in fact the source just
-            // didn't publish a time.
-            if let startAt = event.startAt {
-                let baseText = isRecurring
-                    ? "Next: \(formatDate(startAt, timeKnown: event.timeKnown))"
-                    : formatDate(startAt, timeKnown: event.timeKnown)
+            // Date. Recurring events show a COMPUTED next occurrence, not the
+            // raw start_at (a stale one-time crawl date that drifts into the
+            // past — the "Next: <past date>" bug). Cadence-less recurrences show
+            // no date line at all; the badge already conveys that they recur.
+            // Non-recurring events show start_at; date-only rows (timeKnown=false)
+            // show JUST the date — no "Time TBD" suffix, since many crawl sources
+            // (libraries, museums, community calendars) are date-only by design.
+            if let recurrence = recurrence {
+                if let nextText = nextRecurrenceText(
+                    label: recurrence,
+                    startAt: event.startAt,
+                    timeKnown: event.timeKnown
+                ) {
+                    infoRow(
+                        systemName: "calendar",
+                        iconColor: AppColor.coral,
+                        text: "Next: \(nextText)"
+                    )
+                    Spacer().frame(height: 10)
+                }
+            } else if let startAt = event.startAt {
+                let baseText = formatDate(startAt, timeKnown: event.timeKnown)
                 let displayText: String = {
                     guard !event.timeKnown else { return baseText }
                     // Strip any " · 12:00 AM" the formatter might have appended

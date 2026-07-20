@@ -894,8 +894,10 @@ private fun epochMillisToLocalDate(millis: Long): LocalDate =
 // Client-side equivalent of the server `date_filter` slugs, for screens (venue
 // detail) that filter already-loaded events instead of re-querying. Returns a
 // half-open [startMillis, endMillis) window, or null for "show everything".
-// Weekend windows span Sat 00:00 → Mon 00:00 of the current/next calendar week
-// in the device timezone, matching THIS_WEEKEND / NEXT_WEEKEND on Explore.
+// Weekend windows span Fri 00:00 → Mon 00:00 of the current/next calendar week
+// in the device timezone, matching THIS_WEEKEND / NEXT_WEEKEND on the server
+// (explore-events `this_weekend` = Fri→Mon). Previously this started Saturday,
+// so the venue-detail weekend chip and Explore disagreed by a day.
 private fun EventDateFilter.localWindow(
     customStart: LocalDate?,
     customEnd: LocalDate?,
@@ -904,14 +906,14 @@ private fun EventDateFilter.localWindow(
     val today = kotlin.time.Clock.System.now().toLocalDateTime(tz).date
     fun LocalDate.ms() = atStartOfDayIn(tz).toEpochMilliseconds()
     val monday = today.minus(DatePeriod(days = today.dayOfWeek.isoDayNumber - 1))
-    val thisSat = monday.plus(DatePeriod(days = 5))
+    val thisFri = monday.plus(DatePeriod(days = 4))
     val nextMonday = monday.plus(DatePeriod(days = 7))
     return when (this) {
         EventDateFilter.TODAY -> today.ms() to today.plus(DatePeriod(days = 1)).ms()
         EventDateFilter.TOMORROW -> today.plus(DatePeriod(days = 1)).ms() to today.plus(DatePeriod(days = 2)).ms()
         EventDateFilter.THIS_WEEK -> today.ms() to nextMonday.ms()
-        EventDateFilter.THIS_WEEKEND -> thisSat.ms() to nextMonday.ms()
-        EventDateFilter.NEXT_WEEKEND -> thisSat.plus(DatePeriod(days = 7)).ms() to nextMonday.plus(DatePeriod(days = 7)).ms()
+        EventDateFilter.THIS_WEEKEND -> thisFri.ms() to nextMonday.ms()
+        EventDateFilter.NEXT_WEEKEND -> thisFri.plus(DatePeriod(days = 7)).ms() to nextMonday.plus(DatePeriod(days = 7)).ms()
         EventDateFilter.NEXT_30_DAYS -> today.ms() to today.plus(DatePeriod(days = 30)).ms()
         EventDateFilter.CUSTOM ->
             if (customStart == null || customEnd == null) null
@@ -1642,6 +1644,19 @@ fun VenueDetailPage(
     onShare: () -> Unit = {},
     isShared: Boolean = false,
     onSaveVenue: (() -> Unit)? = null,
+    /**
+     * Event ids the user has already saved, so an event opened from this venue
+     * page shows the correct (filled) heart. Sourced from HomeViewModel state.
+     */
+    savedEventIds: Set<String> = emptySet(),
+    /**
+     * Save/unsave an event opened from this venue page. Wired to
+     * HomeViewModel.toggleEventFavorite so the save persists, updates the saved
+     * set, awards the FOMO badge, and fires analytics — exactly like the feed.
+     * Null falls back to a bare recordFavorite (used by call sites with no event
+     * list, e.g. the shared-venue deep link).
+     */
+    onEventSaveToggle: ((Event) -> Unit)? = null,
 ) {
     var selectedEvent by remember { mutableStateOf<Event?>(null) }
     // null = no filter (show all loaded events), mirroring Explore's default.
@@ -1802,7 +1817,12 @@ fun VenueDetailPage(
                         Spacer(Modifier.height(10.dp))
                     }
 
-                    val venueEventCount = if (events.isNotEmpty()) events.size else venueWithMeta.upcomingEventCount
+                    // Count the events we actually loaded, so the header chip can
+                    // never contradict the list below it. The old fallback to
+                    // venueWithMeta.upcomingEventCount (a server bucket count using
+                    // a different name/geo matcher than these events) produced
+                    // headers like "20 upcoming events" over an empty list.
+                    val venueEventCount = events.size
                     if (venueEventCount > 0) {
                         val countLabel = when {
                             venueEventCount == 1 -> "1 upcoming event"
@@ -2014,13 +2034,25 @@ fun VenueDetailPage(
                 EventDetailScreen(
                     event = selectedEvent!!,
                     onBack = { selectedEvent = null },
+                    initialFavorited = selectedEvent!!.id in savedEventIds,
                     onShareTracked = { eventId ->
                         val cat = selectedEvent?.let { it.subcategory ?: it.category }
                         communityInterestRepo.recordShare(eventId, InteractionType.EVENT, cat)
                     },
                     onFavoriteTracked = { eventId ->
-                        val cat = selectedEvent?.let { it.subcategory ?: it.category }
-                        communityInterestRepo.recordFavorite(eventId, InteractionType.EVENT, cat)
+                        // Route through the same VM path the feed uses so the save
+                        // actually persists AND updates the saved set, awards the
+                        // FOMO badge, and fires analytics. A bare recordFavorite
+                        // here did none of that — the event never showed as saved
+                        // and no FOMO was earned. Fall back to recordFavorite for
+                        // call sites that don't hoist the toggle (shared deep link).
+                        val ev = selectedEvent
+                        if (onEventSaveToggle != null && ev != null) {
+                            onEventSaveToggle(ev)
+                        } else {
+                            val cat = ev?.let { it.subcategory ?: it.category }
+                            communityInterestRepo.recordFavorite(eventId, InteractionType.EVENT, cat)
+                        }
                     },
                 )
             }
