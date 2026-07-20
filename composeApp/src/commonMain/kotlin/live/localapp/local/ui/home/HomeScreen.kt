@@ -245,7 +245,13 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
             state.carousels
         } else {
             state.carousels
-                .map { section -> section.copy(events = section.events.filter { (it.distanceMiles ?: 999.0) <= radius }) }
+                .map { section ->
+                    // The "Get Away" rail is INTENTIONALLY events beyond the user's
+                    // radius (50-200mi weekend trips). Radius-filtering it would
+                    // strip every event and drop the rail — so exempt it.
+                    if (section.filterType.equals("getaway", ignoreCase = true)) section
+                    else section.copy(events = section.events.filter { (it.distanceMiles ?: 999.0) <= radius })
+                }
                 .filter { it.events.isNotEmpty() }
         }
         if (state.selectedCategory.equals("experiences", ignoreCase = true)) {
