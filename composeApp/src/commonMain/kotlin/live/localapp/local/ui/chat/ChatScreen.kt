@@ -669,6 +669,7 @@ fun ChatScreen(
                                 viewModel.sendDraftTrayChip(footerActionToIntent(action))
                             },
                             onScopeChip = { intent -> viewModel.sendDraftTrayChip(intent) },
+                            onOpenVenue = { name -> selectedVenueName = name },
                             isDismissed = { id -> id in dismissedEventIds },
                             onDismiss = { id ->
                                 dismissedEventIds = dismissedEventIds + id
@@ -3036,6 +3037,7 @@ private fun StructuredResponseRenderer(
     onOpenEvent: (live.localapp.local.domain.model.Event) -> Unit,
     onFooterAction: (live.localapp.local.domain.model.BoStructuredResponse.Suggestions.Action) -> Unit,
     onScopeChip: (String) -> Unit,
+    onOpenVenue: (String) -> Unit = {},
     isDismissed: (String) -> Boolean = { false },
     onDismiss: (String) -> Unit = {},
     isGroupLoading: (String) -> Boolean = { false },
@@ -3085,6 +3087,7 @@ private fun StructuredResponseRenderer(
                 trayIds = trayIds,
                 onAddToTray = onAddToTray,
                 onOpenEvent = onOpenEvent,
+                onOpenVenue = onOpenVenue,
             )
         }
         is live.localapp.local.domain.model.BoStructuredResponse.QuickFact -> {
@@ -3195,6 +3198,7 @@ private fun VenueBriefCard(
     trayIds: Set<String>,
     onAddToTray: (live.localapp.local.domain.model.Event) -> Unit,
     onOpenEvent: (live.localapp.local.domain.model.Event) -> Unit,
+    onOpenVenue: (String) -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -3205,10 +3209,24 @@ private fun VenueBriefCard(
             .border(1.5.dp, AppColors.Pebble, RoundedCornerShape(16.dp))
             .padding(14.dp),
     ) {
-        Text(response.venueName, style = TextStyle(
-            fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black,
-            fontSize = 16.sp, color = AppColors.Ink,
-        ))
+        // Venue name links to the venue detail page when we have the venue in
+        // our DB (venueId resolved client-side) — coral + tappable; plain Ink
+        // otherwise.
+        val venueLinkable = response.venueId != null
+        Text(
+            response.venueName,
+            style = TextStyle(
+                fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black,
+                fontSize = 16.sp,
+                color = if (venueLinkable) AppColors.Coral else AppColors.Ink,
+            ),
+            modifier = if (venueLinkable) {
+                Modifier.clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { onOpenVenue(response.venueName) }
+            } else Modifier,
+        )
         response.answerLine?.takeIf { it.isNotBlank() }?.let {
             Spacer(Modifier.height(4.dp))
             Text(it, style = TextStyle(

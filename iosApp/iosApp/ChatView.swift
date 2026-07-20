@@ -862,35 +862,66 @@ struct ChatView: View {
                     .padding(.vertical, 10)
                     .background(C.mist)
                     .clipShape(RoundedRectangle(cornerRadius: 18))
-            } else if typedMessageIds.contains(message.id) || message.preRevealed {
-                // `preRevealed`: this bubble was already revealed live via
-                // streamingText, so render it full/static — replaying the
-                // typewriter here is the "full message flashes, vanishes, then
-                // re-streams" bug (shared fix, see ChatViewModel.addAiMessage).
-                aiMessageBubble(message.text)
             } else {
-                TypewritingAiBubble(rawText: message.text, onReveal: { typewriterTick &+= 1 }) {
-                    typedMessageIds.insert(message.id)
-                    // Mirror into the app-lifetime store so reopens of the
-                    // sheet skip the animation for this message.
-                    TypewriterCompletionStore.shared.completed.insert(message.id)
-                }
-                // LazyVStack destroys offscreen rows; TypewritingAiBubble's
-                // `.task` is cancelled on disappear and re-runs on reappear,
-                // restarting the typewriter from scratch (the "events
-                // re-stream when I scroll back" bug). The natural-completion
-                // closure above only fires if the bubble stays on screen long
-                // enough — any bubble scrolled away mid-type never records, so
-                // it replays. Lock it to static full-text the instant it
-                // leaves the viewport: once seen, never re-animate.
-                .onDisappear {
-                    typedMessageIds.insert(message.id)
-                    TypewriterCompletionStore.shared.completed.insert(message.id)
+                // Bo bubble + (optional) a "View <venue>" link chip beneath it,
+                // shown when this is a VenueBrief whose venue we have in our DB.
+                VStack(alignment: .leading, spacing: 6) {
+                    if typedMessageIds.contains(message.id) || message.preRevealed {
+                        // `preRevealed`: already revealed live via streamingText,
+                        // so render it full/static — replaying the typewriter here
+                        // is the "full message flashes, vanishes, then re-streams"
+                        // bug (shared fix, see ChatViewModel.addAiMessage).
+                        aiMessageBubble(message.text)
+                    } else {
+                        TypewritingAiBubble(rawText: message.text, onReveal: { typewriterTick &+= 1 }) {
+                            typedMessageIds.insert(message.id)
+                            // Mirror into the app-lifetime store so reopens of the
+                            // sheet skip the animation for this message.
+                            TypewriterCompletionStore.shared.completed.insert(message.id)
+                        }
+                        // LazyVStack destroys offscreen rows; TypewritingAiBubble's
+                        // `.task` is cancelled on disappear and re-runs on reappear,
+                        // restarting the typewriter (the "events re-stream when I
+                        // scroll back" bug). Lock to static full-text the instant it
+                        // leaves the viewport: once seen, never re-animate.
+                        .onDisappear {
+                            typedMessageIds.insert(message.id)
+                            TypewriterCompletionStore.shared.completed.insert(message.id)
+                        }
+                    }
+                    if let venue = message.venueLinkName, !venue.isEmpty {
+                        venueLinkChip(venue)
+                    }
                 }
             }
 
             if !message.isUser { Spacer(minLength: 40) }
         }
+    }
+
+    // Tappable "View <venue>" chip under a VenueBrief bubble. Reuses the same
+    // open path as plan-slot venue taps (onVenueTap resolves the name → native
+    // venue detail; see HeroTransition.ios.kt). Only shown when the client
+    // resolved the venue in our DB, so it never dead-ends.
+    private func venueLinkChip(_ venueName: String) -> some View {
+        Button {
+            VenueDetailTransitionController.fromPlanContext = true
+            ChatBridge.shared.onVenueTap?(venueName)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "building.columns")
+                    .font(.system(size: 12, weight: .bold))
+                Text("View \(venueName)")
+                    .font(F.body(13, .bold))
+                    .lineLimit(1)
+            }
+            .foregroundColor(C.coral)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(C.coralLt)
+            .clipShape(Capsule())
+        }
+        .buttonStyle(.plain)
     }
 
     private func aiMessageBubble(_ text: String) -> some View {

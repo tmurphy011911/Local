@@ -4540,6 +4540,18 @@ class ChatViewModel(
             else -> s
         }
 
+        // Link the venue when we have it. If Bo's brief names a venue that's in
+        // our DB, resolve its id (name → venue via searchByName) so the card
+        // (Android) / bubble (iOS) can link to the venue detail page. Resolves
+        // to null when we don't have the venue — then it stays a plain prose
+        // answer, exactly as before.
+        (structured as? live.localapp.local.domain.model.BoStructuredResponse.VenueBrief)?.let { vb ->
+            if (vb.venueId == null && vb.venueName.isNotBlank()) {
+                val v = try { getVenueByName(vb.venueName) } catch (_: Throwable) { null }
+                if (v != null) structured = vb.copy(venueId = v.id)
+            }
+        }
+
         // Deferred wrapper-prose bubble — shown for briefs/trays that carry a
         // short intro, UNLESS it was just folded into an eventless brief's
         // answerLine above (else it would render twice).

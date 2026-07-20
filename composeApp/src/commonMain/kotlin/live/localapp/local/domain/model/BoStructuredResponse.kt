@@ -76,6 +76,11 @@ sealed interface BoStructuredResponse {
         val venueName: String,
         val answerLine: String?,
         val upcomingEventIds: List<String>,
+        /** Id of the matching venue in our DB, resolved client-side from
+         *  [venueName] (never sent by Bo). Non-null only when we actually have
+         *  the venue — the card/bubble links to its detail page; null keeps it
+         *  a plain prose answer. */
+        val venueId: String? = null,
     ) : BoStructuredResponse
 
     /** present_quick_fact — one-line answer with optional tap-target. */

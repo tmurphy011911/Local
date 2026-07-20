@@ -176,6 +176,13 @@ object ChatBridge {
                     s.toSnapshot(sc.hydratedEvents)
                 }
             }
+            // Linkable venue for a VenueBrief we resolved in our DB — Swift
+            // renders a "View <venue>" chip that opens venue detail.
+            val venueLink = (content as? MessageContent.Structured)?.let { sc ->
+                (sc.response as? BoStructuredResponse.VenueBrief)
+                    ?.takeIf { it.venueId != null }
+                    ?.venueName
+            }
             ChatMessageSnapshot(
                 id = msg.id,
                 isUser = msg.role == MessageRole.USER,
@@ -194,6 +201,7 @@ object ChatBridge {
                 isSuperseded = msg.id in supersededIds,
                 structured = structuredSnap,
                 preRevealed = live.localapp.local.ui.chat.TypewriterCompletionStore.isCompleted(msg.id),
+                venueLinkName = venueLink,
             )
         }
 
@@ -307,6 +315,10 @@ data class ChatMessageSnapshot(
      *  typewriter (which reads as: full message flashes, vanishes, re-streams).
      *  Sourced from the shared TypewriterCompletionStore. */
     val preRevealed: Boolean = false,
+    /** Venue name to link to detail — non-null only for a VenueBrief whose
+     *  venue we resolved in our DB. Swift renders a tappable "View <venue>"
+     *  chip under the bubble that calls [onVenueTap]. */
+    val venueLinkName: String? = null,
 )
 
 // ── Structured response snapshots (Phase 6 / Bo present_suggestions) ──
