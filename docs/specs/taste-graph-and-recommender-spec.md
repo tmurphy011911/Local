@@ -326,3 +326,32 @@ Beyond the six requirements you listed:
 10. **Evaluation harness.** Decide the success metric now (discovery share, save rate, session depth) so Phase 2+ ships against a target, not a vibe.
 11. **Feedback-loop / staleness of interests.** Taste drifts; decay old signals and refresh the top-5 on a cadence, or a user who went to one kids' event in 2024 is "a parent" forever.
 ```
+
+---
+
+## 18. Follow-ups — v1.3
+
+### 18.1 Seasonal / holiday rails
+Time-gated For-You rails (Halloween, Thanksgiving, etc.), **universal but taste-ranked**. Deliberately lean — no table, no migration, no nightly job:
+- **1 season config** (below) + an **active-season gate** (returns the season whose month-day window contains today; 0–1 active) + a **tag-filtered fetch** (`fetchOccasionEvents`, a clone of `fetchSubcategoryEvents` filtering `tags @> {tag}`) + **one rail block** in `buildCarousels` (ranked by `sortFn`, placed high during its window, ≥3-event gate).
+- **Off-season = the rail isn't built** → zero footprint the other 11 months.
+- **Dependency:** events tagged with the occasion tag. The `occasion` facet is already in `scripts/taste/tag_vocabulary.js` (added 2026-07-17), so the first tag backfill picks it up — no further vocab work.
+
+Season config (product-owned titles/windows):
+```ts
+const SEASONS = [
+  { tag: "halloween",    title: "Halloween Haunts",        from: "10-01", to: "10-31" },
+  { tag: "thanksgiving", title: "Thanksgiving is coming",  from: "11-20", to: "11-30" },
+  { tag: "christmas",    title: "'Tis the Season",         from: "12-01", to: "12-26" },
+  { tag: "new-years",    title: "Ring in the New Year",    from: "12-27", to: "01-02" }, // wraps year-end
+  { tag: "valentines",   title: "Valentine's Picks",       from: "02-01", to: "02-14" },
+  { tag: "st-patricks",  title: "St. Patrick's Day",       from: "03-10", to: "03-17" },
+  { tag: "pride",        title: "Pride",                   from: "06-01", to: "06-30" },
+  { tag: "july-4th",     title: "Fourth of July",          from: "06-20", to: "07-04" },
+  // …remaining occasion tags, same shape
+];
+```
+Note: the New Year's window wraps the year boundary — the gate needs a trivial `from > to` wrap check.
+
+### 18.2 Cross-domain collaborative enrichment
+The "Shane Gillis → baseball" leap (entity → *subcategory/tag* adjacency, not just entity → entity). Deferred from the collaborative layer pending **per-source flood-control** — cap N events per adjacent feature so a broad subcategory (comedy) can't drown the rail. The `feature_affinity` matrix already stores cross-type relations (`related_type` = subcategory/tag/entity); this is serve-side only.
