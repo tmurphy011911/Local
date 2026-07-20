@@ -1951,13 +1951,22 @@ function buildCarousels(
       affinityCount++;
     }
 
-    // Pool: Get Away — preference-matched events 50-200 mi out. A "little
-    // roadtrip" discovery rail. The fetch already matched the user's preferred
-    // subcategories; here we enforce the distance band and rank by taste.
+    // Pool: Get Away for the Weekend — preference-matched events 50-200 mi out
+    // that START on a Fri/Sat/Sun. A weekend-trip discovery rail. The fetch
+    // already matched the user's preferred subcategories.
     const getawayRail: CarouselSection | null = (() => {
       if (getawayEvents.length === 0) return null;
+      // Weekend = the event's calendar date lands on Fri/Sat/Sun. Use the date
+      // part at noon UTC so an evening event near midnight isn't mis-dayed by a
+      // timezone shift. getUTCDay: 0=Sun … 5=Fri, 6=Sat.
+      const startsOnWeekend = (s: string): boolean => {
+        if (!s) return false;
+        const dow = new Date(s.slice(0, 10) + "T12:00:00Z").getUTCDay();
+        return dow === 5 || dow === 6 || dow === 0;
+      };
       const events = getawayEvents
         .filter(isGeneralFeedEvent)
+        .filter(e => startsOnWeekend(e.start_at ?? ""))
         .map(e => withDistance(e, userLat, userLng))
         .filter(e => {
           const d = e.distance_miles ?? 0;
@@ -1968,7 +1977,7 @@ function buildCarousels(
       if (events.length < 3) return null;
       return {
         slug: "get-away",
-        title: "Get Away a Little Bit",
+        title: "Get Away for the Weekend",
         subtitle: null,
         filter_type: "getaway",
         events,
