@@ -564,6 +564,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         }
 
         // Main tab content — fills entire screen, tab bar overlays on top
+        val tabStateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
         if (!showHomeTutorial) {
         val contentBlur by animateDpAsState(
             targetValue = if (showCreatePlanMenu) 16.dp else 0.dp,
@@ -571,6 +572,12 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         )
         Box(modifier = Modifier.fillMaxSize().blur(contentBlur)) {
             Box(modifier = Modifier.fillMaxSize()) {
+                // Retain each tab's saveable state (scroll positions etc.) across
+                // tab switches. The router disposes the unselected tab's composables,
+                // so without this the LazyColumn/LazyList scroll positions on Home and
+                // Explore reset to the top every time you leave and come back. Keyed by
+                // the tab so each tab keeps its own remembered state.
+                tabStateHolder.SaveableStateProvider(selectedTab.name) {
                 when (selectedTab) {
                     Tab.HOME -> {
                         HomeScreen(
@@ -1191,6 +1198,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         }
                     }
                 }
+                } // SaveableStateProvider
             }
 
             }
@@ -1903,6 +1911,13 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             onFavoriteToggle = { placesVm.toggleVenueFavorite(venue.venue.id, venue.primaryCategory) },
                             onShare = {
                                 presentShareSheet(venue.venue.name, "https://localapp.live/v/${venue.venue.id}")
+                            },
+                            // An event opened from this venue page saves through the
+                            // same VM path as the feed, so it persists, shows the
+                            // filled heart, and earns FOMO.
+                            savedEventIds = homeState.favoriteEventIds,
+                            onEventSaveToggle = { ev ->
+                                homeVm.toggleEventFavorite(ev.id, ev.subcategory ?: ev.category, source = "venue_detail")
                             },
                         )
                     }

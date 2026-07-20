@@ -144,6 +144,7 @@ fun EventDetailScreen(
     val uriHandler = LocalUriHandler.current
     val inAppBrowser = rememberInAppBrowser()
     val clipboardManager = LocalClipboardManager.current
+    val haptic = LocalHapticFeedback.current
 
     // Upcoming-event count for the host venue, shown on the venue card. Events
     // carry no venue FK in the read path (see EventDto), so we resolve by the
@@ -264,11 +265,16 @@ fun EventDetailScreen(
                         // post-auth), matching iOS. Replaces the old full-width
                         // "Save Event" button, which stacked over the Get Tickets /
                         // More Info CTA below.
+                        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                         onSaveEvent()
                     } else {
                         val wasFavorited = isFavorited
                         isFavorited = !isFavorited
                         if (!wasFavorited) {
+                            // Confirm the save with a tap of haptic feedback, on
+                            // every surface that hosts this screen (feed, venue
+                            // page, share) — the heart previously saved silently.
+                            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                             // Persistence + analytics both happen in the VM's
                             // toggleEventFavorite (wired via onFavoriteTracked).
                             onFavoriteTracked?.invoke(event.id)

@@ -594,6 +594,20 @@ actual fun showNativeVenueDetail(
     VenueDetailBridge.onDismissed = onDismissed
     VenueDetailBridge.onFavorited = onFavorited
 
+    // An event opened from inside this native venue detail is presented by Swift
+    // calling EventDetailBridge.showEventDetail directly (VenueDetailView.swift),
+    // which bypasses showNativeEventDetail — so EventDetailBridge.onFavorited would
+    // otherwise be left null or stale here, and tapping that event's heart would
+    // neither save the event nor award FOMO. Point it at the same VM path the feed
+    // uses so the save persists, updates the saved set, and earns the badge.
+    // (Category only drives affinity weighting and isn't carried on this callback,
+    // so pass null — the save + FOMO don't need it.)
+    EventDetailBridge.onFavorited = { eventId ->
+        org.koin.mp.KoinPlatform.getKoin()
+            .get<live.localapp.local.ui.home.HomeViewModel>()
+            .toggleEventFavorite(eventId, null, source = "venue_detail")
+    }
+
     // Serialize upcoming events as JSON for Swift
     val eventsJson = kotlinx.serialization.json.buildJsonArray {
         venueWithMeta.upcomingEvents.forEach { event ->
