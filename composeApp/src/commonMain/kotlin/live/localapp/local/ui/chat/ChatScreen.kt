@@ -3216,7 +3216,11 @@ private fun VenueBriefCard(
                 fontSize = 12.sp, color = AppColors.Ink3,
             ))
         }
-        if (response.upcomingEventIds.isNotEmpty()) {
+        // Only render the "Upcoming" section when at least one id actually
+        // hydrated — a non-empty upcomingEventIds whose rows all fail to
+        // resolve (web-sourced or invented ids) would otherwise leave a
+        // dangling "Upcoming" label with no rows beneath it.
+        if (response.upcomingEventIds.any { hydratedEvents.containsKey(it) }) {
             Spacer(Modifier.height(10.dp))
             Text("Upcoming", style = TextStyle(
                 fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold,

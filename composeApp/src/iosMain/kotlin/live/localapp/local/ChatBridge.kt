@@ -157,7 +157,16 @@ object ChatBridge {
                 is MessageContent.Structured -> when (val r = content.response) {
                     is BoStructuredResponse.Suggestions -> ""
                     is BoStructuredResponse.EventBrief -> r.answerLine
-                    is BoStructuredResponse.VenueBrief -> r.answerLine ?: "Upcoming at ${r.venueName}"
+                    // Keep the bare "Upcoming at X" header ONLY when events
+                    // actually hydrated (iOS renders the brief as this text
+                    // bubble); otherwise it's a dead-end. The client backfills
+                    // answerLine for eventless briefs, so this graceful line is
+                    // just defense-in-depth.
+                    is BoStructuredResponse.VenueBrief -> r.answerLine?.takeIf { it.isNotBlank() }
+                        ?: if (r.upcomingEventIds.any { content.hydratedEvents.containsKey(it) })
+                            "Upcoming at ${r.venueName}"
+                        else
+                            "I couldn't pull up upcoming events for ${r.venueName} right now."
                     is BoStructuredResponse.QuickFact -> r.text
                     is BoStructuredResponse.ScopeRedirect -> r.explanation
                 }

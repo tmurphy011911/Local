@@ -4433,20 +4433,21 @@ class ChatViewModel(
     private suspend fun handleStructuredResponse(parsed: ParsedChatResponse) {
         val json = parsed.structuredJson?.jsonObject ?: kotlinx.serialization.json.JsonObject(emptyMap())
 
-        // Bo may emit a short prose intro alongside the terminal tool — show
-        // it ONLY when it's substantive (not a "Let me check…" preamble and
-        // not duplicated by the structured tool's own answerLine). Empirical
-        // guard: ≤ 240 chars, no leading "Let me / I'll / Searching / etc."
-        // patterns. Longer prose gets dropped (Bo broke BREVITY) since the
-        // structured payload already conveys the answer.
+        // Bo may emit a short prose intro alongside the terminal tool — shown
+        // ONLY when substantive (not a "Let me check…" preamble and not
+        // duplicated by the structured tool's own answerLine). Empirical guard:
+        // ≤ 240 chars, no leading "Let me / I'll / Searching / etc." patterns.
+        // The actual show is DEFERRED to just before the card renders — an
+        // eventless brief (below) folds this prose into its answerLine instead,
+        // and we must not render it twice.
         val wrapperProse = parsed.text.trim()
-        if (wrapperProse.isNotBlank() && isAcceptableWrapperProse(wrapperProse)) {
-            addAiMessage(wrapperProse)
-        }
 
         var structured = parseStructuredResponse(parsed.type, json) ?: run {
-            // Malformed payload — at minimum we already showed wrapper prose
-            // above (if acceptable). End the turn.
+            // Malformed payload — surface Bo's prose (if acceptable) so the turn
+            // isn't a silent dead-end, then end.
+            if (wrapperProse.isNotBlank() && isAcceptableWrapperProse(wrapperProse)) {
+                addAiMessage(wrapperProse)
+            }
             finishTurn(emptyList())
             return
         }
@@ -4505,6 +4506,45 @@ class ChatViewModel(
                     println("ChatVM: VenueBrief salvage — rebuilt ${matches.size} events for '${vb.venueName}' from cache")
                 }
             }
+        }
+
+        // Never-empty-brief guard. A Venue/Event brief that resolves to zero
+        // renderable events with a blank answerLine would degrade to a bare
+        // "Upcoming at <venue>" header — and on iOS the bridge collapses the
+        // whole reply to exactly that string, dead-ending the turn (the
+        // "Upcoming at Symphony Hall" freeze). Web-discovered events have no
+        // event-card path in a brief (save_web_finding hydration is plan-only),
+        // so Bo's real answer lives in THIS turn's prose. Fold that prose into
+        // answerLine so both platforms show the answer; fall back to a graceful
+        // line when Bo wrote no prose either.
+        var wrapperProseConsumed = false
+        structured = when (val s = structured) {
+            is live.localapp.local.domain.model.BoStructuredResponse.VenueBrief -> {
+                val hasEvents = s.upcomingEventIds.any { hydrated.containsKey(it) }
+                if (!hasEvents && s.answerLine.isNullOrBlank()) {
+                    wrapperProseConsumed = wrapperProse.isNotBlank()
+                    s.copy(answerLine = wrapperProse.ifBlank {
+                        "I couldn't pull up upcoming events for ${s.venueName} right now — want me to widen the search?"
+                    })
+                } else s
+            }
+            is live.localapp.local.domain.model.BoStructuredResponse.EventBrief -> {
+                val hasEvent = hydrated.containsKey(s.eventId)
+                if (!hasEvent && s.answerLine.isBlank()) {
+                    wrapperProseConsumed = wrapperProse.isNotBlank()
+                    s.copy(answerLine = wrapperProse.ifBlank {
+                        "I couldn't pull up the details for that one right now."
+                    })
+                } else s
+            }
+            else -> s
+        }
+
+        // Deferred wrapper-prose bubble — shown for briefs/trays that carry a
+        // short intro, UNLESS it was just folded into an eventless brief's
+        // answerLine above (else it would render twice).
+        if (!wrapperProseConsumed && wrapperProse.isNotBlank() && isAcceptableWrapperProse(wrapperProse)) {
+            addAiMessage(wrapperProse)
         }
 
         addMessage(
