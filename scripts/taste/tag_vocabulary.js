@@ -66,6 +66,15 @@ const TAG_FACETS = {
     "hidden-gem", "boston-essential", "must-see", "buzzworthy",
   ],
 
+  // Seasonal / holiday occasion — ONLY applies to events tied to that occasion
+  // (a Trick-or-Treat trail => halloween; a tree lighting => christmas). Left
+  // empty for the vast majority of events. Drives time-gated seasonal rails.
+  occasion: [
+    "halloween", "thanksgiving", "christmas", "hanukkah", "new-years",
+    "valentines", "st-patricks", "july-4th", "easter", "mothers-day",
+    "fathers-day", "pride", "lunar-new-year", "oktoberfest",
+  ],
+
   // WHAT it's about — the topical interests.
   interest: [
     "live-music", "local-artist", "touring-act", "electronic-music",
