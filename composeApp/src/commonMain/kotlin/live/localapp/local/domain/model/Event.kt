@@ -3,6 +3,8 @@ package live.localapp.local.domain.model
 
 // Clock imported fully-qualified below to avoid kotlin.time.Clock conflict
 import kotlinx.datetime.Instant
+import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 
@@ -203,15 +205,30 @@ data class Event(
      */
     val isUpcoming: Boolean
         get() {
+            val tz = TimeZone.currentSystemDefault()
+            // start_at-anchored, matching the "This event has passed" banner
+            // (computeCountdown), so Saved Events sheds exactly the events the
+            // app itself calls passed. A genuinely date-less entry (null
+            // start_at) is treated as always-on and kept.
             val s = startAt ?: return true
-            return try {
-                val tz = TimeZone.currentSystemDefault()
-                val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
-                val eventDay = Instant.parse(s).toLocalDateTime(tz).date.toEpochDays()
-                val todayDay = Instant.fromEpochMilliseconds(nowMs).toLocalDateTime(tz).date.toEpochDays()
-                eventDay >= todayDay
-            } catch (_: Exception) {
-                true
-            }
+            val eventDay = eventEpochDay(s, tz) ?: return true  // unparseable → keep
+            val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
+            val todayDay = Instant.fromEpochMilliseconds(nowMs).toLocalDateTime(tz).date.toEpochDays()
+            return eventDay >= todayDay
         }
+
+    /**
+     * Local-day epoch of an event timestamp, tolerant of the formats the
+     * backend actually emits: offset-aware ISO ("…T00:00:00+00:00"), naive ISO
+     * from a `timestamp without time zone` column ("…T00:00:00", which
+     * [Instant.parse] rejects — the old fail-open bug that kept passed events in
+     * Saved Events), and bare dates ("2026-05-17"). Returns null only when none
+     * of these parse.
+     */
+    private fun eventEpochDay(s: String, tz: TimeZone): Long? {
+        runCatching { return Instant.parse(s).toLocalDateTime(tz).date.toEpochDays().toLong() }
+        runCatching { return LocalDateTime.parse(s).date.toEpochDays().toLong() }
+        runCatching { return LocalDate.parse(s.take(10)).toEpochDays().toLong() }
+        return null
+    }
 }

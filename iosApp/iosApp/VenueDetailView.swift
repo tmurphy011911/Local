@@ -426,9 +426,14 @@ struct VenueDetailView: View {
         return parts.isEmpty ? nil : parts.joined(separator: " \u{00B7} ")
     }
 
-    /// Prefer the freshly-loaded live count; fall back to the seeded count.
+    /// Count the events we actually loaded, so the header chip can never
+    /// contradict the list below it. The old fallback to `venue.upcomingEventCount`
+    /// (a server bucket count computed with a different name/geo matcher than the
+    /// events we fetch) produced "20 upcoming events" headers over an empty list,
+    /// and "2 events" over a longer one. When nothing loaded this returns 0, so
+    /// `formatVenueEventCount` drops the chip and the no-events state shows instead.
     private var venueEventCountForChip: Int {
-        liveEvents.isEmpty ? venue.upcomingEventCount : liveEvents.count
+        liveEvents.count
     }
 
     /// "4.5 · Arts Center" — category dropped when blank.
@@ -631,9 +636,10 @@ struct VenueDetailView: View {
 
                 Spacer().frame(height: 8)
 
-                Text("No upcoming events at this venue")
+                Text("No events for this venue on Local (yet). Some venues prevent us from pulling in their events — check their website for a calendar!")
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(AppColor.ink3)
+                    .fixedSize(horizontal: false, vertical: true)
                     .padding(.vertical, 12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 14)

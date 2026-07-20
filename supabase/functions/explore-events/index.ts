@@ -309,23 +309,46 @@ async function fetchEvents(
   const lngDelta = radiusMiles / 45;
   const { startIso: nowIso, endIso, floorIso } = resolveDateWindow(dateFilter, dateStart, dateEnd, tzOffsetMin);
 
+  // Explicit date presets (Today/Tomorrow/This Week/This Weekend/…, or a
+  // custom-picked date) mean the user wants events that *start* inside that
+  // window — NOT every long-running event that happens to overlap it. Anchoring
+  // on start_at here fixes filters leaking foreign days: e.g. a weeks-long
+  // exhibition that started today no longer appears under "Tomorrow", and a
+  // Tuesday event with a far-out end_at no longer bleeds into "This Weekend".
+  // The all-day-festival case the overlap logic was added for (a00e8a5) is still
+  // covered, because an all-day event's start_at IS the window's local-midnight
+  // floor, so `start_at >= floorIso` keeps it visible for the whole day.
+  const EXPLICIT_WINDOWS = new Set([
+    "today", "tomorrow", "this_week", "this_weekend",
+    "next_weekend", "next_30_days", "custom",
+  ]);
+  const startAnchored = dateFilter != null && EXPLICIT_WINDOWS.has(dateFilter);
+
   let q = supabase
     .from("events")
     .select(
       "id,title,description,category,subcategory,start_at,end_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,venue_lat,venue_lng,event_city,event_state,event_lat,event_lng,source_url,city",
     )
-    .eq("is_active", true)
-    // Keep events that OVERLAP the window, not just those that START inside it.
-    // An in-progress event (started before `now`, still running) must survive —
-    // otherwise an all-day festival vanished from Explore the moment it began,
-    // even while it was still happening. Mirrors the home-feed logic in
-    // carousels/index.ts: still-running rows (end_at >= now) stay; open-ended
-    // rows (null end_at) stay for the whole day they start on (start_at >= floor).
-    .or(`end_at.gte.${nowIso},and(end_at.is.null,start_at.gte.${floorIso})`)
-    // Upper bound is EXCLUSIVE: events at exactly the next-local-midnight
-    // belong to the following day's bucket. With `.lte` they were leaking
-    // into both today's and tomorrow's filter.
-    .lt("start_at", endIso)
+    .eq("is_active", true);
+
+  if (startAnchored) {
+    // Start-anchored: the event's own start falls inside [floor, end).
+    q = q.gte("start_at", floorIso).lt("start_at", endIso);
+  } else {
+    // Default browse feed keeps OVERLAP semantics, so an in-progress event
+    // (started before `now`, still running) survives — otherwise an all-day
+    // festival vanished from Explore the moment it began, even while still
+    // happening. Mirrors carousels/index.ts: still-running rows (end_at >= now)
+    // stay; open-ended rows (null end_at) stay for the day they start on.
+    q = q
+      .or(`end_at.gte.${nowIso},and(end_at.is.null,start_at.gte.${floorIso})`)
+      // Upper bound is EXCLUSIVE: events at exactly the next-local-midnight
+      // belong to the following day's bucket. With `.lte` they were leaking
+      // into both today's and tomorrow's filter.
+      .lt("start_at", endIso);
+  }
+
+  q = q
     .gte("venue_lat", lat - latDelta)
     .lte("venue_lat", lat + latDelta)
     .gte("venue_lng", lng - lngDelta)
