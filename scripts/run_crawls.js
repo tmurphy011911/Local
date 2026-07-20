@@ -658,6 +658,19 @@ function normalizeEvent(event, venue) {
   const isExplicitMidnight = /T00:00:00/.test(startStr);
   const startHasTime = hasTimePart && !isExplicitMidnight;
 
+  // Date-only events (no parsed time) get stamped at local midnight with
+  // end == start (zero duration). Left that way they read as "ended at 00:00"
+  // and vanish the instant their day begins — the explore-events / carousels
+  // feeds keep rows only while end_at >= now. Treat an unknown-time event as
+  // ALL-DAY: span it to the next local midnight (matching how real all-day
+  // festivals are stored) so it stays visible for its whole date, and the daily
+  // deactivate_past_events job still retires it correctly once the day ends.
+  const startAt = tagEasternTime(event.start_date);
+  let endAt = tagEasternTime(event.end_date);
+  if (!startHasTime && startAt && (!endAt || endAt === startAt)) {
+    endAt = new Date(Date.parse(startAt) + 24 * 60 * 60 * 1000).toISOString();
+  }
+
   return {
     title,
     description: description || null,
@@ -667,8 +680,8 @@ function normalizeEvent(event, venue) {
     // we just emit a neutral default.
     category: "other",
     subcategory: null,
-    start_at: tagEasternTime(event.start_date),
-    end_at: tagEasternTime(event.end_date),
+    start_at: startAt,
+    end_at: endAt,
     time_known: startHasTime,
     is_free: event.is_free || false,
     price_min: event.price_min ?? null,
