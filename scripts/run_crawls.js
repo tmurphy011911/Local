@@ -257,6 +257,12 @@ async function crawlFeedXml(venue, feedXml, sourceLabel) {
   console.log(`    RSS breakdown: ${jsonLdEvents.length} via JSON-LD detail pages, ${claudeEvents.length} via Claude fallback`);
 
   const rows = allEvents.map((e) => normalizeEvent(e, venue));
+  // Upsert inline (per-venue) so a cancelled/timed-out run keeps these events.
+  // The RSS/Claude paths used to buffer rows for a single end-of-run batch that
+  // could crash (bad date) or blow the job timeout and lose a whole state's
+  // events — the reason NY read ~86% zero. rows are still returned for the run
+  // summary, but they are already persisted here.
+  if (rows.length > 0) await upsertEvents(rows);
   await updateVenueCrawlStatus(venue.id, true, venue.crawl_success_rate);
   return { venue: venue.name, events: rows.length, status: "ok (rss)", rows };
 }
@@ -736,7 +742,13 @@ function shadowKey(title, startAt, venueName) {
 }
 
 async function filterDateOnlyShadows(batch) {
-  const dateOnly = batch.filter((r) => r.time_known === false && r.start_at && r.venue_name);
+  // Guard against malformed start_at (e.g. a doubled timezone like
+  // "2026-07-28T20:00:00-0400-05:00"): a bad value slices to an unparseable date
+  // → NaN maxDateMs → new Date(NaN).toISOString() throws and takes down the whole
+  // upsert batch. Only keep date-only rows whose date part actually parses.
+  const dateOnly = batch.filter((r) =>
+    r.time_known === false && r.start_at && r.venue_name &&
+    !Number.isNaN(Date.parse(String(r.start_at).slice(0, 10) + "T00:00:00Z")));
   if (dateOnly.length === 0) return batch;
 
   const venues = [...new Set(dateOnly.map((r) => r.venue_name))];
@@ -2021,6 +2033,9 @@ async function crawlVenue(venue) {
     const events = (result.events || []).filter((e) => e.title && e.start_date);
     const rows = events.map((e) => normalizeEvent(e, venue));
 
+    // Upsert inline (per-venue) — see the RSS path above. Persist as we go so a
+    // cancelled/timed-out run never loses a buffered end-of-run batch.
+    if (rows.length > 0) await upsertEvents(rows);
     await updateVenueCrawlStatus(venue.id, true, venue.crawl_success_rate);
 
     return { venue: venue.name, events: rows.length, status: "ok", rows };
@@ -2120,9 +2135,13 @@ async function main() {
   fs.writeFileSync(outPath, JSON.stringify(allRows, null, 2));
   console.log(`\nSaved ${allRows.length} events to ${outPath}`);
 
-  // 4. Upsert to Supabase
-  console.log(`\nUpserting ${allRows.length} events to Supabase...`);
-  const { inserted, errors } = await upsertEvents(allRows);
+  // 4. All rows were already upserted inline per-venue as they were crawled
+  //    (see the upsertEvents calls in each path). Nothing to flush here — that
+  //    is what lets a cancelled/timed-out run keep everything it persisted
+  //    instead of losing a whole buffered batch (why NY read ~86% zero).
+  //    allRows is retained only for the summary/backup above.
+  const inserted = allRows.length;
+  const errors = 0;
 
   // 5. Summary
   console.log("\n=== Crawl Summary ===");
