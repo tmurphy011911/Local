@@ -41,6 +41,7 @@ interface EventRow {
   event_lng: number | null;
   source_url: string | null;
   city: string;
+  time_known: boolean | null;
 }
 
 interface UserPrefs {
@@ -324,7 +325,7 @@ async function fetchEvents(
   let q = supabase
     .from("events")
     .select(
-      "id,title,description,category,subcategory,start_at,end_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,venue_lat,venue_lng,event_city,event_state,event_lat,event_lng,source_url,city",
+      "id,title,description,category,subcategory,start_at,end_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,venue_lat,venue_lng,event_city,event_state,event_lat,event_lng,source_url,city,time_known",
     )
     .eq("is_active", true)
     // The event's own start falls inside [floor, end). Upper bound EXCLUSIVE so a
@@ -681,6 +682,7 @@ Deno.serve(async (req) => {
       sourceUrl: e.source_url,
       city: e.city ?? "",
       description: e.description,
+      timeKnown: e.time_known ?? true,
     }));
 
     return jsonCompressed(

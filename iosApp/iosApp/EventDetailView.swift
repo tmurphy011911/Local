@@ -636,6 +636,32 @@ struct EventDetailView: View {
                 Spacer().frame(height: 10)
             }
 
+            // Unknown-time events: the crawl source exposed only a calendar day,
+            // so rather than a fake "12:00 AM" we point the user to the source
+            // page for the real start time. Shown ONLY here on the event page.
+            if !event.timeKnown, recurrence == nil {
+                if let urlStr = event.sourceUrl ?? event.ticketUrl, let url = URL(string: urlStr) {
+                    Button {
+                        UIApplication.shared.open(url)
+                    } label: {
+                        infoRow(
+                            systemName: "clock",
+                            iconColor: AppColor.coral,
+                            text: "Visit site for event start time",
+                            textColor: AppColor.sky
+                        )
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    infoRow(
+                        systemName: "clock",
+                        iconColor: AppColor.coral,
+                        text: "Visit site for event start time"
+                    )
+                }
+                Spacer().frame(height: 10)
+            }
+
             // Venue — tappable card that opens the venue's detail screen and
             // surfaces city · distance · upcoming-event count on a secondary line.
             if let venueName = event.venueName {

@@ -38,6 +38,7 @@ import androidx.compose.material.icons.automirrored.outlined.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.AttachMoney
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Refresh
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.DirectionsCar
 import androidx.compose.material.icons.outlined.Favorite
 import androidx.compose.material.icons.outlined.FavoriteBorder
@@ -337,8 +338,26 @@ fun EventDetailScreen(
                     InfoRow(
                         icon = Icons.Outlined.CalendarMonth,
                         iconTint = AppColors.Coral,
-                        text = formatDate(event.startAt),
+                        text = formatDate(event.startAt, event.timeKnown),
                     )
+                    Spacer(Modifier.height(10.dp))
+                }
+
+                // Unknown-time events: the crawl source exposed only a calendar
+                // day, so point the user to the source page for the real start
+                // time instead of a fake 12:00 AM. Shown only here on the event page.
+                if (!event.timeKnown && !isRecurring) {
+                    val timeUrl = event.sourceUrl ?: event.ticketUrl
+                    Box(
+                        modifier = if (timeUrl != null) Modifier.clickable { uriHandler.openUri(timeUrl) } else Modifier,
+                    ) {
+                        InfoRow(
+                            icon = Icons.Outlined.Schedule,
+                            iconTint = AppColors.Coral,
+                            text = "Visit site for event start time",
+                            textColor = if (timeUrl != null) AppColors.Sky else AppColors.Ink2,
+                        )
+                    }
                     Spacer(Modifier.height(10.dp))
                 }
 
@@ -1034,13 +1053,15 @@ private fun detectRecurrence(event: Event): String? {
     return null
 }
 
-private fun formatDate(isoDate: String): String {
+private fun formatDate(isoDate: String, timeKnown: Boolean = true): String {
     return try {
-        // Midnight UTC means "no specific time" — just show the date
-        val isMidnightUtc = isoDate.contains("T00:00:00")
+        // Show date only when there's no real time: a midnight-UTC placeholder,
+        // OR an explicit time-unknown row (date-only crawl sources stamped at
+        // local midnight). Otherwise a fake "12:00 AM" would render.
+        val dateOnly = isoDate.contains("T00:00:00") || !timeKnown
         val instant = Instant.parse(isoDate)
         val tz = kotlinx.datetime.TimeZone.currentSystemDefault()
-        val local = if (isMidnightUtc) {
+        val local = if (dateOnly) {
             instant.toLocalDateTime(kotlinx.datetime.TimeZone.UTC)
         } else {
             instant.toLocalDateTime(tz)
@@ -1049,7 +1070,7 @@ private fun formatDate(isoDate: String): String {
         val month = months.getOrNull(local.monthNumber - 1) ?: ""
         val day = local.dayOfMonth
         val year = local.year
-        if (isMidnightUtc) {
+        if (dateOnly) {
             "$month $day, $year"
         } else {
             val hour = local.hour

@@ -202,6 +202,7 @@ interface InlineEventRow {
   venue_name: string | null;
   venue_city: string | null;
   source_url: string | null;
+  time_known: boolean | null;
 }
 
 interface VenueEvents {
@@ -254,7 +255,7 @@ async function fetchEventsByVenue(
     Array.from({ length: numPages }, (_, p) =>
       applyBbox(
         supabase.from("events").select(
-          "id,title,description,category,subcategory,start_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,source_url",
+          "id,title,description,category,subcategory,start_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,source_url,time_known",
         ),
       )
         .order("start_at", { ascending: true })
@@ -618,6 +619,7 @@ Deno.serve(async (req) => {
         venueName: e.venue_name,
         venueCity: e.venue_city ?? "",
         sourceUrl: e.source_url,
+        timeKnown: e.time_known ?? true,
       })),
     }));
 

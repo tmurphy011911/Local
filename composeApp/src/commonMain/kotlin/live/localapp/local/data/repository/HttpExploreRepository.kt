@@ -180,6 +180,10 @@ private data class ExploreEventDto(
     val city: String = "",
     val sourceUrl: String? = null,
     val distanceMiles: Double? = null,
+    // Defaults true so any response that omits it (older edge-fn deploys) keeps
+    // prior behavior; explore-events now returns it so date-only events render
+    // "Visit site for event start time" instead of a fake 12:00 AM.
+    val timeKnown: Boolean = true,
 ) {
     // Decode HTML entities at the DTO boundary — without this, raw `&#8211;`
     // / `&amp;` / `&hellip;` from municipal-feed and crawler-sourced titles
@@ -216,6 +220,7 @@ private data class ExploreEventDto(
         sourceUrl = sourceUrl,
         distanceMiles = distanceMiles,
         venueDescription = null,
+        timeKnown = timeKnown,
     )
 }
 
