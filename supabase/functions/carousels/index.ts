@@ -3630,7 +3630,29 @@ Deno.serve(async (req) => {
         // most reads will land on a < 10 min old row. The 30 min ceiling
         // tolerates one missed cron without falling back to slow path.
         const ageMs = row?.computed_at ? Date.now() - new Date(row.computed_at as string).getTime() : Infinity;
-        if (row?.payload && ageMs < 30 * 60 * 1000) {
+        // ── Geometry gate ──────────────────────────────────────────────
+        // A cached payload is a bake computed at the METRO CENTER with
+        // radius = BAKE_RADIUS_MILES, and the client trims every rail to the
+        // user's own radius around the user's OWN coords. Serving it to a user
+        // sitting well off that center (the nearest-bucket fallback can be up
+        // to ±0.3° ≈ 21 mi away) hands them a lopsided feed: their real local
+        // supply on the far side of the metro (e.g. a Perkasie user's
+        // Philadelphia events, ~29 mi south of the Allentown bake) is outside
+        // the bake, and the client trim then guts the capped rails. Measured:
+        // ~68% of in-market users sit 3.5–21 mi off their nearest metro. So
+        // serve a bake ONLY when it can't distort — the user's 0.1° bucket is
+        // the bake's bucket or an immediately adjacent one (±0.11° ≈ within one
+        // bucket step) AND their requested radius covers the bake. Everyone
+        // else falls through to the slow path, computed at their OWN
+        // coords/radius (correct content; slower). No serve-stale, no rewarm —
+        // this is only the serve-vs-slowpath decision.
+        const BAKE_RADIUS_MILES = 25;
+        const bucketDistOk = row
+          ? Math.abs(((row as any).lat_bucket as number) - latBucket) <= 0.11 &&
+            Math.abs(((row as any).lng_bucket as number) - lngBucket) <= 0.11
+          : false;
+        const radiusCoversBake = radiusMiles >= BAKE_RADIUS_MILES;
+        if (row?.payload && ageMs < 30 * 60 * 1000 && bucketDistOk && radiusCoversBake) {
           // This branch only runs for non-personalized requests now
           // (anonymous callers, or subcategory tabs that are identical for
           // every user). Personalized foryou/locations requests skip the
