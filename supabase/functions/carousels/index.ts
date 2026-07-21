@@ -2796,14 +2796,40 @@ async function fetchGetawayEvents(
   subcategories: string[],
 ): Promise<EventRow[]> {
   if (subcategories.length === 0) return [];
+  // Outer bbox: ±200 mi (the far end of the getaway ring).
   const radiusMiles = 200;
   const latDelta = radiusMiles / 69.0;
   const lngDelta = radiusMiles / 50.0;
   const minLat = lat - latDelta, maxLat = lat + latDelta;
   const minLng = lng - lngDelta, maxLng = lng + lngDelta;
-  const startFrom = nowIso();
-  const startTo = daysFromNowIso(90);
-  const PER_SUBCAT = 60;
+
+  // Far-ring donut: exclude an inner ~40 mi box so the per-subcat budget goes to
+  // FAR events, not the dense nearby core. In a metro like Boston the nearby
+  // events alone would fill every page and get stripped by the >50 mi filter,
+  // starving the rail. Kept below 50 mi (diagonally) so true 50 mi+ events survive;
+  // the precise d>50 && d<=200 cut still happens in the rail builder.
+  const innerMiles = 40;
+  const innerMinLat = lat - innerMiles / 69.0, innerMaxLat = lat + innerMiles / 69.0;
+  const innerMinLng = lng - innerMiles / 50.0, innerMaxLng = lng + innerMiles / 50.0;
+  const outsideInner =
+    `venue_lat.lt.${innerMinLat},venue_lat.gt.${innerMaxLat},` +
+    `venue_lng.lt.${innerMinLng},venue_lng.gt.${innerMaxLng}`;
+
+  // Upcoming-weekend date window. A soonest-first fetch never reaches the coming
+  // weekend in a dense metro (the next few days already overflow the page), so
+  // anchor the window to the coming Friday (or today if it's already Fri/Sat/Sun)
+  // and run ~5 weekends out. Weekday events are outside the window entirely.
+  const now = new Date();
+  const dow = now.getUTCDay(); // 0=Sun … 6=Sat
+  const daysToFri = (dow === 6 || dow === 0) ? 0 : (5 - dow + 7) % 7;
+  const windowStart = new Date(now.getTime());
+  windowStart.setUTCDate(now.getUTCDate() + daysToFri);
+  if (daysToFri > 0) windowStart.setUTCHours(0, 0, 0, 0);
+  const windowEnd = new Date(windowStart.getTime());
+  windowEnd.setUTCDate(windowStart.getUTCDate() + 35);
+  const startFrom = windowStart.toISOString();
+  const startTo = windowEnd.toISOString();
+  const PER_SUBCAT = 100;
 
   const pages = await Promise.all(subcategories.map(async (subcat) => {
     const { data, error } = await supabase
@@ -2817,6 +2843,7 @@ async function fetchGetawayEvents(
       .lte("venue_lat", maxLat)
       .gte("venue_lng", minLng)
       .lte("venue_lng", maxLng)
+      .or(outsideInner)
       .order("start_at", { ascending: true })
       .limit(PER_SUBCAT);
     if (error) {
