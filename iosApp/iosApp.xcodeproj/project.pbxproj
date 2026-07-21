@@ -11,6 +11,7 @@
 		5E1C2C142F88028A0057E9F9 /* RevenueCat in Frameworks */ = {isa = PBXBuildFile; productRef = 5E1C2C132F88028A0057E9F9 /* RevenueCat */; };
 		5E1C2C182F9187330057E9F9 /* Products.storekit in Resources */ = {isa = PBXBuildFile; fileRef = 5E1C2C172F9187330057E9F9 /* Products.storekit */; };
 		5E84B18C2FBEAA0F00B1A75B /* PostHog in Frameworks */ = {isa = PBXBuildFile; productRef = 5E84B18B2FBEAA0F00B1A75B /* PostHog */; };
+		FA115011000163E3003B9202 /* OneSignalFramework in Frameworks */ = {isa = PBXBuildFile; productRef = FA115011000163E3003B9201 /* OneSignalFramework */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -52,6 +53,7 @@
 				5E1C2C142F88028A0057E9F9 /* RevenueCat in Frameworks */,
 				5E84B18C2FBEAA0F00B1A75B /* PostHog in Frameworks */,
 				5E0B24E02FD3409300162445 /* Sentry-Dynamic in Frameworks */,
+				FA115011000163E3003B9202 /* OneSignalFramework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -109,6 +111,7 @@
 				5E1C2C132F88028A0057E9F9 /* RevenueCat */,
 				5E84B18B2FBEAA0F00B1A75B /* PostHog */,
 				5E0B24DF2FD3409300162445 /* Sentry-Dynamic */,
+				FA115011000163E3003B9201 /* OneSignalFramework */,
 			);
 			productName = iosApp;
 			productReference = EEB79C38E91BB2244F08BFBD /* Local.app */;
@@ -565,6 +568,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 5E84B18A2FBEAA0F00B1A75B /* XCRemoteSwiftPackageReference "posthog-ios" */;
 			productName = PostHog;
+		};
+		FA115011000163E3003B9201 /* OneSignalFramework */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 5E346405300163E3003B920F /* XCRemoteSwiftPackageReference "OneSignal-iOS-SDK" */;
+			productName = OneSignalFramework;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};
