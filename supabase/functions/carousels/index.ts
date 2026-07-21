@@ -3611,7 +3611,24 @@ Deno.serve(async (req) => {
         // fresh even when the cron doesn't fire. The cron remains the backstop
         // that pre-warms metros with no recent traffic.
         const ageMs = row?.computed_at ? Date.now() - new Date(row.computed_at as string).getTime() : Infinity;
-        if (row?.payload && ageMs < SERVE_STALE_MAX_MS) {
+        // Geometry gate — serve a bake only when it cannot starve the feed.
+        // Bakes are computed at the metro's coords with radius=BAKE_RADIUS_MILES
+        // and the CLIENT trims every rail to its own radius around the USER's
+        // coords. If the user sits a full bucket-plus away (e.g. Perkasie
+        // being served Allentown's bake, 18 mi off-center) or asked for a
+        // radius tighter than the bake (20 mi vs 25), that trim guts the
+        // capped rails — the intersection of the two circles keeps only a
+        // sliver of each rail's 25 events. Those requests take the slow path
+        // computed at their own coords/radius, exactly like pre-cache
+        // behavior. Only same-bucket/adjacent-bucket users whose radius
+        // covers the bake get the precomputed payload.
+        const BAKE_RADIUS_MILES = 25;
+        const bucketDistOk = row
+          ? Math.abs(((row as any).lat_bucket as number) - latBucket) <= 0.11 &&
+            Math.abs(((row as any).lng_bucket as number) - lngBucket) <= 0.11
+          : false;
+        const radiusCoversBake = radiusMiles >= BAKE_RADIUS_MILES;
+        if (row?.payload && ageMs < SERVE_STALE_MAX_MS && bucketDistOk && radiusCoversBake) {
           // This branch only runs for non-personalized requests now
           // (anonymous callers, or subcategory tabs that are identical for
           // every user). Personalized foryou/locations requests skip the
