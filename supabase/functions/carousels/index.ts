@@ -597,7 +597,16 @@ function cleanEvents(
     // venue_city. ONLY serve stable Supabase-Storage URLs: the city_photos
     // table historically held rotted Google Places URLs that embed an API
     // key — never surface those to clients.
-    if (!result.image_url && cityPhotoCache) {
+    //
+    // Exception: farmers markets. Their source supplies no image and the
+    // market "venue" has no photo, so every image-less market in a city (e.g.
+    // all of Philadelphia's) would wear the identical city skyline. We'd
+    // rather let them fall through to the client's category gradient, so skip
+    // the city photo for them. Same predicate as the farmers-market rail.
+    const isFarmersMarket =
+      (result.subcategory ?? "").toLowerCase() === "farmers-market" ||
+      (Array.isArray(result.tags) && result.tags.some(t => (t ?? "").toLowerCase() === "farmers-market"));
+    if (!result.image_url && !isFarmersMarket && cityPhotoCache) {
       const cityKey = (result.venue_city ?? "").trim().toLowerCase();
       const cityPhoto = cityKey ? cityPhotoCache.get(cityKey) : undefined;
       if (cityPhoto && cityPhoto.includes("/storage/v1/object/public/city-photos/")) {
