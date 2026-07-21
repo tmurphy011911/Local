@@ -761,6 +761,12 @@ const ADAPTIVE_FEED_TARGET = 120;        // events wanted for a diverse feed
 // tighter requested radius is honored exactly. Chosen at 90 so the legacy
 // "Any" = 200→100 value trips it while every real slider pick (≤ ~75) does not.
 const ADAPTIVE_APPLIES_AT_OR_ABOVE_MILES = 90;
+
+// Max number of "At {venue}" rails a single subcategory tab renders, ranked by
+// event count. Also the number of venues the venue-diverse RPC seeds into the
+// pool, so the two stay consistent (a display cap higher than the pool's venue
+// count would just render whatever the pool happens to hold).
+const SUBCATEGORY_VENUE_RAIL_CAP = 20;
 function adaptiveRadiusMiles(events: ProcessedEvent[], fetchRadiusMiles: number): number {
   const ds = events
     .map(e => e.distance_miles)
@@ -1329,13 +1335,16 @@ function buildDynamicSubcarousels(
   // Venue must have at least 4 events to render (matches addCarousel's
   // minimum). Filtering at >= 4 here (not >= 2) avoids burning a top-N
   // slot on a venue that's going to silently fail to render anyway.
-  // Show up to 12 venues so dense subcategories (For Kids in metro Boston
-  // has 20+ venues meeting the bar) surface a representative spread
-  // instead of clipping to a top 6.
+  // Show up to SUBCATEGORY_VENUE_RAIL_CAP venues so dense subcategories (For
+  // Kids in metro Boston has 20+ venues meeting the bar) surface a
+  // representative spread instead of clipping to a top 6. Raised 12 → 20 so
+  // mid-volume venues that clear the 4-event bar but sit just below the busiest
+  // dozen (e.g. Johnny Brenda's, 6 music events, ranked ~13th in a Philly-radius
+  // feed) still get their "At {venue}" rail.
   const sortedVenues = [...byVenue.entries()]
     .filter(([, v]) => v.length >= 4)
     .sort((a, b) => b[1].length - a[1].length)
-    .slice(0, 12);
+    .slice(0, SUBCATEGORY_VENUE_RAIL_CAP);
   for (const [, venueEvents] of sortedVenues) {
     const venueName = venueEvents[0].venue_name!;
     addCarousel(
@@ -2566,7 +2575,7 @@ async function fetchAllEvents(
         p_lng: lng,
         p_radius_miles: radiusMiles,
         p_subcategory: subcategoryFocus,
-        p_top_venues: 12,
+        p_top_venues: SUBCATEGORY_VENUE_RAIL_CAP,
         p_events_per_venue: 6,
       })
     : Promise.resolve({ data: [], error: null });
