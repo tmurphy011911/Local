@@ -30,6 +30,10 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const CLAUDE_API_URL = "https://api.anthropic.com/v1/messages";
 const CLAUDE_MODEL = "claude-haiku-4-5-20251001";
+// Fact-check/critic pass runs on a stronger model than generation — factuality
+// and subjectivity judgment is exactly where the capability gap pays for itself,
+// and it's only ~1 call per (state × difficulty) cell per run.
+const VERIFY_MODEL = "claude-opus-4-8";
 const DIFFICULTIES = ["easy", "medium", "hard"] as const;
 type Difficulty = (typeof DIFFICULTIES)[number];
 
@@ -73,9 +77,14 @@ function parseQuestions(raw: string): GenQuestion[] {
   }
 }
 
-async function callClaude(anthropicKey: string, system: string, user: string): Promise<string> {
+async function callClaude(
+  anthropicKey: string,
+  system: string,
+  user: string,
+  model: string = CLAUDE_MODEL,
+): Promise<string> {
   const body = JSON.stringify({
-    model: CLAUDE_MODEL,
+    model,
     max_tokens: 4096,
     system,
     messages: [{ role: "user", content: user }],
@@ -94,7 +103,9 @@ async function callClaude(anthropicKey: string, system: string, user: string): P
     });
     if (res.ok) {
       const data = await res.json();
-      return (data?.content?.[0]?.text ?? "") as string;
+      // Grab the first text block (robust to thinking/other block types).
+      const text = (data?.content ?? []).find((b: { type?: string }) => b?.type === "text")?.text;
+      return (text ?? "") as string;
     }
     last = res;
     const transient = res.status === 429 || res.status === 503 || res.status === 529 || (res.status >= 500 && res.status < 600);
@@ -102,6 +113,53 @@ async function callClaude(anthropicKey: string, system: string, user: string): P
     if (!transient) break;
   }
   throw new Error(`Claude request failed (${last?.status ?? "no response"})`);
+}
+
+// ── Fact-check / critic pass ────────────────────────────────────────────────
+// Structural validation (4 answers, 1 correct) can't catch a hallucinated
+// premise, a wrong marked-correct answer, an ambiguous question with multiple
+// valid answers, or a subjective/opinion prompt. A stronger model reviews each
+// candidate and returns keep/reject so those never reach the live bank.
+interface VerifyRow { question: string; answers: string[]; correctIndex: number; }
+
+async function verifyQuestions(
+  anthropicKey: string,
+  stateName: string,
+  candidates: VerifyRow[],
+): Promise<boolean[]> {
+  if (candidates.length === 0) return [];
+
+  const system =
+    `You are a rigorous, skeptical trivia fact-checker for a local-knowledge quiz. ` +
+    `The questions below were machine-generated and are known to contain hallucinations. ` +
+    `For EACH question decide keep vs reject. REJECT if ANY of these is true:\n` +
+    `1. The premise is false (e.g. "Which ${stateName} chemist discovered iodine" — iodine was discovered by Bernard Courtois, a Frenchman → false premise).\n` +
+    `2. The answer marked correct is not actually correct.\n` +
+    `3. Another listed option is also correct, so there is no single defensible answer.\n` +
+    `4. The question is subjective/opinion-based ("best", "most beautiful", "trendiest", "most gentrified") with no objective answer.\n` +
+    `5. A named person, place, or entity in the question or answers appears fabricated.\n` +
+    `KEEP only questions that are factually accurate, objective, and have exactly one defensible answer. ` +
+    `When genuinely unsure whether a factual claim is true, REJECT — a smaller, correct bank beats a larger, wrong one. ` +
+    `Return ONLY a JSON array of {"i": <index>, "verdict": "keep"|"reject", "reason": <short string>}, one element per question, no prose, no markdown.`;
+  const list = candidates
+    .map((c, i) => `#${i} Q: ${c.question}\n   correct: ${c.answers[c.correctIndex]}\n   options: ${JSON.stringify(c.answers)}`)
+    .join("\n");
+  const user = `Fact-check these ${candidates.length} ${stateName} trivia questions:\n\n${list}`;
+
+  const raw = await callClaude(anthropicKey, system, user, VERIFY_MODEL);
+  const start = raw.indexOf("[");
+  const end = raw.lastIndexOf("]");
+  if (start < 0 || end <= start) throw new Error("verifier returned no JSON array");
+  const verdicts = JSON.parse(raw.slice(start, end + 1)) as Array<{ i: number; verdict: string }>;
+
+  // Default to reject: anything the verifier didn't explicitly keep is dropped.
+  const keep = new Array(candidates.length).fill(false);
+  for (const v of verdicts) {
+    if (typeof v?.i === "number" && v.i >= 0 && v.i < candidates.length && v.verdict === "keep") {
+      keep[v.i] = true;
+    }
+  }
+  return keep;
 }
 
 Deno.serve(async (req) => {
@@ -125,6 +183,8 @@ Deno.serve(async (req) => {
   const targetUnused: number = Math.max(1, Math.min(200, bodyIn.targetUnused ?? 40));
   const perCellCap: number = Math.max(1, Math.min(50, bodyIn.perCellCap ?? 30));
   const dryRun: boolean = bodyIn.dryRun === true;
+  // Fact-check pass is ON by default; pass verify:false to skip it (e.g. debugging).
+  const verify: boolean = bodyIn.verify !== false;
   const reqDifficulties: Difficulty[] = Array.isArray(bodyIn.difficulties) && bodyIn.difficulties.length
     ? bodyIn.difficulties.filter((d: string) => (DIFFICULTIES as readonly string[]).includes(d))
     : [...DIFFICULTIES];
@@ -167,6 +227,15 @@ Deno.serve(async (req) => {
         `{"question": string, "answers": [string, string, string, string], "correct_index": 0-3}. ` +
         `Exactly 4 answers, exactly one correct (at correct_index). Questions must be factually ` +
         `accurate, unambiguous, single-answer, and about ${stateName}. Vary the answer position. ` +
+        `HARD REQUIREMENTS — a question that violates any of these will be rejected:\n` +
+        `- Every question must be OBJECTIVE. No opinion/subjective framing ("best", "most beautiful", ` +
+        `"trendiest", "most gentrified", "coolest"). If the answer is a matter of taste, do not write it.\n` +
+        `- The premise must be TRUE. Do not attribute a fact to ${stateName} that belongs elsewhere ` +
+        `(e.g. do not call a person from another state or country a "${stateName}" figure).\n` +
+        `- Exactly ONE option may be defensibly correct; the other three must be clearly, verifiably wrong. ` +
+        `Never write a question where two options are both arguably correct.\n` +
+        `- Use only REAL people, places, and entities. Never invent names as distractors.\n` +
+        `- If you are not certain a fact is true, do not write the question.\n` +
         `Do NOT repeat, rephrase, or restate any question in the "ALREADY IN THE BANK" list.`;
       const user =
         `Generate ${requested} NEW ${difficulty} trivia questions about ${stateName}.\n` +
@@ -188,6 +257,7 @@ Deno.serve(async (req) => {
       const seenBatch = new Set<string>();
       let invalid = 0, skippedDuplicate = 0;
       const rows: Array<Record<string, unknown>> = [];
+      const candidates: VerifyRow[] = [];  // index-aligned with `rows`, for the critic pass
       for (const g of generated) {
         const q = (g?.question ?? "").trim();
         const answers = g?.answers;
@@ -201,16 +271,39 @@ Deno.serve(async (req) => {
         const norm = normalize(q);
         if (existingNorm.has(norm) || seenBatch.has(norm)) { skippedDuplicate++; continue; }
         seenBatch.add(norm);
+        const trimmed = answers.map((a) => a.trim());
         rows.push({
           id: `gen_${crypto.randomUUID()}`,
           state,
           difficulty,
           question: q,
-          answers: answers.map((text, i) => ({ text: text.trim(), correct: i === ci })),
+          answers: trimmed.map((text, i) => ({ text, correct: i === ci })),
           generated_at: today,
           used_on: null,
           times_used: 0,
         });
+        candidates.push({ question: q, answers: trimmed, correctIndex: ci });
+      }
+
+      // Critic pass: drop hallucinated / subjective / ambiguous questions before
+      // they reach the live bank. Fails safe — a verifier error skips this cell's
+      // insert rather than shipping unverified questions.
+      let rejected = 0;
+      if (verify && rows.length > 0) {
+        let keep: boolean[];
+        try {
+          keep = await verifyQuestions(anthropicKey, stateName, candidates);
+        } catch (e) {
+          results.push({ state, difficulty, unusedBefore, requested, generated: generated.length, inserted: 0, skippedDuplicate, invalid, rejected: 0, error: `verify: ${String(e).slice(0, 150)}` });
+          continue;
+        }
+        const kept: Array<Record<string, unknown>> = [];
+        for (let i = 0; i < rows.length; i++) {
+          if (keep[i]) kept.push(rows[i]);
+          else rejected++;
+        }
+        rows.length = 0;
+        rows.push(...kept);
       }
 
       let inserted = 0;
@@ -221,7 +314,7 @@ Deno.serve(async (req) => {
           .upsert(rows, { onConflict: "state,difficulty,normalized_question", ignoreDuplicates: true })
           .select("id");
         if (error) {
-          results.push({ state, difficulty, unusedBefore, requested, generated: generated.length, inserted: 0, skippedDuplicate, invalid, error: error.message.slice(0, 160) });
+          results.push({ state, difficulty, unusedBefore, requested, generated: generated.length, inserted: 0, skippedDuplicate, invalid, rejected, error: error.message.slice(0, 160) });
           continue;
         }
         inserted = ins?.length ?? 0;
@@ -233,9 +326,9 @@ Deno.serve(async (req) => {
         generated: generated.length,
         inserted: dryRun ? 0 : inserted,
         wouldInsert: dryRun ? rows.length : undefined,
-        skippedDuplicate, invalid,
+        skippedDuplicate, invalid, rejected,
       });
-      console.log(`generate-quiz-questions: ${state}/${difficulty} unused=${unusedBefore} req=${requested} gen=${generated.length} ins=${dryRun ? "(dry)" : inserted} dup=${skippedDuplicate} invalid=${invalid}`);
+      console.log(`generate-quiz-questions: ${state}/${difficulty} unused=${unusedBefore} req=${requested} gen=${generated.length} ins=${dryRun ? "(dry)" : inserted} dup=${skippedDuplicate} invalid=${invalid} rejected=${rejected}`);
     }
   }
 
