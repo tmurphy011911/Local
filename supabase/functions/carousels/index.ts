@@ -597,16 +597,7 @@ function cleanEvents(
     // venue_city. ONLY serve stable Supabase-Storage URLs: the city_photos
     // table historically held rotted Google Places URLs that embed an API
     // key — never surface those to clients.
-    //
-    // Exception: farmers markets. Their source supplies no image and the
-    // market "venue" has no photo, so every image-less market in a city (e.g.
-    // all of Philadelphia's) would wear the identical city skyline. We'd
-    // rather let them fall through to the client's category gradient, so skip
-    // the city photo for them. Same predicate as the farmers-market rail.
-    const isFarmersMarket =
-      (result.subcategory ?? "").toLowerCase() === "farmers-market" ||
-      (Array.isArray(result.tags) && result.tags.some(t => (t ?? "").toLowerCase() === "farmers-market"));
-    if (!result.image_url && !isFarmersMarket && cityPhotoCache) {
+    if (!result.image_url && cityPhotoCache) {
       const cityKey = (result.venue_city ?? "").trim().toLowerCase();
       const cityPhoto = cityKey ? cityPhotoCache.get(cityKey) : undefined;
       if (cityPhoto && cityPhoto.includes("/storage/v1/object/public/city-photos/")) {
@@ -3412,91 +3403,6 @@ function isCacheValid(): boolean {
   return dataCache !== null && (Date.now() - dataCache.timestamp) < CACHE_TTL_MS;
 }
 
-// ── Stale-while-revalidate policy for the precomputed carousel_cache ──
-// Serve rows up to 2 h old (content is metro-wide and slow-moving; a 40-min-old
-// row is identical to what an on-time cron would serve). Past 10 min, also fire
-// a background re-warm so user traffic keeps every visited bucket fresh
-// independently of the (unreliable) GH Actions cron cadence.
-const SERVE_STALE_MAX_MS = 2 * 60 * 60 * 1000;
-const REWARM_AFTER_MS = 10 * 60 * 1000;
-// Per-isolate guard so one stale bucket doesn't trigger a re-warm stampede
-// while its first re-warm is still computing.
-const rewarmInFlight = new Map<string, number>();
-const REWARM_DEDUPE_MS = 5 * 60 * 1000;
-
-// Recompute one carousel_cache bucket in the background, reproducing the cron
-// job's compute exactly (metro's own coords + name, radius=25, X-Refresh-Cache
-// bypass) so the stored payload is byte-for-byte what refresh_carousel_cache.js
-// would have written — same events, same carousels, same ordering.
-// deno-lint-ignore no-explicit-any — untyped client keeps this free of the
-// generated-types mismatch the other fetchers' signatures trip over.
-function scheduleRewarm(
-  supabase: any,
-  latBucket: number,
-  lngBucket: number,
-  category: string,
-): void {
-  const key = `${latBucket},${lngBucket},${category}`;
-  const started = rewarmInFlight.get(key);
-  if (started && Date.now() - started < REWARM_DEDUPE_MS) return;
-  rewarmInFlight.set(key, Date.now());
-  const task = (async () => {
-    try {
-      // Cache rows exist only for active metros; find the metro whose 0.1°
-      // bucket matches so we re-warm at its exact coords (not the bucket
-      // center — keeps distance math identical to the cron's output).
-      const { data: metros } = await supabase
-        .from("metros")
-        .select("name, lat, lng")
-        .eq("is_active", true);
-      const metro = (metros ?? []).find((m: any) =>
-        Math.round(m.lat * 10) / 10 === latBucket &&
-        Math.round(m.lng * 10) / 10 === lngBucket
-      );
-      if (!metro) return;
-      const url = new URL(`${SUPABASE_URL}/functions/v1/carousels`);
-      url.searchParams.set("lat", String(metro.lat));
-      url.searchParams.set("lng", String(metro.lng));
-      url.searchParams.set("radius", "25");
-      url.searchParams.set("location_name", metro.name);
-      if (category !== "foryou") url.searchParams.set("category", category);
-      const resp = await fetch(url.toString(), {
-        headers: {
-          Authorization: `Bearer ${SUPABASE_SERVICE_ROLE_KEY}`,
-          "X-Refresh-Cache": "1",
-        },
-      });
-      if (!resp.ok) throw new Error(`rewarm compute HTTP ${resp.status}`);
-      const payload = await resp.json();
-      const carouselCount = (payload.carousels ?? []).length;
-      const eventCount = (payload.carousels ?? [])
-        .reduce((n: number, c: any) => n + (c.events?.length ?? 0), 0);
-      const { error } = await supabase
-        .from("carousel_cache")
-        .upsert({
-          lat_bucket: latBucket,
-          lng_bucket: lngBucket,
-          category,
-          payload,
-          event_count: eventCount,
-          carousel_count: carouselCount,
-          computed_at: new Date().toISOString(),
-        }, { onConflict: "lat_bucket,lng_bucket,category" });
-      if (error) throw error;
-      console.log(`[carousels] rewarmed ${key}: ${eventCount} events, ${carouselCount} carousels`);
-    } catch (e) {
-      console.error(`[carousels] rewarm ${key} failed:`, e);
-    } finally {
-      rewarmInFlight.delete(key);
-    }
-  })();
-  // Keep the isolate alive past the response for the background compute.
-  // Older runtimes without waitUntil still run the promise best-effort.
-  try {
-    (globalThis as any).EdgeRuntime?.waitUntil?.(task);
-  } catch (_) { /* best-effort */ }
-}
-
 // Main handler
 // ════════════════════════════════════════════════════════════════
 
@@ -3597,72 +3503,22 @@ Deno.serve(async (req) => {
         }
 
         const row = cacheRows?.[0];
-        // Stale-while-revalidate. The old policy rejected rows older than
-        // 30 min, sized to a GitHub Actions cron "every 10 minutes" — but GH
-        // throttles busy schedules and the real cadence is every 1-3 HOURS,
-        // so nearly every tab request rejected the row and paid the 5-9 s
-        // slow path (measured 2026-07-21). The content itself changes slowly
-        // (the source MV refreshes every 5 min; rails are metro-wide), so a
-        // row that was correct 40 min ago is the same rails a perfectly-timed
-        // cron would have served. New policy: serve any row up to
-        // SERVE_STALE_MAX_MS immediately, and past REWARM_AFTER_MS kick a
-        // background re-warm of that bucket (identical compute to the cron:
-        // same metro coords, same radius=25) so user traffic keeps the cache
-        // fresh even when the cron doesn't fire. The cron remains the backstop
-        // that pre-warms metros with no recent traffic.
+        // Accept cache up to 30 min old. Refresh job runs every 10 min, so
+        // most reads will land on a < 10 min old row. The 30 min ceiling
+        // tolerates one missed cron without falling back to slow path.
         const ageMs = row?.computed_at ? Date.now() - new Date(row.computed_at as string).getTime() : Infinity;
-        // Geometry gate — serve a bake only when it cannot starve the feed.
-        // Bakes are computed at the metro's coords with radius=BAKE_RADIUS_MILES
-        // and the CLIENT trims every rail to its own radius around the USER's
-        // coords. If the user sits a full bucket-plus away (e.g. Perkasie
-        // being served Allentown's bake, 18 mi off-center) or asked for a
-        // radius tighter than the bake (20 mi vs 25), that trim guts the
-        // capped rails — the intersection of the two circles keeps only a
-        // sliver of each rail's 25 events. Those requests take the slow path
-        // computed at their own coords/radius, exactly like pre-cache
-        // behavior. Only same-bucket/adjacent-bucket users whose radius
-        // covers the bake get the precomputed payload.
-        const BAKE_RADIUS_MILES = 25;
-        const bucketDistOk = row
-          ? Math.abs(((row as any).lat_bucket as number) - latBucket) <= 0.11 &&
-            Math.abs(((row as any).lng_bucket as number) - lngBucket) <= 0.11
-          : false;
-        const radiusCoversBake = radiusMiles >= BAKE_RADIUS_MILES;
-        if (row?.payload && ageMs < SERVE_STALE_MAX_MS && bucketDistOk && radiusCoversBake) {
+        if (row?.payload && ageMs < 30 * 60 * 1000) {
           // This branch only runs for non-personalized requests now
           // (anonymous callers, or subcategory tabs that are identical for
           // every user). Personalized foryou/locations requests skip the
           // cache above and take the slow path so their per-user rails build.
           const isFallback = (row as any).lat_bucket !== latBucket || (row as any).lng_bucket !== lngBucket;
-          const needsRewarm = ageMs > REWARM_AFTER_MS;
-          if (needsRewarm) {
-            scheduleRewarm(
-              supabase,
-              (row as any).lat_bucket as number,
-              (row as any).lng_bucket as number,
-              category,
-            );
-          }
           return jsonCompressed(req, row.payload, {
             extraHeaders: {
-              "X-Cache": `precomputed-${Math.round(ageMs / 1000)}s${isFallback ? "-nearest" : ""}${needsRewarm ? "-rewarm" : ""}`,
+              "X-Cache": `precomputed-${Math.round(ageMs / 1000)}s${isFallback ? "-nearest" : ""}`,
             },
           });
         }
-        // Row missing or past the serve ceiling: this request pays the slow
-        // path once, but still kick a re-warm so the NEXT user gets the fast
-        // path — otherwise a bucket that ages past the ceiling stays dead
-        // until the (unreliable) cron happens to run. Target the found row's
-        // own bucket when there is one (nearest-metro case: the user's bucket
-        // isn't a metro, the row's is). scheduleRewarm no-ops unless the
-        // bucket matches an active metro, so arbitrary coords can't mint
-        // cache rows.
-        scheduleRewarm(
-          supabase,
-          (row as any)?.lat_bucket ?? latBucket,
-          (row as any)?.lng_bucket ?? lngBucket,
-          category,
-        );
       } catch (_) { /* fall through to slow path */ }
     }
 
@@ -3673,41 +3529,6 @@ Deno.serve(async (req) => {
     let venueCache: Map<string, VenueInfo>;
     let cityPhotoCache: Map<string, string>;
     let carouselsConfig: any[];
-
-    // ── Wave 1 kickoff — fetches independent of BOTH the shared pool and
-    // the verified user: token verification, plus the state-scoped and
-    // geo-scoped pools that never read prefs/affinity. Started here (after
-    // the precomputed-cache return, so cache hits never fire them) so they
-    // overlap the shared-pool fetch below — on a cold isolate that hides
-    // their entire cost behind the big fetch. Results are awaited after the
-    // shared pool resolves because cleaning needs venueCache.
-    const reqFilter = resolveFilter(category);
-    const reqStateCode = userStateCode(lat, lng);
-    const userToken = req.headers.get("X-User-Token");
-    // IDOR fix (phase 1): if the caller presented a user access token, verify
-    // it and trust its subject over the spoofable `user_id` query param. We do
-    // this on the slow path only — warm-cache requests for anonymous content
-    // never need a precise user id, so they skip the auth round-trip. A
-    // missing/expired/invalid token falls back to the query param for now.
-    const verifiedUserIdPromise: Promise<string | null> = userToken
-      ? supabase.auth.getUser(userToken)
-          .then(({ data }: any) => data?.user?.id ?? null)
-          .catch(() => null)
-      : Promise.resolve(null);
-    // Restaurant Weeks rail builds on For You AND the Food tab; the Must-Know
-    // rail is For-You only. Both are state-scoped.
-    const rwRowsPromise: Promise<EventRow[]> =
-      (reqStateCode && (reqFilter.type === "none" || (reqFilter.type === "category" && reqFilter.value === "food")))
-        ? fetchRestaurantWeekEvents(supabase, reqStateCode)
-        : Promise.resolve([]);
-    const curatedRowsPromise: Promise<ProcessedEvent[]> =
-      (reqStateCode && reqFilter.type === "none")
-        ? fetchCuratedEvents(supabase, reqStateCode)
-        : Promise.resolve([]);
-    const farmersRowsPromise: Promise<EventRow[]> =
-      reqFilter.type === "none"
-        ? fetchFarmersMarketEvents(supabase, lat, lng, radiusMiles)
-        : Promise.resolve([]);
 
     const cachedGeoKey = (dataCache as any)?.geoKey as string | undefined;
     if (isCacheValid() && cachedGeoKey === cacheGeoKey) {
@@ -3774,22 +3595,24 @@ Deno.serve(async (req) => {
       dataCache = { allEvents, rawSportsEvents, venueCache, cityPhotoCache, carouselsConfig, timestamp: Date.now(), geoKey: cacheGeoKey } as any;
     }
 
-    // Await wave 1 (kicked off before the shared-pool fetch above).
-    const [verifiedUserId, rwRows, curatedRows, farmersRows] = await Promise.all([
-      verifiedUserIdPromise, rwRowsPromise, curatedRowsPromise, farmersRowsPromise,
-    ]);
-    if (verifiedUserId) userId = verifiedUserId;
+    // IDOR fix (phase 1): if the caller presented a user access token, verify
+    // it and trust its subject over the spoofable `user_id` query param. We do
+    // this on the slow path only — warm-cache requests for anonymous content
+    // never need a precise user id, so they skip the auth round-trip. A
+    // missing/expired/invalid token falls back to the query param for now.
+    const userToken = req.headers.get("X-User-Token");
+    if (userToken) {
+      try {
+        const { data: { user } } = await supabase.auth.getUser(userToken);
+        if (user?.id) userId = user.id;
+      } catch (_) { /* invalid/expired token — keep param fallback (phase 1) */ }
+    }
 
-    // Wave 2 — per-user data, needs the verified userId. Taste seeds join
-    // this wave (they depend only on userId), removing the old sequential
-    // tasteEntities await from the request tail.
-    const [userPreferences, communityScores, affinityMap, tasteEntities] = await Promise.all([
+    // Per-user data — always fetched fresh (fast, single-row queries)
+    const [userPreferences, communityScores, affinityMap] = await Promise.all([
       userId ? fetchUserPreferences(supabase, userId) : Promise.resolve(null),
       fetchCommunityScores(supabase, userId),
       fetchCategoryAffinity(supabase, userId),
-      reqFilter.type === "none"
-        ? fetchTasteEntities(supabase, userId)
-        : Promise.resolve([] as string[]),
     ]);
 
     // Reach adapts to how many events are actually near this user: dense metros
@@ -3813,13 +3636,22 @@ Deno.serve(async (req) => {
     let curatedEvents: ProcessedEvent[] = [];
     let getawayEvents: ProcessedEvent[] = [];
     let tasteEntityGroups: { entity: string; events: ProcessedEvent[] }[] = [];
-    // Wave-1 pools, cleaned now that venueCache is available. (The fetches
-    // themselves ran in parallel with the shared pool above.)
-    restaurantWeekEvents = cleanEvents(deduplicateCrossSource(rwRows), venueCache, cityPhotoCache);
-    // curated_events are already editorial (hand-curated titles) — skip the
-    // title-cleaning / cross-source dedup the events pool needs.
-    curatedEvents = curatedRows;
-    if (reqFilter.type === "none") {
+    // Restaurant Weeks rail builds on For You AND the Food tab; the Must-Know rail
+    // is For-You only. Both are state-scoped, so resolve the state once.
+    {
+      const rwFilter = resolveFilter(category);
+      const rwState = userStateCode(lat, lng);
+      if (rwState && (rwFilter.type === "none" || (rwFilter.type === "category" && rwFilter.value === "food"))) {
+        const rwRows = await fetchRestaurantWeekEvents(supabase, rwState);
+        restaurantWeekEvents = cleanEvents(deduplicateCrossSource(rwRows), venueCache, cityPhotoCache);
+      }
+      if (rwState && rwFilter.type === "none") {
+        // curated_events are already editorial (hand-curated titles) — skip the
+        // title-cleaning / cross-source dedup the events pool needs.
+        curatedEvents = await fetchCuratedEvents(supabase, rwState);
+      }
+    }
+    if (resolveFilter(category).type === "none") {
       const targetCities = [nearestCity];
       for (const n of userPreferences?.selected_neighborhoods ?? []) {
         if (!targetCities.some(c => c.toLowerCase() === n.toLowerCase())) {
@@ -3836,25 +3668,27 @@ Deno.serve(async (req) => {
       for (const [c, score] of affinityMap) {
         if (score >= 0.4) railSubcats.add(c.toLowerCase());
       }
-      // Wave 3 — needs prefs (venues/neighborhoods), affinity (railSubcats)
-      // and taste seeds. City/venue/subcategory pools bypass the
-      // rank-stratified MV's metro-wide sampling so the named
-      // city/venue/subcategory's full slate is available per-request. The
-      // collaborative-adjacency lookup ("SG fans also like Bill Burr") chains
-      // into the entity-events fetch INSIDE the batch so it runs concurrently
-      // with the other pools instead of as a sequential await before them.
-      const [cityRows, venueRows, subcatRows, getawayRows, entityGroupRows] = await Promise.all([
+      // Top entities (taste graph) drive the "If You Like <X>" rails — read
+      // first so the entity-events fetch can run in the parallel batch below.
+      const tasteEntities = await fetchTasteEntities(supabase, userId);
+      // Collaborative adjacency for those seeds ("SG fans also like Bill Burr").
+      const relatedBySeed = await fetchFeatureAffinity(supabase, tasteEntities);
+      // Parallel: city-scoped pool (neighborhood rails) + venue-scoped pool
+      // (fav-venue rails) + subcategory-scoped pool (topical fav-cat/affinity
+      // rails). All three bypass the rank-stratified MV's metro-wide sampling so
+      // the named city/venue/subcategory's full slate is available per-request.
+      const [cityRows, venueRows, subcatRows, farmersMarketRows, getawayRows, entityGroupRows] = await Promise.all([
         fetchCityEvents(supabase, lat, lng, radiusMiles, targetCities),
         fetchVenueEvents(supabase, lat, lng, radiusMiles, userPreferences?.selected_venues ?? []),
         fetchSubcategoryEvents(supabase, lat, lng, radiusMiles, [...railSubcats]),
+        fetchFarmersMarketEvents(supabase, lat, lng, radiusMiles),
         fetchGetawayEvents(supabase, lat, lng, [...railSubcats]),
-        fetchFeatureAffinity(supabase, tasteEntities).then((relatedBySeed) =>
-          fetchEntityEvents(supabase, lat, lng, radiusMiles, tasteEntities, relatedBySeed)),
+        fetchEntityEvents(supabase, lat, lng, radiusMiles, tasteEntities, relatedBySeed),
       ]);
       cityEvents = cleanEvents(deduplicateCrossSource(cityRows), venueCache, cityPhotoCache);
       venueEvents = cleanEvents(deduplicateCrossSource(venueRows), venueCache, cityPhotoCache);
       subcatEvents = cleanEvents(deduplicateCrossSource(subcatRows), venueCache, cityPhotoCache);
-      farmersMarketEvents = cleanEvents(deduplicateCrossSource(farmersRows), venueCache, cityPhotoCache);
+      farmersMarketEvents = cleanEvents(deduplicateCrossSource(farmersMarketRows), venueCache, cityPhotoCache);
       getawayEvents = cleanEvents(deduplicateCrossSource(getawayRows), venueCache, cityPhotoCache);
       tasteEntityGroups = entityGroupRows
         .map(g => ({ entity: g.entity, events: cleanEvents(deduplicateCrossSource(g.rows), venueCache, cityPhotoCache) }))
