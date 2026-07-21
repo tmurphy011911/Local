@@ -131,16 +131,27 @@ fun BoRefreshControl(
     var overscrollPx by remember { mutableStateOf(0f) }
     var latched by remember { mutableStateOf(false) }
     var minDisplayDone by remember { mutableStateOf(false) }
+    // Set once the user scrolls the feed while a refresh is still running, so
+    // the locked tray retracts instead of pinning a strip the content slides
+    // beneath. The fetch keeps going; only the indicator leaves.
+    var scrollDismissed by remember { mutableStateOf(false) }
 
     val pullPx = (overscrollPx * PULL_RESISTANCE).coerceIn(0f, maxPullPx)
     // Animatable that owns the tray height for every non-drag transition
     // (lock at 104, snap-back to 0, post-fetch collapse).
     val trayAnim = remember { Animatable(0f) }
+    // Multiplier (1 → 0) applied while a refresh is in flight. Scrolling the feed
+    // mid-refresh decays this to 0, and it STAYS 0 until the control returns to
+    // Idle — so the lock/settle animations can't re-raise the tray and pop Bo
+    // back into view. Kept separate from trayAnim on purpose: one animator can't
+    // both hold the height and guarantee it stays hidden.
+    val dismissAnim = remember { Animatable(1f) }
 
     val trayHeightPx = when (phase) {
         Phase.Pulling, Phase.Ready -> pullPx
         Phase.Idle -> 0f
-        else -> trayAnim.value // Refreshing / SnapBack / Settling
+        // Refreshing / SnapBack / Settling — folded down by any scroll-dismiss.
+        else -> trayAnim.value * dismissAnim.value
     }
 
     val connection = remember(enabled, thresholdPx, maxPullPx) {
@@ -162,6 +173,13 @@ fun BoRefreshControl(
                         onLatch = { latched = true },
                     )
                     return Offset(0f, -consume)
+                }
+                // While the tray is locked open for a refresh, the first upward
+                // scroll dismisses it so the feed reclaims the full viewport
+                // rather than sliding behind a pinned strip. Don't consume — let
+                // the list scroll normally; the retract is a side effect.
+                if (source == NestedScrollSource.Drag && available.y < 0f && phase == Phase.Refreshing) {
+                    scrollDismissed = true
                 }
                 return Offset.Zero
             }
@@ -238,9 +256,23 @@ fun BoRefreshControl(
             Phase.Idle -> {
                 overscrollPx = 0f
                 latched = false
+                scrollDismissed = false
                 trayAnim.snapTo(0f)
+                dismissAnim.snapTo(1f)
             }
             else -> {}
+        }
+    }
+
+    // Retract the locked tray when the user scrolls mid-refresh. Freezes the
+    // lock climb at its current height, then fades the multiplier to 0 so the
+    // strip folds away smoothly. dismissAnim holds 0 until Idle, so neither the
+    // settle collapse nor a still-running lock animation can pop Bo back. The
+    // fetch is untouched — this only hides the indicator.
+    LaunchedEffect(scrollDismissed) {
+        if (scrollDismissed) {
+            trayAnim.stop()
+            dismissAnim.animateTo(0f, tween(COLLAPSE_MS, easing = CollapseEasing))
         }
     }
 
