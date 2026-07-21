@@ -22,22 +22,27 @@ set -eu
 # came back unsymbolicated. Prepend both locations before probing.
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
-if ! command -v sentry-cli >/dev/null 2>&1; then
-  msg="sentry-cli not found on PATH — dSYMs will NOT upload and crashes won't symbolicate. Install: brew install getsentry/tools/sentry-cli"
-  # Fail the build for any non-Debug configuration (Release / Staging archive)
-  # so a broken uploader can never ship silently again. Stay soft for Debug so
-  # local dev builds aren't blocked by a missing CLI.
+# dSYM upload only matters for symbolicating SHIPPED builds (Release / Staging
+# archives). For a local Debug build it is irrelevant and must NEVER block the
+# build. So on ANY problem below — missing CLI, missing creds, or a failed
+# upload — hard-fail on non-Debug (a broken uploader can't ship silently again)
+# but skip softly on Debug so local dev/RC runs aren't blocked.
+soft_fail() {
   if [ "${CONFIGURATION:-}" != "Debug" ]; then
-    echo "error: $msg" >&2
+    echo "error: $1" >&2
     exit 1
   fi
-  echo "warning: $msg — skipping (Debug build)" >&2
+  echo "warning: $1 — skipping (Debug build)" >&2
   exit 0
+}
+
+if ! command -v sentry-cli >/dev/null 2>&1; then
+  soft_fail "sentry-cli not found on PATH — dSYMs will NOT upload and crashes won't symbolicate. Install: brew install getsentry/tools/sentry-cli"
 fi
 
-: "${SENTRY_ORG:?set SENTRY_ORG}"
-: "${SENTRY_PROJECT:?set SENTRY_PROJECT}"
-: "${SENTRY_AUTH_TOKEN:?set SENTRY_AUTH_TOKEN}"
+if [ -z "${SENTRY_ORG:-}" ] || [ -z "${SENTRY_PROJECT:-}" ] || [ -z "${SENTRY_AUTH_TOKEN:-}" ]; then
+  soft_fail "Sentry credentials not set (SENTRY_ORG/SENTRY_PROJECT/SENTRY_AUTH_TOKEN) — dSYMs will NOT upload."
+fi
 
 # Pick where to look for dSYMs:
 #  1) explicit arg, 2) Xcode's build var, 3) fall back to DerivedData.
@@ -50,8 +55,12 @@ else
 fi
 
 echo "Uploading dSYMs from: $SEARCH_PATH"
-sentry-cli debug-files upload \
+# Don't let a failed upload (stale token, no network, or no dSYMs produced for a
+# Debug build) abort the Xcode build on Debug — soft_fail downgrades it there.
+if ! sentry-cli debug-files upload \
   --org "$SENTRY_ORG" \
   --project "$SENTRY_PROJECT" \
   --include-sources \
-  "$SEARCH_PATH"
+  "$SEARCH_PATH"; then
+  soft_fail "sentry-cli dSYM upload failed (bad/expired token, no network, or no dSYMs at $SEARCH_PATH)."
+fi
