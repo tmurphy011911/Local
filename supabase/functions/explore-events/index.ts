@@ -307,48 +307,30 @@ async function fetchEvents(
   // Generous bbox prefilter — tighter radius applied post-fetch.
   const latDelta = radiusMiles / 55;
   const lngDelta = radiusMiles / 45;
-  const { startIso: nowIso, endIso, floorIso } = resolveDateWindow(dateFilter, dateStart, dateEnd, tzOffsetMin);
+  const { endIso, floorIso } = resolveDateWindow(dateFilter, dateStart, dateEnd, tzOffsetMin);
 
-  // Explicit date presets (Today/Tomorrow/This Week/This Weekend/…, or a
-  // custom-picked date) mean the user wants events that *start* inside that
-  // window — NOT every long-running event that happens to overlap it. Anchoring
-  // on start_at here fixes filters leaking foreign days: e.g. a weeks-long
-  // exhibition that started today no longer appears under "Tomorrow", and a
-  // Tuesday event with a far-out end_at no longer bleeds into "This Weekend".
-  // The all-day-festival case the overlap logic was added for (a00e8a5) is still
-  // covered, because an all-day event's start_at IS the window's local-midnight
-  // floor, so `start_at >= floorIso` keeps it visible for the whole day.
-  const EXPLICIT_WINDOWS = new Set([
-    "today", "tomorrow", "this_week", "this_weekend",
-    "next_weekend", "next_30_days", "custom",
-  ]);
-  const startAnchored = dateFilter != null && EXPLICIT_WINDOWS.has(dateFilter);
-
+  // START-ANCHOR EVERY window — presets AND the default browse feed. The Explore
+  // Events tab should only surface events that START inside [floor, end), never a
+  // long-running exhibition or a mis-dated row whose end_at is still in the
+  // future but whose start_at is months in the past. The old overlap default
+  // (`end_at >= now`) had no lower bound on start_at, so it flooded the list with
+  // events that already happened (and leaked foreign days into the presets:
+  // "Tomorrow" showing a Today event, "This Weekend" showing a Tuesday one).
+  // The all-day-festival case the overlap logic was originally added for
+  // (a00e8a5) is still covered: an all-day event's start_at IS the window's
+  // local-midnight floor, so `start_at >= floorIso` keeps it visible all day.
+  // Trade-off: a multi-day event that STARTED before the window no longer shows
+  // in Explore for its later days (it still surfaces in the home carousels).
   let q = supabase
     .from("events")
     .select(
       "id,title,description,category,subcategory,start_at,end_at,is_free,price_min,price_max,ticket_url,image_url,venue_name,venue_city,venue_lat,venue_lng,event_city,event_state,event_lat,event_lng,source_url,city",
     )
-    .eq("is_active", true);
-
-  if (startAnchored) {
-    // Start-anchored: the event's own start falls inside [floor, end).
-    q = q.gte("start_at", floorIso).lt("start_at", endIso);
-  } else {
-    // Default browse feed keeps OVERLAP semantics, so an in-progress event
-    // (started before `now`, still running) survives — otherwise an all-day
-    // festival vanished from Explore the moment it began, even while still
-    // happening. Mirrors carousels/index.ts: still-running rows (end_at >= now)
-    // stay; open-ended rows (null end_at) stay for the day they start on.
-    q = q
-      .or(`end_at.gte.${nowIso},and(end_at.is.null,start_at.gte.${floorIso})`)
-      // Upper bound is EXCLUSIVE: events at exactly the next-local-midnight
-      // belong to the following day's bucket. With `.lte` they were leaking
-      // into both today's and tomorrow's filter.
-      .lt("start_at", endIso);
-  }
-
-  q = q
+    .eq("is_active", true)
+    // The event's own start falls inside [floor, end). Upper bound EXCLUSIVE so a
+    // row at exactly the next-local-midnight belongs to the following day.
+    .gte("start_at", floorIso)
+    .lt("start_at", endIso)
     .gte("venue_lat", lat - latDelta)
     .lte("venue_lat", lat + latDelta)
     .gte("venue_lng", lng - lngDelta)
@@ -628,9 +610,14 @@ Deno.serve(async (req) => {
         .map((e) => {
           const venueKey = normalizeVenueKey(e.venue_name);
           const meta = venueKey ? venueMeta[venueKey] : undefined;
-          // Last-resort city photo for venueless municipal events.
+          // Last-resort city photo for venueless municipal events. Skip it for
+          // farmers markets: their source carries no image and the market has
+          // no venue photo, so every image-less market in a city would wear the
+          // identical city skyline. Let them fall through to the client's
+          // category gradient instead. Mirrors carousels/index.ts.
+          const isFarmersMarket = (e.subcategory ?? "").toLowerCase() === "farmers-market";
           const cityKey = (e.venue_city ?? "").trim().toLowerCase();
-          const cityPhoto = cityKey ? cityPhotos[cityKey] : undefined;
+          const cityPhoto = isFarmersMarket ? undefined : (cityKey ? cityPhotos[cityKey] : undefined);
           const resolvedImage = e.image_url || meta?.photoUrl || cityPhoto || null;
           const venueRank = meta?.rank ?? null;
           // Prefer event_lat/lng (real location) over venue HQ — same basis
@@ -670,7 +657,13 @@ Deno.serve(async (req) => {
       startAt: e.start_at,
       endAt: e.end_at,
       venueName: e.venue_name,
-      venueCity: e.venue_city,
+      // Coalesce nulls the client parses into NON-nullable String fields
+      // (ExploreEventDto.venueCity/category/city). Municipal at-large rows have a
+      // null venue_city (sometimes null category/city); a single null here fails
+      // kotlinx.serialization for the ENTIRE page, blanking Explore wide across a
+      // metro. Prod already runs this fix (2026-07-16); keep it so a redeploy of
+      // this file can't regress it. Mirrors the carousels null-venue_city fix.
+      venueCity: e.venue_city ?? "",
       venueLat: e.venue_lat,
       venueLng: e.venue_lng,
       eventCity: e.event_city,
@@ -678,7 +671,7 @@ Deno.serve(async (req) => {
       eventLat: e.event_lat,
       eventLng: e.event_lng,
       imageUrl: resolvedImage,
-      category: e.category,
+      category: e.category ?? "",
       subcategory: e.subcategory,
       priceMin: e.price_min,
       priceMax: e.price_max,
@@ -686,7 +679,7 @@ Deno.serve(async (req) => {
       distanceMiles: dist,
       ticketUrl: e.ticket_url,
       sourceUrl: e.source_url,
-      city: e.city,
+      city: e.city ?? "",
       description: e.description,
     }));
 
