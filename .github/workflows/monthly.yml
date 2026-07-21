@@ -195,3 +195,53 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
         run: node sync_restaurant_weeks.js
+
+  # Venue health snapshot — runs AFTER the discover/fix/rank chain so it reflects
+  # this month's mutations. `if: always()` so it still reports the current DB
+  # state even if an upstream venue job failed. Writes a full Markdown breakdown
+  # to the run summary and emails the full report (state % split + per-state
+  # event-coverage + events_url content gap) via Resend to ALERT_EMAIL_TO.
+  venue-state-of-the-union:
+    runs-on: ubuntu-latest
+    needs: rank-venues
+    if: ${{ always() }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build Venue State of the Union
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node venue_state_of_the_union.js
+      - name: Email the digest (Resend)
+        if: ${{ always() }}
+        working-directory: scripts
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RESEND_API_KEY:-}" ]; then
+            echo "RESEND_API_KEY not set; skipping email (full report is in the run summary)."
+            exit 0
+          fi
+          if [ ! -f sotu_email.html ]; then
+            echo "No digest produced (script failed before writing); skipping email."
+            exit 0
+          fi
+          TO="${ALERT_EMAIL_TO:-tom@localapp.live}"
+          SUBJECT="$(cat sotu_subject.txt)"
+          jq -n \
+            --arg from "Local Alerts <onboarding@resend.dev>" \
+            --arg to "$TO" \
+            --arg subject "$SUBJECT" \
+            --rawfile html sotu_email.html \
+            '{from:$from, to:[$to], subject:$subject, html:$html}' \
+          | curl -sf -X POST "https://api.resend.com/emails" \
+              -H "Authorization: Bearer $RESEND_API_KEY" \
+              -H "Content-Type: application/json" \
+              --data @- \
+          && echo "Venue State of the Union emailed to $TO."

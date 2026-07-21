@@ -1,0 +1,119 @@
+name: Notify — Email on Workflow Run
+
+# Emails you (via Resend) when one of the workflows below finishes, with the
+# result (success/failure) and a per-job overview — same Resend path the
+# venue-health silent-failure digest uses. Delivers to ALERT_EMAIL_TO
+# (default tom@localapp.live). No A2P / carrier gating, unlike SMS.
+#
+# NOTE: `workflow_run` only fires for workflows that exist on the DEFAULT branch
+# (main), and each watched workflow must be listed by its `name:` field below.
+# When you add a NEW workflow, add its name here too or it won't notify.
+
+on:
+  workflow_run:
+    workflows:
+      - "Daily — Event Sync, Dedupe & Pattern Prefilter"
+      - "Daily — Crawl (day-sharded) + Classify; weekly aggregator/dedupe tail"
+      - "Ad-hoc — Finish Downstream (sync municipal, classify, dedupe)"
+      - "Ad-hoc — Fix Venue URLs (state-scoped)"
+      - "Hourly — Deactivate Past Events"
+      - "Migration Lint (additive-only)"
+      - "Monthly — Discover Venues, Fix URLs & Rank"
+      - "Ad-hoc — Discover Municipal Feeds (state-scoped)"
+      - "Ad-hoc — Rank Venues (state-scoped)"
+      - "Refresh Carousel Cache"
+      - "Seed Trusted Domains for State"
+      - "Sync Prod → Dev DB"
+      - "Weekly — Crawl Venues & Classify Events"
+    types: [completed]
+
+permissions:
+  actions: read
+
+jobs:
+  email:
+    runs-on: ubuntu-latest
+    # Notify policy:
+    #   - Every workflow emails on FAILURE (any non-success conclusion).
+    #   - On SUCCESS, the high-frequency Hourly/Daily jobs are silenced
+    #     (they'd be 25+ emails/day); all other workflows still email on success.
+    # To make a workflow success-silent, add its `name:` to the && chain below.
+    # To email on every run, replace the whole expression with:  if: ${{ always() }}
+    if: >-
+      ${{ github.event.workflow_run.conclusion != 'success' ||
+          (github.event.workflow_run.name != 'Hourly — Deactivate Past Events' &&
+           github.event.workflow_run.name != 'Daily — Event Sync, Dedupe & Pattern Prefilter') }}
+    steps:
+      - name: Build email
+        id: msg
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          WR_NAME: ${{ github.event.workflow_run.name }}
+          WR_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          WR_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          WR_SHA: ${{ github.event.workflow_run.head_sha }}
+          WR_URL: ${{ github.event.workflow_run.html_url }}
+          WR_ID: ${{ github.event.workflow_run.id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Per-job overview: how many jobs succeeded, and name any that didn't.
+          jobs_json=$(gh api "repos/$REPO/actions/runs/$WR_ID/jobs" --paginate 2>/dev/null || echo '{}')
+          total=$(echo "$jobs_json"  | jq '[.jobs[]?] | length')
+          okcount=$(echo "$jobs_json" | jq '[.jobs[]? | select(.conclusion == "success")] | length')
+          failed=$(echo "$jobs_json"  | jq -r '[.jobs[]? | select(.conclusion != "success" and .conclusion != null and .conclusion != "skipped") | .name] | join(", ")')
+
+          case "$WR_CONCLUSION" in
+            success)   emoji="✅"; color="#1a7f37";;
+            failure)   emoji="❌"; color="#cf222e";;
+            cancelled) emoji="🚫"; color="#8250df";;
+            *)         emoji="⚠️"; color="#9a6700";;
+          esac
+
+          short_sha=${WR_SHA:0:7}
+          conclusion_uc=$(echo "$WR_CONCLUSION" | tr '[:lower:]' '[:upper:]')
+          overview="${okcount}/${total} jobs ok"
+          if [ -n "$failed" ]; then
+            overview="$overview — failed: $failed"
+          fi
+
+          # Subject (single line → step output)
+          echo "subject=$emoji $WR_NAME: $conclusion_uc" >> "$GITHUB_OUTPUT"
+
+          # HTML body (written at column 0 so no stray indentation leaks in)
+          cat > email.html <<HTMLEOF
+          <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;color:#1a1a1a">
+          <h2 style="margin:0 0 4px">$emoji $WR_NAME</h2>
+          <p style="margin:0 0 16px;color:#57606a">GitHub Actions · branch <code>$WR_BRANCH</code> @ <code>$short_sha</code></p>
+          <table style="border-collapse:collapse;font-size:14px">
+          <tr><td style="padding:4px 16px 4px 0;color:#57606a">Result</td><td style="padding:4px 0;font-weight:600;color:$color">$conclusion_uc</td></tr>
+          <tr><td style="padding:4px 16px 4px 0;color:#57606a">Jobs</td><td style="padding:4px 0">$overview</td></tr>
+          </table>
+          <p style="margin:22px 0 0"><a href="$WR_URL" style="background:#1a1a1a;color:#fff;text-decoration:none;padding:9px 16px;border-radius:6px;font-size:14px">View run on GitHub →</a></p>
+          </div>
+          HTMLEOF
+
+      - name: Send email (Resend)
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+          SUBJECT: ${{ steps.msg.outputs.subject }}
+        run: |
+          set -euo pipefail
+          if [ -z "${RESEND_API_KEY:-}" ]; then
+            echo "RESEND_API_KEY not set; skipping email."
+            exit 0
+          fi
+          TO="${ALERT_EMAIL_TO:-tom@localapp.live}"
+          jq -n \
+            --arg from "Local Alerts <onboarding@resend.dev>" \
+            --arg to "$TO" \
+            --arg subject "$SUBJECT" \
+            --rawfile html email.html \
+            '{from:$from, to:[$to], subject:$subject, html:$html}' \
+          | curl -sf -X POST "https://api.resend.com/emails" \
+              -H "Authorization: Bearer $RESEND_API_KEY" \
+              -H "Content-Type: application/json" \
+              --data @- \
+          && echo "Emailed $TO."
