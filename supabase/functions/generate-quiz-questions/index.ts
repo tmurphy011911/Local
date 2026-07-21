@@ -131,15 +131,19 @@ async function verifyQuestions(
 
   const system =
     `You are a rigorous, skeptical trivia fact-checker for a local-knowledge quiz. ` +
-    `The questions below were machine-generated and are known to contain hallucinations. ` +
-    `For EACH question decide keep vs reject. REJECT if ANY of these is true:\n` +
+    `The questions below were machine-generated and are known to contain hallucinations and quality problems. ` +
+    `Apply a STRICT bar — better safe than sorry. KEEP a question ONLY if it is flawless: ` +
+    `factually correct, objective, well-formed, and has exactly one unambiguous answer. ` +
+    `REJECT if ANY of these is true:\n` +
     `1. The premise is false (e.g. "Which ${stateName} chemist discovered iodine" — iodine was discovered by Bernard Courtois, a Frenchman → false premise).\n` +
-    `2. The answer marked correct is not actually correct.\n` +
-    `3. Another listed option is also correct, so there is no single defensible answer.\n` +
+    `2. The answer marked correct is not actually correct, OR any detail in the question is inaccurate (even if the marked answer happens to be right).\n` +
+    `3. Another listed option is also correct or defensible, so the answer is ambiguous.\n` +
     `4. The question is subjective/opinion-based ("best", "most beautiful", "trendiest", "most gentrified") with no objective answer.\n` +
     `5. A named person, place, or entity in the question or answers appears fabricated.\n` +
-    `KEEP only questions that are factually accurate, objective, and have exactly one defensible answer. ` +
-    `When genuinely unsure whether a factual claim is true, REJECT — a smaller, correct bank beats a larger, wrong one. ` +
+    `6. The wording is circular or self-answering (the answer appears inside the question).\n` +
+    `7. The phrasing is awkward, confusing, or garbled, or the question is a near-duplicate of another in this batch.\n` +
+    `8. You are not fully confident every factual claim is true.\n` +
+    `A smaller, flawless bank beats a larger one with any doubtful questions. When in doubt, REJECT. ` +
     `Return ONLY a JSON array of {"i": <index>, "verdict": "keep"|"reject", "reason": <short string>}, one element per question, no prose, no markdown.`;
   const list = candidates
     .map((c, i) => `#${i} Q: ${c.question}\n   correct: ${c.answers[c.correctIndex]}\n   options: ${JSON.stringify(c.answers)}`)
