@@ -3632,6 +3632,20 @@ Deno.serve(async (req) => {
             },
           });
         }
+        // Row missing or past the serve ceiling: this request pays the slow
+        // path once, but still kick a re-warm so the NEXT user gets the fast
+        // path — otherwise a bucket that ages past the ceiling stays dead
+        // until the (unreliable) cron happens to run. Target the found row's
+        // own bucket when there is one (nearest-metro case: the user's bucket
+        // isn't a metro, the row's is). scheduleRewarm no-ops unless the
+        // bucket matches an active metro, so arbitrary coords can't mint
+        // cache rows.
+        scheduleRewarm(
+          supabase,
+          (row as any)?.lat_bucket ?? latBucket,
+          (row as any)?.lng_bucket ?? lngBucket,
+          category,
+        );
       } catch (_) { /* fall through to slow path */ }
     }
 
