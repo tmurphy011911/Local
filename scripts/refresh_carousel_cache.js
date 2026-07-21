@@ -120,9 +120,21 @@ async function main() {
 
   let ok = 0, fail = 0;
   const startMs = Date.now();
+  // Bake pairs through a small worker pool instead of strictly sequentially.
+  // A sequential pass took 6-12 min per run — long enough that, combined with
+  // GitHub's cron throttling, rows regularly aged past the edge function's
+  // acceptance window. 4 concurrent bakes keeps a full pass to ~2 min while
+  // staying gentle on the shared DB (each bake is one edge-fn compute).
+  const CONCURRENCY = 4;
+  const pairs = [];
   for (const m of metros) {
     const { lat_bucket, lng_bucket } = bucket(m.lat, m.lng);
-    for (const cat of CATEGORIES) {
+    for (const cat of CATEGORIES) pairs.push({ m, cat, lat_bucket, lng_bucket });
+  }
+  let next = 0;
+  async function worker() {
+    while (next < pairs.length) {
+      const { m, cat, lat_bucket, lng_bucket } = pairs[next++];
       const t0 = Date.now();
       try {
         const payload = await computeViaEdgeFn(m.lat, m.lng, cat, m.name);
@@ -136,6 +148,7 @@ async function main() {
       }
     }
   }
+  await Promise.all(Array.from({ length: CONCURRENCY }, worker));
   const totalSec = ((Date.now() - startMs) / 1000).toFixed(1);
   console.log(`\nDone in ${totalSec}s. Refreshed ${ok}, failed ${fail}.`);
 }
