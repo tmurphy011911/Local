@@ -2,8 +2,14 @@
 package live.localapp.local.domain.model
 
 // Clock imported fully-qualified below to avoid kotlin.time.Clock conflict
+import kotlinx.datetime.DatePeriod
+import kotlinx.datetime.DayOfWeek
 import kotlinx.datetime.Instant
+import kotlinx.datetime.LocalDate
+import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
+import kotlinx.datetime.plus
+import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 
 data class Event(
@@ -135,9 +141,108 @@ data class Event(
             }
         }
 
+    // ── Recurrence ─────────────────────────────────────────────────────────
+    // A recurring event's start_at is a stale one-time crawl date that nothing
+    // rolls forward, so surfaces must derive the NEXT occurrence for display and
+    // must NOT treat the event as "passed". Recurrence is inferred from the
+    // title/description (mirrors the iOS EventDetailView.detectRecurrence
+    // heuristic) plus the always_on category.
+    private val recurrenceText: String
+        get() = "$title ${description ?: ""}".lowercase()
+
+    /** Detected weekly weekday from the title/description, or null. */
+    val recurringWeekday: DayOfWeek?
+        get() {
+            val text = recurrenceText
+            val days = listOf(
+                "sunday" to DayOfWeek.SUNDAY,
+                "monday" to DayOfWeek.MONDAY,
+                "tuesday" to DayOfWeek.TUESDAY,
+                "wednesday" to DayOfWeek.WEDNESDAY,
+                "thursday" to DayOfWeek.THURSDAY,
+                "friday" to DayOfWeek.FRIDAY,
+                "saturday" to DayOfWeek.SATURDAY,
+            )
+            for ((day, dow) in days) {
+                if (text.contains("every $day") || text.contains("${day}s") ||
+                    (text.contains(day) && (text.contains("weekly") || text.contains("every week")))
+                ) return dow
+            }
+            return null
+        }
+
+    private val isRecurringDaily: Boolean
+        get() = recurrenceText.let {
+            it.contains("daily") || it.contains("every day") || it.contains("everyday")
+        }
+
+    /** Any recurrence signal — weekday, daily, weekly, monthly, or always_on. */
+    val isRecurring: Boolean
+        get() {
+            if (recurringWeekday != null || isRecurringDaily) return true
+            val t = recurrenceText
+            if (t.contains("weekly") || t.contains("every week")) return true
+            if (t.contains("monthly") || t.contains("every month") ||
+                t.contains("first friday") || t.contains("first saturday") ||
+                t.contains("last friday") || t.contains("second saturday") ||
+                t.contains("third thursday")
+            ) return true
+            return category == "always_on"
+        }
+
+    /**
+     * The next real occurrence (ISO) for a weekday/daily recurrence, computed at
+     * the event's original local time-of-day. Null for cadence-less recurrences
+     * (always_on / weekly-or-monthly with no concrete day) and non-recurring
+     * events. Drives display + [isUpcoming] so recurring events show their next
+     * date instead of a stale crawl date.
+     */
+    val nextOccurrenceIso: String?
+        get() {
+            val tz = TimeZone.currentSystemDefault()
+            val now = kotlin.time.Clock.System.now()
+            val today = now.toLocalDateTime(tz).date
+            val (hour, minute) = if (timeKnown && startAt != null) {
+                try {
+                    val ldt = Instant.parse(startAt).toLocalDateTime(tz)
+                    ldt.hour to ldt.minute
+                } catch (_: Exception) { 0 to 0 }
+            } else 0 to 0
+
+            fun LocalDate.atLocal(h: Int, m: Int): Instant =
+                LocalDateTime(year, monthNumber, dayOfMonth, h, m).toInstant(tz)
+
+            val dow = recurringWeekday
+            val target: LocalDate? = when {
+                dow != null -> {
+                    var d = today
+                    var i = 0
+                    while (d.dayOfWeek != dow && i < 7) { d = d.plus(DatePeriod(days = 1)); i++ }
+                    // If today is the day but the time already passed, roll a week.
+                    if (d == today && timeKnown && d.atLocal(hour, minute) < now) {
+                        d = d.plus(DatePeriod(days = 7))
+                    }
+                    d
+                }
+                isRecurringDaily ->
+                    if (timeKnown && today.atLocal(hour, minute) < now)
+                        today.plus(DatePeriod(days = 1)) else today
+                else -> null
+            }
+            return target?.atLocal(hour, minute)?.toString()
+        }
+
+    /** start_at to DISPLAY: next occurrence for recurring events, else raw start. */
+    val effectiveStartIso: String?
+        get() = nextOccurrenceIso ?: startAt
+
     val dateDisplay: String
         get() {
-            val s = startAt ?: return ""
+            // Recurring events show their next occurrence; cadence-less
+            // recurrences (always-on) have no concrete next date, so show
+            // nothing rather than a stale one.
+            if (isRecurring && nextOccurrenceIso == null) return ""
+            val s = effectiveStartIso ?: return ""
             return try {
                 val instant = Instant.parse(s)
                 val tz = TimeZone.currentSystemDefault()
@@ -203,15 +308,29 @@ data class Event(
      */
     val isUpcoming: Boolean
         get() {
+            // Recurring events never "pass" — they recur, so they stay in Saved
+            // (and render their next occurrence). Only genuinely one-time events
+            // are dropped once their date is behind us.
+            if (isRecurring) return true
+            val tz = TimeZone.currentSystemDefault()
             val s = startAt ?: return true
-            return try {
-                val tz = TimeZone.currentSystemDefault()
-                val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
-                val eventDay = Instant.parse(s).toLocalDateTime(tz).date.toEpochDays()
-                val todayDay = Instant.fromEpochMilliseconds(nowMs).toLocalDateTime(tz).date.toEpochDays()
-                eventDay >= todayDay
-            } catch (_: Exception) {
-                true
-            }
+            val eventDay = eventEpochDay(s, tz) ?: return true  // unparseable → keep
+            val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
+            val todayDay = Instant.fromEpochMilliseconds(nowMs).toLocalDateTime(tz).date.toEpochDays()
+            return eventDay >= todayDay
         }
+
+    /**
+     * Local-day epoch of an event timestamp, tolerant of the formats the backend
+     * emits: offset-aware ISO ("…+00:00"), naive ISO from a `timestamp without
+     * time zone` column ("…T00:00:00", which [Instant.parse] rejects — the old
+     * fail-open bug that kept passed events in Saved), and bare dates
+     * ("2026-05-17"). Returns null only when none of these parse.
+     */
+    private fun eventEpochDay(s: String, tz: TimeZone): Long? {
+        runCatching { return Instant.parse(s).toLocalDateTime(tz).date.toEpochDays().toLong() }
+        runCatching { return LocalDateTime.parse(s).date.toEpochDays().toLong() }
+        runCatching { return LocalDate.parse(s.take(10)).toEpochDays().toLong() }
+        return null
+    }
 }

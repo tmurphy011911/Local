@@ -629,16 +629,17 @@ struct VenueDetailView: View {
                     .font(.system(size: 16, weight: .bold))
                     .foregroundColor(AppColor.ink)
 
-                Spacer().frame(height: 8)
+                Spacer().frame(height: 12)
 
-                Text("No upcoming events at this venue")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(AppColor.ink3)
-                    .padding(.vertical, 12)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 14)
-                    .background(AppColor.mist)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                // Bo-voiced empty state — explains that some venues block event
+                // ingestion and points the user to their own calendar. Copy is
+                // the verbatim source-of-truth EmptyStateCopy.VENUE_NO_EVENTS
+                // (commonMain) — keep in sync if it changes there.
+                BoTypewriterEmptyState(
+                    rotationKey: "venue-no-events",
+                    fixedLine: "No events for this venue on Local (yet). Some venues prevent us from pulling in their events — check their website for a calendar!"
+                )
+                .frame(maxWidth: .infinity, minHeight: 220)
             }
 
             Spacer().frame(height: 32)
@@ -1054,14 +1055,21 @@ struct VenueDetailView: View {
 /// Re-rolls the copy line whenever `rotationKey` changes (e.g. a new filter).
 private struct BoTypewriterEmptyState: View {
     let rotationKey: AnyHashable
+    // When non-nil, this fixed copy is shown instead of a random bank roll
+    // (e.g. the venue "no events" explainer). A fixed line never re-rolls.
+    private let fixedLine: String?
 
-    @State private var line: String = BoTypewriterEmptyState.bank.randomElement() ?? ""
+    @State private var line: String
     @State private var revealed: Int = 0
     @State private var boOffset: CGFloat = 30
     @State private var boOpacity: Double = 0
     @State private var streamTask: Task<Void, Never>? = nil
 
-    init(rotationKey: AnyHashable) { self.rotationKey = rotationKey }
+    init(rotationKey: AnyHashable, fixedLine: String? = nil) {
+        self.rotationKey = rotationKey
+        self.fixedLine = fixedLine
+        self._line = State(initialValue: fixedLine ?? (BoTypewriterEmptyState.bank.randomElement() ?? ""))
+    }
 
     // Verbatim subset of EmptyStateCopy.NO_EVENTS (commonMain). Source of truth
     // lives in EmptyStateCopy.kt — keep this in sync if the bank's voice changes.
@@ -1104,7 +1112,7 @@ private struct BoTypewriterEmptyState: View {
         .onAppear { start() }
         .onDisappear { streamTask?.cancel() }
         .onChange(of: rotationKey) { _ in
-            line = BoTypewriterEmptyState.bank.randomElement() ?? ""
+            line = fixedLine ?? (BoTypewriterEmptyState.bank.randomElement() ?? "")
             start()
         }
     }

@@ -14,7 +14,7 @@ import live.localapp.local.data.remote.dto.QuizCompletionDto
  * The link is the short /dl path — the worker aliases it to the Daily Local
  * "get the app" flow: attributes the install to source=dailylocalshare AND
  * suppresses the rich link preview (strips OG/Twitter tags for crawlers) so the
- * message never unfurls into a big card. Kept after text ("Get Local → …") too.
+ * message never unfurls into a big card. Kept after text ("Play Now → …") too.
  */
 fun dailyQuizShareText(c: QuizCompletionDto): String {
     val sb = StringBuilder()
@@ -36,6 +36,6 @@ fun dailyQuizShareText(c: QuizCompletionDto): String {
 
     // Full https:// scheme so every messaging client linkifies it into a tappable
     // link — a bare "localapp.live/dl" renders as dead plain text in most apps.
-    sb.append("Get Local → https://localapp.live/dl")   // → , BMP arrow
+    sb.append("Play Now → https://localapp.live/dl")   // → , BMP arrow
     return sb.toString()
 }

@@ -73,7 +73,7 @@ private data class PlaceSuggestion(
 
 @Composable
 fun ManualAddressScreen(
-    onSubmit: (lat: Double, lng: Double, city: String, state: String) -> Unit,
+    onSubmit: (lat: Double, lng: Double, city: String, neighborhood: String, state: String) -> Unit,
     onBack: () -> Unit = {},
 ) {
     var query by remember { mutableStateOf("") }
@@ -117,6 +117,8 @@ fun ManualAddressScreen(
     var resolvedLat by remember { mutableStateOf<Double?>(null) }
     var resolvedLng by remember { mutableStateOf<Double?>(null) }
     var resolvedCity by remember { mutableStateOf("") }
+    // The sublocality (e.g. "Manayunk") shown alongside the city in the chip.
+    var resolvedNeighborhood by remember { mutableStateOf("") }
     // The geocoder's 2-letter state (e.g. "PA") — authoritative at borders where
     // coord-derived state is unreliable. Stored as the profile's geocoded_state.
     var resolvedState by remember { mutableStateOf("") }
@@ -138,6 +140,7 @@ fun ManualAddressScreen(
             resolvedLat = json["lat"]?.jsonPrimitive?.content?.toDoubleOrNull()
             resolvedLng = json["lng"]?.jsonPrimitive?.content?.toDoubleOrNull()
             resolvedCity = json["city"]?.jsonPrimitive?.content ?: ""
+            resolvedNeighborhood = json["neighborhood"]?.jsonPrimitive?.content ?: ""
             resolvedState = json["state"]?.jsonPrimitive?.content ?: ""
         } catch (_: Exception) {
             selectedPlace = null
@@ -435,7 +438,7 @@ fun ManualAddressScreen(
                     color = if (canSubmit) AppColors.Sky else AppColors.Pebble,
                     shadowColor = if (canSubmit) AppColors.SkyDk else AppColors.Pebble,
                     onClick = {
-                        if (canSubmit) onSubmit(resolvedLat!!, resolvedLng!!, resolvedCity, resolvedState)
+                        if (canSubmit) onSubmit(resolvedLat!!, resolvedLng!!, resolvedCity, resolvedNeighborhood, resolvedState)
                     },
                     enabled = canSubmit,
                 )

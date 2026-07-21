@@ -837,8 +837,10 @@ private fun Eyebrow(visible: Boolean) {
     Text(
         text = "Every",
         style = TextStyle(
-            fontFamily = AppFonts.Body,
-            fontWeight = FontWeight.ExtraBold,
+            // Fraunces (Heading) to match the "local" wordmark — one editorial
+            // brand voice across the whole splash, not the generic Nunito body.
+            fontFamily = AppFonts.Heading,
+            fontWeight = FontWeight.Bold,
             fontSize = 30.sp,
             color = AppColors.Ink2,
         ),
@@ -959,10 +961,12 @@ private fun Reel(index: Int, landed: Boolean, reduceMotion: Boolean) {
                 Text(
                     text = item.word,
                     style = TextStyle(
-                        fontFamily = AppFonts.Body,
+                        // Fraunces (Heading) hero word — echoes the wordmark. The
+                        // whole reel shares this face so every frame stays on-brand.
+                        fontFamily = AppFonts.Heading,
                         fontWeight = FontWeight.Black,
                         fontSize = 44.sp,
-                        letterSpacing = (-0.5).sp,
+                        letterSpacing = (-1).sp,
                         color = item.color,
                     ),
                 )
@@ -1019,7 +1023,8 @@ private fun Tagline(visible: Boolean) {
     Text(
         text = "all in one place",
         style = TextStyle(
-            fontFamily = AppFonts.Body,
+            // Fraunces (Heading) — completes the unified editorial stack.
+            fontFamily = AppFonts.Heading,
             fontWeight = FontWeight.Bold,
             fontSize = 26.sp,
             color = AppColors.Ink,
@@ -1044,13 +1049,15 @@ private fun AccentUnderline(visible: Boolean) {
     }
     Box(
         modifier = Modifier
-            .width(36.dp)
-            .height(2.dp)
+            // Chunky, fully-rounded coral pill — the confident Duolingo weight,
+            // not the old 2dp hairline. Same scaleX grow-in on entrance.
+            .width(48.dp)
+            .height(6.dp)
             .graphicsLayer {
                 scaleX = scale.value
                 transformOrigin = TransformOrigin.Center
             }
-            .clip(RoundedCornerShape(1.dp))
+            .clip(RoundedCornerShape(50))
             .background(AppColors.Coral),
     )
 }

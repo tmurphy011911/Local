@@ -109,8 +109,12 @@ object Config {
      * false to fall back to the stock [PullToRefreshBox] spinner in a shipped
      * binary while the control is still being tuned; the elimination pass then
      * drops the BoRefreshControl path as dead code.
+     *
+     * OFF for v1.2.0 — the control still has scroll-interaction rough edges (see
+     * project_bo_pull_to_refresh memory). The full implementation is preserved on
+     * `develop` (2998808) for a v1.3.0 refinement pass; re-enable then.
      */
-    const val FEATURE_BO_PTR_ENABLED = true
+    const val FEATURE_BO_PTR_ENABLED = false
 
     // --- Backend environment (prod vs dev) -------------------------------------
     //

@@ -76,6 +76,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
@@ -113,9 +114,8 @@ import coil3.compose.AsyncImage
 import local.composeapp.generated.resources.Res
 import local.composeapp.generated.resources.bo_tiny
 import org.jetbrains.compose.resources.painterResource
-import live.localapp.local.platform.MapHeroStop
 import live.localapp.local.platform.PlaceSuggestion
-import live.localapp.local.platform.PlanMapHero
+import live.localapp.local.platform.RadiusMapPreview
 import live.localapp.local.platform.rememberInAppBrowser
 import live.localapp.local.platform.rememberPlacesAutocomplete
 import live.localapp.local.ui.theme.AppColors
@@ -902,6 +902,9 @@ private fun LocationEditorSheet(
     var pickedLng by remember(current) { mutableStateOf(currentLng) }
     var suggestions by remember { mutableStateOf<List<PlaceSuggestion>>(emptyList()) }
     var justPicked by remember { mutableStateOf(false) }
+    // Hide the map preview while the city field is focused (keyboard up) so it
+    // doesn't get crushed against the keyboard — matches the Location sheet.
+    var searchFocused by remember { mutableStateOf(false) }
 
     LaunchedEffect(text) {
         if (justPicked) { justPicked = false; suggestions = emptyList(); return@LaunchedEffect }
@@ -937,7 +940,9 @@ private fun LocationEditorSheet(
                 onValueChange = { text = it; pickedLat = null; pickedLng = null },
                 placeholder = { Text("e.g. Brookline, Cambridge, Hyannis") },
                 singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .onFocusChanged { searchFocused = it.isFocused },
                 colors = TextFieldDefaults.colors(
                     focusedContainerColor = AppColors.White,
                     unfocusedContainerColor = AppColors.White,
@@ -984,10 +989,14 @@ private fun LocationEditorSheet(
                 }
             }
 
-            // Live map preview of the chosen scope center.
+            // Live map preview of the chosen scope center + the radius circle —
+            // the SAME component as the Location Settings sheet, so the scope shows
+            // its actual search area (coral circle) rather than a bare pin. Hidden
+            // while the city field is focused (keyboard up) so it isn't crushed
+            // against the keyboard.
             val previewLat = pickedLat ?: currentLat
             val previewLng = pickedLng ?: currentLng
-            if (previewLat != null && previewLng != null) {
+            if (!searchFocused && previewLat != null && previewLng != null) {
                 Spacer(Modifier.height(16.dp))
                 Box(
                     modifier = Modifier
@@ -995,8 +1004,10 @@ private fun LocationEditorSheet(
                         .height(200.dp)
                         .clip(RoundedCornerShape(16.dp)),
                 ) {
-                    PlanMapHero(
-                        stops = listOf(MapHeroStop(previewLat, previewLng, text.ifBlank { current })),
+                    RadiusMapPreview(
+                        lat = previewLat,
+                        lng = previewLng,
+                        radiusMiles = radius.toDouble(),
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
@@ -1021,7 +1032,8 @@ private fun LocationEditorSheet(
                 value = radius,
                 onValueChange = { radius = it },
                 valueRange = 1f..50f,
-                steps = 48,
+                // No `steps` — continuous track (no tick marks), matching the
+                // Location Settings sheet slider. The readout snaps via toInt().
                 colors = SliderDefaults.colors(
                     thumbColor = AppColors.Coral,
                     activeTrackColor = AppColors.Coral,

@@ -54,9 +54,7 @@ data class HomeUiState(
     val carouselsByCategory: Map<String, List<CarouselSection>> = emptyMap(),
     val isLoading: Boolean = false,
     val isRefreshing: Boolean = false,
-    // Bo pull-to-refresh: event ids that first appeared on the last manual
-    // refresh (NEW ribbon, cleared on scroll) + whether that refresh failed.
-    val newItemIds: Set<String> = emptySet(),
+    // Bo pull-to-refresh: whether the last manual refresh failed.
     val refreshFailed: Boolean = false,
     val error: String? = null,
     val userPreferences: UserPreferences? = null,
@@ -343,12 +341,28 @@ class HomeViewModel(
                     // picked an address then killed the app before the Supabase write
                     // completed — the chip would otherwise revert to the default city.
                     val cacheBeforeMerge = userPreferencesRepository.getCachedManualLocation()
-                    val remoteHasManual = remote.manualLocationName != null || remote.manualLat != null
+                    // The local cache is written SYNCHRONOUSLY on every explicit location
+                    // change (setManualLocation / setLocationMode), so it is the most
+                    // reliable record of the user's LATEST on-device choice. Prefer it
+                    // over the remote row for the mode AND the manual triplet (name +
+                    // coords), as a UNIT. Previously only the mode was cache-first; the
+                    // name/coords did `remote ?: cache`, so a non-null STALE remote
+                    // (async write lost/laggy, or a since-changed address) silently
+                    // overwrote the fresher local pick. Because the chip (locationName)
+                    // is set from the cache in the first hydration pass and preserved,
+                    // while the events + drawer are re-set from the remote here, that
+                    // overwrite made the chip DIVERGE from the events + the drawer's
+                    // selected location on cold start (the "chip right, events/drawer
+                    // stale" bug). It also self-worsened: the stale value was mirrored
+                    // back into the cache below, so the next restart lost the fresh pick
+                    // everywhere. Fall back to the remote only when the cache holds no
+                    // manual coords (fresh install / cache cleared).
+                    val cacheHasManualCoords = cacheBeforeMerge.manualLat != null && cacheBeforeMerge.manualLng != null
                     val prefs = remote.copy(
-                        locationMode = if (!remoteHasManual && cacheBeforeMerge.locationMode != null) cacheBeforeMerge.locationMode else remote.locationMode,
-                        manualLocationName = remote.manualLocationName ?: cacheBeforeMerge.manualLocationName,
-                        manualLat = remote.manualLat ?: cacheBeforeMerge.manualLat,
-                        manualLng = remote.manualLng ?: cacheBeforeMerge.manualLng,
+                        locationMode = cacheBeforeMerge.locationMode ?: remote.locationMode,
+                        manualLocationName = if (cacheHasManualCoords) (cacheBeforeMerge.manualLocationName ?: remote.manualLocationName) else remote.manualLocationName,
+                        manualLat = if (cacheHasManualCoords) cacheBeforeMerge.manualLat else remote.manualLat,
+                        manualLng = if (cacheHasManualCoords) cacheBeforeMerge.manualLng else remote.manualLng,
                     )
                     // Mirror remote into the local cache so future cold starts can
                     // hydrate immediately. Covers users whose address was saved
@@ -396,8 +410,19 @@ class HomeViewModel(
                             isUnsupportedState = !isLocationInSupportedState(effectiveLat ?: prefs.userLat, effectiveLng ?: prefs.userLng),
                         )
                     }
-                    // Persist the repair so the next cold open starts clean.
-                    if (manualCorrupted) saveLocationPrefs()
+                    // Persist the repair so the next cold open — and any INDEPENDENT
+                    // reader of the remote row (notably the Bo chat VM, which loads
+                    // preferences itself rather than sharing this state) — starts
+                    // clean. Fires both when we salvaged a corrupted manual row AND
+                    // when the synchronously-cached mode disagreed with the
+                    // (possibly write-lost) remote mode, so a Current-Location switch
+                    // that was killed before its remote write landed is reconciled
+                    // here instead of silently reverting for other readers. Also fires
+                    // when the cache-preferred manual name/coords differ from remote, so
+                    // a manual pick whose async write never landed heals the remote too.
+                    val manualDivergedFromRemote = prefs.manualLocationName != remote.manualLocationName ||
+                        prefs.manualLat != remote.manualLat || prefs.manualLng != remote.manualLng
+                    if (manualCorrupted || prefs.locationMode != remote.locationMode || manualDivergedFromRemote) saveLocationPrefs()
                 }
             }
             // Load carousels once, with prefs already set
@@ -703,27 +728,16 @@ class HomeViewModel(
 
     fun refresh() {
         carouselRepository.invalidateCaches()
-        val oldIds = _uiState.value.carousels.flatMap { it.events }.mapTo(HashSet()) { it.id }
-        _uiState.update { it.copy(isRefreshing = true, refreshFailed = false, newItemIds = emptySet()) }
+        _uiState.update { it.copy(isRefreshing = true, refreshFailed = false) }
         viewModelScope.launch {
             loadCarousels()
             val savedJob = loadSavedThisWeek()
             carouselJob?.join()
             savedJob.join()
 
-            val st = _uiState.value
-            val newIds = st.carousels.flatMap { it.events }.mapNotNull { e ->
-                e.id.takeIf { it !in oldIds }
-            }.toSet()
-            val failed = st.error != null
-            _uiState.update { it.copy(isRefreshing = false, newItemIds = newIds, refreshFailed = failed) }
+            val failed = _uiState.value.error != null
+            _uiState.update { it.copy(isRefreshing = false, refreshFailed = failed) }
         }
-    }
-
-    /** Clear the NEW ribbons once the user scrolls (spec: ribbons clear on next view). */
-    fun clearNewRibbons() {
-        if (_uiState.value.newItemIds.isEmpty()) return
-        _uiState.update { it.copy(newItemIds = emptySet()) }
     }
 
     private fun loadSavedThisWeek(): Job = viewModelScope.launch {

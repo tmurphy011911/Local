@@ -597,7 +597,16 @@ function cleanEvents(
     // venue_city. ONLY serve stable Supabase-Storage URLs: the city_photos
     // table historically held rotted Google Places URLs that embed an API
     // key — never surface those to clients.
-    if (!result.image_url && cityPhotoCache) {
+    //
+    // Exception: farmers markets. Their source supplies no image and the
+    // market "venue" has no photo, so every image-less market in a city (e.g.
+    // all of Philadelphia's) would wear the identical city skyline. We'd
+    // rather let them fall through to the client's category gradient, so skip
+    // the city photo for them. Same predicate as the farmers-market rail.
+    const isFarmersMarket =
+      (result.subcategory ?? "").toLowerCase() === "farmers-market" ||
+      (Array.isArray(result.tags) && result.tags.some(t => (t ?? "").toLowerCase() === "farmers-market"));
+    if (!result.image_url && !isFarmersMarket && cityPhotoCache) {
       const cityKey = (result.venue_city ?? "").trim().toLowerCase();
       const cityPhoto = cityKey ? cityPhotoCache.get(cityKey) : undefined;
       if (cityPhoto && cityPhoto.includes("/storage/v1/object/public/city-photos/")) {
@@ -782,7 +791,7 @@ function coldStartScore(
   let score = 0.5;
   const titleLc = event.title.toLowerCase();
   const venueLc = (event.venue_name ?? "").toLowerCase();
-  const cityLc = event.venue_city.toLowerCase();
+  const cityLc = (event.venue_city ?? "").toLowerCase();
 
   // Pro-sports nudge — used to be +0.35 (a 70 % boost over base 0.5) which
   // pushed Celtics/Bruins/Red Sox to the top of every "Picked for You"
@@ -1884,7 +1893,7 @@ function buildCarousels(
     })();
     for (const neighborhood of neighborhoods) {
       const neighborhoodEvents = neighborhoodPool
-        .filter(e => e.venue_city.toLowerCase().includes(neighborhood.toLowerCase()))
+        .filter(e => (e.venue_city ?? "").toLowerCase().includes(neighborhood.toLowerCase()))
         .map(e => withDistance(e, userLat, userLng))
         .sort(sortFn)
         .slice(0, CAROUSEL_DISPLAY_LIMIT);
@@ -3424,7 +3433,12 @@ Deno.serve(async (req) => {
         ticket_url: e.ticket_url,
         image_url: e.image_url,
         venue_name: e.venue_name,
-        venue_city: e.venue_city,
+        // Never emit null for venue_city/city: the mobile client's EventDto
+        // types these as non-nullable String (default "" only covers a MISSING
+        // key, not an explicit null), so a null here throws in kotlinx
+        // deserialization and blanks the ENTIRE feed. Municipal-sourced rows
+        // can carry null venue_city — coalesce at the serialization boundary.
+        venue_city: e.venue_city ?? "",
         venue_state: e.venue_state,
         venue_lat: e.venue_lat,
         venue_lng: e.venue_lng,
@@ -3433,7 +3447,7 @@ Deno.serve(async (req) => {
         event_state: e.event_state,
         event_lat: e.event_lat,
         event_lng: e.event_lng,
-        city: e.city,
+        city: e.city ?? "",
         source: e.source,
         source_url: e.source_url,
         distance_miles: e.distance_miles,

@@ -44,6 +44,8 @@ fun LocationSettingsSheet(
     locationMode: LocationMode,
     manualLocationName: String,
     radiusFilter: Double?,
+    centerLat: Double? = null,
+    centerLng: Double? = null,
     hasLocationPermission: Boolean,
     onSelectCurrentLocation: () -> Unit,
     onGpsLocation: (lat: Double, lng: Double) -> Unit,
@@ -232,59 +234,84 @@ fun LocationSettingsSheet(
             Spacer(Modifier.height(10.dp))
 
             // ── Manual Address option ──
+            // Tracks whether the address search field is active (keyboard up) so
+            // the radius map + slider below can be hidden while typing.
+            var searchEditing by remember { mutableStateOf(false) }
             val isManualSelected = locationMode == LocationMode.MANUAL
             ManualAddressOption(
                 isSelected = isManualSelected,
                 manualLocationName = manualLocationName,
                 onSelect = onSelectManualLocation,
+                onEditingChanged = { searchEditing = it },
             )
 
             Spacer(Modifier.height(20.dp))
 
             // ── Radius ──
-            Box(Modifier.fillMaxWidth().height(1.dp).background(AppColors.Pebble))
-            Spacer(Modifier.height(16.dp))
-
-            Text(
-                "RADIUS",
-                style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = AppColors.Ink3, letterSpacing = 1.sp),
-            )
-            Spacer(Modifier.height(10.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                listOf<Double?>(null, 10.0, 25.0, 50.0, 100.0).forEach { option ->
-                    val isSelected = option == radiusFilter
-                    val label = if (option == null) "Any" else "${option.toInt()} mi"
-                    Box(
-                        modifier = Modifier
-                            .background(
-                                if (isSelected) AppColors.Sky else AppColors.SkyLt,
-                                RoundedCornerShape(50),
-                            )
-                            .border(1.5.dp, AppColors.Sky, RoundedCornerShape(50))
-                            .clickable(
-                                interactionSource = remember { MutableInteractionSource() },
-                                indication = null,
-                            ) { onRadiusChanged(option) }
-                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                    ) {
-                        Text(
-                            label,
-                            style = TextStyle(
-                                fontFamily = AppFonts.Body,
-                                fontWeight = FontWeight.ExtraBold,
-                                fontSize = 12.sp,
-                                color = if (isSelected) Color.White else AppColors.Sky,
-                            ),
-                        )
-                    }
-                }
+            // Map preview of the search area + a continuous radius slider —
+            // mirrors Bo's "Where should Bo search?" scope picker. Legacy "Any"
+            // (null radiusFilter) maps to the 100mi max; values clamp to 1..100.
+            // Kept OUTSIDE the visibility gate so the value survives the keyboard
+            // showing/hiding.
+            var radius by remember(radiusFilter) {
+                mutableStateOf((radiusFilter ?: 100.0).toFloat().coerceIn(1f, 100f))
             }
 
-            Spacer(Modifier.height(24.dp))
+            // Hidden while the address search is active (keyboard up) — the map +
+            // slider would otherwise be crushed against the keyboard. Reappear on blur.
+            if (!searchEditing) {
+                Box(Modifier.fillMaxWidth().height(1.dp).background(AppColors.Pebble))
+                Spacer(Modifier.height(16.dp))
+
+                if (centerLat != null && centerLng != null) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(180.dp)
+                            .clip(RoundedCornerShape(16.dp)),
+                    ) {
+                        live.localapp.local.platform.RadiusMapPreview(
+                            lat = centerLat,
+                            lng = centerLng,
+                            radiusMiles = radius.toDouble(),
+                            modifier = Modifier.fillMaxSize(),
+                        )
+                    }
+                    Spacer(Modifier.height(16.dp))
+                }
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "RADIUS",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 11.sp, color = AppColors.Ink3, letterSpacing = 1.sp),
+                    )
+                    Spacer(Modifier.weight(1f))
+                    Text(
+                        "${radius.toInt()} mi",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.Coral),
+                    )
+                }
+                Slider(
+                    value = radius,
+                    onValueChange = { radius = it },
+                    valueRange = 1f..100f,
+                    // No `steps` — a continuous track (no tick marks), matching the
+                    // smooth look of Bo's native scope slider rather than the ticked
+                    // Material style. The readout snaps to whole miles via toInt().
+                    // Commit on release so carousels reload once, not on every tick.
+                    onValueChangeFinished = { onRadiusChanged(radius.toDouble()) },
+                    colors = SliderDefaults.colors(
+                        thumbColor = AppColors.Coral,
+                        activeTrackColor = AppColors.Coral,
+                        inactiveTrackColor = AppColors.Pebble.copy(alpha = 0.4f),
+                    ),
+                )
+
+                Spacer(Modifier.height(24.dp))
+            }
 
             // Done button
             Box(
@@ -310,6 +337,7 @@ private fun ManualAddressOption(
     isSelected: Boolean,
     manualLocationName: String,
     onSelect: (lat: Double, lng: Double, name: String) -> Unit,
+    onEditingChanged: (Boolean) -> Unit = {},
 ) {
     var query by remember { mutableStateOf("") }
     var displayAddress by remember { mutableStateOf(manualLocationName) }
@@ -364,6 +392,11 @@ private fun ManualAddressOption(
             try { focusRequester.requestFocus() } catch (_: Exception) {}
         }
     }
+
+    // Surface editing (≈ keyboard-up) so the sheet can hide the map + radius
+    // slider while the user types an address — otherwise they collide with the
+    // keyboard. They reappear once the field blurs.
+    LaunchedEffect(isEditing) { onEditingChanged(isEditing) }
 
     Column(
         modifier = Modifier
@@ -477,10 +510,12 @@ private fun ManualAddressOption(
                             resolvePlace(
                                 httpClient = httpClient,
                                 placeId = suggestion.placeId,
-                                onResult = { lat, lng, city ->
+                                onResult = { lat, lng, city, neighborhood ->
                                     isResolving = false
-                                    // Use city for the pill display, not full street address
-                                    val pillName = city.ifBlank { suggestion.mainText }
+                                    // Prefer the neighborhood/town alone ("Manayunk",
+                                    // "Chestnut Hill"); fall back to the city, never
+                                    // the full street address.
+                                    val pillName = neighborhood.ifBlank { city.ifBlank { suggestion.mainText } }
                                     onSelect(lat, lng, pillName)
                                 },
                                 onFailure = {
@@ -512,7 +547,7 @@ private fun ManualAddressOption(
 private fun resolvePlace(
     httpClient: HttpClient,
     placeId: String,
-    onResult: (Double, Double, String) -> Unit,
+    onResult: (Double, Double, String, String) -> Unit,
     onFailure: () -> Unit,
 ) {
     kotlinx.coroutines.MainScope().launch {
@@ -531,7 +566,8 @@ private fun resolvePlace(
                 return@launch
             }
             val city = json["city"]?.jsonPrimitive?.content ?: ""
-            onResult(lat, lng, city)
+            val neighborhood = json["neighborhood"]?.jsonPrimitive?.content ?: ""
+            onResult(lat, lng, city, neighborhood)
         } catch (_: Exception) {
             onFailure()
         }

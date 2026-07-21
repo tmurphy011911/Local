@@ -29,6 +29,13 @@ class HttpExploreRepository : ExploreRepository {
     private val json = Json {
         ignoreUnknownKeys = true
         isLenient = true
+        // Coerce an explicit JSON null on a non-nullable field WITH a default to
+        // that default (e.g. venueCity/category/city = ""), instead of throwing
+        // and failing the ENTIRE page. Without this, one municipal row with a
+        // null venue_city blanks all Explore events across a metro (2026-07-16
+        // incident, Boston/Philly). The edge fn also coalesces at the source; this
+        // is the client-side backstop so it can never recur on any nullable field.
+        coerceInputValues = true
     }
 
     private val httpClient = HttpClient {

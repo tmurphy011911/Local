@@ -119,7 +119,7 @@ fun OnboardingScreen(
                         onManual = { viewModel.onDenyLocation() },
                     )
                     OnboardingStep.MANUAL_ADDRESS -> ManualAddressScreen(
-                        onSubmit = { lat, lng, city, state -> viewModel.onManualAddressSubmit(lat, lng, city, state) },
+                        onSubmit = { lat, lng, city, neighborhood, state -> viewModel.onManualAddressSubmit(lat, lng, city, neighborhood, state) },
                         onBack = { viewModel.onBackFromManualAddress() },
                     )
                     OnboardingStep.SUCCESS -> SuccessScreen(

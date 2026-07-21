@@ -103,6 +103,7 @@ struct DailyQuizView: View {
     /// (answersJson, done) — runs submit_quiz; `done` receives the augmented result JSON.
     let onSubmit: (String, @escaping (String?) -> Void) -> Void
     let onDismiss: () -> Void
+    var onShared: () -> Void = {}
 
     private enum Phase { case question, submitting, results }
     // Per-question intro: Bo big -> Bo shrinks + question streams -> read-in
@@ -728,6 +729,7 @@ struct DailyQuizView: View {
 
     /// Share the results as a text message (built in Kotlin, delivered via the bridge).
     private func shareCard(_ r: QuizResultJson) {
+        onShared()
         guard let window = UIApplication.shared.connectedScenes
             .compactMap({ $0 as? UIWindowScene }).flatMap({ $0.windows })
             .first(where: { $0.isKeyWindow }) else { return }

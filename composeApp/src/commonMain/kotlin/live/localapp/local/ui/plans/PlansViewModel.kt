@@ -40,9 +40,7 @@ data class PlansUiState(
     val isRefreshing: Boolean = false,
     val savedEvents: List<Event> = emptyList(),
     val savedVenues: List<Venue> = emptyList(),
-    // Bo pull-to-refresh: ids that first appeared on the last manual refresh
-    // (NEW ribbon, cleared on scroll) + whether that refresh failed.
-    val newItemIds: Set<String> = emptySet(),
+    // Bo pull-to-refresh: whether the last manual refresh failed.
     val refreshFailed: Boolean = false,
     val templateRotationKey: Int = 0,
     /** Set when an external surface (e.g. the chat-success "View Plan"
@@ -197,16 +195,10 @@ class PlansViewModel(
     }
 
     fun refresh() {
-        val oldIds = HashSet<String>().apply {
-            addAll(_serverPlans.value.map { it.id })
-            addAll(_uiState.value.savedEvents.map { it.id })
-            addAll(_uiState.value.savedVenues.map { it.id })
-        }
         _uiState.update {
             it.copy(
                 isRefreshing = true,
                 refreshFailed = false,
-                newItemIds = emptySet(),
                 templateRotationKey = it.templateRotationKey + 1,
             )
         }
@@ -215,20 +207,8 @@ class PlansViewModel(
         syncer.kick()
         viewModelScope.launch {
             joinAll(loadPlans(), loadSavedItems())
-            val st = _uiState.value
-            val newIds = buildSet {
-                addAll(_serverPlans.value.map { it.id })
-                addAll(st.savedEvents.map { it.id })
-                addAll(st.savedVenues.map { it.id })
-            } - oldIds
-            _uiState.update { it.copy(isRefreshing = false, newItemIds = newIds) }
+            _uiState.update { it.copy(isRefreshing = false) }
         }
-    }
-
-    /** Clear the NEW ribbons once the user scrolls (spec: ribbons clear on next view). */
-    fun clearNewRibbons() {
-        if (_uiState.value.newItemIds.isEmpty()) return
-        _uiState.update { it.copy(newItemIds = emptySet()) }
     }
 
     // ── Slot-level mutations ───────────────────────────────────────────

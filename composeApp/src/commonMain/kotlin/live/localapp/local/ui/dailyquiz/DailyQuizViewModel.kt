@@ -16,6 +16,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import live.localapp.local.data.remote.dto.DailyQuizDto
 import live.localapp.local.data.remote.dto.QuizCompletionDto
+import live.localapp.local.observability.Analytics
+import live.localapp.local.observability.AnalyticsEvent
 import live.localapp.local.data.remote.dto.QuizQuestionDto
 import live.localapp.local.domain.repository.DailyQuizRepository
 import live.localapp.local.domain.repository.LeaderboardRepository
@@ -113,6 +115,7 @@ class DailyQuizViewModel(
             }
             val res = repo.submitQuiz(answers)
             if (res != null) {
+                trackCompleted(res)
                 badgeService.notifyDataChanged()
                 // Fetch city rank so the native postcard has everything in one payload.
                 val lb = leaderboardRepo.getLeaderboard(LeaderboardScope.CITY)
@@ -222,6 +225,7 @@ class DailyQuizViewModel(
         viewModelScope.launch {
             val res = repo.submitQuiz(_uiState.value.answers)
             if (res != null) {
+                trackCompleted(res)
                 badgeService.notifyDataChanged()   // let the leaderboard refresh live
                 _uiState.update { it.copy(phase = Phase.RESULTS, result = res, submitError = false, animateResults = true) }
                 fetchRank()                        // city rank/percentile for the postcard
@@ -258,6 +262,26 @@ class DailyQuizViewModel(
     /** Close the sheet: drop the session but keep loaded meta/result. */
     fun endSession() {
         _uiState.update { it.copy(phase = Phase.IDLE, revealing = false, revealSelectedIndex = null) }
+    }
+
+    // ── Analytics ──
+
+    /** One "daily_quiz_completed" per fresh submit (both native + Compose paths). */
+    private fun trackCompleted(res: QuizCompletionDto) {
+        Analytics.track(AnalyticsEvent.dailyQuizCompleted(
+            score = res.score,
+            correctCount = res.correctCount,
+            streak = res.streak,
+            isFirst = res.isFirst,
+            isPersonalBest = res.isFirst || res.score > res.bestBefore,
+            state = res.state,
+        ))
+    }
+
+    /** Fired when the user taps Share on the results (from either platform). */
+    fun trackShared() {
+        val score = _uiState.value.quiz?.completion?.score ?: _uiState.value.result?.score ?: 0
+        Analytics.track(AnalyticsEvent.dailyQuizShared(score))
     }
 
     companion object {

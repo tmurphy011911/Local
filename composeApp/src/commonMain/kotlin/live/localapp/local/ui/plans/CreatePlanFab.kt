@@ -51,6 +51,8 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -68,11 +70,20 @@ import live.localapp.local.ui.theme.AppFonts
  * - Scale-shrinks while held
  * - Haptic on release (completion click)
  * - onClick fires on release only (not on cancel / drag-off)
+ *
+ * Accessibility: at large system font scales the "Ask Bo" label grows and
+ * would overrun the left nav pill (fixed-width containers, scaling text).
+ * `compact` drops the label and shrinks to an icon-only pill so the Bo
+ * character alone remains — the caller flips it on above a font-scale
+ * threshold and reclaims the freed width for the nav pill. A
+ * `contentDescription` keeps the button labeled for screen readers when the
+ * visible text is gone.
  */
 @Composable
 fun CreatePlanButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
 ) {
     val haptic = LocalHapticFeedback.current
     val scale = remember { Animatable(1f) }
@@ -84,10 +95,14 @@ fun CreatePlanButton(
     Box(
         modifier = modifier
             .height(52.dp) // 48 face + 4 lip
-            // Pinned to the old "Create Plan" footprint so the shorter "Ask Bo"
-            // label doesn't shrink the pill (the left chat pill reserves room
-            // for this width).
-            .width(156.dp)
+            // Full: pinned to the old "Create Plan" footprint so the shorter
+            // "Ask Bo" label doesn't shrink the pill. Compact (large fonts):
+            // icon-only square so the nav pill can reclaim the width.
+            .width(if (compact) 56.dp else 156.dp)
+            // Merge into one focusable node reading "Ask Bo" — keeps the button
+            // labeled for screen readers when compact drops the visible text, and
+            // avoids a double announce from the child Text in full mode.
+            .semantics(mergeDescendants = true) { contentDescription = "Ask Bo" }
             .graphicsLayer {
                 scaleX = scale.value
                 scaleY = scale.value
@@ -147,7 +162,7 @@ fun CreatePlanButton(
                 )
                 .border(1.5.dp, edge, RoundedCornerShape(26.dp))
                 .clip(RoundedCornerShape(26.dp))
-                .padding(horizontal = 14.dp),
+                .padding(horizontal = if (compact) 0.dp else 14.dp),
             contentAlignment = Alignment.Center,
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -160,16 +175,22 @@ fun CreatePlanButton(
                     showShadow = false,
                     modifier = Modifier.size(34.dp),
                 )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    "Ask Bo",
-                    style = TextStyle(
-                        fontFamily = AppFonts.Body,
-                        fontWeight = FontWeight.ExtraBold,
-                        fontSize = 15.sp,
-                        color = Color.White,
-                    ),
-                )
+                // Compact (large system fonts): icon only — the label is dropped
+                // so the button can't overrun the nav pill.
+                if (!compact) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Ask Bo",
+                        maxLines = 1,
+                        softWrap = false,
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 15.sp,
+                            color = Color.White,
+                        ),
+                    )
+                }
             }
         }
     }

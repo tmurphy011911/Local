@@ -452,6 +452,9 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             val hLng = homeState.userLng
             if (!hasOngoingChat && hLat != null && hLng != null) {
                 chatVm.setCurrentLocation(hLat, hLng, homeState.locationName)
+                // Also mirror the radius the user set in Location Settings — the
+                // location sync alone left Bo on its stale/persisted radius.
+                chatVm.setScopeRadiusFromHome(homeState.radiusFilter)
             }
             if (hasNativeTabBar) {
                 // iOS path: snapshot the pending message before opening the sheet,
@@ -496,6 +499,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         val hLng = homeState.userLng
         if (!hasOngoingChat && locationMissing && hLat != null && hLng != null && homeState.locationName.isNotBlank()) {
             chatVm.setCurrentLocation(hLat, hLng, homeState.locationName)
+            chatVm.setScopeRadiusFromHome(homeState.radiusFilter)
         }
     }
 
@@ -697,10 +701,17 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                         placesVm.toggleVenueFavorite(venueId, venue.primaryCategory)
                                     },
                                 )
-                                // Fallback: only re-query if the server gave us none.
-                                // Covers older edge function deployments and odd cases
-                                // where the count > 0 but events list is empty.
-                                if (venue.upcomingEvents.isEmpty() && venue.upcomingEventCount > 0) {
+                                // Whenever the inline payload carried no events, re-query
+                                // and push the result — so the native detail's loading
+                                // skeleton ALWAYS terminates. This was previously gated on
+                                // `upcomingEventCount > 0`, which meant a venue with
+                                // genuinely zero events (count == 0, empty list) never
+                                // received an update: Swift's isLoadingEvents stayed true and
+                                // the event skeleton spun forever, hiding the empty state.
+                                // Now it covers both the count>0-but-empty race AND the
+                                // true-zero case — an empty re-query resolves loading and
+                                // renders the venue "no events" empty state.
+                                if (venue.upcomingEvents.isEmpty()) {
                                     scope.launch {
                                         val events = try {
                                             venueRepo.getUpcomingEventsForVenue(venue.venue.name, venue.venue.city, venue.venue.latitude, venue.venue.longitude)
@@ -1851,6 +1862,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 VenueDetailSheet(
                     venueWithMeta = placesState.selectedVenue!!,
                     onDismiss = { placesVm.dismissSheet() },
+                    isLoading = placesState.isSheetLoading,
                 )
             }
         }
@@ -1864,6 +1876,8 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 locationMode = homeState.locationMode,
                 manualLocationName = homeState.manualLocationName,
                 radiusFilter = homeState.radiusFilter,
+                centerLat = homeState.userLat,
+                centerLng = homeState.userLng,
                 hasLocationPermission = homeState.hasLocationPermission,
                 onSelectCurrentLocation = { /* mode only flips to CURRENT_LOCATION on successful GPS fix */ },
                 onGpsLocation = { lat, lng ->
@@ -2216,6 +2230,15 @@ private fun BottomTabBar(
     val haptic = LocalHapticFeedback.current
     val pillShape = RoundedCornerShape(22.dp)
 
+    // Accessibility: at large system font scales the "Ask Bo" label grows and
+    // collides with this nav pill (both are fixed-width with scaling text). Above
+    // ~1.3× we collapse the CTA to an icon-only button and hand the freed width
+    // back to the nav pill so the two never overlap.
+    val ctaCompact = LocalDensity.current.fontScale >= 1.3f
+    // Reserved right-margin must track the button width: 156→56 face + 16 end
+    // padding + a small gap.
+    val ctaReserve = if (ctaCompact) 78.dp else 178.dp
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -2226,7 +2249,7 @@ private fun BottomTabBar(
         Row(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 16.dp, end = 178.dp) // room for Create Plan button + margin
+                .padding(start = 16.dp, end = ctaReserve) // room for Ask Bo button + margin
                 .height(52.dp)
                 .background(
                     Color(0xFFF0EDF6).copy(alpha = 0.92f),
@@ -2303,9 +2326,10 @@ private fun BottomTabBar(
             }
         }
 
-        // Create Plan pill — bottom right.
+        // Ask Bo pill — bottom right. Collapses to icon-only at large font scales.
         live.localapp.local.ui.plans.CreatePlanButton(
             onClick = onCreatePlanClick,
+            compact = ctaCompact,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(end = 16.dp),

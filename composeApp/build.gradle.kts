@@ -123,8 +123,12 @@ android {
         // debug symbols). 104 = 1.1.0 test builds (clears iOS hotfix build 103).
         // 105 = creator collab reward surfacing fix (toast + REWARDS counts).
         // 200 = v1.1.0 submission build (round number for the store cut).
-        versionCode = 200
-        versionName = "1.1.0"
+        // 250 = v1.2.0 submission build (round number for the store cut).
+        // 251 = v1.2.0 test build (daily-local batch: venue empty state, splash
+        //        restyle, tutorial trim, location-persistence fix, Bo radius sync,
+        //        unified radius picker).
+        versionCode = 251
+        versionName = "1.2.0"
         // Used by AndroidManifest's <meta-data android:value="${MAPS_API_KEY}" />
         // and read at runtime by the Directions API client.
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey

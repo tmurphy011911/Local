@@ -22,4 +22,7 @@ object DailyQuizBridge {
 
     /** Set by Kotlin: Swift calls this when the sheet is dismissed. */
     var onDismissed: (() -> Unit)? = null
+
+    /** Set by Kotlin: Swift calls this when the user taps Share on the results. */
+    var onShared: (() -> Unit)? = null
 }

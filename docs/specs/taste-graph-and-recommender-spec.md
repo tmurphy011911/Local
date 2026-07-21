@@ -112,6 +112,7 @@ The recommender is only as good as its signals. Today you have **only positive s
 3. **Dwell / depth signals.** `event_viewed` fires on open; add dwell time or scroll depth as a soft-positive.
 4. **Explicit "not interested" / hide control.** A first-class negative that both improves the feed and gives the model gold-standard negatives.
 5. **Snapshot event features at interaction time.** Because events get deactivated/deleted, store the feature vector alongside the interaction so training data survives the event.
+6. **Capture the user's active set location at interaction time.** Store the lat/lng the user had active (live GPS or manually-set location) *on the interaction record*. This is required for travel-propensity (§5.4) — distance is measured from where the user was anchored *then*, not from home, and the set location is mutable so it can't be recovered after the fact. Cheap to add (one lat/lng pair per interaction) and unlocks a whole taste dimension.
 
 ### 4.3 Note
 Keep the two lanes distinct: `community_interactions` = **the recommender's feedback store** (source of truth for taste); PostHog = **product analytics + experiment readout**. Don't try to make PostHog the model's data source.
@@ -150,7 +151,16 @@ user_taste_summary(
 - **New user, no signals:** seed from onboarding `selected_categories`/`selected_venues`/`selected_neighborhoods` (`user_profiles`) + local popularity. This path already exists (`coldStartScore`); keep it as the fallback until ≥N interactions (today Bo uses ≥3).
 - **Sparse user:** blend onboarding priors with observed behavior, shifting weight to behavior as it accumulates.
 
----
+### 5.4 Travel propensity ("willingness to travel") — a first-class dimension
+Distance is currently a **global** ranking penalty (radius-adaptive weighting in `carousels/index.ts`), identical for everyone. It should instead be a **per-user taste attribute**: a homebody and a road-tripper can have identical event taste but need very different feeds. This answers a question orthogonal to "what do they like" — namely "how far will they go to get it."
+
+- **Anchor = the user's *active set location at interaction time*, NOT home.** Users move around and manually change their location; engagement near a weekend-getaway location says nothing about willingness to travel from home. Travel distance is measured from wherever the user was anchored **when the interaction happened**. This means active location must be **captured on the interaction record** (§4.2) — it's mutable and can't be reconstructed later.
+- **What we learn:** a per-user **distance-tolerance curve**, not a single radius, from `distance(event location, interaction-time set location)` across their history. Weight by interaction strength (a `plan_add` 40 miles out is a far stronger travel signal than a `click`).
+- **It's conditional, not scalar.** People travel far for *special/rare* events and stay local for *commodity* ones ("90 minutes for Shane Gillis, not for open-mic night"). Model travel tolerance as **base willingness × event draw** (affinity × uniqueness/marquee-ness), so the distance the scorer tolerates *expands for high-affinity, rare events* and *tightens for generic ones*.
+- **Store:** on `user_taste_summary` — e.g. `travel_propensity` (0–1 scalar), `typical_travel_miles` (p50/p75 of engaged-event distance), optionally per-category travel willingness (some people travel for concerts but not markets).
+- **Relationship to the existing radius filter:** the user-set `radius_filter` (default 25mi, "any" sentinel) is a **hard cutoff**; travel propensity is the **learned soft shaping within it**. They compose — the filter bounds the candidate set, propensity shapes the order — and learned propensity can inform a smarter *default* radius.
+- **Cold start:** seed from the onboarding/`radius_filter` setting + regional density (rural users inherently travel further); refine as engagement accrues.
+- **Learning trap (important):** we mostly *show* nearby events today, so history is proximity-biased and we may never discover that a user would travel. The **exploration budget** (§6) must occasionally surface a further-out high-affinity match — that's how travelers get discovered. This is a dependency, not an afterthought.
 
 ## 6. Component D — The taste/recommender service (the unification)
 
@@ -209,7 +219,9 @@ Guardrail: taste biases, never *filters*, Bo. If the user explicitly asks for so
 
 The taste scorer, inverted and aggregated.
 
-- **Query:** given a business's event (or a hypothetical event described by features), score every eligible user (geo-eligible + active-in-window) → propensity ∈ [0,1] via §6 (event→users direction, pgvector ANN over user taste vectors).
+- **Query:** given a business's event (or a hypothetical event described by features), score every eligible user (active-in-window) → propensity ∈ [0,1] via §6 (event→users direction, pgvector ANN over user taste vectors).
+- **Location anchor for B2B = HOME, not session location.** A venue is a fixed point asking "who is in my catchment and would travel here?" — that's a question about where people are *based*, not where they happen to be browsing. So B2B computes `distance(user home location → venue)` and applies the user's learned travel-propensity curve (§5.4) to decide whether they'd realistically make that trip. Note the asymmetry: travel propensity is **learned** from session-anchored interaction history (§5.4), but for B2B it is **applied** against home location. A traveler with home 30 miles out still counts toward a venue's audience; a homebody at the same distance largely doesn't.
+- **Travel propensity widens the audience estimate (a selling point).** The reachable audience isn't just "users within a fixed radius" — it's "nearby users **plus** users further out whose taste *and* travel behavior say they'd come." More accurate and more compelling than a flat radius.
 - **Output:** calibrated, bucketed counts —
   - "X users active this week who may be interested"
   - "Y users ≥90% likely", "Z ≥75%", "A ≥50%+"
@@ -225,8 +237,8 @@ New / changed (names illustrative):
 - `events`: raise `tags` cap → 12–15; add `performers TEXT[]`, `brands TEXT[]`; add `feature_vector`/embedding (pgvector) or a `event_features` companion; `tag_vocab_version`.
 - `entities` (`entity_id`, `type`, `canonical_name`, `aliases[]`) + `event_entities` join (or arrays if simpler for v1).
 - `event_impressions` (user_id, item_id, feature snapshot, surface, ts) — **new**, sampled.
-- Enrich `community_interactions` with feature snapshot (or companion `interaction_features`).
-- `user_taste_summary` (§5.2) — the top-5 + vector + top entities.
+- Enrich `community_interactions` with feature snapshot **and the user's active set location (lat/lng) at interaction time** (or companion `interaction_context`).
+- `user_taste_summary` (§5.2) — the top-5 + vector + top entities **+ travel fields** (`travel_propensity`, `typical_travel_miles`).
 - `feature_affinity` (feature_a, feature_b, weight) — the co-occurrence/PMI matrix, refreshed nightly.
 - B2B: `propensity_config` (thresholds), plus whatever the dashboard needs.
 - Enable **pgvector**.

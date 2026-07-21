@@ -84,10 +84,8 @@ data class PlacesUiState(
     // than the events screen staying blank while places finishes loading.
     val isEventsLoading: Boolean = false,
     val isRefreshing: Boolean = false,
-    // Bo pull-to-refresh: ids of items that first appeared on the last manual
-    // refresh (drive the NEW ribbon; cleared on scroll), and whether that
-    // refresh failed (drives the settle haptic + retry toast).
-    val newItemIds: Set<String> = emptySet(),
+    // Bo pull-to-refresh: whether the last manual refresh failed (drives the
+    // settle haptic + retry toast).
     val refreshFailed: Boolean = false,
     val error: String? = null,
     val selectedVenue: VenueWithMeta? = null,
@@ -299,7 +297,7 @@ class PlacesViewModel(
         val before = _uiState.value
         val oldEventIds = before.filteredEvents.mapTo(HashSet()) { it.id }
         val oldPlaceIds = before.filteredVenues.mapTo(HashSet()) { it.venue.id }
-        _uiState.update { it.copy(isRefreshing = true, refreshFailed = false, newItemIds = emptySet()) }
+        _uiState.update { it.copy(isRefreshing = true, refreshFailed = false) }
 
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
@@ -324,18 +322,11 @@ class PlacesViewModel(
                     events = eventsSorted,
                     filteredVenues = venuesSorted,
                     venues = venuesSorted,
-                    newItemIds = newEventIds + newPlaceIds,
                     refreshFailed = failed,
                     isRefreshing = false,
                 )
             }
         }
-    }
-
-    /** Clear the NEW ribbons once the user scrolls (spec: ribbons clear on next view). */
-    fun clearNewRibbons() {
-        if (_uiState.value.newItemIds.isEmpty()) return
-        _uiState.update { it.copy(newItemIds = emptySet()) }
     }
 
     fun setFilter(filter: String) {
@@ -820,7 +811,9 @@ class PlacesViewModel(
                 it.copy(
                     favoriteEventIds = current + eventId,
                     savedEvents = if (event != null && it.savedEvents.none { e -> e.id == eventId }) {
-                        it.savedEvents + event
+                        // Keep start-date sorted so a newly-saved event slots in by
+                        // date (matching Home), not appended to the end.
+                        (it.savedEvents + event).sortedBy { e -> e.startAt ?: "" }
                     } else {
                         it.savedEvents
                     },
@@ -844,8 +837,12 @@ class PlacesViewModel(
             // independent of the active filters — by-id fetches surface saved
             // items even when they fall outside the current page.
             // Drop past events so Saved Events sheds them once their date passes.
+            // Sort by start date (soonest first) to match the Home saved-events
+            // carousel (HomeViewModel: savedUpcoming.sortedBy { startAt }). Without
+            // this the Explore carousel showed most-recently-saved order.
             val savedEvents = if (eventIds.isEmpty()) emptyList()
                 else eventRepository.getEventsByIds(eventIds).filter { it.isUpcoming }
+                    .sortedBy { it.startAt ?: "" }
             val savedVenues = if (venueIds.isEmpty()) {
                 emptyList()
             } else {

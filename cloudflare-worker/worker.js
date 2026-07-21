@@ -260,14 +260,21 @@ export default {
           status = redir.status;
           return redir;
         }
-        // Suppress the rich link preview for shares that must NOT unfurl (e.g. the
-        // Daily Local text message, ?s=dailylocalshare): strip the OG/Twitter tags
-        // the crawler reads. Humans never see these tags, so the page is unchanged.
+        // For shares that must NOT unfurl (the Daily Local text, ?s=dailylocalshare)
+        // give link-preview crawlers a page with NO title/description/image/favicon/OG.
+        // iMessage & co. fall back to <title>/description/favicon when OG is absent, so
+        // stripping only OG isn't enough — serve them a truly metadata-free page. Real
+        // (desktop) humans still get the full branded page below.
         var noPreview = source === "dailylocalshare";
-        var html = noPreview
-          ? GET_APP_HTML.replace(/<!--PREVIEW_START-->[\s\S]*?<!--PREVIEW_END-->/, "")
-          : GET_APP_HTML;
-        const resp = new Response(html, {
+        if (noPreview && isBot) {
+          const bare = new Response(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"robots\" content=\"noindex\"></head><body></body></html>",
+            { status: 200, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Vary": "User-Agent" } },
+          );
+          status = bare.status;
+          return bare;
+        }
+        const resp = new Response(GET_APP_HTML, {
           headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Vary": "User-Agent" }
         });
         status = resp.status;

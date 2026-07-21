@@ -14,8 +14,24 @@
 
 set -eu
 
+# Xcode Run Script build phases run with a minimal PATH that omits Homebrew's
+# bin dirs, so a `brew install`ed sentry-cli is invisible here even though it
+# resolves fine in an interactive shell (/opt/homebrew/bin on Apple silicon,
+# /usr/local/bin on Intel). Without this, the probe below fell through to the
+# silent `exit 0` on EVERY archive — dSYMs never uploaded and shipped crashes
+# came back unsymbolicated. Prepend both locations before probing.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 if ! command -v sentry-cli >/dev/null 2>&1; then
-  echo "warning: sentry-cli not installed — skipping dSYM upload. Install: brew install getsentry/tools/sentry-cli" >&2
+  msg="sentry-cli not found on PATH — dSYMs will NOT upload and crashes won't symbolicate. Install: brew install getsentry/tools/sentry-cli"
+  # Fail the build for any non-Debug configuration (Release / Staging archive)
+  # so a broken uploader can never ship silently again. Stay soft for Debug so
+  # local dev builds aren't blocked by a missing CLI.
+  if [ "${CONFIGURATION:-}" != "Debug" ]; then
+    echo "error: $msg" >&2
+    exit 1
+  fi
+  echo "warning: $msg — skipping (Debug build)" >&2
   exit 0
 fi
 

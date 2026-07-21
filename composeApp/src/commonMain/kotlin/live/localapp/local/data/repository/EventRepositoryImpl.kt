@@ -356,7 +356,12 @@ class EventRepositoryImpl(
         }
         val raw = try {
             val result = supabaseClient.postgrest.rpc("search_events_stratified", params)
-            Json { ignoreUnknownKeys = true }.decodeFromString(
+            // coerceInputValues: a null on a non-nullable field WITH a default
+            // (is_free, time_known) coerces to that default instead of throwing
+            // and failing the ENTIRE result list — which would leave Bo with zero
+            // search results. Explore never reads time_known, so this class of
+            // null only breaks Bo's path. Mirrors the explore-events client fix.
+            Json { ignoreUnknownKeys = true; coerceInputValues = true }.decodeFromString(
                 kotlinx.serialization.builtins.ListSerializer(EventDto.serializer()),
                 result.data,
             ).map { it.toDomain() }

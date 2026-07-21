@@ -60,6 +60,10 @@ data class OnboardingState(
     val userLat: Double? = null,
     val userLng: Double? = null,
     val userCity: String = "",
+    // Chip display for a manual address — the neighborhood shown with its city
+    // ("Manayunk, Philadelphia") when distinct, else the city. Kept separate from
+    // userCity so the write-once hometown/city stay at city granularity.
+    val userLocationDisplay: String = "",
     // 2-letter state from the geocoder for a typed home address (e.g. "PA").
     // Authoritative at state borders; stored as the profile's geocoded_state.
     val userState: String = "",
@@ -176,13 +180,17 @@ class OnboardingViewModel(
         _state.update { it.copy(currentStep = OnboardingStep.MANUAL_ADDRESS) }
     }
 
-    fun onManualAddressSubmit(lat: Double, lng: Double, city: String, state: String) {
+    fun onManualAddressSubmit(lat: Double, lng: Double, city: String, neighborhood: String, state: String) {
         val resolvedCity = city.ifBlank { nearestCity(lat, lng) }
+        // Chip shows the neighborhood/town alone ("Manayunk", "Chestnut Hill")
+        // when present; otherwise just the city.
+        val displayName = neighborhood.ifBlank { resolvedCity }.replaceFirstChar { it.uppercase() }
         _state.update {
             it.copy(
                 userLat = lat,
                 userLng = lng,
                 userCity = resolvedCity,
+                userLocationDisplay = displayName,
                 userState = state.trim().uppercase(),
                 locationMode = "manual",
                 // Shortened onboarding — straight to NOTIFICATIONS (skip SUCCESS
@@ -395,7 +403,7 @@ class OnboardingViewModel(
                     notifVenues = s.notifVenues,
                     onboardingComplete = true,
                     locationMode = s.locationMode,
-                    manualLocationName = if (isManual) s.userCity.replaceFirstChar { it.uppercase() } else null,
+                    manualLocationName = if (isManual) s.userLocationDisplay.ifBlank { s.userCity.replaceFirstChar { it.uppercase() } } else null,
                     manualLat = if (isManual) s.userLat else null,
                     manualLng = if (isManual) s.userLng else null,
                     // Durable hometown anchor: the location chosen here, at

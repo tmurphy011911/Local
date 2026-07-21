@@ -16,4 +16,5 @@ expect fun presentNativeDailyQuiz(
     quizJson: String,
     onSubmit: (answersJson: String, done: (resultJson: String?) -> Unit) -> Unit,
     onDismissed: () -> Unit,
+    onShared: () -> Unit,
 ): Boolean

@@ -576,9 +576,14 @@ Deno.serve(async (req) => {
         .map((e) => {
           const venueKey = normalizeVenueKey(e.venue_name);
           const meta = venueKey ? venueMeta[venueKey] : undefined;
-          // Last-resort city photo for venueless municipal events.
+          // Last-resort city photo for venueless municipal events. Skip it for
+          // farmers markets: their source carries no image and the market has
+          // no venue photo, so every image-less market in a city would wear the
+          // identical city skyline. Let them fall through to the client's
+          // category gradient instead. Mirrors carousels/index.ts.
+          const isFarmersMarket = (e.subcategory ?? "").toLowerCase() === "farmers-market";
           const cityKey = (e.venue_city ?? "").trim().toLowerCase();
-          const cityPhoto = cityKey ? cityPhotos[cityKey] : undefined;
+          const cityPhoto = isFarmersMarket ? undefined : (cityKey ? cityPhotos[cityKey] : undefined);
           const resolvedImage = e.image_url || meta?.photoUrl || cityPhoto || null;
           const venueRank = meta?.rank ?? null;
           // Prefer event_lat/lng (real location) over venue HQ — same basis
@@ -618,7 +623,12 @@ Deno.serve(async (req) => {
       startAt: e.start_at,
       endAt: e.end_at,
       venueName: e.venue_name,
-      venueCity: e.venue_city,
+      // Coalesce nulls the client parses into NON-nullable String fields
+      // (ExploreEventDto.venueCity/category/city). Municipal at-large rows have
+      // a null venue_city (and sometimes null category/city); a single null here
+      // fails kotlinx.serialization for the ENTIRE page, blanking Explore events
+      // wide across a metro. Mirrors the 2026-07-16 carousels null-venue_city fix.
+      venueCity: e.venue_city ?? "",
       venueLat: e.venue_lat,
       venueLng: e.venue_lng,
       eventCity: e.event_city,
@@ -626,7 +636,7 @@ Deno.serve(async (req) => {
       eventLat: e.event_lat,
       eventLng: e.event_lng,
       imageUrl: resolvedImage,
-      category: e.category,
+      category: e.category ?? "",
       subcategory: e.subcategory,
       priceMin: e.price_min,
       priceMax: e.price_max,
@@ -634,7 +644,7 @@ Deno.serve(async (req) => {
       distanceMiles: dist,
       ticketUrl: e.ticket_url,
       sourceUrl: e.source_url,
-      city: e.city,
+      city: e.city ?? "",
       description: e.description,
     }));
 

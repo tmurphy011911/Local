@@ -265,6 +265,32 @@ class AnalyticsEvent internal constructor(
         fun paywallDismissed(secondsVisible: Long) =
             AnalyticsEvent("paywall_dismissed", mapOf("seconds_visible" to secondsVisible))
 
+        // ---- Daily Local quiz ----
+        fun dailyQuizStarted(state: String?, streak: Int) =
+            AnalyticsEvent("daily_quiz_started", nonNullMap(
+                "state" to state,
+                "streak" to streak,
+            ))
+
+        fun dailyQuizCompleted(
+            score: Int,
+            correctCount: Int,
+            streak: Int,
+            isFirst: Boolean,
+            isPersonalBest: Boolean,
+            state: String?,
+        ) = AnalyticsEvent("daily_quiz_completed", nonNullMap(
+            "score" to score,
+            "correct_count" to correctCount,
+            "streak" to streak,
+            "is_first" to isFirst,
+            "is_personal_best" to isPersonalBest,
+            "state" to state,
+        ))
+
+        fun dailyQuizShared(score: Int) =
+            AnalyticsEvent("daily_quiz_shared", mapOf("score" to score))
+
         // ---- Escape hatch ----
         // Use sparingly. If you find yourself reaching for it, the event
         // probably belongs in the taxonomy above.

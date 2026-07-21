@@ -11,11 +11,13 @@ actual fun presentNativeDailyQuiz(
     quizJson: String,
     onSubmit: (answersJson: String, done: (resultJson: String?) -> Unit) -> Unit,
     onDismissed: () -> Unit,
+    onShared: () -> Unit,
 ): Boolean {
     val present = DailyQuizBridge.present ?: return false
     DailyQuizBridge.quizJson = quizJson
     DailyQuizBridge.onSubmit = onSubmit
     DailyQuizBridge.onDismissed = onDismissed
+    DailyQuizBridge.onShared = onShared
     present()
     return true
 }

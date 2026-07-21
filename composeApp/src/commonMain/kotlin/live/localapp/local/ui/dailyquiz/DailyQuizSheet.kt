@@ -3,10 +3,12 @@ package live.localapp.local.ui.dailyquiz
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -17,6 +19,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -136,15 +139,32 @@ private fun QuestionStage(
 ) {
     var remainingMs by remember(question.id) { mutableStateOf(QUESTION_MS) }
     var live by remember(question.id) { mutableStateOf(false) }
+    // Question intro choreography (mirrors iOS DailyQuizView): Bo lands big +
+    // centred → shrinks → floats to the top-left → the question types in beside
+    // it → a read-in countdown → the options float up and the clock goes live.
+    var intro by remember(question.id) { mutableStateOf(Intro.BO_BIG) }
+    var placed by remember(question.id) { mutableStateOf(false) }   // Bo floated to top-left
+    var streamed by remember(question.id) { mutableStateOf(0) }     // chars of the question revealed
+    var readInSecs by remember(question.id) { mutableStateOf(2) }
     val haptic = LocalHapticFeedback.current
     val scope = rememberCoroutineScope()
 
-    // Per question: a 2s "read up" delay, THEN the clock drains.
     LaunchedEffect(question.id, revealing) {
         if (revealing) return@LaunchedEffect
-        live = false
-        remainingMs = QUESTION_MS
-        delay(READ_IN_MS)
+        intro = Intro.BO_BIG; placed = false; streamed = 0; readInSecs = 2
+        live = false; remainingMs = QUESTION_MS
+        delay(700)
+        intro = Intro.STREAMING                     // Bo shrinks in place
+        delay(450)
+        placed = true                               // Bo floats to the top-left
+        delay(600)                                  // wait out the float, then type
+        val full = question.question
+        while (streamed < full.length) { streamed++; delay(20) }
+        intro = Intro.READ_IN
+        readInSecs = 2
+        while (readInSecs > 1) { delay(1000); readInSecs-- }
+        delay(1000)
+        intro = Intro.LIVE                          // options float in, clock goes live
         live = true
         var last = withFrameMillis { it }
         while (remainingMs > 0L && isActive) {
@@ -175,46 +195,94 @@ private fun QuestionStage(
                 style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Black, fontSize = 14.sp, color = timerColor(remainingMs)))
         }
 
-        Spacer(Modifier.height(18.dp))
-        Text(question.question, style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = AppColors.Ink, lineHeight = 28.sp))
+        Spacer(Modifier.height(16.dp))
 
-        Spacer(Modifier.height(10.dp))
-        if (!live && !revealing) {
-            Box(
-                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(AppColors.Ink).padding(vertical = 11.dp),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text("Read up — timer starts in 2s", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = AppColors.White))
+        // Bo glides from big + centred to small + top-left; the question types in
+        // beside it. The FULL text is laid out with a transparent tail so revealing
+        // more characters never re-wraps (no line jumps).
+        val boSize by animateDpAsState(
+            if (intro == Intro.BO_BIG) 96.dp else 30.dp,
+            spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessLow), label = "boSize",
+        )
+        val boBias by animateFloatAsState(
+            if (placed) -1f else 0f,
+            spring(dampingRatio = 0.82f, stiffness = Spring.StiffnessLow), label = "boBias",
+        )
+        // Fixed floor so the Bo/question block is the same height whether Bo is
+        // big-centred or the question has typed in — the sheet never jumps.
+        Box(Modifier.fillMaxWidth().heightIn(min = 150.dp)) {
+            Box(Modifier.align(BiasAlignment(boBias, -1f))) {
+                Bo(size = boSize, showShadow = false, showSparkles = false)
             }
-            Spacer(Modifier.height(10.dp))
+            if (placed) {
+                Text(
+                    buildAnnotatedString {
+                        append(question.question)
+                        if (streamed < question.question.length) {
+                            addStyle(SpanStyle(color = Color.Transparent), streamed, question.question.length)
+                        }
+                    },
+                    modifier = Modifier.align(Alignment.TopStart).padding(start = 42.dp),
+                    style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 22.sp, color = AppColors.Ink, lineHeight = 28.sp),
+                )
+            }
         }
 
-        Spacer(Modifier.height(6.dp))
-        question.answers.forEachIndexed { i, ans ->
-            AnswerPill(
-                text = ans.text,
-                enabled = live && !revealing,
-                state = when {
-                    !revealing -> PillState.IDLE
-                    i == correctIndex -> PillState.CORRECT
-                    i == revealSelectedIndex -> PillState.WRONG
-                    else -> PillState.DIM
-                },
-                onClick = {
-                    // One crisp hit on tap; a second, slightly-delayed hit only when
-                    // the tapped answer is the correct one (correctness is known
-                    // client-side from the DTO, so it lands immediately).
-                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
-                    if (i == correctIndex) {
-                        scope.launch { delay(90); haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
+        Spacer(Modifier.height(10.dp))
+
+        // Reserve the options' vertical space up-front so the sheet is already at
+        // full height before they appear (matches iOS's fixed detent instead of
+        // growing when they float in). The read-in chip and the options share this
+        // slot — only one is visible at a time.
+        Box(Modifier.fillMaxWidth().height(270.dp)) {
+          Column(Modifier.fillMaxWidth()) {
+            AnimatedVisibility(
+                visible = intro == Intro.READ_IN,
+                enter = fadeIn(), exit = fadeOut(),
+            ) {
+                Box(
+                    Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(AppColors.Ink).padding(vertical = 11.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text("Timer starts in ${readInSecs}s", style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 13.sp, color = AppColors.White))
+                }
+            }
+            AnimatedVisibility(
+                visible = intro == Intro.LIVE,
+                enter = slideInVertically(spring(dampingRatio = 0.8f)) { it / 3 } + fadeIn(),
+            ) {
+                Column {
+                    question.answers.forEachIndexed { i, ans ->
+                        AnswerPill(
+                            text = ans.text,
+                            enabled = live && !revealing,
+                            state = when {
+                                !revealing -> PillState.IDLE
+                                i == correctIndex -> PillState.CORRECT
+                                i == revealSelectedIndex -> PillState.WRONG
+                                else -> PillState.DIM
+                            },
+                            onClick = {
+                                // One crisp hit on tap; a second, slightly-delayed hit only
+                                // when the tapped answer is the correct one (correctness is
+                                // known client-side from the DTO, so it lands immediately).
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                if (i == correctIndex) {
+                                    scope.launch { delay(90); haptic.performHapticFeedback(HapticFeedbackType.LongPress) }
+                                }
+                                onAnswer(i, remainingMs.toInt())
+                            },
+                        )
+                        Spacer(Modifier.height(10.dp))
                     }
-                    onAnswer(i, remainingMs.toInt())
-                },
-            )
-            Spacer(Modifier.height(10.dp))
+                }
+            }
+          }
         }
     }
 }
+
+private enum class Intro { BO_BIG, STREAMING, READ_IN, LIVE }
 
 private enum class PillState { IDLE, CORRECT, WRONG, DIM }
 

@@ -163,6 +163,9 @@ struct ComposeView: UIViewControllerRepresentable {
                     onDismiss: {
                         weakVC?.dismiss(animated: true)
                         DailyQuizBridge.shared.onDismissed?()
+                    },
+                    onShared: {
+                        DailyQuizBridge.shared.onShared?()
                     }
                 )
                 let hostingVC = UIHostingController(rootView: view)

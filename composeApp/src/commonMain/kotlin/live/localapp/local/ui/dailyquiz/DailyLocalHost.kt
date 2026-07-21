@@ -48,9 +48,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.time.Clock
 import kotlin.time.Instant
+import kotlinx.coroutines.delay
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import live.localapp.local.domain.repository.LeaderboardScope
+import live.localapp.local.observability.Analytics
+import live.localapp.local.observability.AnalyticsEvent
 import live.localapp.local.domain.service.BadgeService
 import live.localapp.local.feature.onboarding.OnboardingViewModel
 import live.localapp.local.platform.presentNativeDailyQuiz
@@ -127,13 +130,30 @@ fun DailyLocalHost(
     // anything to show BEFORE deciding to give it a carousel slot.
     LaunchedEffect(Unit) { quizVm.refresh(); leaderboardVm.prefetchAll(); leaderboardVm.reloadProfile() }
 
+    // If the lobby stays open past the daily reset, re-fetch when it fires so the
+    // user never opens yesterday's stale set — which would score 0 on submit, its
+    // question ids no longer being in today's server set.
+    val resetsAtIso = s.quiz?.resetsAt
+    LaunchedEffect(resetsAtIso) {
+        val iso = resetsAtIso ?: return@LaunchedEffect
+        val ms = runCatching {
+            (Instant.parse(iso.replace("+00:00", "Z")) - Clock.System.now()).inWholeMilliseconds
+        }.getOrNull() ?: return@LaunchedEffect
+        if (ms in 1..(36L * 60 * 60 * 1000)) {   // within 36h — sanity bound
+            delay(ms + 1000)
+            quizVm.refresh()
+        }
+    }
+
     val startQuiz = {
         pendingQuizToast = true
+        Analytics.track(AnalyticsEvent.dailyQuizStarted(s.quiz?.state, s.streak))
         val quizJson = quizVm.currentQuizJson()
         val presentedNatively = quizJson != null && presentNativeDailyQuiz(
             quizJson = quizJson,
             onSubmit = { answersJson, done -> quizVm.submitAnswersJson(answersJson, done) },
             onDismissed = { quizVm.refresh(); fireQuizToast() },
+            onShared = { quizVm.trackShared() },
         )
         if (!presentedNatively) {
             quizVm.begin()
@@ -231,7 +251,7 @@ fun DailyLocalHost(
         ) {
             DailyQuizSheetContent(
                 vm = quizVm,
-                onShare = { text -> presentShareSheet(text, "") },
+                onShare = { text -> quizVm.trackShared(); presentShareSheet(text, "") },
             )
         }
     }
@@ -312,8 +332,8 @@ private fun DailyLocalCard(played: Boolean, streak: Int, score: Int, correctCoun
             )
             val subtitle = when {
                 played -> "$correctCount/3 · Play again in ${resetInLabel(resetsAt)}"
-                streak > 0 -> "Extend streak to ${streak + 1} days"
-                else -> "3 questions · 30 seconds · Start your streak"
+                streak > 0 -> "Extend your run to ${streak + 1} days"
+                else -> "3 questions · 30 seconds · Start your run"
             }
             Text(
                 subtitle,

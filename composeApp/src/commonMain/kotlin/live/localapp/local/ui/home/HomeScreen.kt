@@ -89,7 +89,6 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import live.localapp.local.ui.common.AppRefreshBox
-import live.localapp.local.ui.common.NewRibbon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -401,11 +400,6 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
             modifier = Modifier.fillMaxSize().nestedScroll(dismissKeyboardOnScroll),
         ) {
             val homeListState = androidx.compose.foundation.lazy.rememberLazyListState()
-            // Clear the NEW ribbons as soon as the user scrolls the feed.
-            if (state.newItemIds.isNotEmpty()) {
-                val homeScrolling = homeListState.isScrollInProgress
-                LaunchedEffect(homeScrolling) { if (homeScrolling) viewModel.clearNewRibbons() }
-            }
             @OptIn(ExperimentalFoundationApi::class)
             LazyColumn(
                 state = homeListState,
@@ -493,7 +487,6 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                                 showTags = isForYou,
                                 onFavorite = onFavorite,
                                 favoriteIds = state.favoriteEventIds,
-                                newItemIds = state.newItemIds,
                                 onSeeAll = dest?.let { d ->
                                     {
                                         when (d) {
@@ -691,7 +684,7 @@ private val GENERIC_CATEGORY_IDS = setOf("other", "general", "unknown")
 // ── Dynamic Carousel Section ──
 
 @Composable
-private fun CarouselSectionView(section: CarouselSection, onEventClick: (Event, CardTransitionInfo?) -> Unit, showTags: Boolean = true, onFavorite: ((Event) -> Unit)? = null, favoriteIds: Set<String> = emptySet(), newItemIds: Set<String> = emptySet(), onSeeAll: (() -> Unit)? = null) {
+private fun CarouselSectionView(section: CarouselSection, onEventClick: (Event, CardTransitionInfo?) -> Unit, showTags: Boolean = true, onFavorite: ((Event) -> Unit)? = null, favoriteIds: Set<String> = emptySet(), onSeeAll: (() -> Unit)? = null) {
     SectionHeader(
         title = section.title,
         // "See All" shows whenever the rail maps to a navigable destination
@@ -701,7 +694,7 @@ private fun CarouselSectionView(section: CarouselSection, onEventClick: (Event, 
         // meaningful even when the rail itself only shows a couple of cards.
         onSeeAll = onSeeAll,
     )
-    EventCardRow(section.slug, section.events, onEventClick, showTags = showTags, showSaves = section.showSaves, onFavorite = onFavorite, favoriteIds = favoriteIds, newItemIds = newItemIds)
+    EventCardRow(section.slug, section.events, onEventClick, showTags = showTags, showSaves = section.showSaves, onFavorite = onFavorite, favoriteIds = favoriteIds)
 }
 
 // ── Category Row ──
@@ -1197,7 +1190,7 @@ data class EventCardData(
 )
 
 @Composable
-fun EventCard(data: EventCardData, modifier: Modifier = Modifier.width(156.dp), onClick: (Rect) -> Unit = {}, onFavorite: (() -> Unit)? = null, isFavorited: Boolean = false, isNew: Boolean = false) {
+fun EventCard(data: EventCardData, modifier: Modifier = Modifier.width(156.dp), onClick: (Rect) -> Unit = {}, onFavorite: (() -> Unit)? = null, isFavorited: Boolean = false) {
     val scaleAnim = remember { Animatable(1f) }
     val scope = rememberCoroutineScope()
     val haptic = LocalHapticFeedback.current
@@ -1267,11 +1260,7 @@ fun EventCard(data: EventCardData, modifier: Modifier = Modifier.width(156.dp), 
                     Icon(data.icon, contentDescription = null, modifier = Modifier.size(32.dp), tint = AppColors.Ink3.copy(alpha = 0.3f))
                 }
 
-                // NEW ribbon (Bo pull-to-refresh) takes the top-left slot while
-                // it's showing; the category tag returns once it clears on scroll.
-                if (isNew) {
-                    NewRibbon()
-                } else if (data.showTag) {
+                if (data.showTag) {
                     // Tag pill — only shown on "For You" tab
                     Text(
                         data.tag,
@@ -1415,7 +1404,7 @@ fun EventCard(data: EventCardData, modifier: Modifier = Modifier.width(156.dp), 
 }
 
 @Composable
-private fun EventCardRow(slug: String, events: List<Event>, onEventClick: (Event, CardTransitionInfo?) -> Unit, showTags: Boolean = true, showSaves: Boolean = false, onFavorite: ((Event) -> Unit)? = null, favoriteIds: Set<String> = emptySet(), newItemIds: Set<String> = emptySet()) {
+private fun EventCardRow(slug: String, events: List<Event>, onEventClick: (Event, CardTransitionInfo?) -> Unit, showTags: Boolean = true, showSaves: Boolean = false, onFavorite: ((Event) -> Unit)? = null, favoriteIds: Set<String> = emptySet()) {
     val communityRepo = if (showSaves) {
         remember { KoinPlatform.getKoin().get<live.localapp.local.domain.repository.CommunityInterestRepository>() }
     } else null
@@ -1462,7 +1451,6 @@ private fun EventCardRow(slug: String, events: List<Event>, onEventClick: (Event
                     },
                     onFavorite = onFavorite?.let { { it(event) } },
                     isFavorited = event.id in favoriteIds,
-                    isNew = event.id in newItemIds,
                 )
             }
         }
@@ -1605,6 +1593,10 @@ private fun categoryColors(category: String): Pair<Color, Color> = when (categor
     "arts" -> AppColors.BgSageStart to AppColors.BgSageEnd
     "comedy" -> AppColors.BgSunStart to AppColors.BgSunEnd
     "food" -> AppColors.BgSunStart to AppColors.BgSunEnd
+    // Farmers markets carry no source image; this yellow gradient is their card
+    // placeholder (the carousels/explore edge fns skip the city-photo fallback
+    // for them, so image_url stays null and this renders).
+    "farmers-market" -> AppColors.BgSunStart to AppColors.BgSunEnd
     "outdoors" -> AppColors.BgSageStart to AppColors.BgSageEnd
     "nightlife" -> AppColors.BgPlumStart to AppColors.BgPlumEnd
     else -> AppColors.BgCoralStart to AppColors.BgCoralEnd
@@ -1659,6 +1651,7 @@ private fun categoryIcon(category: String): ImageVector = when (category.lowerca
     "arts" -> Icons.Outlined.Palette
     "comedy" -> Icons.Outlined.TheaterComedy
     "food" -> Icons.Outlined.LocalDining
+    "farmers-market" -> Icons.Outlined.LocalDining
     "outdoors" -> Icons.Outlined.Park
     "nightlife" -> Icons.Outlined.Nightlife
     "experiences" -> Icons.Outlined.Explore
