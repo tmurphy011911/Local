@@ -1574,6 +1574,10 @@ private fun categoryColors(category: String): Pair<Color, Color> = when (categor
     "arts" -> AppColors.BgSageStart to AppColors.BgSageEnd
     "comedy" -> AppColors.BgSunStart to AppColors.BgSunEnd
     "food" -> AppColors.BgSunStart to AppColors.BgSunEnd
+    // Farmers markets carry no source image; this yellow gradient is their card
+    // placeholder (the carousels/explore edge fns skip the city-photo fallback
+    // for them, so image_url stays null and this renders).
+    "farmers-market" -> AppColors.BgSunStart to AppColors.BgSunEnd
     "outdoors" -> AppColors.BgSageStart to AppColors.BgSageEnd
     "nightlife" -> AppColors.BgPlumStart to AppColors.BgPlumEnd
     else -> AppColors.BgCoralStart to AppColors.BgCoralEnd
@@ -1628,6 +1632,7 @@ private fun categoryIcon(category: String): ImageVector = when (category.lowerca
     "arts" -> Icons.Outlined.Palette
     "comedy" -> Icons.Outlined.TheaterComedy
     "food" -> Icons.Outlined.LocalDining
+    "farmers-market" -> Icons.Outlined.LocalDining
     "outdoors" -> Icons.Outlined.Park
     "nightlife" -> Icons.Outlined.Nightlife
     "experiences" -> Icons.Outlined.Explore
