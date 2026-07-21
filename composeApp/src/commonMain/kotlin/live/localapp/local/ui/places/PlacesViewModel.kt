@@ -84,10 +84,8 @@ data class PlacesUiState(
     // than the events screen staying blank while places finishes loading.
     val isEventsLoading: Boolean = false,
     val isRefreshing: Boolean = false,
-    // Bo pull-to-refresh: ids of items that first appeared on the last manual
-    // refresh (drive the NEW ribbon; cleared on scroll), and whether that
-    // refresh failed (drives the settle haptic + retry toast).
-    val newItemIds: Set<String> = emptySet(),
+    // Bo pull-to-refresh: whether the last manual refresh failed (drives the
+    // settle haptic + retry toast).
     val refreshFailed: Boolean = false,
     val error: String? = null,
     val selectedVenue: VenueWithMeta? = null,
@@ -287,7 +285,7 @@ class PlacesViewModel(
         val before = _uiState.value
         val oldEventIds = before.filteredEvents.mapTo(HashSet()) { it.id }
         val oldPlaceIds = before.filteredVenues.mapTo(HashSet()) { it.venue.id }
-        _uiState.update { it.copy(isRefreshing = true, refreshFailed = false, newItemIds = emptySet()) }
+        _uiState.update { it.copy(isRefreshing = true, refreshFailed = false) }
 
         refreshJob?.cancel()
         refreshJob = viewModelScope.launch {
@@ -312,7 +310,6 @@ class PlacesViewModel(
                     events = eventsSorted,
                     filteredVenues = venuesSorted,
                     venues = venuesSorted,
-                    newItemIds = newEventIds + newPlaceIds,
                     refreshFailed = failed,
                     isRefreshing = false,
                 )
@@ -332,12 +329,6 @@ class PlacesViewModel(
             }
             badgeService.emitInfoToast(toast, star = !failed)
         }
-    }
-
-    /** Clear the NEW ribbons once the user scrolls (spec: ribbons clear on next view). */
-    fun clearNewRibbons() {
-        if (_uiState.value.newItemIds.isEmpty()) return
-        _uiState.update { it.copy(newItemIds = emptySet()) }
     }
 
     fun setFilter(filter: String) {

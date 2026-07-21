@@ -54,9 +54,7 @@ data class HomeUiState(
     val carouselsByCategory: Map<String, List<CarouselSection>> = emptyMap(),
     val isLoading: Boolean = false,
     val isRefreshing: Boolean = false,
-    // Bo pull-to-refresh: event ids that first appeared on the last manual
-    // refresh (NEW ribbon, cleared on scroll) + whether that refresh failed.
-    val newItemIds: Set<String> = emptySet(),
+    // Bo pull-to-refresh: whether the last manual refresh failed.
     val refreshFailed: Boolean = false,
     val error: String? = null,
     val userPreferences: UserPreferences? = null,
@@ -688,31 +686,20 @@ class HomeViewModel(
 
     fun refresh() {
         carouselRepository.invalidateCaches()
-        val oldIds = _uiState.value.carousels.flatMap { it.events }.mapTo(HashSet()) { it.id }
-        _uiState.update { it.copy(isRefreshing = true, refreshFailed = false, newItemIds = emptySet()) }
+        _uiState.update { it.copy(isRefreshing = true, refreshFailed = false) }
         viewModelScope.launch {
             loadCarousels()
             val savedJob = loadSavedThisWeek()
             carouselJob?.join()
             savedJob.join()
 
-            val st = _uiState.value
-            val newIds = st.carousels.flatMap { it.events }.mapNotNull { e ->
-                e.id.takeIf { it !in oldIds }
-            }.toSet()
-            val failed = st.error != null
-            _uiState.update { it.copy(isRefreshing = false, newItemIds = newIds, refreshFailed = failed) }
+            val failed = _uiState.value.error != null
+            _uiState.update { it.copy(isRefreshing = false, refreshFailed = failed) }
             badgeService.emitInfoToast(
                 if (failed) "Couldn't refresh — tap to retry" else "Fresh picks, just for you",
                 star = !failed,
             )
         }
-    }
-
-    /** Clear the NEW ribbons once the user scrolls (spec: ribbons clear on next view). */
-    fun clearNewRibbons() {
-        if (_uiState.value.newItemIds.isEmpty()) return
-        _uiState.update { it.copy(newItemIds = emptySet()) }
     }
 
     private fun loadSavedThisWeek(): Job = viewModelScope.launch {
