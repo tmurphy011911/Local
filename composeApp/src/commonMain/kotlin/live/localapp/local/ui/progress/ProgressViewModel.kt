@@ -48,10 +48,11 @@ sealed interface CelebrationEvent {
         val state: String,
     ) : CelebrationEvent
 
-    /** Neutral dark-pill toast (Bo pull-to-refresh result). */
-    data class InfoToast(
-        val message: String,
-        val star: Boolean,
+    /** Generic "+N FOMO" toast with a custom title (username / preferences /
+     *  daily-quiz rewards that don't map to a badge milestone). */
+    data class FomoEarned(
+        val title: String,
+        val points: Int,
     ) : CelebrationEvent
 }
 
@@ -134,9 +135,9 @@ class ProgressViewModel(
                     is BadgeCelebration.NewState -> CelebrationEvent.NewState(
                         state = celebration.state,
                     )
-                    is BadgeCelebration.InfoToast -> CelebrationEvent.InfoToast(
-                        message = celebration.message,
-                        star = celebration.star,
+                    is BadgeCelebration.FomoToast -> CelebrationEvent.FomoEarned(
+                        title = celebration.title,
+                        points = celebration.points,
                     )
                 }
                 _uiState.update { state ->
@@ -152,9 +153,12 @@ class ProgressViewModel(
                 loadStats()
             }
         }
-        // Refresh on every action (even without milestone)
+        // Refresh on every action (even without milestone). loadProfile too, so a
+        // username set elsewhere (e.g. the lobby CTA) updates the header here
+        // without a relaunch.
         viewModelScope.launch {
             badgeService.dataChanged.collect {
+                loadProfile()
                 loadBadgeData()
                 loadStats()
             }
@@ -211,15 +215,11 @@ class ProgressViewModel(
     }
 
     fun refresh() {
-        val before = _uiState.value.totalPoints
         _uiState.update { it.copy(isRefreshing = true, refreshFailed = false) }
         viewModelScope.launch {
             val jobs = listOf(loadStats(), loadBadgeData())
             jobs.joinAll()
-            val delta = _uiState.value.totalPoints - before
             _uiState.update { it.copy(isRefreshing = false) }
-            val toast = if (delta > 0) "+$delta FOMO earned" else "You're all caught up"
-            badgeService.emitInfoToast(toast)
         }
     }
 

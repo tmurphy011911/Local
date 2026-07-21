@@ -197,11 +197,6 @@ class PlansViewModel(
     }
 
     fun refresh() {
-        val oldIds = HashSet<String>().apply {
-            addAll(_serverPlans.value.map { it.id })
-            addAll(_uiState.value.savedEvents.map { it.id })
-            addAll(_uiState.value.savedVenues.map { it.id })
-        }
         _uiState.update {
             it.copy(
                 isRefreshing = true,
@@ -214,16 +209,7 @@ class PlansViewModel(
         syncer.kick()
         viewModelScope.launch {
             joinAll(loadPlans(), loadSavedItems())
-            val st = _uiState.value
-            val newIds = buildSet {
-                addAll(_serverPlans.value.map { it.id })
-                addAll(st.savedEvents.map { it.id })
-                addAll(st.savedVenues.map { it.id })
-            } - oldIds
             _uiState.update { it.copy(isRefreshing = false) }
-            badgeService.emitInfoToast(
-                if (newIds.isEmpty()) "You're all caught up" else "Bo found more nearby",
-            )
         }
     }
 

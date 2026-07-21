@@ -90,12 +90,6 @@ private fun buildSteps(cityForCopy: String): List<HomeTutorialStep> = listOf(
         subtext = "Stop making itinerary docs nobody opens. Tap to plan, tap to share. That's it.",
     ),
     HomeTutorialStep(
-        headline = "Built for",
-        styledWord = "you",
-        subtext = "The more you save, plan, and show up, the smarter Local gets. Almost suspicious.",
-        inlineWord = true,
-    ),
-    HomeTutorialStep(
         headline = "Show up,",
         styledWord = "level up",
         subtext = "Every event, plan, and place racks up FOMO. Climb the ranks for real rewards \u2014 Ticketmaster gift cards on us.",
@@ -117,8 +111,8 @@ private fun StepIcon(page: Int, trigger: Int, size: Dp) {
             modifier = mod,
         )
         2 -> LocalIcon.Events(size = size, trigger = trigger, modifier = mod)
-        3 -> LocalIcon.Other(size = size, trigger = trigger, modifier = mod)
-        // Page 4 ("Show up, level up") is handled separately via BoLevelUpAnimation.
+        // The last page ("Show up, level up") is handled separately via
+        // BoLevelUpAnimation and never reaches StepIcon.
         else -> LocalIcon.ForYou(size = size, trigger = trigger, modifier = mod)
     }
 }
@@ -262,9 +256,11 @@ fun HomeTutorial(cityName: String = "", onComplete: () -> Unit) {
                 ) {
                     // Bo ("Meet Bo", page 1) renders larger than the other icons.
                     val iconSize: Dp = if (page == 1) 190.dp else 140.dp
-                    if (page == 4) {
-                        // "Show up, level up" — full level-up animation (Bo + glow
-                        // ring + progress track) in place of the static trophy.
+                    if (page == steps.lastIndex) {
+                        // "Show up, level up" (the final page) — full level-up
+                        // animation (Bo + glow ring + progress track) in place of
+                        // the static trophy. Tracks lastIndex so it stays correct
+                        // if the step list changes.
                         BoLevelUpAnimation(boSize = 150.dp, restartKey = triggers[page])
                     } else {
                         Box(
@@ -397,7 +393,7 @@ fun HomeTutorial(cityName: String = "", onComplete: () -> Unit) {
         // Skip button (top-right, not on last page)
         if (!isLastPage) {
             Text(
-                "Skip",
+                "Skip →",
                 modifier = Modifier
                     .align(Alignment.TopEnd)
                     .padding(top = 16.dp, end = 24.dp)
@@ -413,8 +409,8 @@ fun HomeTutorial(cityName: String = "", onComplete: () -> Unit) {
                     ),
                 style = TextStyle(
                     fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 13.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 12.sp,
                     color = AppColors.Ink3,
                 ),
             )

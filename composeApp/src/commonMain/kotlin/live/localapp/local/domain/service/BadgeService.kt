@@ -36,15 +36,11 @@ sealed interface BadgeCelebration {
         val state: String,
     ) : BadgeCelebration
 
-    /**
-     * A neutral, non-badge toast — a dark pill with a star icon. Used by the
-     * Bo pull-to-refresh to report a fetch result ("3 new events near
-     * Nantucket", "+137 FOMO earned", "You're all caught up", …). Rides the
-     * same global celebration host so it never overlaps other surfaces.
-     */
-    data class InfoToast(
-        val message: String,
-        val star: Boolean = true,
+    /** A one-off "+N FOMO" toast for a reward earned outside the milestone
+     *  system (server-awarded username / preferences / daily-quiz FOMO). */
+    data class FomoToast(
+        val title: String,
+        val points: Int,
     ) : BadgeCelebration
 }
 
@@ -62,18 +58,22 @@ class BadgeService(
     private val _celebrations = MutableSharedFlow<BadgeCelebration>(extraBufferCapacity = 5)
     val celebrations: SharedFlow<BadgeCelebration> = _celebrations.asSharedFlow()
 
+    /** Show a one-off "+N FOMO" toast for a reward earned outside the milestone
+     *  system (server-awarded username / preferences / daily-quiz FOMO). */
+    fun emitFomoToast(title: String, points: Int) {
+        _celebrations.tryEmit(BadgeCelebration.FomoToast(title, points))
+    }
+
     /** Emitted on every action so profile can refresh counts even without a milestone. */
     private val _dataChanged = MutableSharedFlow<Unit>(extraBufferCapacity = 5)
     val dataChanged: SharedFlow<Unit> = _dataChanged.asSharedFlow()
 
     /**
-     * Surface a neutral info toast on the global celebration host. Fire-and-
-     * forget (buffered) — safe to call from any ViewModel off the main thread.
-     * Backs the Bo pull-to-refresh result toasts.
+     * Signal that FOMO changed via a path outside this service (e.g. the Daily
+     * Local quiz, whose award is written server-side by submit_quiz). Lets the
+     * leaderboard refresh live instead of going stale until relaunch.
      */
-    fun emitInfoToast(message: String, star: Boolean = true) {
-        _celebrations.tryEmit(BadgeCelebration.InfoToast(message, star))
-    }
+    fun notifyDataChanged() { _dataChanged.tryEmit(Unit) }
 
     /** Known states the user has milestones in (cached to detect new states). */
     private val knownStates = mutableSetOf<String>()

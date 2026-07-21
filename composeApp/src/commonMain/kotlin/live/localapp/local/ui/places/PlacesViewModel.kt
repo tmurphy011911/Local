@@ -326,20 +326,6 @@ class PlacesViewModel(
                     isRefreshing = false,
                 )
             }
-
-            val toast = when {
-                failed -> "Couldn't refresh — tap to retry"
-                before.activeTab == SearchTab.EVENTS -> when (newEventIds.size) {
-                    0 -> "You're all caught up"
-                    else -> "${newEventIds.size} new event${if (newEventIds.size == 1) "" else "s"}" +
-                        (st.locationName.takeIf { it.isNotBlank() }?.let { " near $it" } ?: " nearby")
-                }
-                else -> when (newPlaceIds.size) {
-                    0 -> "You're all caught up"
-                    else -> "${newPlaceIds.size} new place${if (newPlaceIds.size == 1) "" else "s"} near you"
-                }
-            }
-            badgeService.emitInfoToast(toast, star = !failed)
         }
     }
 
@@ -825,7 +811,9 @@ class PlacesViewModel(
                 it.copy(
                     favoriteEventIds = current + eventId,
                     savedEvents = if (event != null && it.savedEvents.none { e -> e.id == eventId }) {
-                        it.savedEvents + event
+                        // Keep start-date sorted so a newly-saved event slots in by
+                        // date (matching Home), not appended to the end.
+                        (it.savedEvents + event).sortedBy { e -> e.startAt ?: "" }
                     } else {
                         it.savedEvents
                     },
@@ -849,8 +837,12 @@ class PlacesViewModel(
             // independent of the active filters — by-id fetches surface saved
             // items even when they fall outside the current page.
             // Drop past events so Saved Events sheds them once their date passes.
+            // Sort by start date (soonest first) to match the Home saved-events
+            // carousel (HomeViewModel: savedUpcoming.sortedBy { startAt }). Without
+            // this the Explore carousel showed most-recently-saved order.
             val savedEvents = if (eventIds.isEmpty()) emptyList()
                 else eventRepository.getEventsByIds(eventIds).filter { it.isUpcoming }
+                    .sortedBy { it.startAt ?: "" }
             val savedVenues = if (venueIds.isEmpty()) {
                 emptyList()
             } else {

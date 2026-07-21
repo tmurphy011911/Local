@@ -26,7 +26,6 @@ import live.localapp.local.ui.character.drawLevelMouth
 import live.localapp.local.ui.character.drawMap
 import live.localapp.local.ui.character.drawPennant
 import live.localapp.local.ui.character.drawPlant
-import live.localapp.local.ui.character.drawSuitcase
 import live.localapp.local.ui.character.drawSunglasses
 
 /**
@@ -104,7 +103,6 @@ fun BoCharacter(
                         if (lvl == 3) drawBinoculars()
                         if (lvl == 1) drawMap()
                         if (lvl == 6) drawCoffee()
-                        if (lvl == 0) drawSuitcase()
                         if (lvl == 7) drawBeret()
                         if (lvl == 8) drawCrown()
                     }

@@ -33,6 +33,9 @@ struct ComposeView: UIViewControllerRepresentable {
         // Wire the Kotlin ↔ Swift native home-city editor (leaderboard)
         setupHomeCityEditBridge(composeVC: vc)
 
+        // Wire the Kotlin ↔ Swift native Daily Local quiz
+        setupDailyQuizBridge(composeVC: vc)
+
         // Wire chat sheet background animation
         setupChatSheetBridge(composeVC: vc)
 
@@ -134,6 +137,51 @@ struct ComposeView: UIViewControllerRepresentable {
                 hostingVC.modalPresentationStyle = .pageSheet
                 if let sheet = hostingVC.sheetPresentationController {
                     sheet.detents = [.large()]
+                    sheet.prefersGrabberVisible = true
+                }
+                topPresentedViewController(in: window)?.present(hostingVC, animated: true)
+            }
+        }
+    }
+
+    private func setupDailyQuizBridge(composeVC: UIViewController) {
+        DailyQuizBridge.shared.present = {
+            DispatchQueue.main.async {
+                guard let window = composeVC.view.window ?? UIApplication.shared.connectedScenes
+                    .compactMap({ $0 as? UIWindowScene })
+                    .flatMap({ $0.windows })
+                    .first(where: { $0.isKeyWindow })
+                else { return }
+                guard let json = DailyQuizBridge.shared.quizJson else { return }
+
+                weak var weakVC: UIHostingController<DailyQuizView>?
+                let view = DailyQuizView(
+                    quizJson: json,
+                    onSubmit: { answersJson, done in
+                        DailyQuizBridge.shared.onSubmit?(answersJson) { resultJson in
+                            done(resultJson)
+                            return KotlinUnit()
+                        }
+                    },
+                    onDismiss: {
+                        weakVC?.dismiss(animated: true)
+                        DailyQuizBridge.shared.onDismissed?()
+                    },
+                    onShared: {
+                        DailyQuizBridge.shared.onShared?()
+                    }
+                )
+                let hostingVC = UIHostingController(rootView: view)
+                weakVC = hostingVC
+                hostingVC.modalPresentationStyle = .pageSheet
+                // Swipe-to-dismiss is gated inside DailyQuizView via
+                // .interactiveDismissDisabled (locked only during an active question).
+                if let sheet = hostingVC.sheetPresentationController {
+                    if #available(iOS 16.0, *) {
+                        sheet.detents = [.custom { ctx in ctx.maximumDetentValue * 0.66 }, .large()]
+                    } else {
+                        sheet.detents = [.medium(), .large()]
+                    }
                     sheet.prefersGrabberVisible = true
                 }
                 topPresentedViewController(in: window)?.present(hostingVC, animated: true)

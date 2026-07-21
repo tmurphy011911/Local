@@ -448,4 +448,14 @@ object EmptyStateCopy {
         "Two taps. Then the rest of the world.",
         "We're not here to take part. We're here to sign you in.",
     )
+
+    // ── Venue detail · no events ──────────────────────────────────────
+    // Surfaces: VenueDetailSheet (Android) + VenueDetailView.swift (iOS —
+    // duplicated verbatim there with a keep-in-sync note). Unlike banks 1–4
+    // this is a SINGLE fixed line, not a random roll: it explains WHY a venue
+    // can show zero events and points the user to the venue's own calendar.
+    // Shown only after events finish loading (never during the skeleton).
+    const val VENUE_NO_EVENTS: String =
+        "No events for this venue on Local (yet). Some venues prevent us from " +
+            "pulling in their events — check their website for a calendar!"
 }

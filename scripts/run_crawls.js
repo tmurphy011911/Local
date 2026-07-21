@@ -29,6 +29,9 @@ const VENUE_NAME = process.env.VENUE_NAME || null;
 // hitting the 6h GitHub Actions max). Comma-separated list e.g. "MA" or
 // "MA,RI". Null/empty = all states.
 const STATE_FILTER = (process.env.STATE || "").trim() || null;
+// Optional metro_area scope (e.g. METRO_AREA=nantucket). Narrower than STATE so a
+// single-island/city crawl can't touch venues elsewhere in the same state.
+const METRO_AREA_FILTER = (process.env.METRO_AREA || "").trim().toLowerCase() || null;
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || "3", 10);
 const MAX_VENUES = parseInt(process.env.MAX_VENUES || "0", 10);
 // NPS Developer API — falls back to api.data.gov DEMO_KEY (30 req/hr, 50/day)
@@ -393,6 +396,9 @@ async function fetchVenues() {
     baseUrl += states.length === 1
       ? `&state=eq.${states[0]}`
       : `&state=in.(${states.join(",")})`;
+  }
+  if (METRO_AREA_FILTER) {
+    baseUrl += `&metro_area=eq.${encodeURIComponent(METRO_AREA_FILTER)}`;
   }
   baseUrl += "&order=events_url.desc.nullslast,crawl_success_rate.desc";
 

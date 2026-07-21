@@ -16,9 +16,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.repository.CommunityInterestRepository
@@ -58,6 +60,13 @@ data class OnboardingState(
     val userLat: Double? = null,
     val userLng: Double? = null,
     val userCity: String = "",
+    // Chip display for a manual address — the neighborhood shown with its city
+    // ("Manayunk, Philadelphia") when distinct, else the city. Kept separate from
+    // userCity so the write-once hometown/city stay at city granularity.
+    val userLocationDisplay: String = "",
+    // 2-letter state from the geocoder for a typed home address (e.g. "PA").
+    // Authoritative at state borders; stored as the profile's geocoded_state.
+    val userState: String = "",
     val selectedNeighbourhoods: Set<String> = emptySet(),
     val selectedVenues: Set<String> = emptySet(),
     val selectedCategories: Set<String> = emptySet(),
@@ -171,13 +180,18 @@ class OnboardingViewModel(
         _state.update { it.copy(currentStep = OnboardingStep.MANUAL_ADDRESS) }
     }
 
-    fun onManualAddressSubmit(lat: Double, lng: Double, city: String) {
+    fun onManualAddressSubmit(lat: Double, lng: Double, city: String, neighborhood: String, state: String) {
         val resolvedCity = city.ifBlank { nearestCity(lat, lng) }
+        // Chip shows the neighborhood/town alone ("Manayunk", "Chestnut Hill")
+        // when present; otherwise just the city.
+        val displayName = neighborhood.ifBlank { resolvedCity }.replaceFirstChar { it.uppercase() }
         _state.update {
             it.copy(
                 userLat = lat,
                 userLng = lng,
                 userCity = resolvedCity,
+                userLocationDisplay = displayName,
+                userState = state.trim().uppercase(),
                 locationMode = "manual",
                 // Shortened onboarding — straight to NOTIFICATIONS (skip SUCCESS
                 // + preference steps, kept for a future lobby CTA).
@@ -344,6 +358,21 @@ class OnboardingViewModel(
     /** Save all onboarding selections to Supabase + local cache. */
     fun saveOnboardingPreferences(onSaved: () -> Unit) {
         viewModelScope.launch {
+            // The shortened flow can reach "save" (via onLocationPregranted) before
+            // onAllowLocation has delivered the GPS coords. Persisting a coordless
+            // current-location profile makes the server's home_state resolver fall
+            // through to resolve_state_code(null, null, city): for a non-metro city
+            // like "Waltham" that returns NULL, so home_state is never set — which
+            // silently hides Daily Local (get_daily_quiz -> no_home_state) and mis-
+            // scopes the leaderboard. Wait briefly for the coords to land first. On
+            // timeout we still save: userCity stays blank -> "boston" -> MA, a valid
+            // (if generic) home_state, never null. Manual-address users already carry
+            // coords + geocoded_state, so this only gates the GPS path.
+            if (_state.value.locationMode == "current" && _state.value.userLat == null) {
+                withTimeoutOrNull(4000) {
+                    _state.first { it.userLat != null && it.userLng != null }
+                }
+            }
             try {
                 val s = _state.value
 
@@ -374,7 +403,7 @@ class OnboardingViewModel(
                     notifVenues = s.notifVenues,
                     onboardingComplete = true,
                     locationMode = s.locationMode,
-                    manualLocationName = if (isManual) s.userCity.replaceFirstChar { it.uppercase() } else null,
+                    manualLocationName = if (isManual) s.userLocationDisplay.ifBlank { s.userCity.replaceFirstChar { it.uppercase() } } else null,
                     manualLat = if (isManual) s.userLat else null,
                     manualLng = if (isManual) s.userLng else null,
                     // Durable hometown anchor: the location chosen here, at
@@ -384,6 +413,10 @@ class OnboardingViewModel(
                     hometownName = s.userCity.replaceFirstChar { it.uppercase() }.ifBlank { "Boston" },
                     hometownLat = s.userLat,
                     hometownLng = s.userLng,
+                    // The geocoder's authoritative state for a typed address. The
+                    // server trusts this over coordinate-derived state, fixing the
+                    // border case (Philadelphia -> PA, not the NJ bbox neighbor).
+                    geocodedState = s.userState.ifBlank { null },
                 )
 
                 // Mirror the chosen location into the local cache up-front, before
@@ -442,6 +475,57 @@ class OnboardingViewModel(
                 userPreferencesRepository.cacheRadiusFilterLocally(DEFAULT_RADIUS_MILES)
             }
             onSaved()
+        }
+    }
+
+    // ── Lobby-launched "preferences only" flow (reuses the pick screens) ──
+
+    /**
+     * Enter the preferences flow for the CURRENT (already-onboarded) user: seed
+     * the known home location, load the pick data, and jump to the first step.
+     * Used by the lobby "your preferences" CTA, not the first-run onboarding.
+     */
+    fun beginPreferencesOnly() {
+        viewModelScope.launch {
+            val uid = userPreferencesRepository.getLocalUserId() ?: return@launch
+            authUserId = uid
+            val p = userPreferencesRepository.loadPreferences(uid)
+            val city = (p?.hometownName ?: p?.city ?: "").ifBlank { "boston" }
+            _state.update {
+                it.copy(
+                    userCity = city,
+                    userLat = p?.hometownLat ?: p?.userLat,
+                    userLng = p?.hometownLng ?: p?.userLng,
+                    currentStep = OnboardingStep.NEIGHBOURHOODS,
+                    // Set up-front so the flow shows a loader, not an empty grid,
+                    // in the frame before loadOnboardingData flips this itself.
+                    isLoadingData = true,
+                )
+            }
+            loadOnboardingData()
+        }
+    }
+
+    /**
+     * Persist just the flow's selections and flip preferences_completed (the
+     * server awards 1000 FOMO on the false->true transition). [onSaved] runs on
+     * the main scope with whether the write succeeded.
+     */
+    fun savePreferencesOnly(onSaved: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val s = _state.value
+            val uid = authUserId ?: userPreferencesRepository.getLocalUserId()
+            if (uid == null) { onSaved(false); return@launch }
+            val neighborhoodNames = s.neighborhoods
+                .filter { it.name.lowercase().replace(" ", "-") in s.selectedNeighbourhoods }
+                .map { it.name }
+            val venueNames = s.venues
+                .filter { it.name.lowercase().replace(" ", "-") in s.selectedVenues }
+                .map { it.name }
+            val ok = userPreferencesRepository.savePreferencesSelection(
+                uid, neighborhoodNames, venueNames, s.selectedCategories.toList(),
+            )
+            onSaved(ok)
         }
     }
 

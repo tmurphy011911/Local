@@ -211,6 +211,7 @@ object ChatBridge {
             streamingText = stripUnsupportedGlyphs(state.streamingText),
             isTyping = state.isTyping,
             isSearching = state.isSearching,
+            searchingOpener = stripUnsupportedGlyphs(state.searchingOpener.orEmpty()),
             searchingNarration = state.searchingNarration.map { stripUnsupportedGlyphs(it) },
             localIdioms = state.localIdioms.map { stripUnsupportedGlyphs(it) },
             isBusy = state.isBusy,
@@ -245,6 +246,10 @@ data class ChatStateSnapshot(
     val streamingText: String,
     val isTyping: Boolean,
     val isSearching: Boolean,
+    /** One-time browse opener — a human beat echoing the request + scope
+     *  ("Let me find live music for you. Searching within 20 miles of Waltham.")
+     *  shown above the ✓ steps. Empty = no opener this turn. */
+    val searchingOpener: String = "",
     /** Ordered, human-readable steps for the searching indicator, derived
      *  from Bo's tool args (e.g. "Searching within 20 miles of Waltham").
      *  Empty = fall back to the rotating gerunds. */

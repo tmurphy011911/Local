@@ -167,9 +167,15 @@ private fun String.toTitleCase(): String {
 }
 
 /**
- * Whole days remaining until [trialEndsAt] (ISO-8601), rounded up so any partial
- * final day still reads as "1 day left". Returns null if the date is missing,
- * unparseable, or already in the past (trial over → no countdown).
+ * Whole days remaining until [trialEndsAt] (ISO-8601). Returns null if the date
+ * is missing, unparseable, or already in the past (trial over → no countdown).
+ *
+ * Uses nearest-day rounding, floored at 1 while the trial is active — NOT ceil.
+ * `trial_ends_at` is server-anchored (now() + interval 'N days'), but we compare
+ * it against the DEVICE clock; ceil rounds ANY partial day up, so a device clock
+ * lagging the server by even a second made a fresh 3-day trial read as "4 days"
+ * (seen on an Android emulator). round() absorbs sub-day skew; max(1, …) keeps
+ * the final hours reading "1 day left" instead of "0".
  */
 private fun trialDaysRemaining(trialEndsAt: String?): Int? {
     if (trialEndsAt.isNullOrBlank()) return null
@@ -180,8 +186,8 @@ private fun trialDaysRemaining(trialEndsAt: String?): Int? {
     }
     val nowMs = kotlin.time.Clock.System.now().toEpochMilliseconds()
     if (endMs <= nowMs) return null
-    val secondsLeft = (endMs - nowMs) / 1000.0
-    return kotlin.math.ceil(secondsLeft / 86_400.0).toInt()
+    val daysLeft = kotlin.math.round((endMs - nowMs) / 1000.0 / 86_400.0).toInt()
+    return kotlin.math.max(1, daysLeft)
 }
 
 /** Today's local calendar date as an ISO string (yyyy-MM-dd). */
@@ -415,14 +421,27 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
                     )
                 }
 
-                // Local Leaderboard — FOMO rank CTA + sheet. Build-time gated so a
-                // pre-readiness App Store build can drop it entirely (see Config).
-                if (live.localapp.local.Config.FEATURE_LEADERBOARD_ENABLED) {
-                    item(key = "leaderboard") {
+                // Daily Local + Local Leaderboard — the lobby carousel. Daily Local's
+                // quiz card sits at position 1 (until played today); the leaderboard is
+                // the permanent slot. Both build-time gated (see Config).
+                if (live.localapp.local.Config.FEATURE_DAILY_QUIZ_ENABLED ||
+                    live.localapp.local.Config.FEATURE_LEADERBOARD_ENABLED) {
+                    item(key = "daily_local") {
                         val leaderboardVm = remember {
                             KoinPlatform.getKoin().get<live.localapp.local.ui.leaderboard.LeaderboardViewModel>()
                         }
-                        live.localapp.local.ui.leaderboard.LeaderboardHost(leaderboardVm)
+                        if (live.localapp.local.Config.FEATURE_DAILY_QUIZ_ENABLED) {
+                            val quizVm = remember {
+                                KoinPlatform.getKoin().get<live.localapp.local.ui.dailyquiz.DailyQuizViewModel>()
+                            }
+                            live.localapp.local.ui.dailyquiz.DailyLocalHost(
+                                quizVm = quizVm,
+                                leaderboardVm = leaderboardVm,
+                                showLeaderboard = live.localapp.local.Config.FEATURE_LEADERBOARD_ENABLED,
+                            )
+                        } else {
+                            live.localapp.local.ui.leaderboard.LeaderboardHost(leaderboardVm)
+                        }
                     }
                 }
 

@@ -33,6 +33,10 @@ const SKIP_URL_CHECK = process.env.SKIP_URL_CHECK === "1";
 // Optional state scope (e.g. STATE=NJ). Limits the venue fetch to one state so a
 // new-state run can't touch — or deactivate — venues in already-live states.
 const STATE = (process.env.STATE || "").trim().toUpperCase() || null;
+// Optional metro_area scope (e.g. METRO_AREA=nantucket). Narrower than STATE so a
+// single-island/city backfill can't touch other venues in the same state. Applies
+// to both the default and RETRY_GATE candidate queries.
+const METRO_AREA = (process.env.METRO_AREA || "").trim().toLowerCase() || null;
 // When set, never flip is_active=false. For freshly Google-discovered states the
 // default deactivate-on-no-events-page behavior nukes legit venues (bowling,
 // wineries, diners) that simply lack an events calendar. NO_DEACTIVATE keeps any
@@ -247,6 +251,9 @@ async function fetchVenuesNeedingFix() {
   if (STATE) {
     baseUrl += `&state=eq.${encodeURIComponent(STATE)}`;
   }
+  if (METRO_AREA) {
+    baseUrl += `&metro_area=eq.${encodeURIComponent(METRO_AREA)}`;
+  }
   baseUrl += "&order=name.asc";
 
   const allVenues = [];
@@ -431,6 +438,7 @@ async function fetchRetryGateVenues() {
     conds.push(`or(public_interest_rank.gte.${MIN_RANK},public_interest_rank.is.null)`);
   }
   if (STATE) conds.push(`state.eq.${encodeURIComponent(STATE)}`);
+  if (METRO_AREA) conds.push(`metro_area.eq.${encodeURIComponent(METRO_AREA)}`);
   const base =
     `${SUPABASE_URL}/rest/v1/venues` +
     `?select=id,name,website,events_url,public_interest_rank,events_url_attempts,events_url_last_attempt,events_url_result` +

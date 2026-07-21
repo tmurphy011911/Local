@@ -97,13 +97,11 @@ object Config {
     const val FEATURE_LEADERBOARD_ENABLED = true
 
     /**
-     * OneSignal application id — a PUBLIC identifier, safe to ship in the binary
-     * (like the Supabase anon keys and RevenueCat public keys above). Both
-     * platforms init the OneSignal SDK with it. The REST API key is deliberately
-     * NOT here: it is server-side only, read from the Supabase `secrets` table
-     * by the push-send scripts, never embedded in the client.
+     * Daily Local — the daily state-scoped trivia quiz that shares the Home
+     * carousel with the leaderboard. When false the quiz card + sheet are dead
+     * code (eliminated in release). Backed by get_daily_quiz / submit_quiz.
      */
-    const val ONESIGNAL_APP_ID = "bdbdc7ed-00db-4961-9ad7-67ec3a5cba9f"
+    const val FEATURE_DAILY_QUIZ_ENABLED = true
 
     /**
      * Build-time gate for the Bo mascot pull-to-refresh (replaces the generic
@@ -111,8 +109,12 @@ object Config {
      * false to fall back to the stock [PullToRefreshBox] spinner in a shipped
      * binary while the control is still being tuned; the elimination pass then
      * drops the BoRefreshControl path as dead code.
+     *
+     * OFF for v1.2.0 — the control still has scroll-interaction rough edges (see
+     * project_bo_pull_to_refresh memory). The full implementation is preserved on
+     * `develop` (2998808) for a v1.3.0 refinement pass; re-enable then.
      */
-    const val FEATURE_BO_PTR_ENABLED = true
+    const val FEATURE_BO_PTR_ENABLED = false
 
     // --- Backend environment (prod vs dev) -------------------------------------
     //

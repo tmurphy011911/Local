@@ -575,14 +575,27 @@ private fun ExploreEmptyState(
     hasError: Boolean,
     onRetry: () -> Unit,
 ) {
-    // Bank 2 — Bo empty state. Same component for the error path; the bank
-    // copy is friendly enough to read either way without needing two banks.
-    live.localapp.local.ui.emptystate.BoEmptyState(
-        bank = live.localapp.local.ui.emptystate.EmptyStateCopy.NO_PLACES,
-        ctaLabel = "Refresh",
-        onCta = onRetry,
-        rotationKey = hasError,
-    )
+    // Host the empty state in a single full-height LazyColumn item. A plain
+    // centered column dispatches no scroll, so pull-to-refresh never engages on
+    // an empty tab (the gesture needs a scrollable child to produce overscroll).
+    // fillParentMaxSize keeps the Bo art centred while the list stays pullable.
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        item {
+            Box(
+                modifier = Modifier.fillParentMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                // Bank 2 — Bo empty state. Same component for the error path; the
+                // bank copy is friendly enough to read either way.
+                live.localapp.local.ui.emptystate.BoEmptyState(
+                    bank = live.localapp.local.ui.emptystate.EmptyStateCopy.NO_PLACES,
+                    ctaLabel = "Refresh",
+                    onCta = onRetry,
+                    rotationKey = hasError,
+                )
+            }
+        }
+    }
 }
 
 /**
@@ -2096,6 +2109,7 @@ private fun VenueInfoChip(
 fun VenueDetailSheet(
     venueWithMeta: VenueWithMeta,
     onDismiss: () -> Unit,
+    isLoading: Boolean = false,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
     val v = venueWithMeta.venue
@@ -2183,6 +2197,21 @@ fun VenueDetailSheet(
                             isPrimary = false,
                             modifier = Modifier.weight(1f),
                             onClick = { /* TODO: open v.website in browser */ },
+                        )
+                    }
+                }
+
+                // No events on Local for this venue → Bo explains why (some
+                // venues block ingestion) and points to their own calendar.
+                // Gated on !isLoading so it never flashes while the events
+                // fetch is still in flight (a venue that turns out to have
+                // events swaps to the full VenueDetailPage). Single fixed line —
+                // see EmptyStateCopy.VENUE_NO_EVENTS (shared with iOS).
+                if (!isLoading) {
+                    Spacer(Modifier.height(4.dp))
+                    Box(modifier = Modifier.fillMaxWidth().height(200.dp)) {
+                        live.localapp.local.ui.emptystate.BoEmptyState(
+                            bank = listOf(live.localapp.local.ui.emptystate.EmptyStateCopy.VENUE_NO_EVENTS),
                         )
                     }
                 }

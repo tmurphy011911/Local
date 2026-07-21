@@ -69,6 +69,12 @@ enum AnalyticsBridge {
                         || blob.contains("boentitlementrequiredexception")
                         || blob.contains("otp_expired")
                         || blob.contains("cancellationexception")
+                        // Request torn down mid-flight (user navigated away): the
+                        // Ktor Darwin engine surfaces the cancelled NSURLSessionTask
+                        // as a synthetic HTTPClientError "status code: 544", which
+                        // dodges the cancellationexception check above. Same class
+                        // of expected control-flow — drop it too.
+                        || blob.contains("status code: 544")
                         || (blob.contains("token has expired") && blob.contains("refresh")) {
                         return nil
                     }

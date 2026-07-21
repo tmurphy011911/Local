@@ -356,7 +356,12 @@ class EventRepositoryImpl(
         }
         val raw = try {
             val result = supabaseClient.postgrest.rpc("search_events_stratified", params)
-            Json { ignoreUnknownKeys = true }.decodeFromString(
+            // coerceInputValues: a null on a non-nullable field WITH a default
+            // (is_free, time_known) coerces to that default instead of throwing
+            // and failing the ENTIRE result list — which would leave Bo with zero
+            // search results. Explore never reads time_known, so this class of
+            // null only breaks Bo's path. Mirrors the explore-events client fix.
+            Json { ignoreUnknownKeys = true; coerceInputValues = true }.decodeFromString(
                 kotlinx.serialization.builtins.ListSerializer(EventDto.serializer()),
                 result.data,
             ).map { it.toDomain() }
@@ -486,15 +491,15 @@ class EventRepositoryImpl(
             val map = mutableMapOf<String, Pair<Double, Double>>()
             venueNames.chunked(200).forEach { batch ->
                 val rows = supabaseClient.from("venues")
-                    .select(io.github.jan.supabase.postgrest.query.Columns.list("name", "latitude", "longitude")) {
+                    .select(io.github.jan.supabase.postgrest.query.Columns.list("name", "lat", "lng")) {
                         filter {
                             isIn("name", batch)
                         }
                     }
                     .decodeList<VenueCoordRow>()
                 for (r in rows) {
-                    val lat = r.latitude ?: continue
-                    val lng = r.longitude ?: continue
+                    val lat = r.lat ?: continue
+                    val lng = r.lng ?: continue
                     map[r.name.lowercase().trim()] = lat to lng
                 }
             }
@@ -574,8 +579,13 @@ private data class VenuePhotoRow(
 @kotlinx.serialization.Serializable
 private data class VenueCoordRow(
     val name: String,
-    val latitude: Double? = null,
-    val longitude: Double? = null,
+    // The venues table's coordinate columns are `lat`/`lng` (see VenueDto) —
+    // NOT `latitude`/`longitude`. Selecting the wrong names 400'd on every
+    // request and the swallowing catch made coord hydration a silent no-op,
+    // so events whose venue had coords (but lacked denormalized event.venue_lat)
+    // never got backfilled.
+    val lat: Double? = null,
+    val lng: Double? = null,
 )
 
 @kotlinx.serialization.Serializable

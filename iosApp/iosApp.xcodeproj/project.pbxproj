@@ -142,6 +142,7 @@
 				5E1C2C112F87F5A20057E9F9 /* XCRemoteSwiftPackageReference "purchases-ios-spm" */,
 				5E84B1892FBEA9F200B1A75B /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
 				5E84B18A2FBEAA0F00B1A75B /* XCRemoteSwiftPackageReference "posthog-ios" */,
+				5E346405300163E3003B920F /* XCRemoteSwiftPackageReference "OneSignal-iOS-SDK" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 46A8AB7EB05E776F34C7FBE8 /* Products */;
@@ -521,6 +522,14 @@
 			requirement = {
 				kind = upToNextMajorVersion;
 				minimumVersion = 5.67.2;
+			};
+		};
+		5E346405300163E3003B920F /* XCRemoteSwiftPackageReference "OneSignal-iOS-SDK" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/OneSignal/OneSignal-iOS-SDK";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 5.5.4;
 			};
 		};
 		5E84B1892FBEA9F200B1A75B /* XCRemoteSwiftPackageReference "sentry-cocoa" */ = {

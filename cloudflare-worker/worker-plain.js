@@ -26,8 +26,10 @@ var ASSETLINKS = JSON.stringify([{
   }
 }]);
 
-// Smart "get the app" redirect: iOS → App Store, Android → Play Store, else → site.
-// Branded like Local (coral/ink palette, serif heading) + rich link-preview meta.
+// Branded "get the app" page: tap-first store buttons (iOS → App Store,
+// Android → Play Store) + rich link-preview meta. Tap-first, NOT an auto-redirect —
+// in-app browsers (Messages, Instagram, etc.) block a gesture-less store hand-off
+// ("Could not find an appropriate application"); a real tap always resolves.
 var GET_APP_HTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -37,6 +39,7 @@ var GET_APP_HTML = `<!DOCTYPE html>
   <meta name="description" content="Local finds the best events, venues, and plans near you. Download the app for iPhone and Android." />
   <meta name="theme-color" content="#FF6B6B" />
 
+  <!--PREVIEW_START-->
   <!-- Open Graph / rich link preview -->
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="Local" />
@@ -50,6 +53,7 @@ var GET_APP_HTML = `<!DOCTYPE html>
   <meta name="twitter:title" content="Get Local" />
   <meta name="twitter:description" content="The best events, venues, and plans near you — in one app." />
   <meta name="twitter:image" content="https://localapp.live/share-card.png" />
+  <!--PREVIEW_END-->
 
   <link rel="icon" href="https://localapp.live/app-icon.png" />
   <style>
@@ -86,31 +90,47 @@ var GET_APP_HTML = `<!DOCTYPE html>
       transition:transform .1s ease, box-shadow .1s ease;
     }
     .cta:active{transform:translateY(1px);box-shadow:0 4px 12px rgba(255,107,107,.4)}
-    .hint{margin-top:2px;color:var(--pebble);font-size:13px}
+    .hint{margin-top:2px;font-size:13px}
+    .hint a{color:var(--coral-dk);text-decoration:none;border-bottom:1px solid rgba(232,85,85,.35)}
     .brand{margin-top:auto;padding-top:28px;color:var(--pebble);font-size:12px;letter-spacing:.14em;text-transform:uppercase}
   </style>
 </head>
 <body>
   <div class="wrap">
     <img class="logo" src="https://localapp.live/app-icon.png" alt="Local" width="96" height="96" />
-    <h1>Opening Local…</h1>
-    <p class="sub">Taking you to the right app store for your device.</p>
-    <a id="cta" class="cta" href="#">Get the app</a>
-    <p class="hint">Not redirected automatically? Tap the button above.</p>
+    <h1>Get Local</h1>
+    <p class="sub">The best events, venues, and plans near you — in one app.</p>
+    <a id="cta" class="cta" href="https://localapp.live" rel="noopener">Get the app</a>
+    <p class="hint"><a id="alt" href="https://localapp.live">on another device?</a></p>
     <div class="brand">Local</div>
   </div>
   <script>
-    var IOS_URL      = "https://apps.apple.com/us/app/local-app/id6761425705";
-    var ANDROID_URL  = "https://play.google.com/store/apps/details?id=live.localapp.local";
-    var WEB_FALLBACK = "https://localapp.live";
-    var ua = navigator.userAgent || navigator.vendor || window.opera;
+    var PKG      = "live.localapp.local";
+    var IOS_URL  = "https://apps.apple.com/us/app/local-app/id6761425705";
+    var PLAY_WEB = "https://play.google.com/store/apps/details?id=" + PKG + "&pcampaignid=web_share";
+    // intent:// launches the Play Store app directly (with an https fallback baked in)
+    // so it survives in-app browsers (Messages, Instagram) that refuse to hand a plain
+    // play.google.com link to the Play app — the "Could not find an appropriate
+    // application" case.
+    var PLAY_APP = "intent://details?id=" + PKG + "&pcampaignid=web_share" +
+                   "#Intent;scheme=market;package=com.android.vending;" +
+                   "S.browser_fallback_url=" + encodeURIComponent(PLAY_WEB) + ";end";
+    var ua = navigator.userAgent || navigator.vendor || window.opera || "";
     var isIOS = /iPad|iPhone|iPod/.test(ua) ||
                 (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
     var isAndroid = /android/i.test(ua);
-    var target = isIOS ? IOS_URL : isAndroid ? ANDROID_URL : WEB_FALLBACK;
-    document.getElementById("cta").href = target;
-    // Give the branded page a beat to paint before handing off to the store.
-    setTimeout(function(){ window.location.replace(target); }, 900);
+    var cta = document.getElementById("cta");
+    var alt = document.getElementById("alt");
+    if (isIOS) {
+      cta.href = IOS_URL;   cta.textContent = "Download on the App Store";
+      alt.href = PLAY_WEB;  alt.textContent = "On Android? Get it on Google Play";
+    } else if (isAndroid) {
+      cta.href = PLAY_APP;  cta.textContent = "Get it on Google Play";
+      alt.href = PLAY_WEB;  alt.textContent = "Trouble? Open Google Play in your browser";
+    } else {
+      cta.href = IOS_URL;   cta.textContent = "Download on the App Store";
+      alt.href = PLAY_WEB;  alt.textContent = "Get it on Google Play";
+    }
   </script>
 </body>
 </html>`;
@@ -185,10 +205,65 @@ export default {
         return resp;
       }
 
-      if (path === "/get" || path === "/app" || path === "/download") {
+      if (path === "/get" || path === "/app" || path === "/download" || path === "/dl") {
         route = "get_app";
+        // Server-side store redirect. Link-preview crawlers get the HTML so the rich
+        // card still unfurls; real mobile browsers are 302'd straight to their store
+        // (an HTTP redirect hands off to the store app more reliably than an in-page
+        // link, which in-app browsers like Google Messages block). Desktop sees the
+        // page. Vary + no-store so a per-UA response is never cached for another UA.
+        var ua = request.headers.get("User-Agent") || "";
+        // Optional source tag for attribution: /get?s=instagram (also accepts
+        // src / source / utm_source). Sanitized to a short slug; "direct" if absent.
+        var srcRaw = url.searchParams.get("s") || url.searchParams.get("src") ||
+                     url.searchParams.get("source") || url.searchParams.get("utm_source") || "";
+        var source = srcRaw.toLowerCase().replace(/[^a-z0-9_-]/g, "").slice(0, 40) || "direct";
+        // /dl is the Daily Local short link: always attributed to
+        // "dailylocalshare", which also suppresses the rich preview below.
+        if (path === "/dl") source = "dailylocalshare";
+        var isBot = /(bot|crawler|spider|preview|facebookexternalhit|facebot|whatsapp|telegram|slack|discord|linkedin|embedly|pinterest|redditbot|applebot|skype|twitter|vkshare|googlebot|google-inspectiontool|bingbot|okhttp|iframely|snapchat)/i.test(ua);
+        var goAndroid = !isBot && /android/i.test(ua);
+        var goIOS = !isBot && /iphone|ipad|ipod/i.test(ua);
+        if (goAndroid || goIOS) {
+          var store = goAndroid ? "android" : "ios";
+          var dest;
+          if (goAndroid) {
+            // referrer carries the source to the app post-install via the Play
+            // Install Referrer API (needs app-side reading to attribute installs).
+            dest = "https://play.google.com/store/apps/details?id=live.localapp.local" +
+                   "&pcampaignid=web_share&referrer=" +
+                   encodeURIComponent("utm_source=" + source + "&utm_medium=share");
+          } else {
+            // ct = App Store Connect campaign token (surfaces in App Analytics).
+            dest = "https://apps.apple.com/us/app/local-app/id6761425705?ct=" +
+                   encodeURIComponent(source);
+          }
+          // Attribution click — real users only, never crawler preview fetches. Fresh
+          // distinct_id per tap so PostHog can count unique taps broken down by source.
+          track("get_app_click", { source: source, store: store }, crypto.randomUUID(), ctx);
+          const redir = new Response(null, {
+            status: 302,
+            headers: { "Location": dest, "Cache-Control": "no-store", "Vary": "User-Agent" }
+          });
+          status = redir.status;
+          return redir;
+        }
+        // For shares that must NOT unfurl (the Daily Local text, ?s=dailylocalshare)
+        // give link-preview crawlers a page with NO title/description/image/favicon/OG.
+        // iMessage & co. fall back to <title>/description/favicon when OG is absent, so
+        // stripping only OG isn't enough — serve them a truly metadata-free page. Real
+        // (desktop) humans still get the full branded page below.
+        var noPreview = source === "dailylocalshare";
+        if (noPreview && isBot) {
+          const bare = new Response(
+            "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"robots\" content=\"noindex\"></head><body></body></html>",
+            { status: 200, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Vary": "User-Agent" } },
+          );
+          status = bare.status;
+          return bare;
+        }
         const resp = new Response(GET_APP_HTML, {
-          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "public, max-age=3600" }
+          headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Vary": "User-Agent" }
         });
         status = resp.status;
         return resp;

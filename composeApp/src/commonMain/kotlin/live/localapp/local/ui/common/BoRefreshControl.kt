@@ -195,13 +195,23 @@ fun BoRefreshControl(
                 // Drag ended (fires even at zero velocity) — decide the release.
                 if (!enabled || overscrollPx <= 0f) return Velocity.Zero
                 val released = (overscrollPx * PULL_RESISTANCE).coerceIn(0f, maxPullPx)
+                // Clear the raw pull immediately on release. Otherwise it lingers
+                // at its full value all through the refresh, and any drag handling
+                // that reads overscrollPx sees a stale non-zero pull.
+                overscrollPx = 0f
                 latched = false
+                // Seed the tray animator to the current pull BEFORE switching
+                // phase, so the frame that first reads trayAnim.value (instead of
+                // pullPx) already holds the release position — otherwise the tray
+                // snaps to a stale value for one frame and the content jitters.
                 return if (released >= thresholdPx) {
                     hapticImpactLight()
+                    trayAnim.snapTo(released)
                     phase = Phase.Refreshing
                     onRefresh()
                     available // consume so the list doesn't fling
                 } else if (released > 0f) {
+                    trayAnim.snapTo(released)
                     phase = Phase.SnapBack
                     available
                 } else {
@@ -215,11 +225,11 @@ fun BoRefreshControl(
     LaunchedEffect(phase) {
         when (phase) {
             Phase.Refreshing -> {
-                trayAnim.snapTo(pullPx.coerceAtLeast(0f))
+                // trayAnim already seeded to the release position in onPreFling.
                 trayAnim.animateTo(lockedPx, tween(LOCK_MS, easing = LinearEasing))
             }
             Phase.SnapBack -> {
-                trayAnim.snapTo(pullPx)
+                // trayAnim already seeded to the release position in onPreFling.
                 trayAnim.animateTo(0f, tween(COLLAPSE_MS, easing = CollapseEasing))
                 overscrollPx = 0f
                 phase = Phase.Idle

@@ -185,8 +185,9 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     val userPrefsRepo: UserPreferencesRepository = remember { koin.get() }
     val isLoggedIn = userPrefsRepo.getLocalUserId() != null
     var showLocationSheet by remember { mutableStateOf(false) }
-    var showCreatePlanMenu by remember { mutableStateOf(false) }
-    var showManualPlanSheet by remember { mutableStateOf(false) }
+    // The "Ask Bo" button opens the Bo chat directly — the old Create Plan
+    // menu (Ask Bo / Build Manually) and the manual-plan sheet are no longer
+    // wired up. ManualPlanSheet.kt is retained as dead code.
 
     // ── Premium gating (paywall gates 1–4 + 6, and Bo) ──────────────────────
     // A non-premium user — no active Local Pro trial AND no paid subscription —
@@ -456,6 +457,9 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             val hLng = homeState.userLng
             if (!hasOngoingChat && hLat != null && hLng != null) {
                 chatVm.setCurrentLocation(hLat, hLng, homeState.locationName)
+                // Also mirror the radius the user set in Location Settings — the
+                // location sync alone left Bo on its stale/persisted radius.
+                chatVm.setScopeRadiusFromHome(homeState.radiusFilter)
             }
             if (hasNativeTabBar) {
                 // iOS path: snapshot the pending message before opening the sheet,
@@ -500,6 +504,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         val hLng = homeState.userLng
         if (!hasOngoingChat && locationMissing && hLat != null && hLng != null && homeState.locationName.isNotBlank()) {
             chatVm.setCurrentLocation(hLat, hLng, homeState.locationName)
+            chatVm.setScopeRadiusFromHome(homeState.radiusFilter)
         }
     }
 
@@ -539,13 +544,6 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
             )
         }
     }
-    LaunchedEffect(showManualPlanSheet) {
-        if (showManualPlanSheet) {
-            live.localapp.local.observability.Analytics.track(
-                live.localapp.local.observability.AnalyticsEvent.planCreateStarted(entryPoint = "create_menu")
-            )
-        }
-    }
 
     Box(
         modifier = Modifier
@@ -566,11 +564,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         // Main tab content — fills entire screen, tab bar overlays on top
         val tabStateHolder = androidx.compose.runtime.saveable.rememberSaveableStateHolder()
         if (!showHomeTutorial) {
-        val contentBlur by animateDpAsState(
-            targetValue = if (showCreatePlanMenu) 16.dp else 0.dp,
-            animationSpec = tween(durationMillis = 180),
-        )
-        Box(modifier = Modifier.fillMaxSize().blur(contentBlur)) {
+        Box(modifier = Modifier.fillMaxSize()) {
             Box(modifier = Modifier.fillMaxSize()) {
                 // Retain each tab's saveable state (scroll positions etc.) across
                 // tab switches. The router disposes the unselected tab's composables,
@@ -719,10 +713,17 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                                         placesVm.toggleVenueFavorite(venueId, venue.primaryCategory)
                                     },
                                 )
-                                // Fallback: only re-query if the server gave us none.
-                                // Covers older edge function deployments and odd cases
-                                // where the count > 0 but events list is empty.
-                                if (venue.upcomingEvents.isEmpty() && venue.upcomingEventCount > 0) {
+                                // Whenever the inline payload carried no events, re-query
+                                // and push the result — so the native detail's loading
+                                // skeleton ALWAYS terminates. This was previously gated on
+                                // `upcomingEventCount > 0`, which meant a venue with
+                                // genuinely zero events (count == 0, empty list) never
+                                // received an update: Swift's isLoadingEvents stayed true and
+                                // the event skeleton spun forever, hiding the empty state.
+                                // Now it covers both the count>0-but-empty race AND the
+                                // true-zero case — an empty re-query resolves loading and
+                                // renders the venue "no events" empty state.
+                                if (venue.upcomingEvents.isEmpty()) {
                                     scope.launch {
                                         val events = try {
                                             venueRepo.getUpcomingEventsForVenue(venue.venue.name, venue.venue.city, venue.venue.latitude, venue.venue.longitude)
@@ -788,11 +789,10 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         LaunchedEffect(selectedTab) { if (isLoggedIn) plansVm.refresh() }
                         PlansScreen(
                             viewModel = plansVm,
-                            // "+ New Plan" opens the picker overlay (Build Manually /
-                            // Create with Yocal) — same surface the tab-bar "+ Create Plan"
-                            // button uses. Previously this jumped straight into Yocal,
-                            // bypassing the manual option.
-                            onNewPlan = { showCreatePlanMenu = true },
+                            // "+ New Plan" opens the Bo chat directly — same as the
+                            // tab-bar "Ask Bo" button. The manual-plan option has been
+                            // removed.
+                            onNewPlan = { openChatOrLogin() },
                             onPlanClick = { plan, bounds ->
                                 if (!premiumGate.isPremium) { showPaywallGate(); return@PlansScreen }
                                 if (hasNativeHeroTransition) {
@@ -1203,61 +1203,16 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
 
             }
 
-            // Create Plan scrim — rendered BELOW the tab bar so the button stays bright
-            live.localapp.local.ui.plans.CreatePlanScrim(
-                visible = showCreatePlanMenu,
-                onDismiss = { showCreatePlanMenu = false },
-            )
-
             // Floating tab bar — overlays content at bottom
             Box(modifier = Modifier.align(Alignment.BottomCenter)) {
                 val tabInitial = homeState.userName.firstOrNull()?.uppercase() ?: ""
                 BottomTabBar(
                     selectedTab,
                     onSelect = { selectedTab = it },
-                    onCreatePlanClick = { showCreatePlanMenu = true },
+                    // "Ask Bo" pill opens the Bo chat directly (no more
+                    // Ask Bo / Build Manually menu).
+                    onCreatePlanClick = { openChatOrLogin() },
                     userInitial = tabInitial,
-                )
-            }
-
-            // Menu items — rendered ABOVE the tab bar so they appear to spring from the button
-            live.localapp.local.ui.plans.CreatePlanMenuItems(
-                visible = showCreatePlanMenu,
-                onDismiss = { showCreatePlanMenu = false },
-                onYocal = { openChatOrLogin() },
-                onManual = {
-                    if (userPrefsRepo.getLocalUserId() != null) {
-                        showManualPlanSheet = true
-                    } else {
-                        onLogout()
-                    }
-                },
-            )
-
-            if (showManualPlanSheet) {
-                val manualPremiumGate = remember { live.localapp.local.ui.chat.PremiumGate() }
-                live.localapp.local.ui.plans.ManualPlanSheet(
-                    onDismiss = { showManualPlanSheet = false },
-                    chatVm = chatVm,
-                    eventRepo = eventRepo,
-                    userLat = homeState.userLat,
-                    userLng = homeState.userLng,
-                    canSavePlan = { manualPremiumGate.canCreatePlan(live.localapp.local.ui.chat.PlanSource.MANUAL) },
-                    onPaywallRequired = {
-                        manualPremiumGate.hasSeenPaywall = true
-                        pendingShowPaywall = true
-                        showChat = true
-                        chatOpenCount++
-                    },
-                    onPlanSavedOpenChat = {
-                        manualPremiumGate.recordPlanCreated(live.localapp.local.ui.chat.PlanSource.MANUAL)
-                        // Open the chat sheet so the celebration overlay surfaces.
-                        openChatOrLogin()
-                    },
-                    onPlanWithBo = {
-                        // User abandoned manual flow — open Bo fresh.
-                        openChatOrLogin()
-                    },
                 )
             }
 
@@ -1927,6 +1882,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 VenueDetailSheet(
                     venueWithMeta = placesState.selectedVenue!!,
                     onDismiss = { placesVm.dismissSheet() },
+                    isLoading = placesState.isSheetLoading,
                 )
             }
         }
@@ -1940,6 +1896,8 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                 locationMode = homeState.locationMode,
                 manualLocationName = homeState.manualLocationName,
                 radiusFilter = homeState.radiusFilter,
+                centerLat = homeState.userLat,
+                centerLng = homeState.userLng,
                 hasLocationPermission = homeState.hasLocationPermission,
                 onSelectCurrentLocation = { /* mode only flips to CURRENT_LOCATION on successful GPS fix */ },
                 onGpsLocation = { lat, lng ->
@@ -2268,8 +2226,9 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         // State-specific toasts removed — dismiss silently
                         progressVm.dismissCelebration()
                     }
-                    is CelebrationEvent.InfoToast -> GlobalInfoToast(
-                        event = event,
+                    is CelebrationEvent.FomoEarned -> GlobalFomoToast(
+                        title = event.title,
+                        points = event.points,
                         onDismiss = { progressVm.dismissCelebration() },
                     )
                 }
@@ -2291,6 +2250,15 @@ private fun BottomTabBar(
     val haptic = LocalHapticFeedback.current
     val pillShape = RoundedCornerShape(22.dp)
 
+    // Accessibility: at large system font scales the "Ask Bo" label grows and
+    // collides with this nav pill (both are fixed-width with scaling text). Above
+    // ~1.3× we collapse the CTA to an icon-only button and hand the freed width
+    // back to the nav pill so the two never overlap.
+    val ctaCompact = LocalDensity.current.fontScale >= 1.3f
+    // Reserved right-margin must track the button width: 156→56 face + 16 end
+    // padding + a small gap.
+    val ctaReserve = if (ctaCompact) 78.dp else 178.dp
+
     Box(
         modifier = Modifier
             .fillMaxWidth()
@@ -2301,7 +2269,7 @@ private fun BottomTabBar(
         Row(
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .padding(start = 16.dp, end = 178.dp) // room for Create Plan button + margin
+                .padding(start = 16.dp, end = ctaReserve) // room for Ask Bo button + margin
                 .height(52.dp)
                 .background(
                     Color(0xFFF0EDF6).copy(alpha = 0.92f),
@@ -2378,9 +2346,10 @@ private fun BottomTabBar(
             }
         }
 
-        // Create Plan pill — bottom right.
+        // Ask Bo pill — bottom right. Collapses to icon-only at large font scales.
         live.localapp.local.ui.plans.CreatePlanButton(
             onClick = onCreatePlanClick,
+            compact = ctaCompact,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(end = 16.dp),
@@ -2640,18 +2609,19 @@ private fun GlobalMilestoneToast(event: CelebrationEvent.MilestoneEarned, onDism
     }
 }
 
-/**
- * Neutral dark-pill toast, top-center, ~2.6s — the Bo pull-to-refresh result
- * ("3 new events near Nantucket", "+137 FOMO earned", …). No haptic here; the
- * settle haptic is owned by BoRefreshControl.
- */
+/** Generic "+N FOMO" toast with a custom title — used for rewards that aren't
+ *  badge milestones (username set, preferences saved, Daily Local complete). */
 @Composable
-private fun GlobalInfoToast(event: CelebrationEvent.InfoToast, onDismiss: () -> Unit) {
+private fun GlobalFomoToast(title: String, points: Int, onDismiss: () -> Unit) {
     var visible by remember { mutableStateOf(false) }
+    val haptic = LocalHapticFeedback.current
 
     LaunchedEffect(Unit) {
         visible = true
-        delay(2600)
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        delay(150)
+        haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+        delay(3500)
         visible = false
         delay(300)
         onDismiss()
@@ -2666,28 +2636,38 @@ private fun GlobalInfoToast(event: CelebrationEvent.InfoToast, onDismiss: () -> 
         exit = slideOutVertically(targetOffsetY = { -it * 2 }, animationSpec = tween(250)) + fadeOut(),
         modifier = Modifier.fillMaxWidth(),
     ) {
-        Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 56.dp), contentAlignment = Alignment.TopCenter) {
+        Box(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 56.dp)) {
             Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(999.dp))
+                modifier = Modifier.fillMaxWidth()
+                    .clip(RoundedCornerShape(18.dp))
                     .background(AppColors.Ink)
                     .clickable { onDismiss() }
-                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                    .padding(14.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                if (event.star) {
+                Box(
+                    modifier = Modifier.size(40.dp).clip(RoundedCornerShape(12.dp))
+                        .background(AppColors.SkyLt.copy(alpha = 0.2f)),
+                    contentAlignment = Alignment.Center,
+                ) {
                     Icon(
                         Icons.Rounded.Star,
                         contentDescription = null,
                         tint = AppColors.Sun,
-                        modifier = Modifier.size(18.dp),
+                        modifier = Modifier.size(20.dp),
                     )
-                    Spacer(Modifier.width(8.dp))
                 }
-                Text(
-                    event.message,
-                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.White),
-                )
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "$title!",
+                        style = TextStyle(fontFamily = AppFonts.Heading, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = AppColors.White),
+                    )
+                    Text(
+                        "+${formatNumber(points)} FOMO",
+                        style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.ExtraBold, fontSize = 12.sp, color = AppColors.Sun, letterSpacing = 0.5.sp),
+                    )
+                }
             }
         }
     }

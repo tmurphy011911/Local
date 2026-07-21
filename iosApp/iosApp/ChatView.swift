@@ -32,6 +32,10 @@ class ChatState: ObservableObject {
     @Published var streamingText: String = ""
     @Published var isTyping: Bool = false
     @Published var isSearching: Bool = false
+    /// One-time browse opener — a human beat echoing the request + scope
+    /// ("Let me find live music for you. Searching within 20 miles of Waltham.")
+    /// shown above the ✓ steps. Empty = no opener this turn.
+    @Published var searchingOpener: String = ""
     /// Ordered, human-readable steps for the searching indicator, derived from
     /// Bo's tool args (e.g. "Searching within 20 miles of Waltham"). Empty =
     /// the indicator falls back to the rotating gerunds.
@@ -75,6 +79,7 @@ class ChatState: ObservableObject {
             self?.streamingText = snapshot.streamingText
             self?.isTyping = snapshot.isTyping
             self?.isSearching = snapshot.isSearching
+            self?.searchingOpener = snapshot.searchingOpener
             self?.searchingNarration = snapshot.searchingNarration
             self?.isBusy = snapshot.isBusy
             self?.inputEnabled = snapshot.inputEnabled
@@ -1253,7 +1258,7 @@ struct ChatView: View {
     // MARK: - Indicators
 
     private var searchingIndicator: some View {
-        SearchingIndicatorView(narration: state.searchingNarration, localIdioms: state.localIdioms)
+        SearchingIndicatorView(opener: state.searchingOpener, narration: state.searchingNarration, localIdioms: state.localIdioms)
     }
 
     private var typingIndicator: some View {
@@ -1752,6 +1757,9 @@ private struct SlotCardView: View {
 // MARK: - Searching Indicator (rotating gerunds, fade transition)
 
 private struct SearchingIndicatorView: View {
+    /// One-time browse opener — a human beat echoing the request + scope, shown
+    /// as a Bo row above the ✓ steps. Empty = no opener this turn.
+    var opener: String = ""
     /// Completed narration steps derived from Bo's tool args. They stack up and
     /// persist; the gerund typewriter below is the live "thinking" line.
     let narration: [String]
@@ -1799,6 +1807,23 @@ private struct SearchingIndicatorView: View {
         // idiom Bo lines up directly beneath the narration Bo. When there are
         // no steps yet, only the idiom row renders → a single Bo.
         VStack(alignment: .leading, spacing: 6) {
+            // One-time browse opener — a human beat echoing the request + scope
+            // ("Let me find live music for you. Searching within 20 miles of
+            // Waltham.") above the ✓ steps. Reads as Bo speaking, so it carries
+            // the Bo avatar like the rows below it.
+            if !opener.isEmpty {
+                HStack(alignment: .top, spacing: 8) {
+                    Image("BoTiny")
+                        .resizable()
+                        .aspectRatio(contentMode: .fit)
+                        .frame(width: 20, height: 20)
+                        .padding(.top, 1)
+                    Text(opener)
+                        .font(F.body(15, .medium))
+                        .foregroundColor(C.ink)
+                        .lineSpacing(3)
+                }
+            }
             // Guard on the ACTUAL revealed steps, not just `visibleSteps > 0`:
             // visibleSteps is persistent @State, so when narration is empty (or
             // shorter than a stale visibleSteps) the prefix is empty and we'd
@@ -2310,7 +2335,7 @@ private struct BoResultsMapView: View {
     @State private var focusedId: String?
     @State private var region: MKCoordinateRegion?
     private enum ResultsMode: Hashable { case list, map }
-    @State private var resultsMode: ResultsMode = .map
+    @State private var resultsMode: ResultsMode = .list
 
     /// Groups that still have at least one non-dismissed event.
     // Events already picked (in the draft drawer) leave the results — they
@@ -2596,7 +2621,12 @@ private struct BoResultsMapView: View {
             // Horizontal carousel below the map: swipe left/right to browse
             // (map recenters via focusedId); +/✕ on each card add/dismiss.
             ScrollView(.horizontal, showsIndicators: false) {
-                LazyHStack(spacing: 10) {
+                // Plain HStack, not Lazy: a map group holds a bounded handful of
+                // events, so laziness buys nothing — while a nested LazyHStack's
+                // measureEstimates pass (run while the parent chat LazyVStack sizes
+                // this row) was the >2s main-thread App Hang in Sentry. Cards are a
+                // fixed 72pt, so eager layout of the few of them is cheap.
+                HStack(spacing: 10) {
                     ForEach(currentEvents, id: \.eventId) { ev in
                         SuggestionCardView(
                             event: ev,
@@ -2862,7 +2892,12 @@ struct SuggestionTrayView: View {
                     // Content margins push the first card 14pt off the edge
                     // so it lines up with the headline above.
                     ScrollView(.horizontal, showsIndicators: false) {
-                        LazyHStack(spacing: 10) {
+                        // Plain HStack, not Lazy — same reason as the map carousel
+                        // above: a nested LazyHStack.measureEstimates over a bounded
+                        // group was the main-thread hang, and with several groups
+                        // stacked in one chat row it compounded. Groups are small and
+                        // cards are fixed-height, so eager layout is fine.
+                        HStack(spacing: 10) {
                             ForEach(Array(visible.enumerated()), id: \.offset) { _, ev in
                                 SuggestionCardView(
                                     event: ev,
@@ -3310,27 +3345,30 @@ private struct SearchScopeEditorSheet: View {
                 .padding(.top, 8)
             }
 
-            // Map preview — the radius circle visibly scales with the
-            // slider so the user sees the scope.
-            Map(position: $cameraPosition, interactionModes: []) {
-                MapCircle(center: center, radius: radiusMeters)
-                    .foregroundStyle(C.coral.opacity(0.18))
-                    .stroke(C.coral, lineWidth: 2)
-                Annotation("", coordinate: center, anchor: .center) {
-                    Circle()
-                        .fill(C.coral)
-                        .frame(width: 12, height: 12)
-                        .overlay(Circle().stroke(Color.white, lineWidth: 2))
+            // Map preview — the radius circle visibly scales with the slider so
+            // the user sees the scope. Hidden while the city field is focused
+            // (keyboard up) so it isn't crushed against the keyboard.
+            if !isFocused {
+                Map(position: $cameraPosition, interactionModes: []) {
+                    MapCircle(center: center, radius: radiusMeters)
+                        .foregroundStyle(C.coral.opacity(0.18))
+                        .stroke(C.coral, lineWidth: 2)
+                    Annotation("", coordinate: center, anchor: .center) {
+                        Circle()
+                            .fill(C.coral)
+                            .frame(width: 12, height: 12)
+                            .overlay(Circle().stroke(Color.white, lineWidth: 2))
+                    }
                 }
-            }
-            .frame(height: 200)
-            .clipShape(RoundedRectangle(cornerRadius: 16))
-            .padding(.top, 14)
-            .onChange(of: radiusMiles) { _, _ in
-                cameraPosition = .region(fittingRegion)
-            }
-            .onChange(of: center.latitude) { _, _ in
-                cameraPosition = .region(fittingRegion)
+                .frame(height: 200)
+                .clipShape(RoundedRectangle(cornerRadius: 16))
+                .padding(.top, 14)
+                .onChange(of: radiusMiles) { _, _ in
+                    cameraPosition = .region(fittingRegion)
+                }
+                .onChange(of: center.latitude) { _, _ in
+                    cameraPosition = .region(fittingRegion)
+                }
             }
 
             HStack(spacing: 12) {

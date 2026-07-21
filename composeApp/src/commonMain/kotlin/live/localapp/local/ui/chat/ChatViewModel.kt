@@ -434,6 +434,19 @@ class ChatViewModel(
         ensureLocalIdioms(name)
     }
 
+    /**
+     * Sync Bo's search radius from the Home / Location-Settings radius filter.
+     * Called on Bo open (alongside [setCurrentLocation]) so Bo mirrors the
+     * radius the user set in the Location sheet rather than a stale persisted
+     * scope or the old 20mi default. Clamped to the 1..50 scope-slider range —
+     * Home "Any"/null maps to the 50mi max. Only fired when there's no ongoing
+     * chat, so a scope the user set mid-conversation is left alone.
+     */
+    fun setScopeRadiusFromHome(homeRadiusMiles: Double?) {
+        val clamped = (homeRadiusMiles ?: 50.0).coerceIn(1.0, 50.0)
+        _uiState.update { it.copy(searchRadiusMiles = clamped) }
+    }
+
     // ── Hyperlocal searching idioms ─────────────────────────────────────────
     // In-memory cache of Claude-generated, place-specific gerund idioms, keyed
     // by the lowercased location name. Survives for the life of the ViewModel
@@ -658,18 +671,27 @@ class ChatViewModel(
         // so the chip is correct on first paint after Bo reopens. Closing +
         // re-opening Bo used to drop the user's chosen location/radius;
         // they had to re-edit every session.
-        loadPersistedScope()?.let { saved ->
+        val restoredScope = loadPersistedScope()
+        if (restoredScope != null) {
             _uiState.update {
                 it.copy(
-                    currentLocationName = saved.a,
-                    currentLat = saved.b ?: it.currentLat,
-                    currentLng = saved.c ?: it.currentLng,
-                    searchRadiusMiles = saved.d,
+                    currentLocationName = restoredScope.a,
+                    currentLat = restoredScope.b ?: it.currentLat,
+                    currentLng = restoredScope.c ?: it.currentLng,
+                    searchRadiusMiles = restoredScope.d,
                 )
             }
             // Warm hyperlocal idioms for the restored location so the first
             // search after reopening Bo already has place-specific flavor.
-            ensureLocalIdioms(saved.a)
+            ensureLocalIdioms(restoredScope.a)
+        } else {
+            // First Bo open with no saved scope — default the search radius to the
+            // user's Home radius filter instead of a hardcoded 20mi, so Bo starts
+            // scoped to the location AND the radius they've already set on Home.
+            // Clamped to Bo's 1..50 slider range (Home "Any"/null → the 50mi max).
+            // The location itself is seeded from prefs in loadUserPrefsAndWelcome.
+            val homeRadius = (userPrefsRepo.effectiveRadiusFilter() ?: 50.0).coerceIn(1.0, 50.0)
+            _uiState.update { it.copy(searchRadiusMiles = homeRadius) }
         }
         loadUserPrefsAndWelcome()
     }
@@ -3431,12 +3453,23 @@ class ChatViewModel(
             )
         }
 
+        // Bo must never surface a result it can't place on the map. An event
+        // with no coordinates can't be distance-ranked, shown on the results
+        // map, or reliably located, so it's worse than not showing it at all.
+        // Drop any event lacking BOTH a venue and an event lat/lng up front —
+        // before caching, display, and the coverage counts below — so it never
+        // reaches Bo or the user. (Coords resolve as venue-first, falling back
+        // to the event's own, mirroring the narration filter further down.)
+        val geolocated = rawEvents.filter { e ->
+            (e.venueLat ?: e.eventLat) != null && (e.venueLng ?: e.eventLng) != null
+        }
+
         // Drop events at rank <= 10 venues (community centers, K-12 fields,
         // junk listings). Matches the same global floor the Explore and
         // carousels surfaces enforce — Yocal should never recommend venues
         // the user can't actually discover elsewhere in the app.
         val lowRankNames = venueRepo.getLowRankVenueNames()
-        val cleaned = if (lowRankNames.isEmpty()) rawEvents else rawEvents.filter { e ->
+        val cleaned = if (lowRankNames.isEmpty()) geolocated else geolocated.filter { e ->
             val vn = e.venueName?.trim()?.lowercase() ?: return@filter true
             val normalized = vn.removePrefix("the ").replace(Regex("[^a-z0-9\\s]"), "").trim()
             vn !in lowRankNames && normalized !in lowRankNames
@@ -3672,7 +3705,9 @@ class ChatViewModel(
             userLat = scopeLat,
             userLng = scopeLng,
             radiusMiles = if (haveCoords) state.searchRadiusMiles else null,
-        )
+        ).filter { it.latitude != null && it.longitude != null }
+        // ^ Bo must never surface a venue it can't place on the map — same
+        //   coordinate-integrity rule as searchEvents. Drop coordless venues.
 
         return venues.joinToString("\n") { v ->
             val cat = v.category ?: v.placeType ?: ""

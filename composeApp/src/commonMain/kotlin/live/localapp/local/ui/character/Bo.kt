@@ -191,7 +191,6 @@ fun Bo(
                                     if (lvl == 3) drawBinoculars()
                                     if (lvl == 1) drawMap()
                                     if (lvl == 6) drawCoffee()
-                                    if (lvl == 0) drawSuitcase()
                                     if (lvl == 7) drawBeret()
                                     if (lvl == 8) drawCrown()
                                     if (lvl == 9) drawTopHat()
@@ -448,28 +447,24 @@ private fun DrawScope.drawLevelEyes(level: Int, blinkProgress: Float) {
 internal fun DrawScope.drawLevelEyesScaled(level: Int, openFraction: Float) {
     // Levels 3 (binoculars) and 5 (sunglasses) cover the eyes.
     if (level == 3 || level == 5) return
-    val lookUp = if (level == 0) -2f else 0f
-    val eyeY = 50f + lookUp
+    val eyeY = 50f
     listOf(38f, 62f).forEachIndexed { i, eyeX ->
         scale(1f, openFraction.coerceIn(0f, 1f), pivot = Offset(eyeX, eyeY)) {
             drawOval(BoColors.ink, Offset(eyeX - 5.5f, eyeY - 7f), Size(11f, 14f))
             val shineX = if (i == 0) 40f else 64f
-            drawOval(BoColors.paper, Offset(shineX - 2.2f, (47f + lookUp) - 2.7f), Size(4.4f, 5.4f))
+            drawOval(BoColors.paper, Offset(shineX - 2.2f, 47f - 2.7f), Size(4.4f, 5.4f))
             val dotX = if (i == 0) 36f else 60f
-            drawCircle(BoColors.paper, radius = 0.9f, center = Offset(dotX, 53f + lookUp))
+            drawCircle(BoColors.paper, radius = 0.9f, center = Offset(dotX, 53f))
         }
     }
 }
 
 internal fun DrawScope.drawLevelMouth(level: Int) {
-    // emotion per level: 0 uncertain, 1 curious, 2 cozy, 3 happy, 4 proud,
+    // emotion per level: 0 happy (default), 1 curious, 2 cozy, 3 happy, 4 proud,
     //                    5 cool, 6 cozy, 7 charming, 8 radiant, 9 cozy
     val ink = BoColors.ink
     fun stroke(p: Path) = drawPath(p, ink, style = Stroke(width = 2.5f, cap = StrokeCap.Round, join = StrokeJoin.Round))
     when (level) {
-        0 -> stroke(Path().apply { // uncertain
-            moveTo(44f, 65f); quadraticBezierTo(47f, 62f, 50f, 65f); quadraticBezierTo(53f, 68f, 56f, 65f)
-        })
         1, 2, 6, 9 -> stroke(Path().apply { // curious / cozy
             moveTo(45f, 64f); quadraticBezierTo(50f, 67f, 55f, 64f)
         })
@@ -508,27 +503,6 @@ internal fun DrawScope.svgRect(x: Float, y: Float, w: Float, h: Float, rx: Float
 
 internal fun DrawScope.svgLine(x1: Float, y1: Float, x2: Float, y2: Float, color: Color, w: Float, alpha: Float = 1f) {
     drawLine(color.copy(alpha = alpha), Offset(x1, y1), Offset(x2, y2), strokeWidth = w, cap = StrokeCap.Round)
-}
-
-// Level 0 — suitcase + sweat
-internal fun DrawScope.drawSuitcase() {
-    // sweat bead arc + droplet by the temple
-    svgLine(70f, 36f, 73f, 33f, BoColors.blue, 2.4f)
-    svgLine(73f, 33f, 76f, 36f, BoColors.blue, 2.4f)
-    val drop = Path().apply {
-        moveTo(81f, 40f); quadraticBezierTo(84f, 45f, 81f, 47.5f)
-        quadraticBezierTo(77f, 47.5f, 77.5f, 44f); quadraticBezierTo(78.5f, 42f, 81f, 40f); close()
-    }
-    drawPath(drop, BoColors.blue)
-    drawPath(drop, BoColors.ink, style = Stroke(width = 1.6f, join = StrokeJoin.Round))
-    // rolling suitcase
-    svgRect(82f, 66f, 22f, 18f, 3.5f, BoColors.blue, BoColors.ink, 3f)
-    val handle = Path().apply {
-        moveTo(88f, 66f); quadraticBezierTo(88f, 60f, 96f, 60f); quadraticBezierTo(104f, 60f, 104f, 66f)
-    }
-    drawPath(handle, BoColors.ink, style = Stroke(width = 3f, cap = StrokeCap.Round))
-    svgLine(82f, 74f, 104f, 74f, BoColors.ink, 2f, alpha = 0.6f)
-    svgRect(90f, 69f, 6f, 3f, 1f, BoColors.paper, BoColors.ink, 1.4f)
 }
 
 // Level 1 — map held in two hands

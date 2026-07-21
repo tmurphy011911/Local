@@ -94,20 +94,39 @@ Deno.serve(async (req) => {
       const lng = result?.geometry?.location?.lng;
       const address = result?.formatted_address || "";
 
-      // Extract city from address components
+      // Extract city + state (2-letter) from address components. State is the
+      // authoritative side of the line for border cities (Philadelphia sits in
+      // both the PA and NJ bounding boxes; deriving the state from coords alone
+      // mis-picks the neighbor), so the client stores it as geocoded_state.
+      // neighborhood is the sublocality (e.g. "Manayunk"), returned separately so
+      // the client can show it alongside the city ("Manayunk, Philadelphia")
+      // instead of collapsing a neighborhood pick to its parent locality.
       let city = "";
+      let neighborhood = "";
+      let neighborhoodFallback = "";
+      let state = "";
       for (const comp of result?.address_components || []) {
-        if (comp.types?.includes("locality")) {
+        const types: string[] = comp.types || [];
+        if (types.includes("locality")) {
           city = comp.long_name || comp.short_name || "";
-          break;
         }
-        if (comp.types?.includes("sublocality_level_1") && !city) {
+        if (types.includes("sublocality_level_1") && !city) {
           city = comp.long_name || comp.short_name || "";
+        }
+        if (!neighborhood && types.includes("sublocality_level_1")) {
+          neighborhood = comp.long_name || comp.short_name || "";
+        }
+        if (!neighborhoodFallback && types.includes("neighborhood")) {
+          neighborhoodFallback = comp.long_name || comp.short_name || "";
+        }
+        if (types.includes("administrative_area_level_1")) {
+          state = comp.short_name || "";
         }
       }
+      neighborhood = neighborhood || neighborhoodFallback;
 
       return new Response(
-        JSON.stringify({ lat, lng, address, city }),
+        JSON.stringify({ lat, lng, address, city, neighborhood, state }),
         { status: 200, headers: { "Content-Type": "application/json", ...CORS_HEADERS } },
       );
     }

@@ -30,7 +30,6 @@ import live.localapp.local.ui.common.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -52,6 +51,8 @@ import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -62,47 +63,50 @@ import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 
 /**
- * Bottom-bar "+ Create Plan" button.
+ * Bottom-bar "Ask Bo" button — opens the Bo chat directly.
  *
  * Interaction:
  * - Haptic on touch-down (feedback that the press registered)
  * - Scale-shrinks while held
  * - Haptic on release (completion click)
  * - onClick fires on release only (not on cancel / drag-off)
+ *
+ * Accessibility: at large system font scales the "Ask Bo" label grows and
+ * would overrun the left nav pill (fixed-width containers, scaling text).
+ * `compact` drops the label and shrinks to an icon-only pill so the Bo
+ * character alone remains — the caller flips it on above a font-scale
+ * threshold and reclaims the freed width for the nav pill. A
+ * `contentDescription` keeps the button labeled for screen readers when the
+ * visible text is gone.
  */
 @Composable
 fun CreatePlanButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    compact: Boolean = false,
 ) {
     val haptic = LocalHapticFeedback.current
     val scale = remember { Animatable(1f) }
     val scope = rememberCoroutineScope()
 
+    // Chunky 3D "Duolingo" edge — deeper than the gradient's CoralDk so the
+    // 4.dp lip reads as depth beneath the coral-glow face.
+    val edge = Color(0xFFC94A4A)
     Box(
         modifier = modifier
-            .height(52.dp)
+            .height(52.dp) // 48 face + 4 lip
+            // Full: pinned to the old "Create Plan" footprint so the shorter
+            // "Ask Bo" label doesn't shrink the pill. Compact (large fonts):
+            // icon-only square so the nav pill can reclaim the width.
+            .width(if (compact) 56.dp else 156.dp)
+            // Merge into one focusable node reading "Ask Bo" — keeps the button
+            // labeled for screen readers when compact drops the visible text, and
+            // avoids a double announce from the child Text in full mode.
+            .semantics(mergeDescendants = true) { contentDescription = "Ask Bo" }
             .graphicsLayer {
                 scaleX = scale.value
                 scaleY = scale.value
             }
-            .shadow(
-                elevation = 12.dp,
-                shape = RoundedCornerShape(26.dp),
-                ambientColor = AppColors.Coral,
-                spotColor = AppColors.Coral,
-            )
-            .background(
-                Brush.linearGradient(
-                    colors = listOf(
-                        Color(0xFFFF8A8A),
-                        AppColors.Coral,
-                        AppColors.CoralDk,
-                    ),
-                ),
-                RoundedCornerShape(26.dp),
-            )
-            .clip(RoundedCornerShape(26.dp))
             .pointerInput(Unit) {
                 detectTapGestures(
                     onPress = {
@@ -127,34 +131,67 @@ fun CreatePlanButton(
                     },
                 )
             }
-            .padding(horizontal = 14.dp)
             .testTag("plan_create_btn"),
-        contentAlignment = Alignment.Center,
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(28.dp)
-                    .background(Color.White.copy(alpha = 0.22f), CircleShape),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.Rounded.Add,
-                    contentDescription = null,
-                    tint = Color.White,
-                    modifier = Modifier.size(20.dp),
+        // 3D lip — behind the face, peeking 4.dp below it.
+        Box(
+            Modifier.fillMaxWidth().height(48.dp).align(Alignment.BottomCenter)
+                .clip(RoundedCornerShape(26.dp)).background(edge),
+        )
+        // Face — coral glow + gradient, sitting 4.dp above the lip.
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(48.dp)
+                .align(Alignment.TopCenter)
+                .shadow(
+                    elevation = 12.dp,
+                    shape = RoundedCornerShape(26.dp),
+                    ambientColor = AppColors.Coral,
+                    spotColor = AppColors.Coral,
                 )
+                .background(
+                    Brush.linearGradient(
+                        colors = listOf(
+                            Color(0xFFFF8A8A),
+                            AppColors.Coral,
+                            AppColors.CoralDk,
+                        ),
+                    ),
+                    RoundedCornerShape(26.dp),
+                )
+                .border(1.5.dp, edge, RoundedCornerShape(26.dp))
+                .clip(RoundedCornerShape(26.dp))
+                .padding(horizontal = if (compact) 0.dp else 14.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // Bo character as the icon — matches the "Ask Bo" hero card and the
+                // old Create Plan menu's "Ask Bo" item.
+                live.localapp.local.ui.character.Bo(
+                    size = 34.dp,
+                    level = live.localapp.local.ui.character.cachedBoLevel(),
+                    showSparkles = false,
+                    showShadow = false,
+                    modifier = Modifier.size(34.dp),
+                )
+                // Compact (large system fonts): icon only — the label is dropped
+                // so the button can't overrun the nav pill.
+                if (!compact) {
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        "Ask Bo",
+                        maxLines = 1,
+                        softWrap = false,
+                        style = TextStyle(
+                            fontFamily = AppFonts.Body,
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 15.sp,
+                            color = Color.White,
+                        ),
+                    )
+                }
             }
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "Create Plan",
-                style = TextStyle(
-                    fontFamily = AppFonts.Body,
-                    fontWeight = FontWeight.ExtraBold,
-                    fontSize = 15.sp,
-                    color = Color.White,
-                ),
-            )
         }
     }
 }

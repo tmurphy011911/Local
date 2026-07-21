@@ -27,7 +27,7 @@ import live.localapp.local.domain.service.BadgeService
  */
 class LeaderboardViewModel(
     private val repo: LeaderboardRepository,
-    badgeService: BadgeService,
+    private val badgeService: BadgeService,
     private val userPrefsRepo: UserPreferencesRepository,
 ) : ViewModel() {
 
@@ -47,6 +47,13 @@ class LeaderboardViewModel(
         // Current user's profile bits used by the own-row + header.
         val username: String? = null,
         val usernameIsCustom: Boolean = false,
+        // Whether the lobby preferences flow has been completed — drives the
+        // lobby "select preferences" CTA's presence.
+        val preferencesCompleted: Boolean = false,
+        // False until the profile read lands. The lobby CTAs stay hidden until
+        // then so an existing user (custom username / prefs done) never flashes
+        // a card they shouldn't see while the defaults are still in place.
+        val profileLoaded: Boolean = false,
         val homeCity: String? = null,
     ) {
         val current: LeaderboardDto? get() = byScope[scope]
@@ -56,12 +63,37 @@ class LeaderboardViewModel(
     private val _uiState = MutableStateFlow(UiState())
     val uiState: StateFlow<UiState> = _uiState.asStateFlow()
 
+    /** Re-read the profile + leaderboards after an external change (e.g. the
+     *  lobby preferences flow flipping preferences_completed / earning FOMO). */
+    fun onProfileChanged() {
+        loadProfile()
+        refresh()
+    }
+
+    /**
+     * Re-read just the profile bits (username/prefs flags + home city). Called
+     * whenever the lobby (re)enters Home, so `profileLoaded` self-heals if this
+     * app-scoped singleton's one-shot `init` load ran before the local user id
+     * was persisted (fresh signup) or missed the just-created row (read-after-
+     * write). Without this the username + preferences lobby CTAs stay hidden for
+     * the whole session — the fix for a brand-new account seeing an empty lobby.
+     */
+    fun reloadProfile() {
+        loadProfile()
+    }
+
     private fun loadProfile() {
         viewModelScope.launch {
             val uid = userPrefsRepo.getLocalUserId() ?: return@launch
             val p = userPrefsRepo.loadPreferences(uid) ?: return@launch
             _uiState.update {
-                it.copy(username = p.username, usernameIsCustom = p.usernameIsCustom, homeCity = p.hometownName)
+                it.copy(
+                    username = p.username,
+                    usernameIsCustom = p.usernameIsCustom,
+                    preferencesCompleted = p.preferencesCompleted,
+                    homeCity = p.hometownName,
+                    profileLoaded = true,
+                )
             }
         }
     }
@@ -85,8 +117,16 @@ class LeaderboardViewModel(
         viewModelScope.launch {
             val uid = userPrefsRepo.getLocalUserId()
             if (uid == null) { onResult(UsernameUpdateResult.Error); return@launch }
+            val wasCustom = _uiState.value.usernameIsCustom
             val res = userPrefsRepo.updateUsername(uid, name.trim())
-            if (res == UsernameUpdateResult.Success) { loadProfile(); refresh() }
+            if (res == UsernameUpdateResult.Success) {
+                loadProfile(); refresh()
+                // Broadcast so other screens (e.g. the account header) reload the
+                // handle + the just-awarded FOMO without a relaunch.
+                badgeService.notifyDataChanged()
+                // First real handle → the server awards 1000 FOMO; celebrate it.
+                if (!wasCustom) badgeService.emitFomoToast("Username set", 1000)
+            }
             onResult(res)
         }
     }
@@ -129,5 +169,14 @@ class LeaderboardViewModel(
     /** Reset the per-open session: default back to STATE scope (spec §2). */
     fun resetScopeToState() {
         _uiState.update { it.copy(scope = LeaderboardScope.STATE) }
+    }
+
+    /**
+     * USA-only leaderboard: open the sheet on the COUNTRY scope. The City/State
+     * tabs are hidden for now (see [RegionTabs] in LeaderboardSection); when they
+     * come back, switch the sheet-open call back to [resetScopeToState].
+     */
+    fun resetScopeToCountry() {
+        _uiState.update { it.copy(scope = LeaderboardScope.COUNTRY) }
     }
 }

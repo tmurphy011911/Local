@@ -50,3 +50,6 @@ iosApp/scripts/sentry.env
 local_discovery_logs/
 scripts/_tmp_*
 scripts/venues_boston.csv
+
+# JVM crash dumps
+hs_err_pid*.log

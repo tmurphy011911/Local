@@ -54,6 +54,19 @@ const TEAM_NAME_BACKFILL = process.env.TEAM_NAME_BACKFILL === "1";
 // have sub_subcategory/tags still go through Claude. Used to repair events
 // stuck at invalid parent categories like "other".
 const ONLY_CATEGORY = process.env.ONLY_CATEGORY || null;
+// Optional geo scope: BBOX="latMin,latMax,lngMin,lngMax" limits the run to events
+// whose venue_lat/venue_lng fall inside the box. Lets a single-city/island backfill
+// (e.g. Nantucket) classify only its own events instead of the whole global backlog.
+const BBOX = (() => {
+  const raw = (process.env.BBOX || "").trim();
+  if (!raw) return null;
+  const p = raw.split(",").map((s) => parseFloat(s.trim()));
+  if (p.length !== 4 || p.some((n) => Number.isNaN(n))) {
+    console.error(`Invalid BBOX="${raw}" — expected "latMin,latMax,lngMin,lngMax"`);
+    process.exit(1);
+  }
+  return { latMin: p[0], latMax: p[1], lngMin: p[2], lngMax: p[3] };
+})();
 // Events deliberately tagged subcategory="no-public-interest" are hidden from
 // every user-facing surface (carousels filter them out). They carry subcategory
 // but NOT sub_subcategory/tags, so the "unclassified" filter below would
@@ -748,9 +761,14 @@ async function fetchAllEvents() {
   const pageSize = 500;
   // Also filter is_active=true server-side; reclassifying past/inactive rows
   // wastes Anthropic spend and never affects user-visible surfaces.
-  const baseScope = ONLY_CATEGORY
+  let baseScope = ONLY_CATEGORY
     ? `&category=eq.${encodeURIComponent(ONLY_CATEGORY)}&is_active=eq.true`
     : `&is_active=eq.true`;
+  if (BBOX) {
+    baseScope +=
+      `&venue_lat=gte.${BBOX.latMin}&venue_lat=lte.${BBOX.latMax}` +
+      `&venue_lng=gte.${BBOX.lngMin}&venue_lng=lte.${BBOX.lngMax}`;
+  }
 
   const nowIso = new Date().toISOString();
   let cursor = nowIso;       // first page: start_at >= now

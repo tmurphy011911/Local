@@ -6,6 +6,7 @@ import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -94,13 +95,16 @@ fun BoEmptyState(
 
         if (ctaLabel != null && onCta != null) {
             Spacer(Modifier.height(28.dp))
-            Box(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(50))
-                    .background(AppColors.Coral)
-                    .clickable(onClick = onCta)
-                    .padding(horizontal = 32.dp, vertical = 14.dp),
-            ) {
+            // Chunky 3D "Duolingo" pill — kept oval; a deeper-coral edge peeks
+            // 4.dp below the face with a matching stroke (shared house style).
+            val ctaEdge = Color(0xFFC94A4A)
+            Box {
+                // 3D lip — fills the footprint (incl. the 4.dp bottom reveal).
+                Box(
+                    Modifier.matchParentSize()
+                        .background(ctaEdge, RoundedCornerShape(50)),
+                )
+                // Face — sits 4.dp above the lip.
                 Text(
                     text = ctaLabel,
                     style = TextStyle(
@@ -109,6 +113,13 @@ fun BoEmptyState(
                         fontSize = 15.sp,
                         color = Color.White,
                     ),
+                    modifier = Modifier
+                        .padding(bottom = 4.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(AppColors.Coral)
+                        .border(1.5.dp, ctaEdge, RoundedCornerShape(50))
+                        .clickable(onClick = onCta)
+                        .padding(horizontal = 32.dp, vertical = 14.dp),
                 )
             }
         }

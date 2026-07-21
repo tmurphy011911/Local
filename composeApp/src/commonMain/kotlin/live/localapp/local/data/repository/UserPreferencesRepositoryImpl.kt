@@ -36,6 +36,10 @@ private data class UserProfileDto(
     @SerialName("notif_nearby") val notifNearby: Boolean = true,
     @SerialName("notif_venues") val notifVenues: Boolean = true,
     @SerialName("onboarding_complete") val onboardingComplete: Boolean = false,
+    // Set true when the user completes the (lobby-launched) preferences flow.
+    // Server trigger awards 1000 FOMO on the false->true flip; the lobby CTA
+    // hides once it's true.
+    @SerialName("preferences_completed") val preferencesCompleted: Boolean = false,
     @SerialName("location_mode") val locationMode: String = "current",
     @SerialName("manual_location_name") val manualLocationName: String? = null,
     @SerialName("manual_lat") val manualLat: Double? = null,
@@ -47,6 +51,9 @@ private data class UserProfileDto(
     @SerialName("hometown_lng") val hometownLng: Double? = null,
     // Server-stamped on first capture (guard trigger owns it); we only read it.
     @SerialName("hometown_set_at") val hometownSetAt: String? = null,
+    // Geocoder's authoritative state ("PA"); server prefers it over coord-derived
+    // home_state and preserves it once set (set_home_state trigger).
+    @SerialName("geocoded_state") val geocodedState: String? = null,
     // Server-owned (guard trigger protects it on write); we only read it.
     @SerialName("trial_ends_at") val trialEndsAt: String? = null,
     // Server-owned join timestamp (DEFAULT NOW()); read-only on the client.
@@ -61,6 +68,20 @@ private data class UpsertResult(val id: String)
 // profile.
 @Serializable
 private data class UsernameUpdateDto(val username: String)
+
+// Targeted preferences write for the lobby flow. Sends only the three selection
+// columns + preferences_completed=true (which trips the server FOMO award),
+// leaving hometown/location/etc. untouched.
+@Serializable
+private data class PreferencesSelectionDto(
+    @SerialName("selected_neighborhoods") val selectedNeighborhoods: List<String>,
+    @SerialName("selected_venues") val selectedVenues: List<String>,
+    @SerialName("selected_categories") val selectedCategories: List<String>,
+    // No default: the serializer omits default-valued fields (encodeDefaults=false),
+    // and we specifically need preferences_completed=true to be SENT so the flag
+    // flips and the FOMO award fires.
+    @SerialName("preferences_completed") val preferencesCompleted: Boolean,
+)
 
 class UserPreferencesRepositoryImpl(
     private val supabaseClient: SupabaseClient,
@@ -96,6 +117,10 @@ class UserPreferencesRepositoryImpl(
             notifNearby = prefs.notifNearby,
             notifVenues = prefs.notifVenues,
             onboardingComplete = true,
+            // Default false is omitted by the serializer (encodeDefaults=false),
+            // so general saves never clobber it; only the preferences flow sends
+            // true to flip it (and trip the FOMO award trigger).
+            preferencesCompleted = prefs.preferencesCompleted,
             locationMode = prefs.locationMode,
             manualLocationName = prefs.manualLocationName,
             manualLat = prefs.manualLat,
@@ -103,6 +128,7 @@ class UserPreferencesRepositoryImpl(
             hometownName = prefs.hometownName,
             hometownLat = prefs.hometownLat,
             hometownLng = prefs.hometownLng,
+            geocodedState = prefs.geocodedState,
         )
 
         val result = if (existingId != null) {
@@ -161,6 +187,7 @@ class UserPreferencesRepositoryImpl(
                 notifNearby = dto.notifNearby,
                 notifVenues = dto.notifVenues,
                 onboardingComplete = dto.onboardingComplete,
+                preferencesCompleted = dto.preferencesCompleted,
                 locationMode = dto.locationMode,
                 manualLocationName = dto.manualLocationName,
                 manualLat = dto.manualLat,
@@ -169,6 +196,7 @@ class UserPreferencesRepositoryImpl(
                 hometownLat = dto.hometownLat,
                 hometownLng = dto.hometownLng,
                 hometownSetAt = dto.hometownSetAt,
+                geocodedState = dto.geocodedState,
                 trialEndsAt = dto.trialEndsAt,
                 createdAt = dto.createdAt,
             ).also { prefs ->
@@ -312,6 +340,10 @@ class UserPreferencesRepositoryImpl(
             notifNearby = prefs.notifNearby,
             notifVenues = prefs.notifVenues,
             onboardingComplete = true,
+            // Default false is omitted by the serializer (encodeDefaults=false),
+            // so general saves never clobber it; only the preferences flow sends
+            // true to flip it (and trip the FOMO award trigger).
+            preferencesCompleted = prefs.preferencesCompleted,
             locationMode = prefs.locationMode,
             manualLocationName = prefs.manualLocationName,
             manualLat = prefs.manualLat,
@@ -319,6 +351,7 @@ class UserPreferencesRepositoryImpl(
             hometownName = prefs.hometownName,
             hometownLat = prefs.hometownLat,
             hometownLng = prefs.hometownLng,
+            geocodedState = prefs.geocodedState,
         )
 
         // Check if row exists already
@@ -367,6 +400,29 @@ class UserPreferencesRepositoryImpl(
             } else {
                 UsernameUpdateResult.Error
             }
+        }
+    }
+
+    override suspend fun savePreferencesSelection(
+        userId: String,
+        neighborhoods: List<String>,
+        venues: List<String>,
+        categories: List<String>,
+    ): Boolean {
+        return try {
+            supabaseClient.from("user_profiles")
+                .update(
+                    PreferencesSelectionDto(
+                        selectedNeighborhoods = neighborhoods,
+                        selectedVenues = venues,
+                        selectedCategories = categories,
+                        preferencesCompleted = true,
+                    ),
+                ) { filter { eq("id", userId) } }
+            true
+        } catch (e: Exception) {
+            println("savePreferencesSelection error: ${e.message}")
+            false
         }
     }
 
