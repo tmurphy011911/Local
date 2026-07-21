@@ -159,3 +159,11 @@ actual fun requestNotificationPermission(onResult: (Boolean) -> Unit) {
         }
     }
 }
+
+actual fun flushPersistentStorage() {
+    // Force NSUserDefaults (the auth session's backing store) to write to disk
+    // synchronously, so a force-kill right after logout can't lose the session
+    // deletion. synchronize() is deprecated but remains the correct escape hatch
+    // for "must be on disk before an imminent kill."
+    NSUserDefaults.standardUserDefaults.synchronize()
+}

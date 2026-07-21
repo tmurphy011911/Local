@@ -285,3 +285,8 @@ actual fun requestNotificationPermission(onResult: (Boolean) -> Unit) {
         onResult(granted)
     }
 }
+
+actual fun flushPersistentStorage() {
+    // No-op: SharedPreferences apply()-writes are flushed by QueuedWork during
+    // process teardown, so logout survives a swipe-kill without an explicit sync.
+}

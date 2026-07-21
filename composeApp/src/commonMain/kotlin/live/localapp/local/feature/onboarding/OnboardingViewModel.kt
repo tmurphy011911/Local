@@ -159,14 +159,19 @@ class OnboardingViewModel(
     }
 
     fun onAllowLocation(lat: Double, lng: Double) {
-        val city = nearestCity(lat, lng)
-        println("onAllowLocation: lat=$lat lng=$lng city=$city")
+        val ref = nearestCityRef(lat, lng)
+        println("onAllowLocation: lat=$lat lng=$lng city=${ref.name} state=${ref.state}")
         _state.update {
             it.copy(
                 locationGranted = true,
                 userLat = lat,
                 userLng = lng,
-                userCity = city,
+                userCity = ref.name,
+                // Set state on the GPS path too (manual entry already does via the
+                // geocoder). Persisted as geocoded_state, which set_home_state
+                // trusts over coord-derived state — so a new GPS signup resolves a
+                // home_state and the Daily Local card shows.
+                userState = ref.state,
                 locationMode = "current",
                 // Shortened onboarding — straight to NOTIFICATIONS (skip SUCCESS
                 // + preference steps, kept for a future lobby CTA). No need to
@@ -629,32 +634,41 @@ class OnboardingViewModel(
         }
     }
 
-    private fun nearestCity(lat: Double, lng: Double): String {
-        data class CityRef(val name: String, val lat: Double, val lng: Double)
-        val cities = listOf(
-            CityRef("Boston", 42.3601, -71.0589),
-            CityRef("Cambridge", 42.3736, -71.1097),
-            CityRef("Somerville", 42.3876, -71.0995),
-            CityRef("Waltham", 42.3765, -71.2356),
-            CityRef("Brookline", 42.3318, -71.1212),
-            CityRef("Newton", 42.3370, -71.2092),
-            CityRef("Worcester", 42.2626, -71.8023),
-            CityRef("Springfield", 42.1015, -72.5898),
-            CityRef("Lowell", 42.6334, -71.3162),
-            CityRef("Providence", 41.8240, -71.4128),
-            CityRef("New York", 40.7128, -74.0060),
-            CityRef("Portland", 43.6591, -70.2568),
-            CityRef("Philadelphia", 39.9526, -75.1652),
-            CityRef("Pittsburgh", 40.4406, -79.9959),
-            CityRef("Allentown", 40.6084, -75.4902),
-            CityRef("Harrisburg", 40.2732, -76.8839),
-        )
-        return cities.minByOrNull {
+    private data class CityRef(val name: String, val lat: Double, val lng: Double, val state: String)
+
+    // Known metros with their state. Carrying the state lets the GPS onboarding
+    // path (onAllowLocation) set userState authoritatively, so the server's
+    // set_home_state trigger can resolve a home_state even when the raw coords
+    // never land / the city name isn't an exact metros-table match. Without a
+    // state, a new GPS signup gets home_state = NULL and get_daily_quiz returns
+    // available:false -> the Daily Local card silently never appears.
+    private val onboardingCities = listOf(
+        CityRef("Boston", 42.3601, -71.0589, "MA"),
+        CityRef("Cambridge", 42.3736, -71.1097, "MA"),
+        CityRef("Somerville", 42.3876, -71.0995, "MA"),
+        CityRef("Waltham", 42.3765, -71.2356, "MA"),
+        CityRef("Brookline", 42.3318, -71.1212, "MA"),
+        CityRef("Newton", 42.3370, -71.2092, "MA"),
+        CityRef("Worcester", 42.2626, -71.8023, "MA"),
+        CityRef("Springfield", 42.1015, -72.5898, "MA"),
+        CityRef("Lowell", 42.6334, -71.3162, "MA"),
+        CityRef("Providence", 41.8240, -71.4128, "RI"),
+        CityRef("New York", 40.7128, -74.0060, "NY"),
+        CityRef("Portland", 43.6591, -70.2568, "ME"),
+        CityRef("Philadelphia", 39.9526, -75.1652, "PA"),
+        CityRef("Pittsburgh", 40.4406, -79.9959, "PA"),
+        CityRef("Allentown", 40.6084, -75.4902, "PA"),
+        CityRef("Harrisburg", 40.2732, -76.8839, "PA"),
+    )
+
+    private fun nearestCityRef(lat: Double, lng: Double): CityRef =
+        onboardingCities.minByOrNull {
             val dLat = it.lat - lat
             val dLng = it.lng - lng
             dLat * dLat + dLng * dLng
-        }?.name ?: "Boston"
-    }
+        } ?: onboardingCities.first()
+
+    private fun nearestCity(lat: Double, lng: Double): String = nearestCityRef(lat, lng).name
 
     companion object {
         fun categoryIcon(key: String): ImageVector = when (key.lowercase()) {

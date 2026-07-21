@@ -70,3 +70,12 @@ expect fun requestAppReview()
 
 /** Fetch subscription pricing from RevenueCat. Returns monthly price, annual price, and intro price (if eligible). */
 expect fun fetchSubscriptionPricing(onResult: (monthlyPrice: String?, annualPrice: String?, introPrice: String?) -> Unit)
+
+/**
+ * Force any pending key-value persistence to disk NOW. Needed on iOS, where the
+ * auth session store (NSUserDefaults) persists writes asynchronously with no
+ * flush-on-terminate guarantee — so `logout -> force-kill -> relaunch` can lose
+ * the session deletion and leave the user logged in. Call after clearing the
+ * session. No-op on Android (SharedPreferences flushes on process teardown).
+ */
+expect fun flushPersistentStorage()

@@ -439,6 +439,11 @@ fun App() {
                             try {
                                 supabaseClient.auth.clearSession()
                             } catch (_: Exception) {}
+                            // Flush the session deletion to disk NOW. On iOS the
+                            // session store persists asynchronously, so without this
+                            // a force-kill right after logout leaves the user logged
+                            // in on relaunch. No-op on Android.
+                            try { live.localapp.local.platform.flushPersistentStorage() } catch (_: Exception) {}
                             live.localapp.local.observability.Analytics.track(
                                 live.localapp.local.observability.AnalyticsEvent.signedOut()
                             )
