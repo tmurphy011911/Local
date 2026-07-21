@@ -2576,7 +2576,14 @@ async function fetchAllEvents(
         p_radius_miles: radiusMiles,
         p_subcategory: subcategoryFocus,
         p_top_venues: SUBCATEGORY_VENUE_RAIL_CAP,
-        p_events_per_venue: 6,
+        // Pull each venue's full near-term slate (not a flat 6). A 6-cap
+        // flattened every venue to the same count, so a high-volume room like
+        // Johnny Brenda's (100 upcoming music events) tied with a 6-event bar
+        // and lost the display sort to arbitrary insertion order. At
+        // CAROUSEL_DISPLAY_LIMIT the venue ranks on true volume and its "At
+        // {venue}" rail is full. (Restores the 2026-07-20 develop fix that this
+        // branch lineage was missing.)
+        p_events_per_venue: CAROUSEL_DISPLAY_LIMIT,
       })
     : Promise.resolve({ data: [], error: null });
 
