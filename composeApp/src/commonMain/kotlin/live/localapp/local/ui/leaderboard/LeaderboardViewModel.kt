@@ -170,4 +170,13 @@ class LeaderboardViewModel(
     fun resetScopeToState() {
         _uiState.update { it.copy(scope = LeaderboardScope.STATE) }
     }
+
+    /**
+     * USA-only leaderboard: open the sheet on the COUNTRY scope. The City/State
+     * tabs are hidden for now (see [RegionTabs] in LeaderboardSection); when they
+     * come back, switch the sheet-open call back to [resetScopeToState].
+     */
+    fun resetScopeToCountry() {
+        _uiState.update { it.copy(scope = LeaderboardScope.COUNTRY) }
+    }
 }

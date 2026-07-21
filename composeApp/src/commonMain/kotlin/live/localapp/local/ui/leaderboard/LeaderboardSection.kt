@@ -139,7 +139,9 @@ fun LeaderboardCard(
                     // pressable BEFORE clip/background/border so its scale layer wraps
                     // the whole card box, not just the inner content.
                     .pressable(onClick = {
-                        viewModel.resetScopeToState()
+                        // USA-only leaderboard for now — open on COUNTRY scope.
+                        // Restore resetScopeToState() when City/State tabs return.
+                        viewModel.resetScopeToCountry()
                         showSheet = true
                     }, scale = 0.94f)
                     .clip(RoundedCornerShape(16.dp))
@@ -268,7 +270,7 @@ private fun leaderboardCtaSubtitle(state: LeaderboardViewModel.UiState): String 
 @Composable
 private fun LeaderboardSheetContent(viewModel: LeaderboardViewModel) {
     val state by viewModel.uiState.collectAsState()
-    val onSelectScope = viewModel::selectScope
+    // val onSelectScope = viewModel::selectScope // restore with RegionTabs when City/State tabs return
     var showUsernameDialog by remember { mutableStateOf(false) }
     val current = state.current
     val rows = current?.rows ?: emptyList()
@@ -325,13 +327,16 @@ private fun LeaderboardSheetContent(viewModel: LeaderboardViewModel) {
                         style = AppType.Logo.copy(fontSize = 26.sp, color = LbInk),
                     )
                 }
-                RegionTabs(
-                    scope = state.scope,
-                    cityLabel = state.byScope[LeaderboardScope.CITY]?.location ?: "City",
-                    stateLabel = state.byScope[LeaderboardScope.STATE]?.location ?: "State",
-                    countryLabel = "USA",
-                    onSelect = onSelectScope,
-                )
+                // USA-only leaderboard for now — the City/State/USA tab row is
+                // hidden. The sheet opens on COUNTRY scope (resetScopeToCountry).
+                // Restore RegionTabs(...) here when City/State tabs return.
+                // RegionTabs(
+                //     scope = state.scope,
+                //     cityLabel = state.byScope[LeaderboardScope.CITY]?.location ?: "City",
+                //     stateLabel = state.byScope[LeaderboardScope.STATE]?.location ?: "State",
+                //     countryLabel = "USA",
+                //     onSelect = onSelectScope,
+                // )
                 Spacer(Modifier.height(8.dp))
                 // The caller's own row, pinned with the header. Shows the actual
                 // username; a pencil to set a custom one appears until they have.
