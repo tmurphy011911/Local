@@ -615,17 +615,24 @@ function cleanEvents(
 // Cross-source deduplication
 // ════════════════════════════════════════════════════════════════
 
+// Canonicalizes a venue_name so the same physical venue collapses to one key
+// even when it's ingested under several spellings ("The Wilbur" /
+// "The Wilbur Theatre" / "Wilbur Theatre" are all `wilbur`). Used both by
+// cross-source dedup AND by the "At {Venue}" rail grouping so a fragmented
+// venue name can't split one venue's events across multiple (often under-4,
+// non-rendering) rail buckets. Module-scoped so both sites share the exact
+// same normalization.
+function normalizeVenue(name: string): string {
+  return name.toLowerCase().trim()
+    .replace(/,.*/, "")
+    .replace(/^the\s+/, "")
+    .replace(/\s+(theatre|theater|hall|center|arena|club|room|lounge|stage|pavilion|amphitheater|amphitheatre)$/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function deduplicateCrossSource(events: ProcessedEvent[]): ProcessedEvent[] {
   interface DedupeKey { venue: string; date: string; }
-
-  function normalizeVenue(name: string): string {
-    return name.toLowerCase().trim()
-      .replace(/,.*/, "")
-      .replace(/^the\s+/, "")
-      .replace(/\s+(theatre|theater|hall|center|arena|club|room|lounge|stage|pavilion|amphitheater|amphitheatre)$/i, "")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
 
   function dedupeKey(e: ProcessedEvent): string {
     const venue = normalizeVenue(e.venue_name ?? "");
@@ -1323,11 +1330,17 @@ function buildDynamicSubcarousels(
     addCarousel(`${subcategory}-${subSub}`, subSubcategoryDisplayName(subSub), subSubEvents);
   }
 
-  // Venue dimension (venues with 2+ events)
+  // Venue dimension (venues with 4+ events).
+  // Key on the NORMALIZED venue name, not the raw string, so a venue that's
+  // ingested under several spellings ("The Wilbur" / "The Wilbur Theatre" /
+  // "Wilbur Theatre") collapses into one rail instead of splitting its events
+  // across several buckets — each of which can fall under the >= 4 render bar
+  // and silently drop shows (e.g. Daniel Sloss vanishing from "At The Wilbur").
   const byVenue = new Map<string, ProcessedEvent[]>();
   for (const e of events) {
     if (!e.venue_name) continue;
-    const key = e.venue_name.toLowerCase();
+    const key = normalizeVenue(e.venue_name);
+    if (!key) continue;
     const arr = byVenue.get(key);
     if (arr) arr.push(e);
     else byVenue.set(key, [e]);
@@ -1345,10 +1358,22 @@ function buildDynamicSubcarousels(
     .filter(([, v]) => v.length >= 4)
     .sort((a, b) => b[1].length - a[1].length)
     .slice(0, SUBCATEGORY_VENUE_RAIL_CAP);
-  for (const [, venueEvents] of sortedVenues) {
-    const venueName = venueEvents[0].venue_name!;
+  for (const [normKey, venueEvents] of sortedVenues) {
+    // Display name: the most common raw spelling in the bucket (deterministic
+    // tie-break: shortest, then alphabetical). Keeps the rail title a real
+    // venue_name the client's "See All" → venue-page routing can resolve,
+    // while the slug uses the stable normalized key so it doesn't flip between
+    // builds with event ordering.
+    const spellingCounts = new Map<string, number>();
+    for (const e of venueEvents) {
+      const n = e.venue_name!;
+      spellingCounts.set(n, (spellingCounts.get(n) ?? 0) + 1);
+    }
+    const venueName = [...spellingCounts.entries()]
+      .sort((a, b) =>
+        b[1] - a[1] || a[0].length - b[0].length || a[0].localeCompare(b[0]))[0][0];
     addCarousel(
-      `${subcategory}-venue-${venueName.toLowerCase().replace(/ /g, "-").substring(0, 30)}`,
+      `${subcategory}-venue-${normKey.replace(/ /g, "-").substring(0, 30)}`,
       `At ${venueName}`,
       venueEvents,
     );
@@ -2562,6 +2587,34 @@ async function fetchAllEvents(
     return data ?? [];
   }
 
+  // The rank-stratified MV (mv_events_for_geo) samples ~900 rows per metro,
+  // which starves single-category rails (Live Music, Arts, Comedy, Nightlife,
+  // Outdoors) in dense or lower-rank markets: e.g. Philadelphia has 76 upcoming
+  // music events in radius but the MV surfaces <15, so the rail fails
+  // MIN_CAROUSEL_SIZE=15 and never renders. Mirror the always-on / city-scoped
+  // direct-fetch pattern — pull the soonest upcoming events straight from
+  // `events` (bounded, same geo box + 90-day horizon as the MV) to backfill the
+  // pool the topical rails draw from. Bounded to UPCOMING_PAGES×pageSize and run
+  // in the same Promise.all, so it adds no serial latency. Deduped against the
+  // MV pool below so nothing double-counts.
+  async function fetchUpcomingPage(page: number): Promise<EventRow[]> {
+    const { data, error } = await supabase
+      .from("events")
+      .select("*")
+      .eq("is_active", true)
+      .neq("category", "always_on")
+      .gte("start_at", nowIso())
+      .lte("start_at", daysFromNowIso(90))
+      .gte("venue_lat", minLat)
+      .lte("venue_lat", maxLat)
+      .gte("venue_lng", minLng)
+      .lte("venue_lng", maxLng)
+      .order("start_at", { ascending: true })
+      .range(page * pageSize, (page + 1) * pageSize - 1);
+    if (error) throw error;
+    return data ?? [];
+  }
+
   // When the request is for a subcategory tab, fire a venue-diverse fetch
   // in parallel. mv_events_for_geo's rank-stratified output starves the
   // venue diversity that the "At <venue>" rails need (BPL's high venue
@@ -2587,7 +2640,9 @@ async function fetchAllEvents(
       })
     : Promise.resolve({ data: [], error: null });
 
-  const [mvResp, venueDiverseResp, ...alwaysOnPages] = await Promise.all([
+  const ALWAYS_ON_PAGES = 3;
+  const UPCOMING_PAGES = 2;
+  const [mvResp, venueDiverseResp, ...extraPages] = await Promise.all([
     supabase.rpc("mv_events_for_geo", {
       p_lat: lat,
       p_lng: lng,
@@ -2595,9 +2650,18 @@ async function fetchAllEvents(
       p_max_results: 7000,
     }),
     venueDiverseRpc,
-    ...Array.from({ length: 3 }, (_, i) => fetchAlwaysOnPage(i)),
+    ...Array.from({ length: ALWAYS_ON_PAGES }, (_, i) => fetchAlwaysOnPage(i)),
+    ...Array.from({ length: UPCOMING_PAGES }, (_, i) => fetchUpcomingPage(i)),
   ]);
-  if (mvResp.error) throw mvResp.error;
+  const alwaysOnPages = extraPages.slice(0, ALWAYS_ON_PAGES);
+  const upcomingPages = extraPages.slice(ALWAYS_ON_PAGES);
+  // Non-fatal: if the rank-stratified MV read fails (e.g. the MV is briefly
+  // unpopulated mid-refresh, or a transient RPC error) don't 500 the whole
+  // feed — degrade to the direct always-on + upcoming fetches below, which
+  // cover the same events (rank-degraded, but a populated feed beats a blank one).
+  if (mvResp.error) {
+    console.error("[carousels] mv_events_for_geo failed, falling back to direct fetch:", mvResp.error);
+  }
   // Tolerate venue-diverse RPC errors silently — venue rails are
   // additive; degraded mode is "main RPC's venue diversity only", not
   // a broken page.
@@ -2654,7 +2718,29 @@ async function fetchAllEvents(
     }))
     .filter(e => e.distance_miles == null || e.distance_miles <= radiusMiles);
 
-  return [...mvProcessed, ...venueDiverseProcessed, ...alwaysOnProcessed];
+  // Backfill upcoming events the rank-stratified MV dropped (see
+  // fetchUpcomingPage) so the topical rails aren't starved in under-sampled
+  // markets. Dedup against everything already in the pool — including within
+  // the upcoming pages themselves — so nothing double-counts.
+  const poolSeenIds = new Set<string>([
+    ...mvProcessed.map(e => e.id),
+    ...venueDiverseProcessed.map(e => e.id),
+    ...alwaysOnProcessed.map(e => e.id),
+  ]);
+  const upcomingProcessed: ProcessedEvent[] = [];
+  for (const row of upcomingPages.flat()) {
+    if (poolSeenIds.has(row.id)) continue;
+    poolSeenIds.add(row.id);
+    const distance_miles = (row.event_lat != null && row.event_lng != null)
+      ? distanceMiles(lat, lng, row.event_lat, row.event_lng)
+      : (row.venue_lat != null && row.venue_lng != null)
+        ? distanceMiles(lat, lng, row.venue_lat, row.venue_lng)
+        : null;
+    if (distance_miles != null && distance_miles > radiusMiles) continue;
+    upcomingProcessed.push({ ...row, distance_miles, venue_description: null, venue_photo_url: null });
+  }
+
+  return [...mvProcessed, ...venueDiverseProcessed, ...alwaysOnProcessed, ...upcomingProcessed];
 }
 
 // City-scoped fetch for the neighborhood rails ("The <City> Scene",
