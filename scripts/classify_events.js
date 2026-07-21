@@ -41,6 +41,36 @@ const DRY_RUN = process.env.DRY_RUN === "1";
 const FORCE = process.env.FORCE === "1";
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "60", 10) * 1000;
 
+// Write throttle — the result-write loop must NEVER saturate the Nano prod DB's
+// IO again (an unthrottled concurrency-10 / no-delay write took prod down on
+// 2026-07-20). Low concurrency + a pause between waves + an adaptive health
+// probe that backs off when the DB warms. Safe defaults; tunable via env.
+const WRITE_CONCURRENCY = parseInt(process.env.WRITE_CONCURRENCY || "5", 10);
+let WRITE_WAVE_DELAY_MS = parseInt(process.env.WRITE_WAVE_DELAY_MS || "300", 10);
+const WRITE_PROBE_SLOW_MS = 1500;
+const WRITE_PROBE_HARD_MS = 8000;
+const WRITE_MAX_DELAY_MS = 5000;
+let _writeWaveCount = 0;
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Cheap DB health probe; grows the inter-wave delay when the DB is warm and
+// pauses when it's unreachable, so a big backfill can't repeat the outage.
+async function probeDbHealth() {
+  const start = Date.now();
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), WRITE_PROBE_HARD_MS);
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_config?limit=1&select=key`, {
+      headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` },
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    return { ok: res.ok, ms: Date.now() - start };
+  } catch {
+    return { ok: false, ms: Date.now() - start };
+  }
+}
+
 const REVERT_MODE = process.argv.includes("--revert");
 // When set, skip the Claude batch and only apply the pattern-based auto-exclusion
 // pass. Useful for backfilling `no-public-interest` across already-classified
@@ -853,10 +883,26 @@ async function fetchAllEvents() {
 // ── Write updates back to Supabase ──
 
 async function writeUpdates(updates, originalEvents) {
-  const concurrency = 10;
+  const concurrency = WRITE_CONCURRENCY;
 
   for (let i = 0; i < updates.length; i += concurrency) {
     const batch = updates.slice(i, i + concurrency);
+
+    // Throttle: pause between waves, and every 25 waves probe DB health and
+    // back off if it's warming (protects the Nano prod DB from IO exhaustion).
+    if (_writeWaveCount > 0) await _sleep(WRITE_WAVE_DELAY_MS);
+    if (++_writeWaveCount % 25 === 0) {
+      const h = await probeDbHealth();
+      if (!h.ok || h.ms > WRITE_PROBE_HARD_MS) {
+        WRITE_WAVE_DELAY_MS = Math.min(WRITE_MAX_DELAY_MS, Math.round(WRITE_WAVE_DELAY_MS * 1.5));
+        console.warn(`  ⚠ DB slow/unreachable (${h.ms}ms) — pausing 30s, delay→${WRITE_WAVE_DELAY_MS}ms`);
+        await _sleep(30000);
+      } else if (h.ms > WRITE_PROBE_SLOW_MS) {
+        WRITE_WAVE_DELAY_MS = Math.min(WRITE_MAX_DELAY_MS, Math.round(WRITE_WAVE_DELAY_MS * 1.3));
+        console.warn(`  ↑ DB warm (${h.ms}ms) — delay→${WRITE_WAVE_DELAY_MS}ms`);
+      }
+    }
+
     await Promise.all(batch.map(async (u) => {
       const original = originalEvents.find(e => e.id === u.id);
       const url = `${SUPABASE_URL}/rest/v1/events?id=eq.${u.id}`;

@@ -749,6 +749,18 @@ function weightsForUser(effectiveRadius: number): ScoreWeights {
 // supply-driven: no metro list, no per-city tuning, scales to any new market.
 const ADAPTIVE_RADIUS_FLOOR_MILES = 15;  // always show a full-city view
 const ADAPTIVE_FEED_TARGET = 120;        // events wanted for a diverse feed
+
+// The density-adaptive reach exists to stop far-metro spillover when the user
+// hasn't bounded the search — the "Any distance" case (old clients send it as
+// 200 → clamped to 100; the radius slider's max maps here too). But when the
+// user picks a SPECIFIC radius, that value is an explicit contract: an exurban
+// user who slides to 40 mi to reach the next city over (Perkasie → Philly at
+// ~29 mi) must get 40 mi, not have it silently tightened to ~25 because their
+// local small-town cluster already hit ADAPTIVE_FEED_TARGET. So only apply the
+// adaptive tightening at/above this "effectively unbounded" threshold; any
+// tighter requested radius is honored exactly. Chosen at 90 so the legacy
+// "Any" = 200→100 value trips it while every real slider pick (≤ ~75) does not.
+const ADAPTIVE_APPLIES_AT_OR_ABOVE_MILES = 90;
 function adaptiveRadiusMiles(events: ProcessedEvent[], fetchRadiusMiles: number): number {
   const ds = events
     .map(e => e.distance_miles)
@@ -3572,7 +3584,12 @@ Deno.serve(async (req) => {
       // concentrated on that reach so the whole 900-row budget lands nearby
       // (~715 rows within 15mi for Manayunk). Sparse areas don't tighten, so
       // they skip the second call and keep the wide probe.
-      const probeRadius = adaptiveRadiusMiles(probeEvents, radiusMiles);
+      // Only tighten below the request when the user left the search
+      // effectively unbounded ("Any"); an explicit radius is honored, so its
+      // full width is fetched and the densify re-fetch is skipped.
+      const probeRadius = radiusMiles >= ADAPTIVE_APPLIES_AT_OR_ABOVE_MILES
+        ? adaptiveRadiusMiles(probeEvents, radiusMiles)
+        : radiusMiles;
       const rawEvents = probeRadius < radiusMiles
         ? await fetchAllEvents(supabase, lat, lng, probeRadius, subcategoryFocus)
         : probeEvents;
@@ -3619,7 +3636,9 @@ Deno.serve(async (req) => {
     // tighten to the floor (excluding far-metro spillover), sparse areas keep
     // the fetched width. Computed from the full fetched pool before any rail
     // filtering so every rail shares one consistent, supply-driven radius.
-    const effectiveRadius = adaptiveRadiusMiles(allEvents, radiusMiles);
+    const effectiveRadius = radiusMiles >= ADAPTIVE_APPLIES_AT_OR_ABOVE_MILES
+      ? adaptiveRadiusMiles(allEvents, radiusMiles)
+      : radiusMiles;
     const weights = weightsForUser(effectiveRadius);
     const nearestCity = locationName || nearestCityName(lat, lng);
 
