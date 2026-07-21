@@ -628,9 +628,14 @@ Deno.serve(async (req) => {
         .map((e) => {
           const venueKey = normalizeVenueKey(e.venue_name);
           const meta = venueKey ? venueMeta[venueKey] : undefined;
-          // Last-resort city photo for venueless municipal events.
+          // Last-resort city photo for venueless municipal events. Skip it for
+          // farmers markets: their source carries no image and the market has
+          // no venue photo, so every image-less market in a city would wear the
+          // identical city skyline. Let them fall through to the client's
+          // category gradient instead. Mirrors carousels/index.ts.
+          const isFarmersMarket = (e.subcategory ?? "").toLowerCase() === "farmers-market";
           const cityKey = (e.venue_city ?? "").trim().toLowerCase();
-          const cityPhoto = cityKey ? cityPhotos[cityKey] : undefined;
+          const cityPhoto = isFarmersMarket ? undefined : (cityKey ? cityPhotos[cityKey] : undefined);
           const resolvedImage = e.image_url || meta?.photoUrl || cityPhoto || null;
           const venueRank = meta?.rank ?? null;
           // Prefer event_lat/lng (real location) over venue HQ — same basis
