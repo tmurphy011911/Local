@@ -81,6 +81,23 @@ actual fun RequestLocationEffect(
                     }
                 }
 
+                // Retain the manager + delegate for the entire lifetime of the suspend.
+                // CLLocationManager keeps only a WEAK reference to its delegate, and the app
+                // must hold a strong reference to the manager itself. Both are locals to this
+                // dispatch block, so once it returns — right after the permission prompt is
+                // shown, while we're suspended waiting for the user — they become eligible for
+                // deallocation. When the user then taps "Allow", iOS calls back into a freed
+                // delegate and the app crashes (EXC_BAD_ACCESS). Pinning both to the
+                // continuation keeps them alive until it resumes or is cancelled.
+                continuation.invokeOnCancellation {
+                    // The string template references `delegate` so the closure captures a
+                    // strong reference to it (and to `manager`) — that is what keeps both
+                    // alive for the suspend's duration.
+                    println("LocationEffect: cancelled — releasing manager + delegate $delegate")
+                    manager.delegate = null
+                    manager.stopUpdatingLocation()
+                }
+
                 // Check status BEFORE setting delegate to avoid double-resume
                 val status = CLLocationManager.authorizationStatus()
                 println("LocationEffect: initial status = $status")
