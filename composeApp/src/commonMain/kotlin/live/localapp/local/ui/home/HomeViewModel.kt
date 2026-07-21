@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.datetime.Instant
@@ -53,6 +54,8 @@ data class HomeUiState(
     val carouselsByCategory: Map<String, List<CarouselSection>> = emptyMap(),
     val isLoading: Boolean = false,
     val isRefreshing: Boolean = false,
+    // Bo pull-to-refresh: whether the last manual refresh failed.
+    val refreshFailed: Boolean = false,
     val error: String? = null,
     val userPreferences: UserPreferences? = null,
     val radiusFilter: Double? = null,
@@ -698,13 +701,24 @@ class HomeViewModel(
 
     fun refresh() {
         carouselRepository.invalidateCaches()
-        _uiState.update { it.copy(isRefreshing = true) }
-        loadCarousels()
-        loadSavedThisWeek()
+        _uiState.update { it.copy(isRefreshing = true, refreshFailed = false) }
+        viewModelScope.launch {
+            loadCarousels()
+            val savedJob = loadSavedThisWeek()
+            carouselJob?.join()
+            savedJob.join()
+
+            val failed = _uiState.value.error != null
+            _uiState.update { it.copy(isRefreshing = false, refreshFailed = failed) }
+            badgeService.emitInfoToast(
+                if (failed) "Couldn't refresh — tap to retry" else "Fresh picks, just for you",
+                star = !failed,
+            )
+        }
     }
 
-    private fun loadSavedThisWeek() {
-        viewModelScope.launch {
+    private fun loadSavedThisWeek(): Job = viewModelScope.launch {
+        run {
             try {
                 val userId = userPreferencesRepository.getLocalUserId() ?: return@launch
                 val eventIds = communityInterestRepository.getFavoriteEventIds(userId)
@@ -833,7 +847,6 @@ class HomeViewModel(
                             carouselsByCategory = nextMap,
                             availableCategories = categories,
                             isLoading = false,
-                            isRefreshing = false,
                         )
                     }
                 }
@@ -863,7 +876,6 @@ class HomeViewModel(
                                     carouselsByCategory = nextMap,
                                     availableCategories = cats,
                                     isLoading = false,
-                                    isRefreshing = false,
                                     error = null,
                                 )
                             }
@@ -871,7 +883,7 @@ class HomeViewModel(
                         return@launch
                     } catch (_: Exception) {}
                 }
-                _uiState.update { it.copy(error = e.message, isLoading = false, isRefreshing = false) }
+                _uiState.update { it.copy(error = e.message, isLoading = false) }
             }
         }
     }

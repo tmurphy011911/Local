@@ -88,6 +88,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import live.localapp.local.ui.common.AppRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -386,13 +387,16 @@ fun HomeScreen(viewModel: HomeViewModel, onEventClick: (Event, CardTransitionInf
         val conciergePending = conciergePrompt == null
         val animateConciergePrompt = conciergePrompt != null && conciergePrompt != animatedPrompt
 
-        PullToRefreshBox(
+        AppRefreshBox(
             isRefreshing = state.isRefreshing,
             onRefresh = { viewModel.refresh() },
+            refreshFailed = state.refreshFailed,
             modifier = Modifier.fillMaxSize().nestedScroll(dismissKeyboardOnScroll),
         ) {
+            val homeListState = androidx.compose.foundation.lazy.rememberLazyListState()
             @OptIn(ExperimentalFoundationApi::class)
             LazyColumn(
+                state = homeListState,
                 modifier = Modifier
                     .fillMaxSize()
                     .padding(bottom = 80.dp),
@@ -1237,8 +1241,8 @@ fun EventCard(data: EventCardData, modifier: Modifier = Modifier.width(156.dp), 
                     Icon(data.icon, contentDescription = null, modifier = Modifier.size(32.dp), tint = AppColors.Ink3.copy(alpha = 0.3f))
                 }
 
-                // Tag pill — only shown on "For You" tab
                 if (data.showTag) {
+                    // Tag pill — only shown on "For You" tab
                     Text(
                         data.tag,
                         modifier = Modifier

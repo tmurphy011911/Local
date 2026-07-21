@@ -76,6 +76,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import live.localapp.local.ui.common.AppRefreshBox
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -263,9 +264,10 @@ fun PlacesScreen(
             }
 
             // ── Content ──
-            PullToRefreshBox(
+            AppRefreshBox(
                 isRefreshing = state.isRefreshing,
                 onRefresh = { viewModel.refresh() },
+                refreshFailed = state.refreshFailed,
                 modifier = Modifier.weight(1f).nestedScroll(dismissKeyboardOnScroll)
                     // Also dismiss when the user taps a result card (event/place)
                     // or any empty space in the results. Observes the initial-pass

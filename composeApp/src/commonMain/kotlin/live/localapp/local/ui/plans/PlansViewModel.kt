@@ -7,6 +7,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
 import live.localapp.local.data.sync.ChangeKind
 import live.localapp.local.data.sync.MutationLog
@@ -17,6 +19,7 @@ import live.localapp.local.data.sync.PlanSyncer
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.model.Plan
 import live.localapp.local.domain.model.isLastDayPast
+import live.localapp.local.domain.service.BadgeService
 import live.localapp.local.domain.model.PlanDay
 import live.localapp.local.domain.model.PlanSlot
 import live.localapp.local.domain.model.ReservationState
@@ -38,6 +41,8 @@ data class PlansUiState(
     val isRefreshing: Boolean = false,
     val savedEvents: List<Event> = emptyList(),
     val savedVenues: List<Venue> = emptyList(),
+    // Bo pull-to-refresh: whether the last manual refresh failed.
+    val refreshFailed: Boolean = false,
     val templateRotationKey: Int = 0,
     /** Set when an external surface (e.g. the chat-success "View Plan"
      *  link) wants the Plans tab to auto-open a specific plan. PlansScreen
@@ -68,6 +73,7 @@ class PlansViewModel(
     private val mutationLog: MutationLog,
     private val syncer: PlanSyncer,
     private val realtime: PlanRealtimeWatcher,
+    private val badgeService: BadgeService,
 ) : ViewModel() {
 
     /**
@@ -191,17 +197,34 @@ class PlansViewModel(
     }
 
     fun refresh() {
+        val oldIds = HashSet<String>().apply {
+            addAll(_serverPlans.value.map { it.id })
+            addAll(_uiState.value.savedEvents.map { it.id })
+            addAll(_uiState.value.savedVenues.map { it.id })
+        }
         _uiState.update {
             it.copy(
                 isRefreshing = true,
+                refreshFailed = false,
                 templateRotationKey = it.templateRotationKey + 1,
             )
         }
-        loadPlans()
-        loadSavedItems()
         // Also kick the syncer in case retries are pending — refresh is
         // the user's "try again" affordance.
         syncer.kick()
+        viewModelScope.launch {
+            joinAll(loadPlans(), loadSavedItems())
+            val st = _uiState.value
+            val newIds = buildSet {
+                addAll(_serverPlans.value.map { it.id })
+                addAll(st.savedEvents.map { it.id })
+                addAll(st.savedVenues.map { it.id })
+            } - oldIds
+            _uiState.update { it.copy(isRefreshing = false) }
+            badgeService.emitInfoToast(
+                if (newIds.isEmpty()) "You're all caught up" else "Bo found more nearby",
+            )
+        }
     }
 
     // ── Slot-level mutations ───────────────────────────────────────────
@@ -360,14 +383,12 @@ class PlansViewModel(
 
     // ── Loading ────────────────────────────────────────────────────────
 
-    private fun loadPlans() {
-        viewModelScope.launch {
-            _uiState.update { it.copy(isLoading = true) }
-            val rawPlans = planRepository.getPlans()
-            val plans = backfillSlotVenueCities(rawPlans)
-            _serverPlans.value = plans
-            _uiState.update { it.copy(isLoading = false, isRefreshing = false) }
-        }
+    private fun loadPlans(): Job = viewModelScope.launch {
+        _uiState.update { it.copy(isLoading = true) }
+        val rawPlans = planRepository.getPlans()
+        val plans = backfillSlotVenueCities(rawPlans)
+        _serverPlans.value = plans
+        _uiState.update { it.copy(isLoading = false) }
     }
 
     /**
@@ -408,8 +429,8 @@ class PlansViewModel(
         }
     }
 
-    private fun loadSavedItems() {
-        viewModelScope.launch {
+    private fun loadSavedItems(): Job = viewModelScope.launch {
+        run {
             try {
                 val userId = userPreferencesRepository.getLocalUserId()
                 if (userId == null) return@launch

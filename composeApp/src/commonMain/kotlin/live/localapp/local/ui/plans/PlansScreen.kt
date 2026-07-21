@@ -6,6 +6,7 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import live.localapp.local.ui.common.AppRefreshBox
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.animation.core.LinearEasing
@@ -183,12 +184,15 @@ fun PlansScreen(
             return
         }
 
-        PullToRefreshBox(
+        AppRefreshBox(
             isRefreshing = state.isRefreshing,
             onRefresh = { viewModel.refresh() },
+            refreshFailed = state.refreshFailed,
             modifier = Modifier.fillMaxSize(),
         ) {
+        val plansListState = androidx.compose.foundation.lazy.rememberLazyListState()
         LazyColumn(
+            state = plansListState,
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(start = 20.dp, end = 20.dp, top = 12.dp, bottom = 80.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
