@@ -104,6 +104,15 @@ object Config {
     const val FEATURE_DAILY_QUIZ_ENABLED = true
 
     /**
+     * OneSignal application id — a PUBLIC identifier, safe to ship in the binary
+     * (like the Supabase anon keys and RevenueCat public keys above). Both
+     * platforms init the OneSignal SDK with it. The REST API key is deliberately
+     * NOT here: it is server-side only, read from the Supabase `secrets` table
+     * by the push-send scripts, never embedded in the client.
+     */
+    const val ONESIGNAL_APP_ID = "bdbdc7ed-00db-4961-9ad7-67ec3a5cba9f"
+
+    /**
      * Build-time gate for the Bo mascot pull-to-refresh (replaces the generic
      * Material3 spinner on the Home / Explore / Plans / Profile feeds). Flip to
      * false to fall back to the stock [PullToRefreshBox] spinner in a shipped
