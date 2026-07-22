@@ -765,6 +765,24 @@ function weightsForUser(effectiveRadius: number): ScoreWeights {
 // supply-driven: no metro list, no per-city tuning, scales to any new market.
 const ADAPTIVE_RADIUS_FLOOR_MILES = 15;  // always show a full-city view
 const ADAPTIVE_FEED_TARGET = 120;        // events wanted for a diverse feed
+
+// The density-adaptive reach exists to stop far-metro spillover when the user
+// hasn't bounded the search — the "Any distance" case (old clients send it as
+// 200 → clamped to 100; the radius slider's max maps here too). But when the
+// user picks a SPECIFIC radius, that value is an explicit contract: an exurban
+// user who slides to 40 mi to reach the next city over (Perkasie → Philly at
+// ~29 mi) must get 40 mi, not have it silently tightened to ~25 because their
+// local small-town cluster already hit ADAPTIVE_FEED_TARGET. So only apply the
+// adaptive tightening at/above this "effectively unbounded" threshold; any
+// tighter requested radius is honored exactly. Chosen at 90 so the legacy
+// "Any" = 200→100 value trips it while every real slider pick (≤ ~75) does not.
+const ADAPTIVE_APPLIES_AT_OR_ABOVE_MILES = 90;
+
+// Max number of "At {venue}" rails a single subcategory tab renders, ranked by
+// event count. Also the number of venues the venue-diverse RPC seeds into the
+// pool, so the two stay consistent (a display cap higher than the pool's venue
+// count would just render whatever the pool happens to hold).
+const SUBCATEGORY_VENUE_RAIL_CAP = 20;
 function adaptiveRadiusMiles(events: ProcessedEvent[], fetchRadiusMiles: number): number {
   const ds = events
     .map(e => e.distance_miles)
@@ -1339,13 +1357,16 @@ function buildDynamicSubcarousels(
   // Venue must have at least 4 events to render (matches addCarousel's
   // minimum). Filtering at >= 4 here (not >= 2) avoids burning a top-N
   // slot on a venue that's going to silently fail to render anyway.
-  // Show up to 12 venues so dense subcategories (For Kids in metro Boston
-  // has 20+ venues meeting the bar) surface a representative spread
-  // instead of clipping to a top 6.
+  // Show up to SUBCATEGORY_VENUE_RAIL_CAP venues so dense subcategories (For
+  // Kids in metro Boston has 20+ venues meeting the bar) surface a
+  // representative spread instead of clipping to a top 6. Raised 12 → 20 so
+  // mid-volume venues that clear the 4-event bar but sit just below the busiest
+  // dozen (e.g. Johnny Brenda's, 6 music events, ranked ~13th in a Philly-radius
+  // feed) still get their "At {venue}" rail.
   const sortedVenues = [...byVenue.entries()]
     .filter(([, v]) => v.length >= 4)
     .sort((a, b) => b[1].length - a[1].length)
-    .slice(0, 12);
+    .slice(0, SUBCATEGORY_VENUE_RAIL_CAP);
   for (const [normKey, venueEvents] of sortedVenues) {
     // Display name: the most common raw spelling in the bucket (deterministic
     // tie-break: shortest, then alphabetical). Keeps the rail title a real
@@ -1690,6 +1711,13 @@ function buildCarousels(
   // Curated "25 Must-Know" editorial picks (from the curated_events table) for
   // the user's state — drives the state-scoped Must-Know rail. Empty off For-You.
   curatedEvents: ProcessedEvent[] = [],
+  // Preference-matched events 50-200 mi out (the "Get Away a Little Bit" rail).
+  // Fetched directly since this band reaches beyond the metro-wide MV sample.
+  // Empty off the For-You path.
+  getawayEvents: ProcessedEvent[] = [],
+  // Per-entity event groups for the "If You Like <X>" taste rails (performers/
+  // brands from the taste graph). Empty off For-You / until profiles are built.
+  tasteEntityGroups: { entity: string; events: ProcessedEvent[] }[] = [],
 ): CarouselSection[] {
   const filter = resolveFilter(category);
   if (filter.type === "empty") return [];
@@ -1832,8 +1860,20 @@ function buildCarousels(
     // when the hero ate the rest. Now each rail just shows its top matches.
     const weekendStart = startOfNextFridayIso();
     const weekendEnd = endOfNextSundayIso();
-    const weekendEvents = filtered
-      .filter(e => { const s = e.start_at ?? ""; return s >= weekendStart && s < weekendEnd; });
+    // OVERLAP test (mirrors the Must-Know rail above), not start_at-in-window.
+    // The old test kept only events whose start_at landed inside Fri-Sun, which
+    // silently dropped every multi-day / all-day / festival event that STARTS
+    // before Friday but RUNS THROUGH the weekend (its start_at is < Friday) —
+    // exactly the richest "this weekend" content, and the same start_at-vs-end_at
+    // bug class as the in-progress-festival incident. Lookback bound stops a
+    // long-running exhibit (started weeks ago) from leaking in.
+    const weekendLookback = daysFromNowIso(-14);
+    const weekendEvents = filtered.filter(e => {
+      const s = e.start_at ?? "";
+      if (!s || s >= weekendEnd) return false;            // no start, or starts after the window
+      const end = e.end_at ?? s;                          // point event ends at its start
+      return end >= weekendStart && s >= weekendLookback; // overlaps the window, started recently
+    });
 
     // Source pool for the topical favorite-category + affinity rails. Same
     // rationale as favVenuePool / neighborhoodPool below: the rank-stratified
@@ -1938,9 +1978,15 @@ function buildCarousels(
     const favCatSlugs = new Set(favCatCarousels.map(c => c.slug));
     const sortedAffinity = [...affinityMap.entries()].sort((a, b) => b[1] - a[1]);
     let affinityCount = 0;
+    // Taste-graph era: give engaged users a rail per genuine interest. The old
+    // gate (score >= 0.4 of top, cap 6) throttled heavy users to ~2 rails when
+    // one category dominated (arts=1.0 => museums/comedy/baseball all < 0.4).
+    // Lower the relative floor to surface the long tail and raise the cap; the
+    // empty-events skip below is the natural quality floor (no rail without a
+    // populated slate). Numbers are tunable on real data.
     for (const [cat, score] of sortedAffinity) {
-      if (score < 0.4) break;
-      if (affinityCount >= 6) break;
+      if (score < 0.15) break;
+      if (affinityCount >= 20) break;
       if (skipCategories.has(cat.toLowerCase())) continue;
       if (favCatSlugs.has(`fav-cat-${cat.toLowerCase()}`)) continue;
       const affinityEvents = topicalPool
@@ -1959,6 +2005,65 @@ function buildCarousels(
       });
       affinityCount++;
     }
+
+    // Pool: Get Away for the Weekend — preference-matched events 50-200 mi out
+    // that START on a Fri/Sat/Sun. A weekend-trip discovery rail. The fetch
+    // already matched the user's preferred subcategories.
+    const getawayRail: CarouselSection | null = (() => {
+      if (getawayEvents.length === 0) return null;
+      // Weekend = the event's calendar date lands on Fri/Sat/Sun. Use the date
+      // part at noon UTC so an evening event near midnight isn't mis-dayed by a
+      // timezone shift. getUTCDay: 0=Sun … 5=Fri, 6=Sat.
+      const startsOnWeekend = (s: string): boolean => {
+        if (!s) return false;
+        const dow = new Date(s.slice(0, 10) + "T12:00:00Z").getUTCDay();
+        return dow === 5 || dow === 6 || dow === 0;
+      };
+      const events = getawayEvents
+        .filter(isGeneralFeedEvent)
+        .filter(e => startsOnWeekend(e.start_at ?? ""))
+        .map(e => withDistance(e, userLat, userLng))
+        .filter(e => {
+          const d = e.distance_miles ?? 0;
+          return d > 50 && d <= 200;
+        })
+        .sort(sortFn)
+        .slice(0, CAROUSEL_DISPLAY_LIMIT);
+      if (events.length < 3) return null;
+      return {
+        slug: "get-away",
+        title: "Get Away for the Weekend",
+        subtitle: null,
+        filter_type: "getaway",
+        events,
+      };
+    })();
+
+    // Taste entity rails — "If You Like Shane Gillis". One rail per top entity
+    // (performer/brand) the user gravitates to; the fetch already scoped events
+    // to that entity, so here we just apply radius + rank + a min-count gate.
+    const entityRails: CarouselSection[] = tasteEntityGroups
+      .map((group) => {
+        const events = group.events
+          .map(e => withDistance(e, userLat, userLng))
+          .filter(e => maxRadius === Infinity || (e.distance_miles ?? 999) <= maxRadius)
+          .sort(sortFn)
+          .slice(0, CAROUSEL_DISPLAY_LIMIT);
+        if (events.length < 3) return null;
+        const label = group.entity
+          .split(/[_-]+/)
+          .filter(Boolean)
+          .map(w => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(" ");
+        return {
+          slug: `taste-entity-${group.entity}`,
+          title: `If You Like ${label}`,
+          subtitle: null,
+          filter_type: "taste_entity",
+          events,
+        } as CarouselSection;
+      })
+      .filter((c): c is CarouselSection => c !== null);
 
     // Pool: Popular
     const popularEvents = filtered
@@ -2000,6 +2105,10 @@ function buildCarousels(
         events: personalizedEvents,
       });
     }
+
+    // Taste entity rails ("If You Like Shane Gillis") — placed right after
+    // Picked for You; they're the strongest personal hook the feed has.
+    for (const rail of entityRails) addCarousel(rail);
 
     // 2. Weekend Lineup
     if (weekendEvents.length > 0) {
@@ -2108,6 +2217,10 @@ function buildCarousels(
         }
       }
     }
+
+    // Get Away — preference-matched roadtrip rail (50-200 mi), placed after the
+    // primary personalized rails.
+    if (getawayRail) addCarousel(getawayRail);
 
     // Interleave any remaining — round-robin across pools so no type clusters
     let hasMore = true;
@@ -2516,23 +2629,22 @@ async function fetchAllEvents(
   // venue diversity that the "At <venue>" rails need (BPL's high venue
   // rank crowds out Brighton Branch, Hummingbird Books, etc., for the
   // for-kids subcategory). This parallel call returns top 12 venues × top
-  // N events for the focused subcategory only — bounded payload, zero
+  // 6 events for the focused subcategory only — bounded payload, zero
   // added latency because it runs in the same Promise.all.
-  //
-  // p_events_per_venue is CAROUSEL_DISPLAY_LIMIT (not 6): the "At <venue>"
-  // rail renders up to CAROUSEL_DISPLAY_LIMIT events, so fetching only 6
-  // per venue capped every venue rail at ~6 shows regardless of how many
-  // the venue actually programs (e.g. The Wilbur has 36 upcoming comedy
-  // shows but the rail showed 4-6). Worst case 12×25 = 300 rows, still far
-  // under PostgREST's 1000-row wire cap. The rail's own slice keeps the
-  // final card count at CAROUSEL_DISPLAY_LIMIT.
   const venueDiverseRpc = subcategoryFocus
     ? supabase.rpc("mv_events_for_subcategory_venues", {
         p_lat: lat,
         p_lng: lng,
         p_radius_miles: radiusMiles,
         p_subcategory: subcategoryFocus,
-        p_top_venues: 12,
+        p_top_venues: SUBCATEGORY_VENUE_RAIL_CAP,
+        // Pull each venue's full near-term slate (not a flat 6). A 6-cap
+        // flattened every venue to the same count, so a high-volume room like
+        // Johnny Brenda's (100 upcoming music events) tied with a 6-event bar
+        // and lost the display sort to arbitrary insertion order. At
+        // CAROUSEL_DISPLAY_LIMIT the venue ranks on true volume and its "At
+        // {venue}" rail is full. (Restores the 2026-07-20 develop fix that this
+        // branch lineage was missing.)
         p_events_per_venue: CAROUSEL_DISPLAY_LIMIT,
       })
     : Promise.resolve({ data: [], error: null });
@@ -2794,6 +2906,174 @@ async function fetchSubcategoryEvents(
   const byId = new Map<string, EventRow>();
   for (const row of pages.flat()) byId.set(row.id, row);
   return [...byId.values()];
+}
+
+// Get Away — preference-matched events out to 200 mi so buildCarousels can show
+// a "little roadtrip" rail. The 50-mi LOWER bound (excluding local events) is
+// applied in buildCarousels, since a bbox can't express a min-radius. One query
+// per preferred subcategory so no single category starves the wider band.
+async function fetchGetawayEvents(
+  supabase: ReturnType<typeof createClient>,
+  lat: number,
+  lng: number,
+  subcategories: string[],
+): Promise<EventRow[]> {
+  if (subcategories.length === 0) return [];
+  // Outer bbox: ±200 mi (the far end of the getaway ring).
+  const radiusMiles = 200;
+  const latDelta = radiusMiles / 69.0;
+  const lngDelta = radiusMiles / 50.0;
+  const minLat = lat - latDelta, maxLat = lat + latDelta;
+  const minLng = lng - lngDelta, maxLng = lng + lngDelta;
+
+  // Far-ring donut: exclude an inner ~40 mi box so the per-subcat budget goes to
+  // FAR events, not the dense nearby core. In a metro like Boston the nearby
+  // events alone would fill every page and get stripped by the >50 mi filter,
+  // starving the rail. Kept below 50 mi (diagonally) so true 50 mi+ events survive;
+  // the precise d>50 && d<=200 cut still happens in the rail builder.
+  const innerMiles = 40;
+  const innerMinLat = lat - innerMiles / 69.0, innerMaxLat = lat + innerMiles / 69.0;
+  const innerMinLng = lng - innerMiles / 50.0, innerMaxLng = lng + innerMiles / 50.0;
+  const outsideInner =
+    `venue_lat.lt.${innerMinLat},venue_lat.gt.${innerMaxLat},` +
+    `venue_lng.lt.${innerMinLng},venue_lng.gt.${innerMaxLng}`;
+
+  // Upcoming-weekend date window. A soonest-first fetch never reaches the coming
+  // weekend in a dense metro (the next few days already overflow the page), so
+  // anchor the window to the coming Friday (or today if it's already Fri/Sat/Sun)
+  // and run ~5 weekends out. Weekday events are outside the window entirely.
+  const now = new Date();
+  const dow = now.getUTCDay(); // 0=Sun … 6=Sat
+  const daysToFri = (dow === 6 || dow === 0) ? 0 : (5 - dow + 7) % 7;
+  const windowStart = new Date(now.getTime());
+  windowStart.setUTCDate(now.getUTCDate() + daysToFri);
+  if (daysToFri > 0) windowStart.setUTCHours(0, 0, 0, 0);
+  const windowEnd = new Date(windowStart.getTime());
+  windowEnd.setUTCDate(windowStart.getUTCDate() + 35);
+  const startFrom = windowStart.toISOString();
+  const startTo = windowEnd.toISOString();
+  const PER_SUBCAT = 100;
+
+  const pages = await Promise.all(subcategories.map(async (subcat) => {
+    const { data, error } = await supabase
+      .from("events")
+      .select("*")
+      .eq("is_active", true)
+      .ilike("subcategory", subcat)
+      .gte("start_at", startFrom)
+      .lte("start_at", startTo)
+      .gte("venue_lat", minLat)
+      .lte("venue_lat", maxLat)
+      .gte("venue_lng", minLng)
+      .lte("venue_lng", maxLng)
+      .or(outsideInner)
+      .order("start_at", { ascending: true })
+      .limit(PER_SUBCAT);
+    if (error) {
+      console.error(`[carousels] fetchGetawayEvents(${subcat}) failed:`, error);
+      return [];
+    }
+    return (data ?? []) as EventRow[];
+  }));
+  const byId = new Map<string, EventRow>();
+  for (const row of pages.flat()) byId.set(row.id, row);
+  return [...byId.values()];
+}
+
+// Top entities (performers/brands) the user gravitates to, from the taste graph
+// (user_taste_summary). Drives the "If You Like <X>" rails. Empty until the
+// nightly profile build has run.
+async function fetchTasteEntities(
+  supabase: ReturnType<typeof createClient>,
+  userId: string | null,
+): Promise<string[]> {
+  if (!userId) return [];
+  try {
+    const { data } = await (supabase as any)
+      .from("user_taste_summary")
+      .select("top_entities,interaction_count")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (!data || (data.interaction_count ?? 0) < 3) return [];
+    return ((data.top_entities ?? []) as string[]).slice(0, 3);
+  } catch {
+    return [];
+  }
+}
+
+// Collaborative adjacency (feature_affinity): for each seed entity, the top
+// related ENTITIES the user base also engages ("Shane Gillis fans also like
+// Bill Burr"). Enriches the "If You Like <X>" rail with adjacent acts without
+// flooding it (entity-scoped, unlike a broad subcategory). Empty until the
+// matrix job has run — then the rail falls back to exact matches.
+async function fetchFeatureAffinity(
+  supabase: ReturnType<typeof createClient>,
+  seeds: string[],
+): Promise<Map<string, string[]>> {
+  const out = new Map<string, string[]>();
+  if (seeds.length === 0) return out;
+  try {
+    const { data } = await (supabase as any)
+      .from("feature_affinity")
+      .select("seed,related,weight")
+      .in("seed", seeds)
+      .eq("related_type", "entity")
+      .order("weight", { ascending: false });
+    for (const row of ((data ?? []) as { seed: string; related: string }[])) {
+      const arr = out.get(row.seed) ?? [];
+      if (arr.length < 6) { arr.push(row.related); out.set(row.seed, arr); }
+    }
+  } catch {
+    // feature_affinity absent / not built yet — rails fall back to exact matches.
+  }
+  return out;
+}
+
+// Per-entity direct fetch for the "If You Like <X>" rails: events whose
+// performers OR brands array contains the entity, within radius. GIN-indexed
+// (idx_events_performers_gin / _brands_gin). Empty per-entity if the columns
+// aren't present yet — graceful pre-backfill.
+async function fetchEntityEvents(
+  supabase: ReturnType<typeof createClient>,
+  lat: number,
+  lng: number,
+  radiusMiles: number,
+  entities: string[],
+  relatedBySeed: Map<string, string[]>,
+): Promise<{ entity: string; rows: EventRow[] }[]> {
+  if (entities.length === 0) return [];
+  const latDelta = radiusMiles / 69.0;
+  const lngDelta = radiusMiles / 50.0;
+  const minLat = lat - latDelta, maxLat = lat + latDelta;
+  const minLng = lng - lngDelta, maxLng = lng + lngDelta;
+  const startFrom = nowIso();
+  const startTo = daysFromNowIso(90);
+  return await Promise.all(entities.map(async (entity) => {
+    // Exact seed + collaborative related acts — all entity-scoped, so adjacency
+    // enriches the rail without flooding it with generic same-subcategory events.
+    const conds = [`performers.cs.{${entity}}`, `brands.cs.{${entity}}`];
+    for (const rel of relatedBySeed.get(entity) ?? []) {
+      conds.push(`performers.cs.{${rel}}`, `brands.cs.{${rel}}`);
+    }
+    const { data, error } = await supabase
+      .from("events")
+      .select("*")
+      .eq("is_active", true)
+      .or(conds.join(","))
+      .gte("start_at", startFrom)
+      .lte("start_at", startTo)
+      .gte("venue_lat", minLat)
+      .lte("venue_lat", maxLat)
+      .gte("venue_lng", minLng)
+      .lte("venue_lng", maxLng)
+      .order("start_at", { ascending: true })
+      .limit(60);
+    if (error) {
+      console.error(`[carousels] fetchEntityEvents(${entity}) failed:`, error);
+      return { entity, rows: [] as EventRow[] };
+    }
+    return { entity, rows: (data ?? []) as EventRow[] };
+  }));
 }
 
 // Farmers markets are always_on, and the always_on slow-path fetch is capped
@@ -3181,16 +3461,47 @@ async function fetchCategoryAffinity(
   userId: string | null,
 ): Promise<Map<string, number>> {
   if (!userId) return new Map();
+  const map = new Map<string, number>();
+
   const { data, error } = await supabase
     .rpc("get_category_affinity", { p_user_id: userId });
-  if (error || !data) return new Map();
-  // Normalize to 0-1 by dividing by max
-  const entries = (data as CategoryAffinity[]);
-  const maxWeight = Math.max(...entries.map(e => e.weight), 1);
-  const map = new Map<string, number>();
-  for (const entry of entries) {
-    map.set(entry.category.toLowerCase(), Math.min(entry.weight / maxWeight, 1.0));
+  if (!error && data) {
+    // Normalize to 0-1 by dividing by max
+    const entries = (data as CategoryAffinity[]);
+    const maxWeight = Math.max(...entries.map(e => e.weight), 1);
+    for (const entry of entries) {
+      map.set(entry.category.toLowerCase(), Math.min(entry.weight / maxWeight, 1.0));
+    }
   }
+
+  // Taste graph (spec §6): blend the richer per-user subcategory taste from
+  // user_taste_summary into the affinity map, so the For-You feed reflects the
+  // taste vector (coldStartScore already reads this map — no threading needed).
+  // Graceful: absent table / no row / cold-start (<3 interactions) leaves the
+  // map untouched, so behavior is unchanged until profiles are built.
+  try {
+    const { data: t } = await (supabase as any)
+      .from("user_taste_summary")
+      .select("subcategory_scores,interaction_count")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (t && (t.interaction_count ?? 0) >= 3 && t.subcategory_scores) {
+      const sc = t.subcategory_scores as Record<string, number>;
+      const vals = Object.values(sc).filter((v) => v > 0);
+      if (vals.length > 0) {
+        const max = Math.max(...vals);
+        for (const [k, v] of Object.entries(sc)) {
+          if (v > 0) {
+            const key = k.toLowerCase();
+            map.set(key, Math.max(map.get(key) ?? 0, v / max));
+          }
+        }
+      }
+    }
+  } catch {
+    // leave map as-is — taste blend is best-effort
+  }
+
   return map;
 }
 
@@ -3319,7 +3630,29 @@ Deno.serve(async (req) => {
         // most reads will land on a < 10 min old row. The 30 min ceiling
         // tolerates one missed cron without falling back to slow path.
         const ageMs = row?.computed_at ? Date.now() - new Date(row.computed_at as string).getTime() : Infinity;
-        if (row?.payload && ageMs < 30 * 60 * 1000) {
+        // ── Geometry gate ──────────────────────────────────────────────
+        // A cached payload is a bake computed at the METRO CENTER with
+        // radius = BAKE_RADIUS_MILES, and the client trims every rail to the
+        // user's own radius around the user's OWN coords. Serving it to a user
+        // sitting well off that center (the nearest-bucket fallback can be up
+        // to ±0.3° ≈ 21 mi away) hands them a lopsided feed: their real local
+        // supply on the far side of the metro (e.g. a Perkasie user's
+        // Philadelphia events, ~29 mi south of the Allentown bake) is outside
+        // the bake, and the client trim then guts the capped rails. Measured:
+        // ~68% of in-market users sit 3.5–21 mi off their nearest metro. So
+        // serve a bake ONLY when it can't distort — the user's 0.1° bucket is
+        // the bake's bucket or an immediately adjacent one (±0.11° ≈ within one
+        // bucket step) AND their requested radius covers the bake. Everyone
+        // else falls through to the slow path, computed at their OWN
+        // coords/radius (correct content; slower). No serve-stale, no rewarm —
+        // this is only the serve-vs-slowpath decision.
+        const BAKE_RADIUS_MILES = 25;
+        const bucketDistOk = row
+          ? Math.abs(((row as any).lat_bucket as number) - latBucket) <= 0.11 &&
+            Math.abs(((row as any).lng_bucket as number) - lngBucket) <= 0.11
+          : false;
+        const radiusCoversBake = radiusMiles >= BAKE_RADIUS_MILES;
+        if (row?.payload && ageMs < 30 * 60 * 1000 && bucketDistOk && radiusCoversBake) {
           // This branch only runs for non-personalized requests now
           // (anonymous callers, or subcategory tabs that are identical for
           // every user). Personalized foryou/locations requests skip the
@@ -3384,7 +3717,12 @@ Deno.serve(async (req) => {
       // concentrated on that reach so the whole 900-row budget lands nearby
       // (~715 rows within 15mi for Manayunk). Sparse areas don't tighten, so
       // they skip the second call and keep the wide probe.
-      const probeRadius = adaptiveRadiusMiles(probeEvents, radiusMiles);
+      // Only tighten below the request when the user left the search
+      // effectively unbounded ("Any"); an explicit radius is honored, so its
+      // full width is fetched and the densify re-fetch is skipped.
+      const probeRadius = radiusMiles >= ADAPTIVE_APPLIES_AT_OR_ABOVE_MILES
+        ? adaptiveRadiusMiles(probeEvents, radiusMiles)
+        : radiusMiles;
       const rawEvents = probeRadius < radiusMiles
         ? await fetchAllEvents(supabase, lat, lng, probeRadius, subcategoryFocus)
         : probeEvents;
@@ -3431,7 +3769,9 @@ Deno.serve(async (req) => {
     // tighten to the floor (excluding far-metro spillover), sparse areas keep
     // the fetched width. Computed from the full fetched pool before any rail
     // filtering so every rail shares one consistent, supply-driven radius.
-    const effectiveRadius = adaptiveRadiusMiles(allEvents, radiusMiles);
+    const effectiveRadius = radiusMiles >= ADAPTIVE_APPLIES_AT_OR_ABOVE_MILES
+      ? adaptiveRadiusMiles(allEvents, radiusMiles)
+      : radiusMiles;
     const weights = weightsForUser(effectiveRadius);
     const nearestCity = locationName || nearestCityName(lat, lng);
 
@@ -3446,6 +3786,8 @@ Deno.serve(async (req) => {
     let farmersMarketEvents: ProcessedEvent[] = [];
     let restaurantWeekEvents: ProcessedEvent[] = [];
     let curatedEvents: ProcessedEvent[] = [];
+    let getawayEvents: ProcessedEvent[] = [];
+    let tasteEntityGroups: { entity: string; events: ProcessedEvent[] }[] = [];
     // Restaurant Weeks rail builds on For You AND the Food tab; the Must-Know rail
     // is For-You only. Both are state-scoped, so resolve the state once.
     {
@@ -3478,27 +3820,39 @@ Deno.serve(async (req) => {
       for (const [c, score] of affinityMap) {
         if (score >= 0.4) railSubcats.add(c.toLowerCase());
       }
+      // Top entities (taste graph) drive the "If You Like <X>" rails — read
+      // first so the entity-events fetch can run in the parallel batch below.
+      const tasteEntities = await fetchTasteEntities(supabase, userId);
+      // Collaborative adjacency for those seeds ("SG fans also like Bill Burr").
+      const relatedBySeed = await fetchFeatureAffinity(supabase, tasteEntities);
       // Parallel: city-scoped pool (neighborhood rails) + venue-scoped pool
       // (fav-venue rails) + subcategory-scoped pool (topical fav-cat/affinity
       // rails). All three bypass the rank-stratified MV's metro-wide sampling so
       // the named city/venue/subcategory's full slate is available per-request.
-      const [cityRows, venueRows, subcatRows, farmersMarketRows] = await Promise.all([
+      const [cityRows, venueRows, subcatRows, farmersMarketRows, getawayRows, entityGroupRows] = await Promise.all([
         fetchCityEvents(supabase, lat, lng, radiusMiles, targetCities),
         fetchVenueEvents(supabase, lat, lng, radiusMiles, userPreferences?.selected_venues ?? []),
         fetchSubcategoryEvents(supabase, lat, lng, radiusMiles, [...railSubcats]),
         fetchFarmersMarketEvents(supabase, lat, lng, radiusMiles),
+        fetchGetawayEvents(supabase, lat, lng, [...railSubcats]),
+        fetchEntityEvents(supabase, lat, lng, radiusMiles, tasteEntities, relatedBySeed),
       ]);
       cityEvents = cleanEvents(deduplicateCrossSource(cityRows), venueCache, cityPhotoCache);
       venueEvents = cleanEvents(deduplicateCrossSource(venueRows), venueCache, cityPhotoCache);
       subcatEvents = cleanEvents(deduplicateCrossSource(subcatRows), venueCache, cityPhotoCache);
       farmersMarketEvents = cleanEvents(deduplicateCrossSource(farmersMarketRows), venueCache, cityPhotoCache);
+      getawayEvents = cleanEvents(deduplicateCrossSource(getawayRows), venueCache, cityPhotoCache);
+      tasteEntityGroups = entityGroupRows
+        .map(g => ({ entity: g.entity, events: cleanEvents(deduplicateCrossSource(g.rows), venueCache, cityPhotoCache) }))
+        .filter(g => g.events.length > 0);
     }
 
     const carouselSections = buildCarousels(
       allEvents, rawSportsEvents, carouselsConfig, category,
       lat, lng, userPreferences, nearestCity,
       weights, venueCache, communityScores, affinityMap, cityEvents, venueEvents, subcatEvents,
-      farmersMarketEvents, restaurantWeekEvents, radiusMiles, curatedEvents,
+      farmersMarketEvents, restaurantWeekEvents, radiusMiles, curatedEvents, getawayEvents,
+      tasteEntityGroups,
     );
 
     const categories = buildCategories(allEvents, userPreferences);
