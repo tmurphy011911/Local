@@ -210,7 +210,8 @@ private fun QuestionStage(
         )
         // Fixed floor so the Bo/question block is the same height whether Bo is
         // big-centred or the question has typed in — the sheet never jumps.
-        Box(Modifier.fillMaxWidth().heightIn(min = 150.dp)) {
+        // 96dp matches iOS's big-Bo height (no dead space below a short question).
+        Box(Modifier.fillMaxWidth().heightIn(min = 96.dp)) {
             Box(Modifier.align(BiasAlignment(boBias, -1f))) {
                 Bo(size = boSize, showShadow = false, showSparkles = false)
             }

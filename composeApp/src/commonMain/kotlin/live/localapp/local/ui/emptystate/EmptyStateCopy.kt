@@ -458,4 +458,13 @@ object EmptyStateCopy {
     const val VENUE_NO_EVENTS: String =
         "No events for this venue on Local (yet). Some venues prevent us from " +
             "pulling in their events — check their website for a calendar!"
+
+    // ── Event detail · recurring, no concrete start time ──────────────
+    // Surfaces: the event detail (Android Compose) + EventDetailView.swift
+    // (iOS — duplicated verbatim there with a keep-in-sync note). A cadence-
+    // less recurring event ("Recurring Event"/"Available Anytime"/"Happens
+    // Weekly|Monthly") has no real time-of-day, so the body would otherwise be
+    // blank under the recurrence badge; point the user to the venue's page.
+    const val RECURRING_NO_START_TIME: String =
+        "Visit website for information on start time"
 }

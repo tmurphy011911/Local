@@ -82,6 +82,7 @@ import live.localapp.local.domain.repository.formatVenueEventCount
 import live.localapp.local.snakeToTitleCase
 import live.localapp.local.ui.theme.AppColors
 import org.koin.mp.KoinPlatform
+import live.localapp.local.ui.emptystate.EmptyStateCopy
 import live.localapp.local.ui.theme.AppFonts
 import live.localapp.local.ui.theme.AppShapes
 import live.localapp.local.ui.theme.AppType
@@ -328,6 +329,31 @@ fun EventDetailScreen(
                                 fontSize = 12.sp,
                                 color = AppColors.Sky,
                             ),
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                }
+
+                // Cadence-less recurring events (no concrete next date/time —
+                // "Recurring Event"/"Available Anytime"/"Happens Weekly|Monthly")
+                // would otherwise leave the body blank under the badge. Point the
+                // user to the venue's own page for the real start time. Mirrors iOS
+                // (the 7 weekdays + "Happens Daily" resolve a next date instead).
+                val recurringNoTime = isRecurring && recurrenceLabel !in setOf(
+                    "Happens Every Sunday", "Happens Every Monday", "Happens Every Tuesday",
+                    "Happens Every Wednesday", "Happens Every Thursday", "Happens Every Friday",
+                    "Happens Every Saturday", "Happens Daily",
+                )
+                if (recurringNoTime) {
+                    val recurUrl = event.sourceUrl ?: event.ticketUrl
+                    Box(
+                        modifier = if (recurUrl != null) Modifier.clickable { uriHandler.openUri(recurUrl) } else Modifier,
+                    ) {
+                        InfoRow(
+                            icon = Icons.Outlined.Schedule,
+                            iconTint = AppColors.Coral,
+                            text = EmptyStateCopy.RECURRING_NO_START_TIME,
+                            textColor = if (recurUrl != null) AppColors.Sky else AppColors.Ink2,
                         )
                     }
                     Spacer(Modifier.height(10.dp))

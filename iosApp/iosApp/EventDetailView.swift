@@ -618,6 +618,31 @@ struct EventDetailView: View {
                         text: "Next: \(nextText)"
                     )
                     Spacer().frame(height: 10)
+                } else {
+                    // Cadence-less recurring event (no concrete next date/time):
+                    // point to the venue's own page for the real start time so the
+                    // body isn't blank under the badge. Keep this string in sync
+                    // with EmptyStateCopy.RECURRING_NO_START_TIME (commonMain).
+                    if let urlStr = event.sourceUrl ?? event.ticketUrl, let url = URL(string: urlStr) {
+                        Button {
+                            UIApplication.shared.open(url)
+                        } label: {
+                            infoRow(
+                                systemName: "clock",
+                                iconColor: AppColor.coral,
+                                text: "Visit website for information on start time",
+                                textColor: AppColor.sky
+                            )
+                        }
+                        .buttonStyle(.plain)
+                    } else {
+                        infoRow(
+                            systemName: "clock",
+                            iconColor: AppColor.coral,
+                            text: "Visit website for information on start time"
+                        )
+                    }
+                    Spacer().frame(height: 10)
                 }
             } else if let startAt = event.startAt {
                 let baseText = formatDate(startAt, timeKnown: event.timeKnown)
