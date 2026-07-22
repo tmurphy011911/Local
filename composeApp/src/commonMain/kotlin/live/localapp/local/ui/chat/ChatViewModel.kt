@@ -2566,6 +2566,19 @@ class ChatViewModel(
             else -> null
         }
 
+        // A specific calendar day (month name, weekday, or ordinal/numeric date)
+        // has NO date_range mapping here, so taking the fast path would search
+        // date-less → resolveDateWindow's 90-day fallback → events across many
+        // dates ("Music events on July 25th" returning a month of shows). Bail to
+        // the LLM flow, which resolves it to a concrete start_date (and start_date
+        // now wins over any range). A false positive only skips the optimization.
+        val specificDay = dateRange == null && Regex(
+            "\\b(january|february|march|april|may|june|july|august|september|october|" +
+                "november|december|monday|tuesday|wednesday|thursday|friday|saturday|" +
+                "sunday)\\b|\\b\\d{1,2}(st|nd|rd|th)\\b|\\b\\d{1,2}/\\d{1,2}\\b",
+        ).containsMatchIn(lower)
+        if (specificDay) return null
+
         if (category == null && dateRange == null) return null
 
         return kotlinx.serialization.json.buildJsonObject {
@@ -3345,8 +3358,13 @@ class ChatViewModel(
         // run the cheap RPC again (sub-second) and let the result speak for
         // itself, not lie via stale cache.
 
-        // If specific dates provided, use custom date range instead of keyword
-        if (startDate != null && dateRange == null) {
+        // If a specific start_date is provided it WINS over any relative
+        // date_range hint. Bo (Haiku) often emits BOTH for a day like "Saturday"
+        // (e.g. date_range=this_weekend + start_date=2026-07-25); honoring the
+        // range would widen the window to multiple days, and the 80-row rank cap
+        // below could then drop that exact day entirely ("Nothing's Live" for a
+        // day that has events). Scoping to the single day makes the cap moot.
+        if (startDate != null) {
             dateRange = "custom"
         }
 
@@ -3480,7 +3498,7 @@ class ChatViewModel(
         // = full 20mi pool, events = in-scope) so the response can surface a
         // coverage breadcrumb to Bo, who can offer the user the choice to
         // widen rather than silently expanding.
-        val events = if (strictLocation && !location.isNullOrBlank()) {
+        val eventsRaw = if (strictLocation && !location.isNullOrBlank()) {
             val target = location.trim().lowercase()
             cleaned.filter { e ->
                 val ec = e.venueCity?.trim()?.lowercase() ?: return@filter false
@@ -3489,6 +3507,14 @@ class ChatViewModel(
                 println("searchEvents: strict_location=true location='$location' kept ${kept.size}/${cleaned.size} after city filter")
             }
         } else cleaned
+        // Collapse true duplicate rows: distinct event ids that share
+        // title+venue+start_at (the events-table dup problem). The RPC de-dupes
+        // only by id, so it can't catch these — dedupe here before the cache,
+        // tray, and plans so Bo never shows the same show 2-3× (Tim McGraw ×2,
+        // Phish ×3).
+        val events = eventsRaw.distinctBy {
+            listOf(it.title.trim().lowercase(), it.venueName?.trim()?.lowercase(), it.startAt)
+        }
         val coverageInScope = events.size
         val coverageWithin20mi = cleaned.size
 

@@ -23,14 +23,18 @@ data class EventDto(
     val status: String? = "active",
     @SerialName("venue_name") val venueName: String? = null,
     @SerialName("venue_address") val venueAddress: String? = null,
-    @SerialName("venue_city") val venueCity: String,
+    // Default "" so a null from a municipal at-large row (no venue_city/city)
+    // coerces to empty via coerceInputValues instead of throwing and zeroing
+    // the ENTIRE decoded page — which left Bo with no events. See the search_
+    // events_stratified RPC (no venue_city coalesce) + the explore null-city fix.
+    @SerialName("venue_city") val venueCity: String = "",
     @SerialName("venue_state") val venueState: String? = null,
     @SerialName("venue_lat") val venueLat: Double? = null,
     @SerialName("venue_lng") val venueLng: Double? = null,
-    val source: String,
+    val source: String = "",
     @SerialName("source_id") val sourceId: String? = null,
     @SerialName("source_url") val sourceUrl: String? = null,
-    val city: String,
+    val city: String = "",
     @SerialName("venue_description") val venueDescription: String? = null,
     // True when start_at is a real source-provided time; false when start_at
     // was inferred from a date-only crawl source (defaulted to midnight).

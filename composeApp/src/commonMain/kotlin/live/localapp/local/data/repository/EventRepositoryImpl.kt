@@ -336,7 +336,15 @@ class EventRepositoryImpl(
         endDate: String?,
         keyword: String?,
         limit: Int,
-    ): List<Event> {
+    ): List<Event> = withContext(Dispatchers.Default) {
+        // Off the caller's dispatcher: this is Bo's hottest, largest-payload
+        // query (up to 500 rows), and the RPC + kotlinx decode + per-row
+        // toDomain()/hydration is CPU-heavy. Bo calls it from viewModelScope
+        // (Main); running inline blocked the Android main thread, which — under
+        // the tool loop's parallel searches + the 20s socket timeout — starved
+        // concurrent RPC reads into timeouts that this catch swallowed to
+        // emptyList(), so Bo saw zero events and fell back to web search (iOS was
+        // just slow-but-correct). Mirrors getEventsByIds above.
         val now = kotlin.time.Clock.System.now()
         val nowIso = now.toString()
         val tz = TimeZone.currentSystemDefault()
@@ -374,9 +382,9 @@ class EventRepositoryImpl(
                 throw SearchInfraTimeoutException(e.message ?: "search timeout", e)
             }
             println("searchEventsBroad RPC failed (${e.message}) — returning empty")
-            return emptyList()
+            return@withContext emptyList()
         }
-        return hydrateVenueImages(hydrateVenueCoords(raw))
+        hydrateVenueImages(hydrateVenueCoords(raw))
     }
 
     /**
