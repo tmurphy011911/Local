@@ -3526,10 +3526,11 @@ class ChatViewModel(
         turnSearchPool.addAll(events)
         events.forEach { boTools.searchResultCache[it.id] = it }
 
-        // Data-driven search narration — tell the user what we actually found
-        // ("Found 12 arts events", "Lots of music events") + the tailoring/sort
-        // steps, instead of generic "Searching nearby" filler. Counts are
-        // radius-scoped and drop no-public-interest so they match the tray.
+        // Data-driven search narration — tell the user what we actually found.
+        // Counts are radius-scoped and drop no-public-interest so they match the
+        // tray. When the user asked for a SPECIFIC category we narrate ONLY that
+        // category (never "12 sports events" on a music query); with no category
+        // we surface the top categories actually present.
         run {
             val nLat = _uiState.value.currentLat
             val nLng = _uiState.value.currentLng
@@ -3541,21 +3542,36 @@ class ChatViewModel(
                 nLat == null || nLng == null || (vlat != null && vlng != null &&
                     live.localapp.local.domain.model.distanceMiles(nLat, nLng, vlat, vlng) <= nRadius)
             }
-            val byCat = inRadius
-                .groupingBy { computeEventCategoryKey(it).third }
-                .eachCount()
-                .entries.sortedByDescending { it.value }
+            val total = inRadius.size
             val lines = mutableListOf<String>()
-            for ((label, n) in byCat.take(4)) {
-                if (n <= 0 || label == "Other") continue
-                val lc = label.lowercase()
-                lines += if (n >= 15) "Lots of $lc events" else "Found $n $lc event${if (n == 1) "" else "s"}"
+
+            val requestedCat = category?.trim()?.lowercase()?.takeIf { it.isNotBlank() }
+            val cityLabel = location?.trim()?.takeIf { it.isNotBlank() }
+                ?.replaceFirstChar { it.uppercase() }
+            if (requestedCat != null) {
+                // Category-scoped: mirror what the user asked for, nothing else.
+                val catLabel = requestedCat.replace('-', ' ')
+                lines += "Found $catLabel events"
+                if (cityLabel != null) lines += "Found $catLabel events in $cityLabel"
+            } else {
+                // No category — the top categories actually present are fair game.
+                val byCat = inRadius
+                    .groupingBy { computeEventCategoryKey(it).third }
+                    .eachCount()
+                    .entries.sortedByDescending { it.value }
+                for ((label, n) in byCat.take(3)) {
+                    if (n <= 0 || label == "Other") continue
+                    val lc = label.lowercase()
+                    lines += if (n >= 15) "Lots of $lc events" else "Found $n $lc event${if (n == 1) "" else "s"}"
+                }
             }
+
+            if (total > 0) lines += "Looking for more"
+            if (total > 0) lines += "Grabbed $total events total"
+            lines += "Pulling them together"
             if (tasteProfile != null && (tasteProfile?.interactionCount ?: 0) >= 3) {
-                lines += "Tailoring to your preferences"
+                lines += "Ranking based on preference"
             }
-            lines += "Sorting by what's best"
-            lines += "Putting it on the map"
             if (lines.isNotEmpty()) {
                 _uiState.update {
                     it.copy(
