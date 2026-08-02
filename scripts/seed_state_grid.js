@@ -14,7 +14,8 @@ const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
 
 const STATE = process.env.STATE || null;
 const FORCE = process.env.FORCE === "1";
-const MODEL = "claude-sonnet-4-20250514";
+// The old pinned Sonnet 4 snapshot was retired (404s as of 2026-08).
+const MODEL = "claude-opus-5";
 
 let ANTHROPIC_API_KEY, SUPABASE_SERVICE_KEY;
 

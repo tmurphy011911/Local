@@ -3,7 +3,16 @@ name: Monthly — Discover Venues, Fix URLs & Rank
 on:
   schedule:
     - cron: '0 8 1 * *'  # 8am UTC / 3am EST on the 1st of each month
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      run_discovery:
+        description: 'Run Google Places venue discovery (PAUSED until 2027 — coverage is sufficient for all live states; see 2026-08 cost review)'
+        type: boolean
+        default: false
+      states:
+        description: 'Optional comma-separated state codes to discover (e.g. CA,NY) — blank = all live states'
+        type: string
+        default: ''
 
 # Forward-compat: opt into Node 24 for the JS-based actions before the
 # June 2 2026 forced-cutoff. Removes deprecation warnings on every job.
@@ -11,7 +20,16 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
+  # ── DISCOVERY PAUSED UNTIL 2027 (2026-08-02 cost review) ──────────────
+  # The monthly full re-sweep hit every live state's grid (80 centers × 33
+  # categories ≈ 6-8k Places API calls at the Enterprise+Atmosphere SKU) to
+  # re-fetch venues we almost entirely already have (~60k in the table).
+  # Coverage is sufficient for all live states, so discovery no longer runs
+  # on the schedule. To run it manually (new state launch, 2027 refresh):
+  # workflow_dispatch with run_discovery=true, optionally states=CA,NY to
+  # scope the sweep. fix-urls/rank/photos below still run monthly.
   seed-grids:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_discovery }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,6 +43,7 @@ jobs:
         run: node seed_state_grid.js
 
   discover-venues:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_discovery }}
     runs-on: ubuntu-latest
     needs: seed-grids
     timeout-minutes: 120
@@ -37,9 +56,13 @@ jobs:
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          STATES: ${{ inputs.states }}
         run: node discover_venues_google.js
 
   fix-venue-urls:
+    # Runs whether discovery ran or was skipped (the monthly default);
+    # only skips if a requested discovery actually failed.
+    if: ${{ !failure() && !cancelled() }}
     runs-on: ubuntu-latest
     needs: discover-venues
     timeout-minutes: 120
@@ -76,12 +99,12 @@ jobs:
           node-version: '22'
       - name: Rank Venues (Claude)
         working-directory: scripts
+        # No FORCE — only null-ranked venues (new discoveries) get ranked.
+        # The one-time rubric-rebalance re-rank landed with the 2026-06-01 run;
+        # FORCE'ing all ~60k venues monthly after that was pure token burn
+        # (and silently no-oped in Jul/Aug when the pinned model was retired).
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
-          # FORCE re-rank — without this the script only touches null-ranked
-          # venues, so the rebalanced rubric (push community venues from 55 →
-          # 75+) never lands on the existing pre-ranked corpus.
-          FORCE: "1"
         run: node rank_venues.js
 
   backfill-photos:
