@@ -579,7 +579,10 @@ async function main() {
     console.log(`CLASSIFY_LIMIT=${CLASSIFY_LIMIT} — deferring ${toClassify.length - CLASSIFY_LIMIT} to later runs\n`);
     toClassify = toClassify.slice(0, CLASSIFY_LIMIT);
   }
-  if (toClassify.length === 0) return;
+  // Guard must run even when the filter finds nothing — "filter sees zero
+  // work while the DB holds a stranded backlog" is exactly the failure mode
+  // it exists to catch.
+  if (toClassify.length === 0) { await checkBacklogGuard(); return; }
 
   // 3. Build batch requests — one per chunk of BATCH_SIZE events
   const chunks = [];
@@ -625,6 +628,45 @@ async function main() {
 
   // 6. Stream results and write to DB
   await processResults(batchId, chunks, events);
+
+  // 7. Backlog guard — counts subcategory-NULL rows directly in the DB, so
+  //    it is independent of the needs-classification filter above. That
+  //    independence is the point: the 2026-08 incident was 57k rows the
+  //    filter couldn't see (TAGS_ONLY backfill stamped tags on them), so a
+  //    guard derived from the filter would have stayed green. Fails the run
+  //    loudly (→ Actions failure email) when the backlog is still large.
+  //    Skipped in CLASSIFY_LIMIT catch-up bites, where leftover backlog is
+  //    expected by design.
+  await checkBacklogGuard();
+}
+
+async function checkBacklogGuard() {
+  if (parseInt(process.env.CLASSIFY_LIMIT || "0", 10) > 0) return;
+  const threshold = parseInt(process.env.BACKLOG_ALERT_MAX || "5000", 10);
+  const nowIso = new Date().toISOString();
+  const url =
+    `${SUPABASE_URL}/rest/v1/events?select=id` +
+    `&is_active=is.true&subcategory=is.null&duplicate_of=is.null` +
+    `&start_at=gte.${encodeURIComponent(nowIso)}&limit=1`;
+  const res = await fetch(url, {
+    method: "HEAD",
+    headers: {
+      apikey: SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      Prefer: "count=exact",
+    },
+  });
+  const range = res.headers.get("content-range") || "";
+  const total = parseInt(range.split("/")[1] || "0", 10);
+  if (!Number.isFinite(total)) return;
+  console.log(`\nBacklog guard: ${total} future active events still have subcategory NULL (threshold ${threshold})`);
+  if (total > threshold) {
+    console.error(
+      `BACKLOG GUARD TRIPPED: ${total} unclassified future events remain after a full run. ` +
+      `Something is stranding rows outside the classifier's view — investigate before they pile up.`,
+    );
+    process.exit(1);
+  }
 }
 
 // ── Batch API helpers ──
