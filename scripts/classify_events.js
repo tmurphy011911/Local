@@ -54,6 +54,19 @@ const TEAM_NAME_BACKFILL = process.env.TEAM_NAME_BACKFILL === "1";
 // have sub_subcategory/tags still go through Claude. Used to repair events
 // stuck at invalid parent categories like "other".
 const ONLY_CATEGORY = process.env.ONLY_CATEGORY || null;
+// Optional geo scope: BBOX="latMin,latMax,lngMin,lngMax" limits the run to events
+// whose venue_lat/venue_lng fall inside the box. Lets a single-city/island backfill
+// (e.g. Nantucket) classify only its own events instead of the whole global backlog.
+const BBOX = (() => {
+  const raw = (process.env.BBOX || "").trim();
+  if (!raw) return null;
+  const p = raw.split(",").map((s) => parseFloat(s.trim()));
+  if (p.length !== 4 || p.some((n) => Number.isNaN(n))) {
+    console.error(`Invalid BBOX="${raw}" — expected "latMin,latMax,lngMin,lngMax"`);
+    process.exit(1);
+  }
+  return { latMin: p[0], latMax: p[1], lngMin: p[2], lngMax: p[3] };
+})();
 // Events deliberately tagged subcategory="no-public-interest" are hidden from
 // every user-facing surface (carousels filter them out). They carry subcategory
 // but NOT sub_subcategory/tags, so the "unclassified" filter below would
@@ -62,44 +75,6 @@ const ONLY_CATEGORY = process.env.ONLY_CATEGORY || null;
 // (including FORCE/ONLY_CATEGORY). Set RECLASSIFY_EXCLUDED=1 only when you
 // genuinely want to re-evaluate suppressed events.
 const RECLASSIFY_EXCLUDED = process.env.RECLASSIFY_EXCLUDED === "1";
-
-// ── Fetch with retry for transient network failures ──────────────────
-//
-// Yesterday's run crashed with `TypeError: fetch failed / ECONNRESET` mid-way
-// through applying ~867 reclassifications — one Supabase PATCH hung up
-// the connection and killed the whole pass. The script is idempotent
-// (scopes to unclassified rows + still-matching patterns) so a rerun
-// recovers, but losing a 90-second-into-it pass on a one-off network blip
-// is the wrong default. Wrap the worker fetches in retry-with-backoff so
-// transient ECONNRESET / ETIMEDOUT / EAI_AGAIN / 5xx errors don't kill
-// the run.
-
-async function fetchWithRetry(url, opts, { maxAttempts = 4, baseDelayMs = 500 } = {}) {
-  let lastErr = null;
-  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-    try {
-      const res = await fetch(url, opts);
-      // Retry on transient 5xx too — Supabase occasionally returns 502/503
-      // when its Postgres connection pool churns under load.
-      if (res.status >= 500 && res.status < 600 && attempt < maxAttempts) {
-        lastErr = new Error(`HTTP ${res.status}`);
-      } else {
-        return res;
-      }
-    } catch (err) {
-      const code = err.cause?.code || err.code || "";
-      const msg = String(err.message || err);
-      const transient =
-        ["ECONNRESET", "ETIMEDOUT", "EAI_AGAIN", "UND_ERR_SOCKET", "UND_ERR_CONNECT_TIMEOUT"].includes(code) ||
-        /fetch failed|socket hang up|other side closed/i.test(msg);
-      if (!transient || attempt === maxAttempts) throw err;
-      lastErr = err;
-    }
-    // Exponential backoff: 500ms → 1s → 2s → 4s
-    await new Promise((r) => setTimeout(r, baseDelayMs * 2 ** (attempt - 1)));
-  }
-  throw lastErr;
-}
 
 // ── Rule-based auto-exclusion ─────────────────────────────────────────
 //
@@ -312,28 +287,21 @@ async function applyReclassifications(events, skipIds = new Set()) {
     while (index < matches.length) {
       const i = index++;
       const m = matches[i];
-      try {
-        const res = await fetchWithRetry(`${SUPABASE_URL}/rest/v1/events?id=eq.${m.id}`, {
-          method: "PATCH",
-          headers: {
-            apikey: SUPABASE_SERVICE_KEY,
-            Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            subcategory: m._newSubcategory,
-            // Preserve prior value once — original_subcategory is set by the
-            // auto-exclusion pass too, so only write if not already set.
-            ...(m.original_subcategory ? {} : { original_subcategory: m.subcategory ?? null }),
-          }),
-        });
-        if (res.ok) updated++;
-      } catch (err) {
-        // Don't let a single row's repeated transient failure kill the whole
-        // pass. Log and move on — the next classify run picks it up (the
-        // script scopes to still-matching-pattern rows).
-        console.warn(`  reclassify ${m.id} failed after retries: ${err.message}`);
-      }
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/events?id=eq.${m.id}`, {
+        method: "PATCH",
+        headers: {
+          apikey: SUPABASE_SERVICE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          subcategory: m._newSubcategory,
+          // Preserve prior value once — original_subcategory is set by the
+          // auto-exclusion pass too, so only write if not already set.
+          ...(m.original_subcategory ? {} : { original_subcategory: m.subcategory ?? null }),
+        }),
+      });
+      if (res.ok) updated++;
     }
   }
   await Promise.all(Array.from({ length: 5 }, worker));
@@ -384,24 +352,20 @@ async function applyAutoExclusions(events) {
     while (index < matches.length) {
       const i = index++;
       const m = matches[i];
-      try {
-        const res = await fetchWithRetry(`${SUPABASE_URL}/rest/v1/events?id=eq.${m.id}`, {
-          method: "PATCH",
-          headers: {
-            apikey: SUPABASE_SERVICE_KEY,
-            Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            subcategory: "no-public-interest",
-            // Preserve an audit trail so we can revert if a pattern is too aggressive.
-            original_subcategory: m.subcategory || null,
-          }),
-        });
-        if (res.ok) updated++;
-      } catch (err) {
-        console.warn(`  auto-exclude ${m.id} failed after retries: ${err.message}`);
-      }
+      const res = await fetch(`${SUPABASE_URL}/rest/v1/events?id=eq.${m.id}`, {
+        method: "PATCH",
+        headers: {
+          apikey: SUPABASE_SERVICE_KEY,
+          Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          subcategory: "no-public-interest",
+          // Preserve an audit trail so we can revert if a pattern is too aggressive.
+          original_subcategory: m.subcategory || null,
+        }),
+      });
+      if (res.ok) updated++;
     }
   }
   await Promise.all(Array.from({ length: 5 }, worker));
@@ -549,12 +513,7 @@ async function main() {
   ANTHROPIC_API_KEY = secrets.ANTHROPIC_API_KEY;
   SUPABASE_SERVICE_KEY = secrets.SUPABASE_SERVICE_KEY;
 
-  // Anthropic is only needed when we're actually calling Claude. REVERT_MODE
-  // and PREFILTER_ONLY (pattern-based prefilter) don't touch the model and
-  // shouldn't fail when the key is unavailable — important when Supabase's
-  // secrets table is briefly unreachable (Cloudflare 520s, etc.) and we'd
-  // otherwise lose the daily prefilter pass.
-  if (!REVERT_MODE && !PREFILTER_ONLY && !ANTHROPIC_API_KEY) { console.error("Missing ANTHROPIC_API_KEY"); process.exit(1); }
+  if (!REVERT_MODE && !ANTHROPIC_API_KEY) { console.error("Missing ANTHROPIC_API_KEY"); process.exit(1); }
   if (!SUPABASE_SERVICE_KEY) { console.error("Missing SUPABASE_SERVICE_KEY"); process.exit(1); }
 
   if (REVERT_MODE) return await revertClassifications();
@@ -599,11 +558,31 @@ async function main() {
       // RECLASSIFY_EXCLUDED above). Applies in FORCE/ONLY_CATEGORY too.
       (RECLASSIFY_EXCLUDED || e.subcategory !== "no-public-interest"),
   );
-  const toClassify = (FORCE || ONLY_CATEGORY)
+  // "Needs classification" = missing a subcategory, OR missing both
+  // sub_subcategory and tags. The subcategory check must be explicit: the
+  // taste-graph TAGS_ONLY backfill stamped tags/sub_subcategory onto ~57k
+  // never-classified rows (category='other', subcategory NULL), and the old
+  // tags-only test read those as "done" — leaving them invisible to every
+  // category rail forever.
+  let toClassify = (FORCE || ONLY_CATEGORY)
     ? remaining
-    : remaining.filter((e) => !e.sub_subcategory && (!e.tags || e.tags.length === 0));
+    : remaining.filter(
+        (e) => !e.subcategory || (!e.sub_subcategory && (!e.tags || e.tags.length === 0)),
+      );
   console.log(`${toClassify.length} events need Claude classification${FORCE ? " (forced)" : ONLY_CATEGORY ? ` (scoped to category=${ONLY_CATEGORY})` : ""}\n`);
-  if (toClassify.length === 0) return;
+  // CLASSIFY_LIMIT caps one run's bite (soonest start_at first — rows are
+  // already ordered by start_at, so visible-soon events get fixed first).
+  // Lets a huge backlog be worked off across bounded runs instead of one
+  // job that risks the Actions timeout mid-write.
+  const CLASSIFY_LIMIT = parseInt(process.env.CLASSIFY_LIMIT || "0", 10);
+  if (CLASSIFY_LIMIT > 0 && toClassify.length > CLASSIFY_LIMIT) {
+    console.log(`CLASSIFY_LIMIT=${CLASSIFY_LIMIT} — deferring ${toClassify.length - CLASSIFY_LIMIT} to later runs\n`);
+    toClassify = toClassify.slice(0, CLASSIFY_LIMIT);
+  }
+  // Guard must run even when the filter finds nothing — "filter sees zero
+  // work while the DB holds a stranded backlog" is exactly the failure mode
+  // it exists to catch.
+  if (toClassify.length === 0) { await checkBacklogGuard(); return; }
 
   // 3. Build batch requests — one per chunk of BATCH_SIZE events
   const chunks = [];
@@ -649,6 +628,45 @@ async function main() {
 
   // 6. Stream results and write to DB
   await processResults(batchId, chunks, events);
+
+  // 7. Backlog guard — counts subcategory-NULL rows directly in the DB, so
+  //    it is independent of the needs-classification filter above. That
+  //    independence is the point: the 2026-08 incident was 57k rows the
+  //    filter couldn't see (TAGS_ONLY backfill stamped tags on them), so a
+  //    guard derived from the filter would have stayed green. Fails the run
+  //    loudly (→ Actions failure email) when the backlog is still large.
+  //    Skipped in CLASSIFY_LIMIT catch-up bites, where leftover backlog is
+  //    expected by design.
+  await checkBacklogGuard();
+}
+
+async function checkBacklogGuard() {
+  if (parseInt(process.env.CLASSIFY_LIMIT || "0", 10) > 0) return;
+  const threshold = parseInt(process.env.BACKLOG_ALERT_MAX || "5000", 10);
+  const nowIso = new Date().toISOString();
+  const url =
+    `${SUPABASE_URL}/rest/v1/events?select=id` +
+    `&is_active=is.true&subcategory=is.null&duplicate_of=is.null` +
+    `&start_at=gte.${encodeURIComponent(nowIso)}&limit=1`;
+  const res = await fetch(url, {
+    method: "HEAD",
+    headers: {
+      apikey: SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      Prefer: "count=exact",
+    },
+  });
+  const range = res.headers.get("content-range") || "";
+  const total = parseInt(range.split("/")[1] || "0", 10);
+  if (!Number.isFinite(total)) return;
+  console.log(`\nBacklog guard: ${total} future active events still have subcategory NULL (threshold ${threshold})`);
+  if (total > threshold) {
+    console.error(
+      `BACKLOG GUARD TRIPPED: ${total} unclassified future events remain after a full run. ` +
+      `Something is stranding rows outside the classifier's view — investigate before they pile up.`,
+    );
+    process.exit(1);
+  }
 }
 
 // ── Batch API helpers ──
@@ -802,9 +820,14 @@ async function fetchAllEvents() {
   const pageSize = 500;
   // Also filter is_active=true server-side; reclassifying past/inactive rows
   // wastes Anthropic spend and never affects user-visible surfaces.
-  const baseScope = ONLY_CATEGORY
+  let baseScope = ONLY_CATEGORY
     ? `&category=eq.${encodeURIComponent(ONLY_CATEGORY)}&is_active=eq.true`
     : `&is_active=eq.true`;
+  if (BBOX) {
+    baseScope +=
+      `&venue_lat=gte.${BBOX.latMin}&venue_lat=lte.${BBOX.latMax}` +
+      `&venue_lng=gte.${BBOX.lngMin}&venue_lng=lte.${BBOX.lngMax}`;
+  }
 
   const nowIso = new Date().toISOString();
   let cursor = nowIso;       // first page: start_at >= now
@@ -863,9 +886,15 @@ async function fetchAllEvents() {
 // ── Write updates back to Supabase ──
 
 async function writeUpdates(updates, originalEvents) {
-  const concurrency = 10;
+  // Gentle writes: the unthrottled concurrency-10 loop saturated the Nano
+  // prod DB's IO on the 2026-07-20 tag backfill and took the app down
+  // (PostgREST 522). Same profile as resume_tag_backfill.js: low
+  // concurrency plus a pause between groups. Tunable for small runs.
+  const concurrency = parseInt(process.env.WRITE_CONCURRENCY || "4", 10);
+  const delayMs = parseInt(process.env.WRITE_DELAY_MS || "300", 10);
 
   for (let i = 0; i < updates.length; i += concurrency) {
+    if (i > 0 && delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
     const batch = updates.slice(i, i + concurrency);
     await Promise.all(batch.map(async (u) => {
       const original = originalEvents.find(e => e.id === u.id);

@@ -24,6 +24,10 @@ on:
         description: "Pause between write groups (ms)"
         required: false
         default: "300"
+      auto_continue:
+        description: "Follow-up dispatches to chain after this run (0 = none)"
+        required: false
+        default: "0"
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -44,3 +48,29 @@ jobs:
           WRITE_CONCURRENCY: ${{ inputs.write_concurrency }}
           WRITE_DELAY_MS: ${{ inputs.write_delay_ms }}
         run: node classify_events.js
+
+  # Serial self-chaining: workflow_dispatch fired with the repo GITHUB_TOKEN is
+  # one of the two event types exempt from GitHub's recursion block, so this
+  # works — bounded by the decrementing auto_continue counter. Runs stay
+  # serial (next bite starts only after this one's writes finish), so two
+  # runs never classify the same soonest-start_at slice concurrently.
+  auto-continue:
+    runs-on: ubuntu-latest
+    needs: classify-events
+    if: ${{ success() && inputs.auto_continue != '0' && inputs.auto_continue != '' }}
+    permissions:
+      actions: write
+    steps:
+      - name: Re-dispatch next bite
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NEXT=$(( ${{ inputs.auto_continue }} - 1 ))
+          echo "Chaining next classify bite (auto_continue=$NEXT after this)"
+          gh workflow run classify_adhoc.yml \
+            -R "${{ github.repository }}" \
+            --ref "${{ github.ref_name }}" \
+            -f classify_limit="${{ inputs.classify_limit }}" \
+            -f write_concurrency="${{ inputs.write_concurrency }}" \
+            -f write_delay_ms="${{ inputs.write_delay_ms }}" \
+            -f auto_continue="$NEXT"
