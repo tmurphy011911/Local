@@ -1,0 +1,46 @@
+name: Ad-hoc — Classify Events Only
+
+# Runs ONLY the classify step, standalone. Built for the 2026-08 backlog
+# catch-up: the taste-graph TAGS_ONLY backfill stamped tags onto ~57k
+# never-classified rows, which the old "has tags = classified" filter then
+# skipped forever (category='other', subcategory NULL — invisible to every
+# category rail). classify_events.js now keys on subcategory IS NULL, so
+# repeated dispatches of this workflow work the backlog off in bounded bites.
+#
+# Only SUPABASE_SERVICE_KEY needed (other keys come from the Supabase secrets table).
+
+on:
+  workflow_dispatch:
+    inputs:
+      classify_limit:
+        description: "Max events to classify this run (0 = no cap)"
+        required: false
+        default: "20000"
+      write_concurrency:
+        description: "Concurrent PATCHes per write group"
+        required: false
+        default: "4"
+      write_delay_ms:
+        description: "Pause between write groups (ms)"
+        required: false
+        default: "300"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  classify-events:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Classify & Tag Events
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          CLASSIFY_LIMIT: ${{ inputs.classify_limit }}
+          WRITE_CONCURRENCY: ${{ inputs.write_concurrency }}
+          WRITE_DELAY_MS: ${{ inputs.write_delay_ms }}
+        run: node classify_events.js
