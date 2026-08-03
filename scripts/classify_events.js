@@ -558,10 +558,27 @@ async function main() {
       // RECLASSIFY_EXCLUDED above). Applies in FORCE/ONLY_CATEGORY too.
       (RECLASSIFY_EXCLUDED || e.subcategory !== "no-public-interest"),
   );
-  const toClassify = (FORCE || ONLY_CATEGORY)
+  // "Needs classification" = missing a subcategory, OR missing both
+  // sub_subcategory and tags. The subcategory check must be explicit: the
+  // taste-graph TAGS_ONLY backfill stamped tags/sub_subcategory onto ~57k
+  // never-classified rows (category='other', subcategory NULL), and the old
+  // tags-only test read those as "done" — leaving them invisible to every
+  // category rail forever.
+  let toClassify = (FORCE || ONLY_CATEGORY)
     ? remaining
-    : remaining.filter((e) => !e.sub_subcategory && (!e.tags || e.tags.length === 0));
+    : remaining.filter(
+        (e) => !e.subcategory || (!e.sub_subcategory && (!e.tags || e.tags.length === 0)),
+      );
   console.log(`${toClassify.length} events need Claude classification${FORCE ? " (forced)" : ONLY_CATEGORY ? ` (scoped to category=${ONLY_CATEGORY})` : ""}\n`);
+  // CLASSIFY_LIMIT caps one run's bite (soonest start_at first — rows are
+  // already ordered by start_at, so visible-soon events get fixed first).
+  // Lets a huge backlog be worked off across bounded runs instead of one
+  // job that risks the Actions timeout mid-write.
+  const CLASSIFY_LIMIT = parseInt(process.env.CLASSIFY_LIMIT || "0", 10);
+  if (CLASSIFY_LIMIT > 0 && toClassify.length > CLASSIFY_LIMIT) {
+    console.log(`CLASSIFY_LIMIT=${CLASSIFY_LIMIT} — deferring ${toClassify.length - CLASSIFY_LIMIT} to later runs\n`);
+    toClassify = toClassify.slice(0, CLASSIFY_LIMIT);
+  }
   if (toClassify.length === 0) return;
 
   // 3. Build batch requests — one per chunk of BATCH_SIZE events
@@ -827,9 +844,15 @@ async function fetchAllEvents() {
 // ── Write updates back to Supabase ──
 
 async function writeUpdates(updates, originalEvents) {
-  const concurrency = 10;
+  // Gentle writes: the unthrottled concurrency-10 loop saturated the Nano
+  // prod DB's IO on the 2026-07-20 tag backfill and took the app down
+  // (PostgREST 522). Same profile as resume_tag_backfill.js: low
+  // concurrency plus a pause between groups. Tunable for small runs.
+  const concurrency = parseInt(process.env.WRITE_CONCURRENCY || "4", 10);
+  const delayMs = parseInt(process.env.WRITE_DELAY_MS || "300", 10);
 
   for (let i = 0; i < updates.length; i += concurrency) {
+    if (i > 0 && delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
     const batch = updates.slice(i, i + concurrency);
     await Promise.all(batch.map(async (u) => {
       const original = originalEvents.find(e => e.id === u.id);
