@@ -260,15 +260,23 @@ export default {
           status = redir.status;
           return redir;
         }
-        // For shares that must NOT unfurl (the Daily Local text, ?s=dailylocalshare)
-        // give link-preview crawlers a page with NO title/description/image/favicon/OG.
-        // iMessage & co. fall back to <title>/description/favicon when OG is absent, so
-        // stripping only OG isn't enough — serve them a truly metadata-free page. Real
-        // (desktop) humans still get the full branded page below.
+        // For shares that must NOT unfurl (the Daily Local text, ?s=dailylocalshare):
+        // the ONLY thing that produces a rich card is preview metadata, so guarantee
+        // no request on this path ever receives any. Real mobile taps were already
+        // 302'd to the store above; everyone else reaching here — declared bots, and
+        // crucially the previewers that DON'T declare themselves (iMessage's daemon
+        // sends a plain desktop-Safari UA, Google Messages fetches as `GoogleOther`) —
+        // gets a page with NO <title>/description/image/favicon/OG. Nothing to build a
+        // card from, whatever UA it wears. Plain store links keep the page useful for a
+        // desktop human who lands here (a body <a> is never followed for a preview card).
         var noPreview = source === "dailylocalshare";
-        if (noPreview && isBot) {
+        if (noPreview) {
           const bare = new Response(
-            "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"robots\" content=\"noindex\"></head><body></body></html>",
+            "<!doctype html><html><head><meta charset=\"utf-8\"><meta name=\"robots\" content=\"noindex\"></head><body>" +
+            "<p>Get Local:</p>" +
+            "<p><a href=\"https://apps.apple.com/us/app/local-app/id6761425705\">iPhone &amp; iPad — App Store</a></p>" +
+            "<p><a href=\"https://play.google.com/store/apps/details?id=live.localapp.local\">Android — Google Play</a></p>" +
+            "</body></html>",
             { status: 200, headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store", "Vary": "User-Agent" } },
           );
           status = bare.status;

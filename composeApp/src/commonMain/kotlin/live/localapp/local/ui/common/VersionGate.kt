@@ -24,6 +24,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import live.localapp.local.sanitizeForDisplay
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -74,7 +75,9 @@ private fun rememberBoUpdateLine(tone: UpdateTone, timeoutMs: Long, fallback: St
     }
     var line by remember { mutableStateOf("") }
     LaunchedEffect(tone) {
-        line = service?.line(tone, timeoutMs)?.takeIf { it.isNotBlank() } ?: fallback
+        // sanitizeForDisplay(): the server line (from app_config / Bo) can carry
+        // smart quotes or dashes that tofu-box on iOS — normalise before typing.
+        line = (service?.line(tone, timeoutMs)?.takeIf { it.isNotBlank() } ?: fallback).sanitizeForDisplay()
     }
     return line
 }

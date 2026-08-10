@@ -103,6 +103,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.foundation.Image
 import coil3.compose.AsyncImage
+import coil3.compose.AsyncImagePainter
+import live.localapp.local.sanitizeForDisplay
+import androidx.compose.ui.draw.alpha
 import local.composeapp.generated.resources.Res
 import local.composeapp.generated.resources.*
 import org.jetbrains.compose.resources.DrawableResource
@@ -686,7 +689,7 @@ private val GENERIC_CATEGORY_IDS = setOf("other", "general", "unknown")
 @Composable
 private fun CarouselSectionView(section: CarouselSection, onEventClick: (Event, CardTransitionInfo?) -> Unit, showTags: Boolean = true, onFavorite: ((Event) -> Unit)? = null, favoriteIds: Set<String> = emptySet(), onSeeAll: (() -> Unit)? = null) {
     SectionHeader(
-        title = section.title,
+        title = section.title.sanitizeForDisplay(),
         // "See All" shows whenever the rail maps to a navigable destination
         // (the caller passes null otherwise, via seeAllDestFor). No event-count
         // gate: the destination is a broader page (full category / Next-30-days
@@ -932,7 +935,7 @@ private fun SeeAllSheet(
         ) {
             // Title
             Text(
-                section.title,
+                section.title.sanitizeForDisplay(),
                 modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
                 style = TextStyle(
                     fontFamily = AppFonts.Heading,
@@ -1249,15 +1252,26 @@ fun EventCard(data: EventCardData, modifier: Modifier = Modifier.width(156.dp), 
                     ),
                 contentAlignment = Alignment.Center,
             ) {
+                // Category icon fallback, always drawn beneath the photo. It shows
+                // through for image-less events, while the photo is still loading,
+                // and if the load fails. Critically, it means this Box is never an
+                // unpainted surface: on iOS (Metal) an unpainted AsyncImage surface
+                // rendered as a flat magenta "missing texture" while the photo was
+                // still binding, which is where the bright-magenta cards came from.
+                Icon(data.icon, contentDescription = null, modifier = Modifier.size(32.dp), tint = AppColors.Ink3.copy(alpha = 0.3f))
+
                 if (data.imageUrl != null) {
+                    // Keep the photo fully transparent until Coil reports Success,
+                    // so no partially-decoded / unpainted frame is ever shown.
+                    var loaded by remember(data.imageUrl) { mutableStateOf(false) }
+                    val imgAlpha by animateFloatAsState(if (loaded) 1f else 0f, tween(180), label = "cardImgFade")
                     AsyncImage(
                         model = data.imageUrl,
                         contentDescription = data.title,
                         contentScale = ContentScale.Crop,
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier.fillMaxSize().alpha(imgAlpha),
+                        onState = { state -> loaded = state is AsyncImagePainter.State.Success },
                     )
-                } else {
-                    Icon(data.icon, contentDescription = null, modifier = Modifier.size(32.dp), tint = AppColors.Ink3.copy(alpha = 0.3f))
                 }
 
                 if (data.showTag) {
@@ -1533,7 +1547,7 @@ private fun SlimEventCard(event: Event, onClick: (Rect) -> Unit) {
             // a pick that has them.
             // Title greys out when there's no confirmed upcoming date ("Dates TBD").
             Text(
-                event.title.toTitleCase(),
+                event.title.sanitizeForDisplay().toTitleCase(),
                 style = if (event.dateTbd) AppType.EventCardTitle.copy(color = AppColors.Ink3) else AppType.EventCardTitle,
                 minLines = 2,
                 maxLines = 2,
@@ -1665,20 +1679,22 @@ fun Event.toCardData(showTag: Boolean = true, tagOverride: String? = null, fallb
     val colorKey = subcategory ?: category
     val (bgS, bgE) = categoryColors(colorKey)
     return EventCardData(
-        title = title.toTitleCase(),
-        venueName = venueName ?: "",
+        // sanitizeForDisplay(): strip characters that tofu-box on iOS (smart
+        // quotes, dashes, ellipses, accents, emoji) before they reach a Text.
+        title = title.sanitizeForDisplay().toTitleCase(),
+        venueName = (venueName ?: "").sanitizeForDisplay(),
         date = dateDisplay,
         city = buildString {
             // Prefer the physical event location over the host-venue HQ.
             // displayCity returns eventCity when set, otherwise venueCity.
-            append(displayCity.replaceFirstChar { it.uppercase() })
+            append(displayCity.sanitizeForDisplay().replaceFirstChar { it.uppercase() })
             val state = (eventState ?: venueState)?.uppercase()
             if (state != null && state != "MA") {
                 append(", $state")
             }
         },
         distance = distanceDisplay,
-        tag = displayTag,
+        tag = displayTag.sanitizeForDisplay(),
         showTag = showTag,
         isFree = isFree,
         price = priceDisplay,
