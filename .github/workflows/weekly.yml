@@ -77,6 +77,23 @@ jobs:
           else
             STATES=$(echo "$ALL" | jq -c --argjson dow "$DOW" \
               '[ to_entries[] | select((.key % 7) == $dow) | .value ]')
+            # Big-state second shard day. One 240-min slot/week can't drain the
+            # largest catalogs (CA ~6.5k crawlable venues covered only ~58%/wk,
+            # NY ~3.5k at ~72%/wk measured 2026-07-25), so their stalest tail
+            # sat 10+ days between crawls and upcoming events aged out — venues
+            # "decayed" back to zero between visits. Give them a second weekly
+            # slot: NY also runs Saturday (otherwise an idle shard day with 6
+            # live states), CA also runs Wednesday. Max two states on any day,
+            # so shared-Nano write pressure stays far below the old all-states
+            # Sunday burst this sharding replaced. Revisit the map when a new
+            # state goes live (index shift) or a catalog outgrows one slot:
+            # weekly capacity/state ≈ CRAWL_MAX_MINUTES × CONCURRENCY ÷ ~15s-per-venue.
+            EXTRA=$(jq -nc --argjson dow "$DOW" \
+              '{"3":["CA"],"6":["NY"]}[$dow|tostring] // []')
+            # Intersect with ALL so a state dropped from is_live can't sneak
+            # back in via the extra-day map.
+            STATES=$(jq -nc --argjson a "$STATES" --argjson b "$EXTRA" --argjson all "$ALL" \
+              '$a + ($b | map(select(. as $s | $all | index($s)))) | unique')
           fi
           if [ "$DOW" = "0" ]; then RUN_HEAVY=true; else RUN_HEAVY=false; fi
           echo "DOW=$DOW  all=$ALL  today=$STATES  run_heavy=$RUN_HEAVY"
@@ -118,6 +135,14 @@ jobs:
           VENUE_NAME: ${{ github.event.inputs.venue_filter }}
           STATE: ${{ matrix.state }}
           CRAWL_MAX_MINUTES: '240'
+          # 5 parallel venue crawls (script default is 3). Raises per-slot
+          # throughput ~1.7× so big-state slots drain their whole stalest tail
+          # within the 240m budget instead of leaving 28-42% uncrawled each
+          # week (measured NY 72% / CA 58% weekly coverage at the default).
+          # 5 is the level every manual catch-up crawl has run at against the
+          # same shared Nano with zero upsert errors; per-venue inline upserts
+          # keep write bursts small and steady rather than one end-of-run bulk.
+          CONCURRENCY: '5'
           # Optional — falls back to DEMO_KEY if secret not set. For production
           # crawls, set an NPS_API_KEY secret (free, from api.data.gov).
           NPS_API_KEY: ${{ secrets.NPS_API_KEY }}
