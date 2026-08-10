@@ -1,0 +1,46 @@
+name: Daily — Push Notifications (Bo)
+
+# Evaluates the per-weekday push decision trees and sends via OneSignal.
+# One daily run: the script derives the ET weekday itself and walks that day's
+# tree. 22:00 UTC = 6pm EDT / 5pm EST — an evening send that's still on the same
+# ET calendar day (so "today"/"tomorrow" logic is correct). The 1h DST drift is
+# acceptable while all live states are US Eastern (see the script's TIMEZONE note).
+#
+# ONESIGNAL_REST_API_KEY is read from the prod `secrets` table by the script
+# (getSecrets), so only SUPABASE_SERVICE_KEY needs to be a GitHub secret.
+
+on:
+  schedule:
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+    inputs:
+      day:
+        description: 'Override ET weekday (sun|mon|tue|wed|thu|fri|sat); blank = today'
+        required: false
+        default: ''
+      dry_run:
+        description: 'Dry run (log recipients, send nothing)'
+        type: boolean
+        default: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  send-daily-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Send daily push
+        working-directory: scripts
+        env:
+          SUPABASE_URL: https://blifubxslaucshmlphdc.supabase.co
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DAY: ${{ github.event.inputs.day }}
+          # Scheduled runs send; manual runs send unless dry_run is checked.
+          SEND: ${{ github.event.inputs.dry_run == 'true' && '0' || '1' }}
+        run: node push/send_daily_push.js
