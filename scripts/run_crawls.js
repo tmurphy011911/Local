@@ -711,6 +711,27 @@ function tagEasternTime(isoDate) {
 function normalizeEvent(event, venue) {
   const now = new Date().toISOString();
   const venueCity = (venue.city || "unknown").toLowerCase();
+  // Per-event venue override (event._venue) — set by adapters when the feed
+  // carries real per-event venue data (e.g. a Tribe aggregator like Waltham
+  // Times whose every event names its actual venue). Attribution fields come
+  // from the override; sourceId/dedupe_hash still hash the DB venue row's
+  // name so a re-crawl after an attribution fix UPDATES the same rows
+  // in place instead of duplicating them.
+  const attr = event._venue && event._venue.name
+    ? {
+        name: decodeXmlEntities(event._venue.name).trim(),
+        city: event._venue.city || venue.city,
+        state: event._venue.state || venue.state || null,
+        lat: event._venue.lat ?? venue.lat,
+        lng: event._venue.lng ?? venue.lng,
+      }
+    : {
+        name: decodeXmlEntities(venue.name),
+        city: venue.city,
+        state: venue.state || null,
+        lat: venue.lat,
+        lng: venue.lng,
+      };
   // Decode HTML entities before hashing so "Pattern &amp; Place" and
   // "Pattern & Place" produce the same dedupe_hash across crawl paths.
   const title = decodeXmlEntities(event.title || "").trim();
@@ -753,12 +774,12 @@ function normalizeEvent(event, venue) {
     // venue's photo. The migration backfill query handles existing rows.
     image_url: event.image_url || venue.photo_url || null,
     status: "active",
-    venue_name: decodeXmlEntities(venue.name),
+    venue_name: attr.name,
     venue_address: null,
-    venue_city: venue.city,
-    venue_state: venue.state || null,
-    venue_lat: venue.lat ? parseFloat(venue.lat) : null,
-    venue_lng: venue.lng ? parseFloat(venue.lng) : null,
+    venue_city: attr.city,
+    venue_state: attr.state,
+    venue_lat: attr.lat ? parseFloat(attr.lat) : null,
+    venue_lng: attr.lng ? parseFloat(attr.lng) : null,
     source: "crawl",
     source_id: sourceId,
     // For aggregator venues (Harvard Square, Creative Legion, etc.) padding
@@ -1273,6 +1294,32 @@ async function crawlLocalist(venue, baseUrl) {
 
 // ── WordPress REST API crawler ──
 
+/**
+ * Per-event venue from a Tribe REST event, for AGGREGATOR feeds only.
+ * A Tribe aggregator (e.g. a local-news calendar like Waltham Times) names the
+ * real venue on every event; attributing those rows to the aggregator hides
+ * them from every per-venue surface. For normal single-venue feeds we keep the
+ * DB venue row's identity — feed-side name variants ("MFA Boston" vs our
+ * "Museum of Fine Arts") would fragment carousels otherwise.
+ * Returns null (no override) unless the crawled venue is an aggregator and the
+ * event carries a usable venue name. Skips virtual/online pseudo-venues so
+ * Zoom meetings stay on the aggregator row instead of minting "Zoom" venues.
+ */
+function tribeEventVenue(evt, venue) {
+  if (!venue.is_aggregator) return null;
+  const v = evt.venue && !Array.isArray(evt.venue) ? evt.venue : (Array.isArray(evt.venue) ? evt.venue[0] : null);
+  const name = (v && (v.venue || v.name) || "").trim();
+  if (!name) return null;
+  if (/^(zoom|online|virtual|webinar|tbd|tba)$/i.test(name)) return null;
+  return {
+    name,
+    city: (v.city || "").trim() || null,
+    state: (v.state_province || v.state || v.province || "").trim() || null,
+    lat: v.geo_lat != null && v.geo_lat !== "" ? v.geo_lat : null,
+    lng: v.geo_lng != null && v.geo_lng !== "" ? v.geo_lng : null,
+  };
+}
+
 async function crawlWordPress(venue, baseUrl) {
   const allEvents = [];
 
@@ -1319,6 +1366,7 @@ async function crawlWordPress(venue, baseUrl) {
             source_url: evt.url || evt.link || null,
             is_free: evt.cost === "Free" || evt.cost === "" || evt.cost === "$0" || false,
             ticket_url: evt.website || evt.url || null,
+            _venue: tribeEventVenue(evt, venue),
           });
         }
 
@@ -1341,6 +1389,7 @@ async function crawlWordPress(venue, baseUrl) {
                 title, start_date: startDate, end_date: evt.end_date || null,
                 description: desc || null, source_url: evt.url || evt.link || null,
                 is_free: evt.cost === "Free" || false, ticket_url: evt.website || null,
+                _venue: tribeEventVenue(evt, venue),
               });
             }
             nextUrl = nextData.next_rest_url || null;
