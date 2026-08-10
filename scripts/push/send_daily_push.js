@@ -228,11 +228,19 @@ async function loadDailyLocal() {
     const cur = topScoreByState.get(r.state);
     if (cur == null || r.score > cur) topScoreByState.set(r.state, r.score);
   }
-  // latest streak per user (most recent completion)
-  const recent = await sbGet(`quiz_completions?select=user_id,streak,quiz_date&order=quiz_date.desc&limit=2000`);
-  const streaks = new Map();
-  for (const r of recent) if (!streaks.has(r.user_id)) streaks.set(r.user_id, r.streak || 0);
-  return { playedToday, topScoreByState, streaks };
+  // per user: latest streak, whether they've ever played, and whether their most
+  // recent game (within 2 days) was 2/3 — powers the streak/"so close" E copy.
+  const recent = await sbGet(`quiz_completions?select=user_id,streak,correct_count,quiz_date&order=quiz_date.desc&limit=5000`);
+  const twoDaysAgo = isoDateEastern(-2);
+  const streaks = new Map(), everPlayed = new Set(), lastClose = new Set();
+  for (const r of recent) {
+    everPlayed.add(r.user_id);
+    if (!streaks.has(r.user_id)) { // first row per user = most recent game
+      streaks.set(r.user_id, r.streak || 0);
+      if (r.correct_count === 2 && r.quiz_date >= twoDaysAgo) lastClose.add(r.user_id);
+    }
+  }
+  return { playedToday, topScoreByState, streaks, everPlayed, lastClose };
 }
 function userLatLng(p) {
   if (p.location_mode === "manual" && p.manual_lat != null) return { lat: p.manual_lat, lng: p.manual_lng };
@@ -260,60 +268,111 @@ async function tasteEventCount(cat, lat, lng, start, end) {
   const cr = res.headers.get("content-range"); // "0-0/<total>" or "*/<total>"
   return cr ? parseInt(cr.split("/")[1], 10) || 0 : 0;
 }
-/** C — Daily Local social-proof, void if the user already played today or the
- * state has no REAL score to beat yet (top must be > 0 — "Score to beat: 0 /
- * you don't stand a chance" is nonsense before anyone posts a real score). */
-function buildCFor(uid, p, ctx) {
-  if (ctx.playedToday.has(uid)) return null;
-  const top = ctx.topScoreByState.get(p.home_state);
-  if (top == null || top <= 0) return null;
-  return { type: "C", title: `Score to beat: ${top} 💛`, body: "Unfortunately, Bo says you don't stand a chance", dedupeKey: `C:${uid}:${isoDateEastern(0)}` };
+/** E copy. Title is always the state's score to beat (or a "be the first" line
+ * when nobody's posted one). Body varies by the user's Daily Local state and
+ * rotates by a {uid}+{date} hash so it isn't identical two sends running.
+ * {N} = current streak, {N1} = streak+1. */
+const E_BODIES = {
+  never: [
+    "Bo says a first-timer won't touch it. Prove him wrong — 3 questions.",
+    "Everyone starts at zero. Go get yours — 30 seconds.",
+    "You've never played, so Bo likes his odds. Ruin his afternoon.",
+    "New here? Sneak up on the leaderboard. 3 questions, that's it.",
+    "Bo bet you'd never open this. Beat it and make it awkward for him.",
+    "Your city, 3 questions, 30 seconds. Start the streak today.",
+  ],
+  lapsed: [
+    "You let the streak die. Bo noticed. One clean run fixes it.",
+    "Comeback season? Beat it and restart the run.",
+    "Bo's been holding your spot. Take today's three and reclaim it.",
+    "A zero-day streak is a bad look on you. 30 seconds to fix it.",
+    "You know you can top that. Prove you still can.",
+    "Rusty? Bo's counting on it. Prove otherwise.",
+  ],
+  fragile: [
+    "Day {N}'s in the bag — don't fold on day {N1}.",
+    "A {N}-day streak is a fragile little thing. Guard it.",
+    "Bo's waiting for the day you slip. Don't let it be today.",
+    "You've got {N} in a row on the line. Keep it breathing.",
+    "Two-day-old streaks break easy. Not yours, right?",
+    "Momentum's real. Beat it, extend the run.",
+  ],
+  rolling: [
+    "{N} days deep. Bo won't admit he's impressed — I will. Keep going.",
+    "You're in a rhythm. Make it day {N1}.",
+    "Bo's quietly rooting against the streak. Spite him.",
+    "{N} in a row is no accident. Prove it again.",
+    "Don't get cocky — it's a real number. Go earn day {N1}.",
+    "The streak's getting serious. So's the score. Handle both.",
+  ],
+  fire: [
+    "{N} straight days. Bo's genuinely sweating. Don't stop now.",
+    "A {N}-day streak on the line. No pressure. (Pressure.)",
+    "You've come way too far to fumble today. 30 seconds.",
+    "Bo's been telling people about your streak. Don't make him a liar.",
+    "{N} days. Legendary. Keep the myth alive.",
+    "This is where lesser players choke. Not you. Go.",
+  ],
+  close: [
+    "You were ONE away yesterday. Bo hasn't shut up about it. Rematch?",
+    "2/3 yesterday. So close it stung. Today's your redemption.",
+    "One question stood between you and glory. Settle it.",
+    "Bo's still laughing about that miss. Wipe the smile off.",
+    "Yesterday: heartbreak. Today: a number to beat. Get even.",
+    "You KNOW you had that last one. Prove it wasn't a fluke.",
+  ],
+};
+function hashStr(s) { let h = 0; for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
+function eBodyFor(uid, streak, everPlayed, wasClose) {
+  const state = wasClose ? "close"
+    : streak >= 7 ? "fire"
+    : streak >= 3 ? "rolling"
+    : streak >= 1 ? "fragile"
+    : everPlayed ? "lapsed"
+    : "never";
+  const arr = E_BODIES[state];
+  return arr[hashStr(uid + isoDateEastern(0)) % arr.length]
+    .replace(/\{N1\}/g, String(streak + 1)).replace(/\{N\}/g, String(streak));
 }
 
-/** B — discovery/FOMO (Tue): >=3 taste events within 10mi this week, else fall back to C. */
+/** B — discovery/FOMO (Tue): >=3 taste events within 10mi this week (else nothing;
+ * the tree's next leaf is the fallback). */
 async function buildDiscoveryFomo(ctx) {
   const start = dateBoundaryISO(0), end = dateBoundaryISO(8);
   const out = new Map();
   for (const [uid, p] of ctx.profiles) {
     const loc = userLatLng(p), cat = topCategory(p);
-    if (loc && cat) {
-      const n = await tasteEventCount(cat, loc.lat, loc.lng, start, end);
-      if (n >= 3) { out.set(uid, { type: "B", title: "Bo's been busy", body: `${n} ${cat} events within 10 miles of you this week`, dedupeKey: `B:${uid}:${isoDateEastern(0)}` }); continue; }
-    }
-    const c = buildCFor(uid, p, ctx);
-    if (c) out.set(uid, c);
+    if (!loc || !cat) continue;
+    const n = await tasteEventCount(cat, loc.lat, loc.lng, start, end);
+    if (n >= 3) out.set(uid, { type: "B", title: "Bo's been busy", body: `${n} ${cat} events within 10 miles of you this week`, dedupeKey: `B:${uid}:${isoDateEastern(0)}` });
   }
   return out;
 }
-/** C standalone (Tue leaf). */
-async function buildDailyLocalSocialProof(ctx) {
-  const out = new Map();
-  for (const [uid, p] of ctx.profiles) { const c = buildCFor(uid, p, ctx); if (c) out.set(uid, c); }
-  return out;
-}
-/** E — Daily Local reminder (Sun): users who haven't played today. */
+/** E — Daily Local nudge. The universal catch-all: the last leaf on every day,
+ * for anyone who hasn't played yet today (subject to that day's activity gate).
+ * Title = the state's score to beat; body varies by streak / yesterday. Replaces
+ * the old C. */
 async function buildDailyLocalReminder(ctx) {
   const out = new Map();
   for (const [uid, p] of ctx.profiles) {
     if (ctx.playedToday.has(uid)) continue;
-    const streak = ctx.streaks.get(uid) || 0;
-    const clause = streak > 0 ? ` — keep your ${streak}-day streak alive` : "";
-    out.set(uid, { type: "E", title: "Today's Daily Local is live 💛", body: `3 questions, 30 seconds. Bo bets you can't go 3/3${clause}`, dedupeKey: `E:${uid}:${isoDateEastern(0)}` });
+    const top = ctx.topScoreByState.get(p.home_state) || 0;
+    const title = top > 0 ? `Today's score to beat: ${top} 💛` : "Be the first on today's Daily Local 💛";
+    const body = eBodyFor(uid, ctx.streaks.get(uid) || 0, ctx.everPlayed.has(uid), ctx.lastClose.has(uid));
+    out.set(uid, { type: "E", title, body, dedupeKey: `E:${uid}:${isoDateEastern(0)}` });
   }
   return out;
 }
-/** F — taste weekend events (Thu): >=3 within 10mi Thu–Sun, else fall back to C. */
+/** F — taste weekend events (Thu): >=3 within 10mi Thu–Sun (else nothing; the
+ * tree's next leaf, E, is the fallback). */
 async function buildTasteWeekend(ctx) {
   const start = dateBoundaryISO(0), end = dateBoundaryISO(4);
   const out = new Map();
   for (const [uid, p] of ctx.profiles) {
     const loc = userLatLng(p), cat = topCategory(p);
-    if (loc && cat) {
-      const n = await tasteEventCount(cat, loc.lat, loc.lng, start, end);
-      if (n >= 3) { out.set(uid, { type: "F", title: "Bo says you're welcome", body: `${n} ${cat} events within 10 miles of you this weekend`, dedupeKey: `F:${uid}:${isoDateEastern(0)}` }); continue; }
-    }
-    const c = buildCFor(uid, p, ctx);
-    if (c) out.set(uid, c);
+    if (!loc || !cat) continue;
+    const n = await tasteEventCount(cat, loc.lat, loc.lng, start, end);
+    if (n >= 3) out.set(uid, { type: "F", title: "Bo says you're welcome", body: `${n} ${cat} events within 10 miles of you this weekend`, dedupeKey: `F:${uid}:${isoDateEastern(0)}` });
   }
   return out;
 }
@@ -326,12 +385,13 @@ async function treeForDay(day, ctx) {
   const A = await buildPlanReminders();
   switch (day) {
     case "sun": return [A, await buildSavedEventSoon("this_week"), await buildDailyLocalReminder(ctx)];
-    case "tue": return [A, await buildDiscoveryFomo(ctx), await buildDailyLocalSocialProof(ctx)];
-    case "thu": return [A, await buildSavedVenueWeekend(), await buildTasteWeekend(ctx)]; // F falls back to C internally; E is Sun-only
-    case "fri": return [A, await buildSavedEventSoon("weekend_edge")];
-    // mon/wed/sat: only the plan reminder, and it's gated (main() drops it for
-    // users who logged in today) — so A reaches only inactive users with a plan.
-    default:   return [A];
+    case "tue": return [A, await buildDiscoveryFomo(ctx), await buildDailyLocalReminder(ctx)];
+    case "thu": return [A, await buildSavedVenueWeekend(), await buildTasteWeekend(ctx), await buildDailyLocalReminder(ctx)];
+    case "fri": return [A, await buildSavedEventSoon("weekend_edge"), await buildDailyLocalReminder(ctx)];
+    // mon/wed/sat: gated plan reminder, then the Daily Local catch-all (E) — the
+    // same broad "come play" nudge as Sunday. Non-A leaves gated on "didn't open
+    // the app today", so E reaches only users who were away and haven't played.
+    default:   return [A, await buildDailyLocalReminder(ctx)];
   }
 }
 
@@ -345,15 +405,10 @@ async function main() {
   const day = WEEKDAYS.includes(DAY_OVERRIDE) ? DAY_OVERRIDE : easternWeekday();
   console.log(`[push] day=${day}  env=${SUPABASE_URL.includes("xbyqwe") ? "DEV" : "PROD"}  mode=${SEND ? "SEND" : "DRY-RUN"}`);
 
-  // Load shared context. Active days need everything; silent days (mon/wed/sat)
-  // still need the activity map to gate the plan reminder.
-  let ctx = { profiles: new Map(), activity: new Map(), playedToday: new Set(), topScoreByState: new Map(), streaks: new Map() };
-  if (["sun", "tue", "thu", "fri"].includes(day)) {
-    const [profiles, activity, dl] = await Promise.all([loadProfiles(), loadActivity(), loadDailyLocal()]);
-    ctx = { profiles, activity, ...dl };
-  } else if (["mon", "wed", "sat"].includes(day)) {
-    ctx.activity = await loadActivity();
-  }
+  // Load shared context — every day now needs it (the Daily Local catch-all E
+  // runs on all days except Tue/Fri, and the gate needs the activity map).
+  const [profiles, activity, dl] = await Promise.all([loadProfiles(), loadActivity(), loadDailyLocal()]);
+  const ctx = { profiles, activity, ...dl };
 
   const layers = await treeForDay(day, ctx);
 
