@@ -85,6 +85,10 @@ const TEAM_NAME_BACKFILL = process.env.TEAM_NAME_BACKFILL === "1";
 // have sub_subcategory/tags still go through Claude. Used to repair events
 // stuck at invalid parent categories like "other".
 const ONLY_CATEGORY = process.env.ONLY_CATEGORY || null;
+// Scope a forced reclassification to a single existing subcategory (e.g.
+// ONLY_SUBCATEGORY=other to re-home the legacy 'other' bucket after it was
+// removed from the vocabulary). Implies FORCE-style "re-send already-classified".
+const ONLY_SUBCATEGORY = process.env.ONLY_SUBCATEGORY || null;
 // Cap the number of events sent to Claude in one run. Use for cheap eyeball
 // test passes (e.g. MAX_EVENTS=30 FORCE=1) before a full backfill. 0 = no cap.
 const MAX_EVENTS = parseInt(process.env.MAX_EVENTS || "0", 10);
@@ -231,16 +235,12 @@ function autoExcludeReason(event) {
 // type of event. Deterministic, cheap, runs outside the Claude batch.
 
 const SUBCATEGORY_RECLASSIFY_PATTERNS = [
-  // Educational / networking / talks → "other"
-  {
-    subcategory: "other",
-    re: /\b(lunch\s*(&|and|&amp;|n)?\s*learn|luncheon\s*(&|and|&amp;)?\s*learn|breakfast\s*(&|and|&amp;)?\s*learn|workshop|seminar|symposium|lecture|panel discussion|panel talk|networking|open house|meet\s*(&|and|&amp;)?\s*greet|professional development|training session|community forum|town hall|round\s?table|info session|information session|fireside chat|guest speaker|keynote|distinguished lecture|colloquium|speaker series)\b/i,
-  },
-  // Fundraising / social / reception → "other"
-  {
-    subcategory: "other",
-    re: /\b(gala|fundraiser|fundraising|charity benefit|annual benefit|bake sale|raffle|cocktail reception|awards ceremony|awards gala|opening reception|annual meeting|member reception)\b/i,
-  },
+  // NOTE: the "other" catch-all was removed (2026). Educational/talks,
+  // networking, and fundraising/reception events are NO LONGER force-mapped to
+  // a bucket here — they are too varied (a charity concert vs a corporate awards
+  // gala) for a blunt regex. The LLM classifier routes them by actual activity
+  // (talks/lectures → libraries, charity concert → music, etc.), and genuinely
+  // private/corporate ones fall to no-public-interest via the auto-exclusion pass.
   // Film screenings → "arts"
   {
     subcategory: "arts",
@@ -328,9 +328,10 @@ async function applyReclassifications(events, skipIds = new Set()) {
         }),
       });
       if (res.ok) updated++;
+      await _sleep(WRITE_WAVE_DELAY_MS); // throttle — never saturate Nano IO
     }
   }
-  await Promise.all(Array.from({ length: 5 }, worker));
+  await Promise.all(Array.from({ length: WRITE_CONCURRENCY }, worker));
   console.log(`  updated: ${updated}/${matches.length}\n`);
   return new Set(matches.map((m) => m.id));
 }
@@ -392,9 +393,10 @@ async function applyAutoExclusions(events) {
         }),
       });
       if (res.ok) updated++;
+      await _sleep(WRITE_WAVE_DELAY_MS); // throttle — never saturate Nano IO
     }
   }
-  await Promise.all(Array.from({ length: 5 }, worker));
+  await Promise.all(Array.from({ length: WRITE_CONCURRENCY }, worker));
   console.log(`  updated: ${updated}/${matches.length}\n`);
   return new Set(matches.map((m) => m.id));
 }
@@ -405,7 +407,7 @@ const VALID_PARENT_CATEGORIES = ["upcoming", "always_on"];
 
 const VALID_SUBCATEGORIES = [
   "music", "arts", "theatre", "food", "comedy", "sports",
-  "museums", "tours", "libraries", "outdoors", "for-kids", "other",
+  "museums", "tours", "libraries", "outdoors", "for-kids",
   "no-public-interest",
 ];
 
@@ -505,7 +507,6 @@ SUBCATEGORY RULES:
 - "libraries" — book clubs, author events, library programs, readings
 - "outdoors" — hiking, cycling, kayaking, beach events, nature walks, cleanups, gardening
 - "for-kids" — storytime, kids camps, children's theatre, kids science, outdoor play
-- "other" — workshops, lectures, networking, community events, wellness, charity, religious, markets
 - "no-public-interest" — events that no member of the general public would be excited to discover and attend. If a random person browsing the app would not want to attend, classify it here. Examples:
   • Recovery / support groups — AA / NA / OA / GA / Al-Anon / Alateen / 12-step / SMART Recovery / Refuge Recovery / sober support meetings / grief groups
   • Youth / scholastic sports games, practices, or tryouts — JV, varsity, freshman, middle school, high school, AAU, little league, pee-wee, pop warner, U-league (U10/U12/U14 etc.). Even state championship HS games are too niche.
@@ -515,6 +516,12 @@ SUBCATEGORY RULES:
   • Routine worship services (weekly prayer, daily prayer, Sunday service, mass). Church concerts, festivals, or special community events are NOT this — they go to music/arts/other.
 
 IMPORTANT classification rules:
+- There is NO "other" catch-all — it has been removed. EVERY event MUST be assigned one of the real subcategories above (or "no-public-interest"). Never return "other". Choose the single closest subcategory by the event's core activity:
+  • workshops / classes → the subject: art/craft-making → "arts", cooking/tasting → "food", fitness/yoga/wellness → "sports", gardening/nature/hikes → "outdoors", anything kid-focused → "for-kids"
+  • lectures / author talks / readings / book events / discussion groups → "libraries"
+  • markets → craft/vintage/art markets → "arts"; farmers/food/maker-food markets → "food"
+  • networking / business mixers / charity galas / community festivals / religious festivals / cultural celebrations → classify by the ACTUAL activity (charity concert → "music", community art fair → "arts", food-truck festival → "food", cultural dance festival → "arts")
+  • Only use "no-public-interest" when the event genuinely has no consumer appeal (per the list above) — it is NOT a replacement dumping ground for "other". When in doubt between a real subcategory and "no-public-interest", prefer the real subcategory.
 - Film screenings and movie showings are "arts" with sub_subcategory "film"
 - A venue's default classification is often WRONG. Classify by the EVENT content, not the venue.
 - ANY event whose title pits two sides against each other is almost certainly "sports" — games, matches, competitions. This includes "vs", "vs.", a standalone single-letter " v " or " v. " (Ticketmaster's format, e.g. "New England Patriots v Buffalo Bills", "2026 World Cup: Haiti v Scotland"), and "@" (e.g. "Yankees @ Red Sox"). It still applies when the matchup follows a prefix like "Preseason Game 1: Team A v Team B". Never classify these as music/arts/etc. For these matchup titles, ALWAYS populate team_name with the local/home team (the side belonging to the event's metro), using the canonical "City Nickname" form.
@@ -560,6 +567,7 @@ async function main() {
   if (DRY_RUN) console.log("DRY RUN — no API calls\n");
   if (FORCE) console.log("FORCE — re-classifying all events\n");
   if (ONLY_CATEGORY) console.log(`ONLY_CATEGORY=${ONLY_CATEGORY} — scoping to active events with category="${ONLY_CATEGORY}", overriding unclassified-only filter\n`);
+  if (ONLY_SUBCATEGORY) console.log(`ONLY_SUBCATEGORY=${ONLY_SUBCATEGORY} — scoping to active events with subcategory="${ONLY_SUBCATEGORY}", forced reclassification\n`);
 
   // 1. Fetch events to classify
   const events = await fetchAllEvents();
@@ -601,7 +609,7 @@ async function main() {
   if (TAGS_ONLY) {
     // Only rows not yet tagged under the current vocab — idempotent across re-runs.
     toClassify = remaining.filter((e) => e.tag_vocab_version !== TAG_VOCAB_VERSION);
-  } else if (FORCE || ONLY_CATEGORY) {
+  } else if (FORCE || ONLY_CATEGORY || ONLY_SUBCATEGORY) {
     toClassify = remaining;
   } else {
     toClassify = remaining.filter((e) => !e.sub_subcategory && (!e.tags || e.tags.length === 0));
@@ -814,9 +822,10 @@ async function fetchAllEvents() {
   const pageSize = 500;
   // Also filter is_active=true server-side; reclassifying past/inactive rows
   // wastes Anthropic spend and never affects user-visible surfaces.
-  const baseScope = ONLY_CATEGORY
+  let baseScope = ONLY_CATEGORY
     ? `&category=eq.${encodeURIComponent(ONLY_CATEGORY)}&is_active=eq.true`
     : `&is_active=eq.true`;
+  if (ONLY_SUBCATEGORY) baseScope += `&subcategory=eq.${encodeURIComponent(ONLY_SUBCATEGORY)}`;
 
   const nowIso = new Date().toISOString();
   let cursor = nowIso;       // first page: start_at >= now
