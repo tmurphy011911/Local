@@ -1,0 +1,53 @@
+name: Ad-hoc — Migrate Venue Photos to Storage
+
+# Phase 2 of the 2026-08 photo-rot fix. Google Places photo references rotate
+# and 400 after weeks, so venue/event images go blank. This re-fetches a fresh
+# photo per venue, downloads the bytes, and stores them permanently in the
+# `venue-photos` bucket (permanent URLs). EVENT_VENUES_ONLY scopes to venues
+# backing an active future event that still hold a Google URL (~7.6k) instead
+# of the whole 58k corpus.
+#
+# Runs in Actions because the script needs the prod SUPABASE_SERVICE_KEY (an
+# Actions secret) to bootstrap GOOGLE_PLACES_API_KEY from the prod secrets
+# table. Costs real Google Places billing (text-search + photo fetch per
+# venue) — dry_run first to see the working-set size for free.
+#
+# AFTER this completes, re-point events to the new storage URLs (see the
+# event-image re-point step run separately).
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (no writes, no Google photo billing beyond search) — set to '0' to actually migrate"
+        required: false
+        default: "1"
+      limit:
+        description: "Cap number of venues this run (0 = all in scope)"
+        required: false
+        default: "0"
+      concurrency:
+        description: "Concurrent venues (each worker paced ~6 req/s)"
+        required: false
+        default: "5"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  migrate-photos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '22' }
+      - name: Migrate venue photos (event-backing venues only)
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          EVENT_VENUES_ONLY: "1"
+          WRITE: ${{ inputs.dry_run == '0' && '1' || '' }}
+          LIMIT: ${{ inputs.limit }}
+          CONCURRENCY: ${{ inputs.concurrency }}
+        run: node migrate_venue_photos_to_storage.js

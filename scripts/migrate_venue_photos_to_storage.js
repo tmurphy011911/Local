@@ -26,6 +26,12 @@ const LIMIT = parseInt(process.env.LIMIT || "0", 10) || null;
 const ONLY_NULL = process.env.ONLY_NULL === "1";
 const VENUE_ID = process.env.VENUE_ID || null;
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || "5", 10);
+// EVENT_VENUES_ONLY: restrict to venues that back an active future event AND
+// still hold a rot-prone Google photo_url. This is the targeted symptom fix —
+// migrating only the venues whose photos are actually shown on upcoming
+// events, instead of the whole 58k corpus. Pairs with the event image
+// re-point that runs after (events keep their own denormalized image_url).
+const EVENT_VENUES_ONLY = process.env.EVENT_VENUES_ONLY === "1";
 
 if (!SERVICE_KEY) { console.error("Missing SUPABASE_SERVICE_KEY"); process.exit(1); }
 
@@ -65,6 +71,33 @@ async function fetchVenues() {
   }
   console.log("");
   return all;
+}
+
+// Distinct venue_names that back an active future event whose image is a
+// (rot-prone) Google URL. Keyset-paginated on id so it scales past the
+// PostgREST 1000-row cap without OFFSET drift.
+async function fetchFutureEventVenueNames() {
+  const names = new Set();
+  let cursor = "00000000-0000-0000-0000-000000000000";
+  const nowIso = new Date().toISOString();
+  while (true) {
+    const url =
+      `${SUPABASE_URL}/rest/v1/events?select=id,venue_name` +
+      `&is_active=eq.true&start_at=gte.${encodeURIComponent(nowIso)}` +
+      `&image_url=like.https://places.googleapis.com*` +
+      `&venue_name=not.is.null` +
+      `&id=gt.${cursor}&order=id.asc&limit=1000`;
+    const r = await fetch(url, { headers: restHeaders });
+    if (!r.ok) throw new Error(`fetch event venue names: ${r.status} ${await r.text()}`);
+    const rows = await r.json();
+    if (rows.length === 0) break;
+    for (const row of rows) if (row.venue_name) names.add(row.venue_name);
+    process.stdout.write(`  scoping: ${names.size} distinct venue names\r`);
+    cursor = rows[rows.length - 1].id;
+    if (rows.length < 1000) break;
+  }
+  console.log("");
+  return names;
 }
 
 // ── Already-migrated detection ──────────────────────────────────────────
@@ -206,6 +239,19 @@ async function main() {
 
   let venues = await fetchVenues();
   console.log(`Loaded ${venues.length} venues`);
+
+  if (EVENT_VENUES_ONLY) {
+    const eventVenueNames = await fetchFutureEventVenueNames();
+    const before = venues.length;
+    // Keep only venues backing a future event that still need migration
+    // (Google photo). Already-on-storage venues are dropped here rather than
+    // in migrateOne so the progress totals reflect real work.
+    venues = venues.filter(
+      (v) => eventVenueNames.has(v.name) && !isAlreadyMigrated(v.photo_url),
+    );
+    console.log(`EVENT_VENUES_ONLY: ${venues.length}/${before} venues back a future event and need migration`);
+  }
+
   if (LIMIT) venues = venues.slice(0, LIMIT);
 
   const tally = {};
