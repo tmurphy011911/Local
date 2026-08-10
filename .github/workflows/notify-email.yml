@@ -13,7 +13,16 @@ on:
   workflow_run:
     workflows:
       - "Daily — Event Sync, Dedupe & Pattern Prefilter"
-      - "Daily — Crawl (day-sharded) + Classify; weekly aggregator/dedupe tail"
+      # NOTE: these entries are GitHub *filter patterns*, not literal strings.
+      # In that syntax `+` means "one or more of the preceding character", so
+      # the crawl workflow's exact name ("… (day-sharded) + Classify; …") can
+      # NEVER match itself as a pattern — the `+` quantifies the space before
+      # it instead of matching the literal plus. That silently killed every
+      # crawl notification from the day the workflow was renamed. Match on a
+      # glob prefix that stops before the `+` instead. If the crawl workflow
+      # is ever renamed again, keep the new name free of `+ ? ! [ ] *` or use
+      # a prefix glob like this one.
+      - "Daily — Crawl (day-sharded)*"
       - "Ad-hoc — Finish Downstream (sync municipal, classify, dedupe)"
       - "Ad-hoc — Fix Venue URLs (state-scoped)"
       - "Hourly — Deactivate Past Events"
@@ -81,6 +90,30 @@ jobs:
           # Subject (single line → step output)
           echo "subject=$emoji $WR_NAME: $conclusion_uc" >> "$GITHUB_OUTPUT"
 
+          # Per-job output digest: pull each completed job's plain-text log and
+          # keep the summary lines (crawl totals, classify counts, budget cuts,
+          # errors). Best-effort — any failure just yields an email without the
+          # digest section, never a failed notify run. Capped per job and overall
+          # so a pathological log can't produce a megabyte email.
+          : > jobs_details.html
+          echo "$jobs_json" | jq -r '.jobs[]? | select(.conclusion != null and .conclusion != "skipped") | "\(.id)\t\(.name)"' \
+          | head -20 \
+          | while IFS=$'\t' read -r jid jname; do
+              summary=$(gh api "repos/$REPO/actions/jobs/$jid/logs" 2>/dev/null \
+                | grep -aE "Found [0-9]+ active venues|Venues crawled|Total events|events extracted|Upserted|Upsert errors|Errors:|budget reached|Classified|Tagged|Deactivated|deduped|duplicates|split into" \
+                | tail -12 \
+                | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' \
+                | cut -c1-200 || true)
+              if [ -n "$summary" ]; then
+                {
+                  echo "<p style=\"margin:14px 0 2px;font-weight:600;font-size:13px\">$jname</p>"
+                  echo "<pre style=\"margin:0;background:#f6f8fa;border-radius:6px;padding:8px 10px;font-size:12px;white-space:pre-wrap\">$summary</pre>"
+                } >> jobs_details.html
+              fi
+            done
+          # Overall cap (~12KB) to stay well inside email-size sanity.
+          head -c 12000 jobs_details.html > jobs_details.trimmed && mv jobs_details.trimmed jobs_details.html
+
           # HTML body (written at column 0 so no stray indentation leaks in)
           cat > email.html <<HTMLEOF
           <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;color:#1a1a1a">
@@ -90,6 +123,7 @@ jobs:
           <tr><td style="padding:4px 16px 4px 0;color:#57606a">Result</td><td style="padding:4px 0;font-weight:600;color:$color">$conclusion_uc</td></tr>
           <tr><td style="padding:4px 16px 4px 0;color:#57606a">Jobs</td><td style="padding:4px 0">$overview</td></tr>
           </table>
+          $(cat jobs_details.html)
           <p style="margin:22px 0 0"><a href="$WR_URL" style="background:#1a1a1a;color:#fff;text-decoration:none;padding:9px 16px;border-radius:6px;font-size:14px">View run on GitHub →</a></p>
           </div>
           HTMLEOF
