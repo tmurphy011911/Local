@@ -260,11 +260,13 @@ async function tasteEventCount(cat, lat, lng, start, end) {
   const cr = res.headers.get("content-range"); // "0-0/<total>" or "*/<total>"
   return cr ? parseInt(cr.split("/")[1], 10) || 0 : 0;
 }
-/** C — Daily Local social-proof, void if the user already played today or has no state high score. */
+/** C — Daily Local social-proof, void if the user already played today or the
+ * state has no REAL score to beat yet (top must be > 0 — "Score to beat: 0 /
+ * you don't stand a chance" is nonsense before anyone posts a real score). */
 function buildCFor(uid, p, ctx) {
   if (ctx.playedToday.has(uid)) return null;
   const top = ctx.topScoreByState.get(p.home_state);
-  if (top == null) return null;
+  if (top == null || top <= 0) return null;
   return { type: "C", title: `Score to beat: ${top} 💛`, body: "Unfortunately, Bo says you don't stand a chance", dedupeKey: `C:${uid}:${isoDateEastern(0)}` };
 }
 
