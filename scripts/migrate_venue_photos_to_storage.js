@@ -185,15 +185,20 @@ async function migrateOne(venue) {
   }
   if (!freshUrl) return { status: "no-photo" };
 
+  // Dry run: stop after the (cheap) text-search that confirms a photo exists.
+  // Do NOT download the bytes — the photo-media fetch is a separate billed
+  // Google SKU, so downloading for every venue just to throw it away would
+  // cost nearly as much as the real run. Dry run validates scope + photo
+  // availability only.
+  if (!WRITE) {
+    return { status: "ok-dry" };
+  }
+
   let bytes;
   try {
     bytes = await downloadPhoto(freshUrl);
   } catch (e) {
     return { status: "download-failed", reason: e.message };
-  }
-
-  if (!WRITE) {
-    return { status: "ok-dry", size: bytes.length };
   }
 
   let storageUrl;
