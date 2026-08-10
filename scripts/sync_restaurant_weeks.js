@@ -154,6 +154,95 @@ function parseDateRanges(raw) {
   return out;
 }
 
+// ── Organizer-page date fallback ────────────────────────────────────
+// findrestaurantweeks.com is a DISCOVERY source (which city has a week + the
+// official organizer URL) but lags on real-time dates: it may still list a past
+// edition after the organizer has posted the next one. When FRW gives us no
+// UPCOMING date, we fall back to the promo's own organizer page — the
+// authoritative source — and scan its text for a date range. Deterministic
+// regex, NOT an LLM (this script exists specifically to replace the old
+// web_search guesswork), so a wrong extraction can't invent a plausible date.
+
+const MONTHNAMES =
+  "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|" +
+  "aug(?:ust)?|sep(?:t)?(?:ember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+
+const monthNum = (s) => MONTHS[String(s).toLowerCase().replace(/\.$/, "")];
+
+/**
+ * Scan free-form organizer-page text for restaurant-week date RANGES and return
+ * the UPCOMING ones ({start,end,raw} YYYY-MM-DD), soonest first. Handles
+ * ordinals ("August 14th-23rd"), same-month ("Aug 14-23") and cross-month
+ * ("August 14 - September 2, 2026") ranges, and Dec→Jan wraps. Requires a
+ * two-endpoint range and a plausible window (0–60 days) to avoid latching onto
+ * stray single dates.
+ *
+ * YEAR RESOLUTION (deliberately conservative — we auto-write these to prod):
+ *   • explicit year → trusted as-is (accepted at any horizon if still upcoming;
+ *     an explicit PAST year is rejected).
+ *   • NO year printed → resolved to the CURRENT year ONLY. If that lands in the
+ *     past, we do NOT speculatively roll it to next year — a bare "June 6-15"
+ *     on a stale page is far more likely last year's leftover than a real
+ *     announcement 10 months out. Rescuing it would invent a plausible-but-wrong
+ *     future date, which is the exact failure this deterministic path avoids.
+ *     Such rows simply stay "Dates TBD" until a dated (or explicit-year) edition
+ *     appears.
+ */
+function extractDatesFromText(text, todayYmd) {
+  if (!text) return [];
+  const t = decodeEntities(text)
+    .replace(/[–—−]/g, "-")
+    .replace(/(\d{1,2})(?:st|nd|rd|th)\b/gi, "$1") // strip ordinals
+    .replace(/\s+/g, " ");
+  const re = new RegExp(
+    `(${MONTHNAMES})\\.?\\s+(\\d{1,2})\\s*(?:-|to|through|thru|until)\\s*` +
+      `(?:(${MONTHNAMES})\\.?\\s+)?(\\d{1,2})(?:\\s*,?\\s*(20\\d{2}))?`,
+    "gi",
+  );
+  const thisYear = parseInt(todayYmd.slice(0, 4), 10);
+  const out = [];
+  const seen = new Set();
+  let m;
+  while ((m = re.exec(t)) !== null) {
+    const m1 = monthNum(m[1]);
+    const d1 = parseInt(m[2], 10);
+    const m2 = m[3] ? monthNum(m[3]) : m1;
+    const d2 = parseInt(m[4], 10);
+    const explicitYear = m[5] ? parseInt(m[5], 10) : null;
+    if (!m1 || !m2 || !d1 || !d2 || d1 > 31 || d2 > 31) continue;
+    // No-year dates resolve to the current year ONLY — never rolled forward.
+    const years = explicitYear ? [explicitYear] : [thisYear];
+    let picked = null;
+    for (const y of years) {
+      // Cross-year window (Dec–Jan): the resolved year belongs to the END.
+      const startY = m1 > m2 ? y - 1 : y;
+      const start = iso(startY, m1, d1);
+      const end = iso(y, m2, d2);
+      const days = (Date.parse(end) - Date.parse(start)) / 86400000;
+      if (end >= todayYmd && days >= 0 && days <= 60) { picked = { start, end }; break; }
+    }
+    if (picked && !seen.has(picked.start + picked.end)) {
+      seen.add(picked.start + picked.end);
+      out.push({ ...picked, raw: m[0].trim() });
+    }
+  }
+  return out.sort((a, b) => (a.start < b.start ? -1 : 1));
+}
+
+/**
+ * High-confidence "this week no longer exists" signal from organizer-page text.
+ * Deliberately narrow — a false positive HIDES a live week — so it only fires on
+ * explicit discontinuation phrasing tied to a restaurant-week/dine-out subject.
+ */
+function looksDiscontinued(text) {
+  if (!text) return false;
+  const t = text.toLowerCase().replace(/\s+/g, " ");
+  return (
+    /(restaurant week|dine out)[^.]{0,60}\b(has been|is|was|are)\s+(cancel|discontinu|retir|ended permanently)/.test(t) ||
+    /\bno longer\s+(host|hold|holding|offer|run|running|participat)[a-z]*\s+(a |an |our |the )?(restaurant week|dine out)/.test(t)
+  );
+}
+
 // ── City derivation (the site lists only a promo name, not a city) ──
 
 function deriveCity(name) {
@@ -167,6 +256,12 @@ function deriveCity(name) {
     .replace(/\s+/g, " ")
     .trim();
   return c;
+}
+
+// Slug from a promo name (shared by buildEvent + the organizer-fallback pool so
+// the two agree on the dedupe_hash they compute).
+function slugOf(name) {
+  return deriveCity(name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "rw";
 }
 
 // Names that don't resolve to a mappable place — drop rather than drop a pin
@@ -195,31 +290,43 @@ async function geocode(city, stateFull) {
   }
 }
 
-// ── og:image scrape from the official organizer page ────────────────
+// ── Organizer page fetch (og:image + plain text + HTTP status) ──────
+// One fetch, reused for both the og:image and (when FRW has no upcoming date)
+// the date fallback. `status` distinguishes a hard-dead link (404/410 → a real
+// "gone" signal) from a transient failure (timeout/5xx/network → status 0, never
+// treated as death, since this app has heavy URL-rot and links flap).
 
-async function fetchOgImage(pageUrl) {
-  if (!pageUrl || !/^https?:\/\//.test(pageUrl)) return null;
+async function fetchOrganizerPage(pageUrl) {
+  const empty = { status: 0, text: "", ogImage: null };
+  if (!pageUrl || !/^https?:\/\//.test(pageUrl)) return empty;
   try {
     const res = await fetch(pageUrl, {
       redirect: "follow",
       signal: AbortSignal.timeout(10000),
       headers: { "User-Agent": BROWSER_UA, Accept: "text/html,*/*;q=0.8" },
     });
-    if (!res.ok) return null;
+    if (!res.ok) return { status: res.status, text: "", ogImage: null };
     const html = (await res.text()).slice(0, 200_000);
+
+    let ogImage = null;
     const patterns = [
       /<meta[^>]+property=["']og:image["'][^>]+content=["']([^"']+)["']/i,
       /<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:image["']/i,
       /<meta[^>]+name=["']twitter:image["'][^>]+content=["']([^"']+)["']/i,
     ];
     for (const re of patterns) {
-      const m = html.match(re);
-      if (m && m[1]) {
-        try { return new URL(m[1], pageUrl).toString(); } catch { return null; }
-      }
+      const mm = html.match(re);
+      if (mm && mm[1]) { try { ogImage = new URL(mm[1], pageUrl).toString(); } catch { /* ignore */ } break; }
     }
-  } catch (_) { /* ignore */ }
-  return null;
+
+    const text = html
+      .replace(/<script[\s\S]*?<\/script>/gi, " ")
+      .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<[^>]+>/g, " ");
+    return { status: res.status, text, ogImage };
+  } catch (_) {
+    return empty; // transient — status 0, never a death signal
+  }
 }
 
 // ── Scrape one state page ───────────────────────────────────────────
@@ -267,10 +374,13 @@ async function scrapeState(code) {
       // per upcoming edition). Past editions of the same promo are ignored.
       for (const dates of upcoming) out.push({ name, sourceUrl, dateText, ...dates });
     } else {
-      // No upcoming edition (all past) OR undated "Check back" → one TBD card
-      // with null dates. Null start survives the deactivate-past-events sweep,
-      // so the week stays visible (labelled "Dates TBD") until a date is posted.
-      out.push({ name, sourceUrl, dateText, start: null, end: null });
+      // No upcoming edition from FRW. `frwPast` distinguishes a concrete-but-past
+      // edition (ranges parsed, all behind us → candidate for the organizer date
+      // fallback, and — combined with a dead link — for inactivation) from an
+      // undated "Check back" placeholder (ranges empty → genuinely unannounced,
+      // always kept as TBD). The date fallback runs for BOTH in the build pool;
+      // this flag only gates the "known not active" inactivation.
+      out.push({ name, sourceUrl, dateText, start: null, end: null, frwPast: ranges.length > 0 });
     }
   }
   return out;
@@ -278,12 +388,13 @@ async function scrapeState(code) {
 
 // ── Event row builder (mirrors sync_farmers_markets.js shape) ───────
 
-function buildEvent(promo, code, coords, imageUrl) {
+function buildEvent(promo, code, coords, imageUrl, opts = {}) {
+  const active = opts.active !== false; // default active; false only when known-dead
   const stateFull = STATES[code];
   // Undated ("Check back") promos carry null dates → a TBD card.
   const startAt = promo.start ? `${promo.start}T12:00:00.000Z` : null;
   const endAt = promo.end ? `${promo.end}T23:59:59.000Z` : null;
-  const slug = deriveCity(promo.name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "rw";
+  const slug = slugOf(promo.name);
   // Edition discriminator (YYYY-MM of start) so a promo that runs multiple
   // times a year — Wildwoods (Jun/Aug/Nov), Manayunk (Mar/Sep), Dine Out Boston
   // (Mar/Aug) — keeps a distinct row per edition instead of collapsing to one
@@ -309,9 +420,14 @@ function buildEvent(promo, code, coords, imageUrl) {
     price_min: null,
     price_max: null,
     ticket_url: promo.sourceUrl,
-    image_url: imageUrl || null,
-    status: "active",
-    is_active: true,
+    // Only trust the scraped og:image when the promo has a CONFIRMED date. An
+    // organizer page that isn't promoting a current dated edition often still
+    // serves a years-old promo flyer (e.g. Hopkinton's og:image is a 2021
+    // graphic) — showing that on a "Dates TBD" card looks dead. Drop it and let
+    // the client render its gradient+icon fallback instead.
+    image_url: startAt ? (imageUrl || null) : null,
+    status: active ? "active" : "inactive",
+    is_active: active,
     venue_name: city ? `${city} Restaurants` : promo.name,
     venue_address: null,
     venue_city: city,
@@ -355,6 +471,34 @@ async function upsert(rows) {
     } else ok += batch.length;
   }
   return { ok, errors };
+}
+
+// When a promo is rescued from "Dates TBD" to a real dated edition via the
+// organizer fallback, its dedupe_hash flips from `frw:<state>:<slug>:tbd` to
+// `frw:<state>:<slug>:<YYYY-MM>`, so the dated row is a NEW row and the old TBD
+// row would linger as a duplicate. Deactivate those orphaned TBD twins.
+async function deactivateHashes(hashes) {
+  const uniq = [...new Set(hashes)];
+  if (!uniq.length) return 0;
+  const list = uniq.map((h) => `"${h}"`).join(",");
+  const url =
+    `${SUPABASE_URL}/rest/v1/events?source=eq.findrestaurantweeks&is_active=eq.true` +
+    `&dedupe_hash=in.(${list})`;
+  const res = await fetch(url, {
+    method: "PATCH",
+    headers: {
+      apikey: SUPABASE_SERVICE_KEY,
+      Authorization: `Bearer ${SUPABASE_SERVICE_KEY}`,
+      "Content-Type": "application/json",
+      Prefer: "return=representation",
+    },
+    body: JSON.stringify({ is_active: false, status: "inactive", updated_at: new Date().toISOString() }),
+  });
+  if (!res.ok) {
+    console.error(`  deactivateHashes: ${res.status} ${(await res.text()).slice(0, 160)}`);
+    return 0;
+  }
+  return (await res.json()).length;
 }
 
 // Deactivate prior findrestaurantweeks rows whose window has ended, so a promo
@@ -402,7 +546,11 @@ async function main() {
 
   const todayIso = new Date().toISOString().slice(0, 10);
   const rows = [];
-  let scanned = 0, droppedDate = 0, droppedCity = 0, droppedGeo = 0, droppedPast = 0;
+  const staleTbdHashes = [];      // TBD rows orphaned when a promo becomes dated
+  const rescuedRows = new Set();  // rows whose dates came from the organizer page
+  const inactiveRows = new Set(); // rows marked inactive (known not active)
+  const deadLinkReview = [];      // stale + dead-deep-link → kept TBD, flagged
+  let scanned = 0, droppedCity = 0, droppedGeo = 0, rescued = 0, inactivated = 0;
 
   for (const code of codes) {
     let promos;
@@ -414,16 +562,50 @@ async function main() {
     }
     scanned += promos.length;
 
-    // Resolve geo + og:image concurrently (small pool — be polite).
-    // NOTE: past + undated promos are KEPT (shown as "Dates TBD" by the rail),
-    // so there's no past-date drop here anymore.
+    // Resolve geo + fetch the organizer page concurrently (small pool — polite).
+    // The organizer page gives the og:image always, and — when FRW carried no
+    // upcoming date — the authoritative date fallback (or a death signal).
     const built = await pool(promos, 5, async (p) => {
       const city = deriveCity(p.name);
       if (!city || VAGUE_CITY.test(city)) { droppedCity++; return null; }
       const coords = await geocode(city, STATES[code]);
       if (!coords) { droppedGeo++; return null; }
-      const img = await fetchOgImage(p.sourceUrl);
-      return buildEvent(p, code, coords, img);
+
+      const page = await fetchOrganizerPage(p.sourceUrl);
+      let promo = p;
+      const opts = {};
+
+      if (!p.start) {
+        const org = extractDatesFromText(page.text, todayIso);
+        if (org.length) {
+          // FRW was stale → organizer has the real upcoming edition. Rescue it.
+          const r = org[0]; // soonest upcoming
+          promo = { ...p, start: r.start, end: r.end, dateText: r.raw };
+          rescued++;
+        } else if (looksDiscontinued(page.text)) {
+          // Known not active: a LIVE page that explicitly says the week is
+          // cancelled/discontinued. This is the only "we know it's dead" signal
+          // we trust to auto-hide a row.
+          opts.active = false;
+          inactivated++;
+        } else if ((page.status === 404 || page.status === 410) && p.frwPast) {
+          // Stale (past) FRW edition AND the organizer deep-link is gone. In THIS
+          // app deep links rot constantly, so a 404 is NOT proof the week is dead
+          // (the site's root may be fine). Per policy, KEEP it as "Dates TBD" but
+          // surface it as a review candidate rather than silently hiding a maybe-
+          // live week. Transient failures (status 0) don't even reach here.
+          deadLinkReview.push(`${code}:${slugOf(p.name)}`);
+        }
+        // else: no date anywhere, no death signal → stays "Dates TBD" (active).
+      }
+
+      const row = buildEvent(promo, code, coords, page.ogImage, opts);
+      if (promo !== p && promo.start) {
+        rescuedRows.add(row);
+        staleTbdHashes.push(`frw:${code}:${slugOf(p.name)}:tbd`);
+      }
+      if (opts.active === false) inactiveRows.add(row);
+      return row;
     });
 
     let kept = 0;
@@ -433,30 +615,42 @@ async function main() {
     console.log(`  [${code}] ${promos.length} listed → ${kept} events`);
   }
 
-  const tbdCount = rows.filter((r) => !r.start_at).length;
+  const tbdCount = rows.filter((r) => !r.start_at && r.is_active).length;
   console.log(
     `Total: ${rows.length} events from ${scanned} listings ` +
-    `(${tbdCount} TBD/undated, ${droppedCity} no-city, ${droppedGeo} no-geo).`,
+    `(${tbdCount} TBD/undated, ${rescued} organizer-dated, ${inactivated} inactivated, ` +
+    `${droppedCity} no-city, ${droppedGeo} no-geo).`,
   );
+  if (deadLinkReview.length) {
+    console.log(
+      `Review (kept as TBD — stale FRW edition + dead organizer link, likely URL rot): ` +
+      `${deadLinkReview.length} → ${deadLinkReview.join(", ")}`,
+    );
+  }
 
   if (DRY_RUN) {
     console.log("\nSample:");
-    for (const r of rows.slice(0, 40)) {
+    for (const r of rows.slice(0, 50)) {
       const when = r.start_at ? `${r.start_at.slice(0, 10)}→${r.end_at.slice(0, 10)}` : "Dates TBD";
+      const tag = rescuedRows.has(r) ? " [organizer]" : inactiveRows.has(r) ? " [INACTIVE]" : "";
       console.log(
         `  • ${r.title} — ${when} — ` +
         `${r.venue_city},${r.venue_state} (${r.venue_lat?.toFixed(3)},${r.venue_lng?.toFixed(3)}) ` +
-        `${r.image_url ? "[img]" : "[no-img]"}`,
+        `${r.image_url ? "[img]" : "[no-img]"}${tag}`,
       );
+    }
+    const uniqStale = [...new Set(staleTbdHashes)];
+    if (uniqStale.length) {
+      console.log(`\nWould deactivate ${uniqStale.length} orphaned TBD row(s): ${uniqStale.join(", ")}`);
     }
     return;
   }
 
-  // No deactivate-expired pass here: a promo with no upcoming edition is ingested
-  // as a null-date TBD row (which the global deactivate-past-events sweep leaves
-  // alone, since it only touches rows with a non-null past start_at).
   const { ok, errors } = await upsert(rows);
   console.log(`Upserted ${ok} rows (${errors} errors).`);
+
+  const deactivated = await deactivateHashes(staleTbdHashes);
+  if (deactivated) console.log(`Deactivated ${deactivated} orphaned TBD row(s) (promo now has a dated edition).`);
 }
 
 if (require.main === module) {
@@ -467,4 +661,7 @@ if (require.main === module) {
 }
 
 // Exported for offline unit tests (test_restaurant_weeks_parse.js).
-module.exports = { parseDateRange, parseDateRanges, parseMonthDay, deriveCity, decodeEntities, stripTags };
+module.exports = {
+  parseDateRange, parseDateRanges, parseMonthDay, deriveCity, decodeEntities,
+  stripTags, slugOf, extractDatesFromText, looksDiscontinued,
+};
