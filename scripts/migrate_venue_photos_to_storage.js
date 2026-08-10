@@ -59,7 +59,13 @@ async function fetchVenues() {
   const all = [];
   let offset = 0;
   while (true) {
-    let url = `${SUPABASE_URL}/rest/v1/venues?is_active=eq.true&select=id,name,city,state,lat,lng,photo_url&order=public_interest_rank.desc.nullslast&offset=${offset}&limit=1000`;
+    // Order MUST be total/deterministic or OFFSET paging skips & duplicates
+    // rows: ~50k venues share a NULL public_interest_rank, so ordering by
+    // that column alone leaves ties in arbitrary (per-request) order and
+    // OFFSET lands on shifting boundaries — the 2026-08-10 run missed ~1,400
+    // event-backing venues this way. `id` as a secondary key makes the sort
+    // total so every row is returned exactly once.
+    let url = `${SUPABASE_URL}/rest/v1/venues?is_active=eq.true&select=id,name,city,state,lat,lng,photo_url&order=public_interest_rank.desc.nullslast,id.asc&offset=${offset}&limit=1000`;
     if (ONLY_NULL) url += `&photo_url=is.null`;
     const r = await fetch(url, { headers: restHeaders });
     if (!r.ok) throw new Error(`fetch venues: ${r.status} ${await r.text()}`);
