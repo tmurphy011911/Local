@@ -2338,7 +2338,17 @@ async function main() {
   const allRows = results.flatMap((r) => r.rows || []);
 
   if (allRows.length === 0) {
-    console.log("\nNo events extracted. Check venue URLs and try again.");
+    // Platform adapters (Tribe/Localist/BiblioCommons/…) upsert their events
+    // INLINE and report only a count — they never hand rows back to this loop.
+    // An adapter-only run therefore has zero allRows while having persisted
+    // everything; saying "No events extracted" here was a lie that repeatedly
+    // sent operators hunting for a failure that didn't exist.
+    const adapterEvents = results.reduce((s, r) => s + (r?.events || 0), 0);
+    if (adapterEvents > 0) {
+      console.log(`\nAll ${adapterEvents} events were extracted and upserted inline by platform adapters. Done.`);
+    } else {
+      console.log("\nNo events extracted. Check venue URLs and try again.");
+    }
     return;
   }
 
