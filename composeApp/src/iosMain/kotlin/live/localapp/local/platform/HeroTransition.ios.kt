@@ -273,8 +273,14 @@ actual fun showNativeEventDetail(
     EventDetailBridge.onVenueTap = onVenueTap@{ name, city ->
         if (name.isBlank()) return@onVenueTap
         MainScope().launch {
-            val venueRepo = org.koin.mp.KoinPlatform.getKoin()
-                .get<live.localapp.local.domain.repository.VenueRepository>()
+            val koin = org.koin.mp.KoinPlatform.getKoin()
+            val venueRepo = koin.get<live.localapp.local.domain.repository.VenueRepository>()
+            // Resolve the shared PlacesViewModel singleton so a save from the
+            // venue detail opened off an event persists through the SAME path as
+            // the Places tab (records the favorite, updates favoriteVenueIds, earns
+            // the badge). Without this the heart filled locally but nothing was
+            // recorded — the place looked saved but wasn't.
+            val placesVm = koin.get<live.localapp.local.ui.places.PlacesViewModel>()
             val venue = try {
                 venueRepo.findVenueByNameAndCity(name, city)
             } catch (_: Exception) { null } ?: return@launch
@@ -292,8 +298,10 @@ actual fun showNativeEventDetail(
                 ),
                 cardX, cardY, cardW, cardH,
                 onDismissed = {},
-                isFavorited = false,
-                onFavorited = null,
+                isFavorited = venue.id in placesVm.uiState.value.favoriteVenueIds,
+                onFavorited = { venueId ->
+                    placesVm.toggleVenueFavorite(venueId, venue.category)
+                },
                 hidesPrimaryCTAs = false,
             )
         }
