@@ -860,15 +860,28 @@ function coldStartScore(
   if (event.image_url) score += 0.05;
 
   if (prefs) {
-    if (event.subcategory && prefs.selected_categories.includes(event.subcategory)) score += 0.25;
+    // Check both taxonomy levels: a selected genre may be the row's subcategory
+    // (libraries) OR its sub_subcategory (folk under subcategory=music).
+    const selected = prefs.selected_categories;
+    if ((event.subcategory && selected.includes(event.subcategory))
+      || (event.sub_subcategory && selected.includes(event.sub_subcategory))) score += 0.25;
     if (prefs.selected_venues.some(v => venueLc.includes(v.toLowerCase()))) score += 0.30;
     if (prefs.selected_neighborhoods.some(n => cityLc.includes(n.toLowerCase()))) score += 0.10;
   }
 
   if (affinityMap.size > 0) {
+    // Credit whichever taxonomy level the user likes most — a folk row
+    // (sub_subcategory=folk, subcategory=music) should benefit from EITHER a
+    // folk or a music affinity, not just subcategory. Take the max so adding
+    // the sub_subcategory lookup can only raise, never lower, an event's score.
+    const eventSubSub = event.sub_subcategory?.toLowerCase() ?? "";
     const eventSubcat = event.subcategory?.toLowerCase() ?? "";
     const eventCat = event.category.toLowerCase();
-    const affinityScore = affinityMap.get(eventSubcat) ?? affinityMap.get(eventCat) ?? 0.0;
+    const affinityScore = Math.max(
+      affinityMap.get(eventSubSub) ?? 0.0,
+      affinityMap.get(eventSubcat) ?? 0.0,
+      affinityMap.get(eventCat) ?? 0.0,
+    );
     score += affinityScore * 0.25;
   }
 
@@ -1139,6 +1152,25 @@ function isGeneralFeedEvent(event: ProcessedEvent): boolean {
     && (event.subcategory ?? "").toLowerCase() !== "restaurant-week"
     && !isWeeklyEvent(event)
     && !isMonthlyEvent(event);
+}
+
+// True when an event belongs to a category/affinity KEY. Genre-level interests
+// (folk, jazz, brewery, baseball, r&b…) are stored in `sub_subcategory` while the
+// row's `subcategory` is the parent (music, nightlife, sports); broader interests
+// (libraries, comedy) live in `subcategory`. A rail keyed on a genre must check
+// `sub_subcategory` too — matching `subcategory` alone left "Your Folk Picks"
+// with ~2 cards because folk rows carry subcategory="music". Mirrors the sports
+// rail's `e.sub_subcategory === X || e.subcategory === X` dual-level match.
+//
+// The second arm keeps the pre-existing `(subcategory ?? category)` semantics:
+// `category` is consulted ONLY when `subcategory` is null. That guard matters —
+// `category` holds generic bucket values ("upcoming", "always_on") that, if
+// matched directly, would balloon a rail keyed on such a value to nearly every
+// row. The null-fallback means a genre/subcategory key never leaks into that.
+function matchesCategoryKey(event: ProcessedEvent, key: string): boolean {
+  const k = key.toLowerCase();
+  return (event.sub_subcategory ?? "").toLowerCase() === k
+    || (event.subcategory ?? event.category ?? "").toLowerCase() === k;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1932,7 +1964,7 @@ function buildCarousels(
       for (const cat of prefs.selected_categories) {
         const catEvents = topicalPool
           .filter(isGeneralFeedEvent)
-          .filter(e => (e.subcategory ?? "").toLowerCase() === cat.toLowerCase())
+          .filter(e => matchesCategoryKey(e, cat))
           .filter(e => !e.start_at || e.start_at <= monthCutoff)
           .map(e => withDistance(e, userLat, userLng))
           .sort(sortFn)
@@ -2032,7 +2064,7 @@ function buildCarousels(
       if (favCatSlugs.has(`fav-cat-${cat.toLowerCase()}`)) continue;
       const affinityEvents = topicalPool
         .filter(isGeneralFeedEvent)
-        .filter(e => (e.subcategory ?? e.category).toLowerCase() === cat.toLowerCase())
+        .filter(e => matchesCategoryKey(e, cat))
         .map(e => withDistance(e, userLat, userLng))
         .sort(sortFn)
         .slice(0, CAROUSEL_DISPLAY_LIMIT);
@@ -2920,32 +2952,39 @@ async function fetchSubcategoryEvents(
   const minLng = lng - lngDelta, maxLng = lng + lngDelta;
   const startFrom = nowIso();
   const startTo = daysFromNowIso(90);
-  const PER_SUBCAT = 80;
+  // A rail key can match the row's subcategory (libraries, comedy) OR its
+  // sub_subcategory (folk, brewery, baseball — genres stored one level down).
+  // Fetch BOTH levels. Two `.in(...)` queries total instead of the old
+  // one-query-per-subcategory fan-out: with railSubcats now ~12 keys (the
+  // render/fetch gate was unified at AFFINITY_RAIL_MIN_SCORE) that fan-out was
+  // ~12 round-trips per request; this is 2 regardless of key count. Taxonomy
+  // columns are stored lowercase (verified), so an exact `.in` on the lowercased
+  // keys is equivalent to the rails' own `.toLowerCase() === key` comparison.
+  // Global cap scales with the key count but is bounded so a broad interest set
+  // can't fan a request into an unbounded scan.
+  const LIMIT = Math.min(subcategories.length * 80, 1500);
+  const lowered = subcategories.map(s => s.toLowerCase());
+  const withBbox = (q: any) => q
+    .eq("is_active", true)
+    .gte("start_at", startFrom)
+    .lte("start_at", startTo)
+    .gte("venue_lat", minLat)
+    .lte("venue_lat", maxLat)
+    .gte("venue_lng", minLng)
+    .lte("venue_lng", maxLng)
+    .order("start_at", { ascending: true })
+    .limit(LIMIT);
 
-  const pages = await Promise.all(subcategories.map(async (subcat) => {
-    // ilike with no wildcards = case-insensitive exact match, mirroring the
-    // rails' own `(e.subcategory).toLowerCase() === cat` comparison.
-    const { data, error } = await supabase
-      .from("events")
-      .select("*")
-      .eq("is_active", true)
-      .ilike("subcategory", subcat)
-      .gte("start_at", startFrom)
-      .lte("start_at", startTo)
-      .gte("venue_lat", minLat)
-      .lte("venue_lat", maxLat)
-      .gte("venue_lng", minLng)
-      .lte("venue_lng", maxLng)
-      .order("start_at", { ascending: true })
-      .limit(PER_SUBCAT);
-    if (error) {
-      console.error(`[carousels] fetchSubcategoryEvents(${subcat}) failed:`, error);
-      return [];
-    }
-    return (data ?? []) as EventRow[];
-  }));
+  const [bySub, bySubSub] = await Promise.all([
+    withBbox(supabase.from("events").select("*").in("subcategory", lowered)),
+    withBbox(supabase.from("events").select("*").in("sub_subcategory", lowered)),
+  ]);
+  if (bySub.error) console.error("[carousels] fetchSubcategoryEvents(subcategory) failed:", bySub.error);
+  if (bySubSub.error) console.error("[carousels] fetchSubcategoryEvents(sub_subcategory) failed:", bySubSub.error);
   const byId = new Map<string, EventRow>();
-  for (const row of pages.flat()) byId.set(row.id, row);
+  for (const row of [...((bySub.data ?? []) as EventRow[]), ...((bySubSub.data ?? []) as EventRow[])]) {
+    byId.set(row.id, row);
+  }
   return [...byId.values()];
 }
 
