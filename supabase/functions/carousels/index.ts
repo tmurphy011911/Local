@@ -141,6 +141,15 @@ const CAROUSEL_DISPLAY_LIMIT = 25;
 // gives the diversity gate room to surface 5+ distinct categories.
 const HERO_CAROUSEL_DISPLAY_LIMIT = 40;
 const MIN_CAROUSEL_SIZE = 15;
+// Minimum normalized affinity score (0-1) for a subcategory to earn a For-You
+// affinity rail. This is the SINGLE source of truth: it gates BOTH whether the
+// rail is rendered (buildCarousels) AND whether its full-slate top-up fetch runs
+// (fetchSubcategoryEvents via railSubcats). These two must stay equal — when the
+// render gate was 0.15 but the fetch gate was 0.4, every affinity scoring in
+// [0.15, 0.4) got a rail with NO direct fetch, so it was fed only by the
+// rank-stratified MV (which starves niche subcategories) and rendered near-empty
+// (e.g. "Your Library Picks" with 2 cards while the Libraries tab was full).
+const AFFINITY_RAIL_MIN_SCORE = 0.15;
 // "At {Venue}" rails (both the favorited-venue rails and the per-subcategory-tab
 // venue rails) show a venue's full upcoming slate in chronological order rather
 // than a relevance-ranked slice — for a single venue, "what's on and when" is
@@ -2017,7 +2026,7 @@ function buildCarousels(
     // empty-events skip below is the natural quality floor (no rail without a
     // populated slate). Numbers are tunable on real data.
     for (const [cat, score] of sortedAffinity) {
-      if (score < 0.15) break;
+      if (score < AFFINITY_RAIL_MIN_SCORE) break;
       if (affinityCount >= 20) break;
       if (skipCategories.has(cat.toLowerCase())) continue;
       if (favCatSlugs.has(`fav-cat-${cat.toLowerCase()}`)) continue;
@@ -3843,14 +3852,19 @@ Deno.serve(async (req) => {
         }
       }
       // Subcategories every topical rail will need: onboarding favorites ∪ the
-      // affinity categories that clear the rail threshold (score ≥ 0.4, same
-      // gate buildCarousels uses). Fetching this union directly means the
-      // favorite-category and affinity rails reflect their full in-radius slate
-      // for EVERY category, not just whatever survived the MV sample.
+      // affinity categories that clear the rail threshold (AFFINITY_RAIL_MIN_SCORE,
+      // the SAME gate buildCarousels renders on). Fetching this union directly
+      // means the favorite-category and affinity rails reflect their full
+      // in-radius slate for EVERY category, not just whatever survived the MV
+      // sample.
       const railSubcats = new Set<string>();
       for (const c of userPreferences?.selected_categories ?? []) railSubcats.add(c.toLowerCase());
+      // Match the rail RENDER gate (AFFINITY_RAIL_MIN_SCORE) exactly. Fetching
+      // the full in-radius slate for every affinity that earns a rail is the
+      // whole point — a lower fetch gate than render gate leaves mid-tier rails
+      // ([0.15, 0.4)) starving on the MV sample. See the constant's comment.
       for (const [c, score] of affinityMap) {
-        if (score >= 0.4) railSubcats.add(c.toLowerCase());
+        if (score >= AFFINITY_RAIL_MIN_SCORE) railSubcats.add(c.toLowerCase());
       }
       // Top entities (taste graph) drive the "If You Like <X>" rails — read
       // first so the entity-events fetch can run in the parallel batch below.
