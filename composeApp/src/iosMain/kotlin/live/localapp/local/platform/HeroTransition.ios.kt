@@ -275,18 +275,28 @@ actual fun showNativeEventDetail(
         MainScope().launch {
             val koin = org.koin.mp.KoinPlatform.getKoin()
             val venueRepo = koin.get<live.localapp.local.domain.repository.VenueRepository>()
-            // Resolve the shared PlacesViewModel singleton so a save from the
-            // venue detail opened off an event persists through the SAME path as
-            // the Places tab (records the favorite, updates favoriteVenueIds, earns
-            // the badge). Without this the heart filled locally but nothing was
-            // recorded — the place looked saved but wasn't.
-            val placesVm = koin.get<live.localapp.local.ui.places.PlacesViewModel>()
+            // Persist a save from the venue detail opened off an event via the
+            // SAME repository path as the deep-link venue detail (see AppNavigation
+            // sharedVenue). We deliberately DON'T reach through PlacesViewModel here
+            // — resolving/using the lifecycle VM from this iOS bridge broke the
+            // detail from even opening. The heart used to fill locally but nothing
+            // was recorded, so the place looked saved but wasn't.
+            val communityRepo =
+                koin.get<live.localapp.local.domain.repository.CommunityInterestRepository>()
+            val userId = koin.get<live.localapp.local.domain.repository.UserPreferencesRepository>()
+                .getLocalUserId()
             val venue = try {
                 venueRepo.findVenueByNameAndCity(name, city)
             } catch (_: Exception) { null } ?: return@launch
             val upcoming = try {
                 venueRepo.getUpcomingEventsForVenue(name, city, venue.latitude, venue.longitude)
             } catch (_: Exception) { emptyList() }
+            // Seed the heart from the user's actual saved set so it opens filled if
+            // already favorited, and track the state locally so each tap toggles
+            // (record ⇄ remove) in step with the native heart.
+            var isFav = if (userId != null) {
+                try { venue.id in communityRepo.getFavoriteVenueIds(userId) } catch (_: Exception) { false }
+            } else false
             showNativeVenueDetail(
                 VenueWithMeta(
                     venue = venue,
@@ -298,9 +308,14 @@ actual fun showNativeEventDetail(
                 ),
                 cardX, cardY, cardW, cardH,
                 onDismissed = {},
-                isFavorited = venue.id in placesVm.uiState.value.favoriteVenueIds,
+                isFavorited = isFav,
                 onFavorited = { venueId ->
-                    placesVm.toggleVenueFavorite(venueId, venue.category)
+                    if (isFav) {
+                        communityRepo.removeFavorite(venueId, live.localapp.local.domain.repository.InteractionType.PLACE)
+                    } else {
+                        communityRepo.recordFavorite(venueId, live.localapp.local.domain.repository.InteractionType.PLACE, venue.category)
+                    }
+                    isFav = !isFav
                 },
                 hidesPrimaryCTAs = false,
             )
