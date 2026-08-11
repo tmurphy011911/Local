@@ -131,8 +131,8 @@ android {
         // 251 = v1.2.0 test build (daily-local batch: venue empty state, splash
         //        restyle, tutorial trim, location-persistence fix, Bo radius sync,
         //        unified radius picker).
-        // 302 = v1.3.0 submission build.
-        versionCode = 302
+        // 302 = v1.3.0 RC. 400 = v1.3.0 submission build (round number for the cut).
+        versionCode = 400
         versionName = "1.3.0"
         // Used by AndroidManifest's <meta-data android:value="${MAPS_API_KEY}" />
         // and read at runtime by the Directions API client.
