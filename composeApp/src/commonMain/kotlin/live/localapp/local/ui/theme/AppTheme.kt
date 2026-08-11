@@ -14,10 +14,20 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import local.composeapp.generated.resources.Res
-import local.composeapp.generated.resources.fraunces_italic_variable
-import local.composeapp.generated.resources.fraunces_variable
-import local.composeapp.generated.resources.nunito_italic_variable
-import local.composeapp.generated.resources.nunito_variable
+import local.composeapp.generated.resources.fraunces_400
+import local.composeapp.generated.resources.fraunces_500
+import local.composeapp.generated.resources.fraunces_700
+import local.composeapp.generated.resources.fraunces_900
+import local.composeapp.generated.resources.fraunces_italic_400
+import local.composeapp.generated.resources.fraunces_italic_500
+import local.composeapp.generated.resources.fraunces_italic_700
+import local.composeapp.generated.resources.fraunces_italic_900
+import local.composeapp.generated.resources.nunito_400
+import local.composeapp.generated.resources.nunito_600
+import local.composeapp.generated.resources.nunito_700
+import local.composeapp.generated.resources.nunito_800
+import local.composeapp.generated.resources.nunito_900
+import local.composeapp.generated.resources.nunito_italic_400
 import org.jetbrains.compose.resources.Font
 
 // ── Color tokens from CSS :root ──
@@ -306,23 +316,29 @@ private val LocalColorScheme = lightColorScheme(
 
 @Composable
 fun LocalAppTheme(content: @Composable () -> Unit) {
+    // Static, single-weight instances of Fraunces/Nunito. Variable fonts render
+    // incorrectly on the iOS/Skia backend — it ignores Compose's weight→wght axis
+    // mapping and falls back to each file's default instance (Fraunces: wght 900 +
+    // WONK=1 wonky glyphs + opsz 9; Nunito: wght 200), which produced garbled
+    // letterforms and clipped/mis-measured text. These were instanced from the
+    // variable sources (WONK=0, opsz=40, correct wght) so Skia renders them cleanly.
     val headingFamily = FontFamily(
-        Font(Res.font.fraunces_variable, FontWeight.Normal),
-        Font(Res.font.fraunces_variable, FontWeight.Medium),
-        Font(Res.font.fraunces_variable, FontWeight.Bold),
-        Font(Res.font.fraunces_variable, FontWeight.Black),
-        Font(Res.font.fraunces_italic_variable, FontWeight.Normal, FontStyle.Italic),
-        Font(Res.font.fraunces_italic_variable, FontWeight.Medium, FontStyle.Italic),
-        Font(Res.font.fraunces_italic_variable, FontWeight.Bold, FontStyle.Italic),
-        Font(Res.font.fraunces_italic_variable, FontWeight.Black, FontStyle.Italic),
+        Font(Res.font.fraunces_400, FontWeight.Normal),
+        Font(Res.font.fraunces_500, FontWeight.Medium),
+        Font(Res.font.fraunces_700, FontWeight.Bold),
+        Font(Res.font.fraunces_900, FontWeight.Black),
+        Font(Res.font.fraunces_italic_400, FontWeight.Normal, FontStyle.Italic),
+        Font(Res.font.fraunces_italic_500, FontWeight.Medium, FontStyle.Italic),
+        Font(Res.font.fraunces_italic_700, FontWeight.Bold, FontStyle.Italic),
+        Font(Res.font.fraunces_italic_900, FontWeight.Black, FontStyle.Italic),
     )
     val bodyFamily = FontFamily(
-        Font(Res.font.nunito_variable, FontWeight.Normal),
-        Font(Res.font.nunito_variable, FontWeight.SemiBold),
-        Font(Res.font.nunito_variable, FontWeight.Bold),
-        Font(Res.font.nunito_variable, FontWeight.ExtraBold),
-        Font(Res.font.nunito_variable, FontWeight.Black),
-        Font(Res.font.nunito_italic_variable, FontWeight.Normal, FontStyle.Italic),
+        Font(Res.font.nunito_400, FontWeight.Normal),
+        Font(Res.font.nunito_600, FontWeight.SemiBold),
+        Font(Res.font.nunito_700, FontWeight.Bold),
+        Font(Res.font.nunito_800, FontWeight.ExtraBold),
+        Font(Res.font.nunito_900, FontWeight.Black),
+        Font(Res.font.nunito_italic_400, FontWeight.Normal, FontStyle.Italic),
     )
 
     CompositionLocalProvider(
