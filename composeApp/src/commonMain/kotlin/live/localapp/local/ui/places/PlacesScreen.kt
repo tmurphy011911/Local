@@ -35,6 +35,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -2677,7 +2678,11 @@ private fun EventRowCard(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(92.dp)
+            // Min-height, not fixed height: the four stacked text lines (title +
+            // venue + date + city·distance) must never clip. A hard .height(92.dp)
+            // let the last line overflow the card once fonts render at their true
+            // metrics; heightIn lets the card grow the few dp it needs instead.
+            .heightIn(min = 92.dp)
             .pressable(onClick = { onClick(imageBounds) })
             .localCardSurface(cornerRadius = 14.dp)
             .testTag("explore_event_card"),
@@ -2709,9 +2714,13 @@ private fun EventRowCard(
         // Metadata mirrors the home EventCard fields (venue name, date, then
         // "city · distance" on one line).
         val card = event.toCardData()
+        // Wrap content (not fillMaxHeight) so this column's natural height drives
+        // the row height — that's what lets heightIn grow the card past 92dp when
+        // the text needs it instead of clipping. The Row's CenterVertically keeps
+        // the block centered against the thumbnail.
         Column(
-            modifier = Modifier.weight(1f).fillMaxHeight().padding(vertical = 10.dp),
-            verticalArrangement = Arrangement.SpaceBetween,
+            modifier = Modifier.weight(1f).padding(vertical = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             Text(
                 event.title,
