@@ -105,13 +105,21 @@ class EventRepositoryImpl(
             // HttpRequestTimeoutException on /events?id=in.(…)&select=*). Smaller
             // chunks keep every request comfortably under the timeout. Sequential
             // (flatMap) — NOT parallel — to avoid Postgres connection-pool queueing.
+            // Per-chunk try/catch: a timed-out or undecodable chunk drops those
+            // events instead of throwing — callers include boot paths where an
+            // escaping exception aborts the app on iOS.
             val raw = ids.chunked(25).flatMap { chunk ->
-                supabaseClient.from("events")
-                    .select {
-                        filter { isIn("id", chunk) }
-                    }
-                    .decodeList<EventDto>()
-                    .map { it.toDomain() }
+                try {
+                    supabaseClient.from("events")
+                        .select {
+                            filter { isIn("id", chunk) }
+                        }
+                        .decodeList<EventDto>()
+                        .map { it.toDomain() }
+                } catch (e: Throwable) {
+                    println("EventRepository.getEventsByIds chunk failed: ${e.message}")
+                    emptyList()
+                }
             }
             // Same hydration pass searchEvents runs — fills in missing event
             // imageUrl from the matching venue's photo_url. Without this, plan

@@ -546,7 +546,10 @@ async function buildEvent(feed, raw) {
     status: "active",
     venue_name: venueName,
     venue_address: raw.venueAddress || null,
-    venue_city: cityLabel,
+    // Never write NULL: the mobile client's EventDto types venue_city as
+    // non-nullable, and merge-duplicates upserts would re-null previously
+    // backfilled rows every sync (2026-08-12 crash-on-open incident).
+    venue_city: cityLabel || "",
     venue_state: stateLabel,
     venue_lat: venueLat,
     venue_lng: venueLng,

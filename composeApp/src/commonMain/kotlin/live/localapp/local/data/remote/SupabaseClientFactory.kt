@@ -22,6 +22,12 @@ object SupabaseClientFactory {
             defaultSerializer = KotlinXSerializer(Json {
                 ignoreUnknownKeys = true
                 isLenient = true
+                // A null in a non-nullable DTO field WITH a default coerces to
+                // the default instead of throwing. EventDto.venueCity's `= ""`
+                // was written assuming this flag was on for the postgrest path —
+                // it wasn't, and a single null venue_city row a user had
+                // favorited hard-crashed every app open (2026-08-12 incident).
+                coerceInputValues = true
             })
             // Tight timeouts on the DB client. Without these the client used
             // the OS default, so a stalled RPC (flaky wifi, dropped keep-alive)

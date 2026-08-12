@@ -824,31 +824,39 @@ class PlacesViewModel(
 
     private fun loadFavoriteVenueIds() {
         val userId = userPreferencesRepository.getLocalUserId() ?: return
+        // try/catch: this runs at first composition on every cold open — an
+        // escaping fetch/decode exception here aborts the whole process on iOS
+        // (2026-08-12 crash-on-open incident; this was the only unguarded
+        // boot-path launch). Saved items just stay empty on failure.
         viewModelScope.launch {
-            val venueIds = communityInterestRepository.getFavoriteVenueIds(userId)
-            val eventIds = communityInterestRepository.getFavoriteEventIds(userId)
-            _uiState.update {
-                it.copy(
-                    favoriteVenueIds = venueIds.toSet(),
-                    favoriteEventIds = eventIds.toSet(),
-                )
+            try {
+                val venueIds = communityInterestRepository.getFavoriteVenueIds(userId)
+                val eventIds = communityInterestRepository.getFavoriteEventIds(userId)
+                _uiState.update {
+                    it.copy(
+                        favoriteVenueIds = venueIds.toSet(),
+                        favoriteEventIds = eventIds.toSet(),
+                    )
+                }
+                // Hydrate the saved carousels from the full favorite sets,
+                // independent of the active filters — by-id fetches surface saved
+                // items even when they fall outside the current page.
+                // Drop past events so Saved Events sheds them once their date passes.
+                // Sort by start date (soonest first) to match the Home saved-events
+                // carousel (HomeViewModel: savedUpcoming.sortedBy { startAt }). Without
+                // this the Explore carousel showed most-recently-saved order.
+                val savedEvents = if (eventIds.isEmpty()) emptyList()
+                    else eventRepository.getEventsByIds(eventIds).filter { it.isUpcoming }
+                        .sortedBy { it.startAt ?: "" }
+                val savedVenues = if (venueIds.isEmpty()) {
+                    emptyList()
+                } else {
+                    venueRepository.getVenuesByIds(venueIds).map { VenueWithMeta(venue = it, primaryCategory = it.category) }
+                }
+                _uiState.update { it.copy(savedEvents = savedEvents, savedVenues = savedVenues) }
+            } catch (e: Throwable) {
+                println("PlacesViewModel.loadFavoriteVenueIds error: ${e::class.simpleName}: ${e.message}")
             }
-            // Hydrate the saved carousels from the full favorite sets,
-            // independent of the active filters — by-id fetches surface saved
-            // items even when they fall outside the current page.
-            // Drop past events so Saved Events sheds them once their date passes.
-            // Sort by start date (soonest first) to match the Home saved-events
-            // carousel (HomeViewModel: savedUpcoming.sortedBy { startAt }). Without
-            // this the Explore carousel showed most-recently-saved order.
-            val savedEvents = if (eventIds.isEmpty()) emptyList()
-                else eventRepository.getEventsByIds(eventIds).filter { it.isUpcoming }
-                    .sortedBy { it.startAt ?: "" }
-            val savedVenues = if (venueIds.isEmpty()) {
-                emptyList()
-            } else {
-                venueRepository.getVenuesByIds(venueIds).map { VenueWithMeta(venue = it, primaryCategory = it.category) }
-            }
-            _uiState.update { it.copy(savedEvents = savedEvents, savedVenues = savedVenues) }
         }
     }
 

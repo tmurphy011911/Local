@@ -10,7 +10,9 @@ data class VenueDto(
     val id: String,
     val name: String,
     val address: String? = null,
-    val city: String,
+    // Default "" so a null city coerces (coerceInputValues) instead of
+    // throwing and zeroing the entire decoded page — mirrors EventDto.venueCity.
+    val city: String = "",
     val state: String? = null,
     val lat: Double? = null,
     val lng: Double? = null,

@@ -246,13 +246,21 @@ class VenueRepositoryImpl(
 
     override suspend fun getVenuesByIds(ids: List<String>): List<Venue> {
         if (ids.isEmpty()) return emptyList()
+        // Per-chunk try/catch: a failed/undecodable chunk drops those venues
+        // instead of throwing — callers (saved-items hydration) run on boot
+        // paths where an escaping exception aborts the app on iOS.
         return ids.chunked(100).flatMap { chunk ->
-            supabaseClient.from("venues")
-                .select {
-                    filter { isIn("id", chunk) }
-                }
-                .decodeList<VenueDto>()
-                .map { it.toDomain() }
+            try {
+                supabaseClient.from("venues")
+                    .select {
+                        filter { isIn("id", chunk) }
+                    }
+                    .decodeList<VenueDto>()
+                    .map { it.toDomain() }
+            } catch (e: Throwable) {
+                println("VenueRepository.getVenuesByIds chunk failed: ${e.message}")
+                emptyList()
+            }
         }
     }
 
