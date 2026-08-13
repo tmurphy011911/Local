@@ -247,9 +247,41 @@ function userLatLng(p) {
   if (p.user_lat != null) return { lat: p.user_lat, lng: p.user_lng };
   return null;
 }
-function topCategory(p) {
+// Interaction-inferred taste. community_interactions.category uses a finer
+// taxonomy than events.category, so normalize it (and drop unmappable ones).
+const CAT_MAP = { rock: "music", "restaurant-week": "food", "for-kids": "family", "farmers-market": "food" };
+const EVENT_CATS = new Set(["arts", "music", "sports", "community", "food", "outdoors", "family"]);
+function normalizeCat(c) { const m = CAT_MAP[c] || c; return EVENT_CATS.has(m) ? m : null; }
+
+/** Infer each user's top category from their interactions (favorite 2 / share 4 /
+ * click 1, matching the app's taste weighting), normalized to event categories. */
+async function loadInteractionTaste() {
+  const W = { favorite: 2, share: 4, click: 1 };
+  const rows = await sbGet(`community_interactions?select=user_id,category,interaction_type&category=not.is.null&limit=20000`);
+  const per = new Map();
+  for (const r of rows) {
+    const c = normalizeCat(r.category);
+    if (!c) continue;
+    let m = per.get(r.user_id);
+    if (!m) { m = {}; per.set(r.user_id, m); }
+    m[c] = (m[c] || 0) + (W[r.interaction_type] || 1);
+  }
+  const top = new Map();
+  for (const [uid, m] of per) {
+    const best = Object.entries(m).sort((a, b) => b[1] - a[1])[0];
+    if (best) top.set(uid, best[0]);
+  }
+  return top;
+}
+
+/** Top category: inferred from interactions first, else a normalized onboarding
+ * pick, else null (→ the taste builders send a location-only default). */
+function topCategory(p, ctx) {
+  const inferred = ctx.interestByUser.get(p.id);
+  if (inferred) return inferred;
   const cats = Array.isArray(p.selected_categories) ? p.selected_categories : [];
-  return cats.length ? cats[0] : null;
+  for (const c of cats) { const n = normalizeCat(c); if (n) return n; }
+  return null;
 }
 function isActive(activity, uid, withinDays) {
   const last = activity.get(uid);
@@ -261,8 +293,9 @@ function isActive(activity, uid, withinDays) {
 async function tasteEventCount(cat, lat, lng, start, end) {
   const dLat = 10 / 69, dLng = 10 / (69 * Math.cos((lat * Math.PI) / 180));
   const box = `venue_lat=gte.${(lat - dLat).toFixed(4)}&venue_lat=lte.${(lat + dLat).toFixed(4)}&venue_lng=gte.${(lng - dLng).toFixed(4)}&venue_lng=lte.${(lng + dLng).toFixed(4)}`;
+  const catFilter = cat ? `category=eq.${encodeURIComponent(cat)}&` : ""; // null cat = all events (the default push)
   const res = await fetch(
-    `${SUPABASE_URL}/rest/v1/events?category=eq.${encodeURIComponent(cat)}&is_active=eq.true&start_at=gte.${start}&start_at=lt.${end}&${box}&select=id`,
+    `${SUPABASE_URL}/rest/v1/events?${catFilter}is_active=eq.true&start_at=gte.${start}&start_at=lt.${end}&${box}&select=id`,
     { headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}`, Prefer: "count=exact", Range: "0-0" } },
   );
   const cr = res.headers.get("content-range"); // "0-0/<total>" or "*/<total>"
@@ -341,10 +374,16 @@ async function buildDiscoveryFomo(ctx) {
   const start = dateBoundaryISO(0), end = dateBoundaryISO(8);
   const out = new Map();
   for (const [uid, p] of ctx.profiles) {
-    const loc = userLatLng(p), cat = topCategory(p);
-    if (!loc || !cat) continue;
-    const n = await tasteEventCount(cat, loc.lat, loc.lng, start, end);
-    if (n >= 3) out.set(uid, { type: "B", title: "Bo's been busy", body: `${n} ${cat} events within 10 miles of you this week`, dedupeKey: `B:${uid}:${isoDateEastern(0)}` });
+    const loc = userLatLng(p);
+    if (!loc) continue; // no location → nothing (falls to E)
+    const cat = topCategory(p, ctx);
+    if (cat) {
+      const n = await tasteEventCount(cat, loc.lat, loc.lng, start, end);
+      if (n >= 3) { out.set(uid, { type: "B", title: "Bo's been busy", body: `${n} ${cat} events within 10 miles of you this week`, dedupeKey: `B:${uid}:${isoDateEastern(0)}` }); continue; }
+    }
+    // No inferable taste (or too few in-category) → location-only default.
+    const nAll = await tasteEventCount(null, loc.lat, loc.lng, start, end);
+    if (nAll >= 3) out.set(uid, { type: "B", title: "Bo's been busy", body: `${nAll} events within 10 miles of you this week`, dedupeKey: `B:${uid}:${isoDateEastern(0)}` });
   }
   return out;
 }
@@ -369,10 +408,16 @@ async function buildTasteWeekend(ctx) {
   const start = dateBoundaryISO(0), end = dateBoundaryISO(4);
   const out = new Map();
   for (const [uid, p] of ctx.profiles) {
-    const loc = userLatLng(p), cat = topCategory(p);
-    if (!loc || !cat) continue;
-    const n = await tasteEventCount(cat, loc.lat, loc.lng, start, end);
-    if (n >= 3) out.set(uid, { type: "F", title: "Bo says you're welcome", body: `${n} ${cat} events within 10 miles of you this weekend`, dedupeKey: `F:${uid}:${isoDateEastern(0)}` });
+    const loc = userLatLng(p);
+    if (!loc) continue; // no location → nothing (falls to E)
+    const cat = topCategory(p, ctx);
+    if (cat) {
+      const n = await tasteEventCount(cat, loc.lat, loc.lng, start, end);
+      if (n >= 3) { out.set(uid, { type: "F", title: "Bo says you're welcome", body: `${n} ${cat} events within 10 miles of you this weekend`, dedupeKey: `F:${uid}:${isoDateEastern(0)}` }); continue; }
+    }
+    // No inferable taste (or too few in-category) → location-only default.
+    const nAll = await tasteEventCount(null, loc.lat, loc.lng, start, end);
+    if (nAll >= 3) out.set(uid, { type: "F", title: "Bo says you're welcome", body: `${nAll} events within 10 miles of you this weekend`, dedupeKey: `F:${uid}:${isoDateEastern(0)}` });
   }
   return out;
 }
@@ -407,8 +452,8 @@ async function main() {
 
   // Load shared context — every day now needs it (the Daily Local catch-all E
   // runs on all days except Tue/Fri, and the gate needs the activity map).
-  const [profiles, activity, dl] = await Promise.all([loadProfiles(), loadActivity(), loadDailyLocal()]);
-  const ctx = { profiles, activity, ...dl };
+  const [profiles, activity, dl, interestByUser] = await Promise.all([loadProfiles(), loadActivity(), loadDailyLocal(), loadInteractionTaste()]);
+  const ctx = { profiles, activity, ...dl, interestByUser };
 
   const layers = await treeForDay(day, ctx);
 
