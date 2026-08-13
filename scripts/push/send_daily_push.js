@@ -249,7 +249,29 @@ function userLatLng(p) {
 }
 // Interaction-inferred taste. community_interactions.category uses a finer
 // taxonomy than events.category, so normalize it (and drop unmappable ones).
-const CAT_MAP = { rock: "music", "restaurant-week": "food", "for-kids": "family", "farmers-market": "food" };
+const CAT_MAP = {
+  // music genres → music
+  rock: "music", "r&b": "music", country: "music", "hip-hop/rap": "music", folk: "music",
+  alternative: "music", classical: "music", metal: "music", reggae: "music", pop: "music",
+  latin: "music", world: "music", "dance/electronic": "music", music_venue: "music",
+  // sports → sports
+  baseball: "sports", basketball: "sports", football: "sports", soccer: "sports",
+  golf: "sports", wrestling: "sports", sports_venue: "sports", stadium: "sports",
+  // food & drink → food
+  brewery: "food", winery: "food", restaurant: "food", "restaurant-week": "food",
+  "farmers-market": "food", bar: "food",
+  // arts / performance → arts
+  museum: "arts", museums: "arts", theatre: "arts", theater: "arts", "performance art": "arts",
+  dance: "arts", arts_center: "arts", cultural: "arts", "magic & illusion": "arts", comedy: "arts",
+  // kids → family
+  "for-kids": "family",
+  // outdoors → outdoors
+  park: "outdoors", trail: "outdoors", garden: "outdoors", fitness: "outdoors", attraction: "outdoors",
+  // civic / festivals → community
+  library: "community", libraries: "community", bookstore: "community", civic: "community",
+  "community/civic": "community", religious: "community", public_space: "community", college: "community",
+  festival: "community", festivals: "community", "fairs & festivals": "community",
+};
 const EVENT_CATS = new Set(["arts", "music", "sports", "community", "food", "outdoors", "family"]);
 function normalizeCat(c) { const m = CAT_MAP[c] || c; return EVENT_CATS.has(m) ? m : null; }
 
