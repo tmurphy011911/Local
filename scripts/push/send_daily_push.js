@@ -288,22 +288,21 @@ async function loadInteractionTaste() {
     if (!m) { m = {}; per.set(r.user_id, m); }
     m[c] = (m[c] || 0) + (W[r.interaction_type] || 1);
   }
-  const top = new Map();
+  const ranked = new Map();
   for (const [uid, m] of per) {
-    const best = Object.entries(m).sort((a, b) => b[1] - a[1])[0];
-    if (best) top.set(uid, best[0]);
+    ranked.set(uid, Object.entries(m).sort((a, b) => b[1] - a[1]).map((e) => e[0])); // categories, most-preferred first
   }
-  return top;
+  return ranked;
 }
 
-/** Top category: inferred from interactions first, else a normalized onboarding
- * pick, else null (→ the taste builders send a location-only default). */
-function topCategory(p, ctx) {
-  const inferred = ctx.interestByUser.get(p.id);
-  if (inferred) return inferred;
-  const cats = Array.isArray(p.selected_categories) ? p.selected_categories : [];
-  for (const c of cats) { const n = normalizeCat(c); if (n) return n; }
-  return null;
+/** Ranked categories to try for a user, most-preferred first: interaction-inferred,
+ * then normalized onboarding picks (deduped). B/F walk this until one has >=3 events. */
+function userCategories(p, ctx) {
+  const out = [], seen = new Set();
+  const add = (c) => { if (c && !seen.has(c)) { seen.add(c); out.push(c); } };
+  for (const c of ctx.interestByUser.get(p.id) || []) add(c);
+  for (const c of (Array.isArray(p.selected_categories) ? p.selected_categories : [])) add(normalizeCat(c));
+  return out;
 }
 function isActive(activity, uid, withinDays) {
   const last = activity.get(uid);
@@ -398,12 +397,14 @@ async function buildDiscoveryFomo(ctx) {
   for (const [uid, p] of ctx.profiles) {
     const loc = userLatLng(p);
     if (!loc) continue; // no location → nothing (falls to E)
-    const cat = topCategory(p, ctx);
-    if (cat) {
+    // Walk the user's categories in preference order; use the first with >=3 events.
+    let picked = null, pickedN = 0;
+    for (const cat of userCategories(p, ctx)) {
       const n = await tasteEventCount(cat, loc.lat, loc.lng, start, end);
-      if (n >= 3) { out.set(uid, { type: "B", title: "Bo's been busy", body: `${n} ${cat} events within 10 miles of you this week`, dedupeKey: `B:${uid}:${isoDateEastern(0)}` }); continue; }
+      if (n >= 3) { picked = cat; pickedN = n; break; }
     }
-    // No inferable taste (or too few in-category) → location-only default.
+    if (picked) { out.set(uid, { type: "B", title: "Bo's been busy", body: `${pickedN} ${picked} events within 10 miles of you this week`, dedupeKey: `B:${uid}:${isoDateEastern(0)}` }); continue; }
+    // No inferable taste (or too few in ANY of their categories) → location-only default.
     const nAll = await tasteEventCount(null, loc.lat, loc.lng, start, end);
     if (nAll >= 3) out.set(uid, { type: "B", title: "Bo's been busy", body: `${nAll} events within 10 miles of you this week`, dedupeKey: `B:${uid}:${isoDateEastern(0)}` });
   }
@@ -432,12 +433,14 @@ async function buildTasteWeekend(ctx) {
   for (const [uid, p] of ctx.profiles) {
     const loc = userLatLng(p);
     if (!loc) continue; // no location → nothing (falls to E)
-    const cat = topCategory(p, ctx);
-    if (cat) {
+    // Walk the user's categories in preference order; use the first with >=3 events.
+    let picked = null, pickedN = 0;
+    for (const cat of userCategories(p, ctx)) {
       const n = await tasteEventCount(cat, loc.lat, loc.lng, start, end);
-      if (n >= 3) { out.set(uid, { type: "F", title: "Bo says you're welcome", body: `${n} ${cat} events within 10 miles of you this weekend`, dedupeKey: `F:${uid}:${isoDateEastern(0)}` }); continue; }
+      if (n >= 3) { picked = cat; pickedN = n; break; }
     }
-    // No inferable taste (or too few in-category) → location-only default.
+    if (picked) { out.set(uid, { type: "F", title: "Bo says you're welcome", body: `${pickedN} ${picked} events within 10 miles of you this weekend`, dedupeKey: `F:${uid}:${isoDateEastern(0)}` }); continue; }
+    // No inferable taste (or too few in ANY of their categories) → location-only default.
     const nAll = await tasteEventCount(null, loc.lat, loc.lng, start, end);
     if (nAll >= 3) out.set(uid, { type: "F", title: "Bo says you're welcome", body: `${nAll} events within 10 miles of you this weekend`, dedupeKey: `F:${uid}:${isoDateEastern(0)}` });
   }
