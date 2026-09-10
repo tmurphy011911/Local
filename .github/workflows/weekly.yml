@@ -17,11 +17,33 @@ on:
         description: 'Comma-separated state codes (e.g. "MA,NJ,NY,PA,RI"). When set, bypasses both the is_live=true filter AND the day-shard — useful for one-off catch-up runs that need to crawl states regardless of their DB live status.'
         required: false
         default: ''
+      run_ai:
+        description: 'Run the Claude/Anthropic-billed jobs (PAUSED 2026-09-10 to cut the Anthropic bill). Leave false for a DB-only run.'
+        type: boolean
+        default: false
 
 # Forward-compat: opt into Node 24 for JS-based actions before the
 # June 2 2026 forced-cutoff. Removes deprecation warnings on every job.
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+# ══ ANTHROPIC-BILLED JOBS PAUSED 2026-09-10 ═════════════════════════════
+# Every job below that calls Claude is gated on `workflow_dispatch` +
+# run_ai=true, so the cron above runs the DB-only jobs and nothing else.
+# Paused here: crawl-venues, classify-events, discover-municipal-feeds,
+# sync-municipal-feeds, refresh-curated-events.
+# Rationale: a 2026-09-10 cost audit found the daily day-sharded crawl alone
+# issuing ~9k Claude HTML-extraction calls/day (2026-09-09: CA 5,120 of 7,556
+# + NY 4,012), the dominant line item on the Anthropic bill. User elected to
+# freeze ALL scheduled Anthropic spend rather than throttle it.
+# KNOWN CONSEQUENCE: the catalog is frozen — no new crawled events, and
+# nothing new gets classified, so fresh rows stay category="other" and are
+# rail-invisible. Accepted deliberately; see the audit notes.
+# To run by hand: Actions tab -> this workflow -> Run workflow -> run_ai=true.
+# NOTE: this pause MUST be back-merged to `develop`, or the next release-Wed
+# develop->main merge silently re-enables it (same trap as monthly.yml on
+# 2026-08-13, PR #22).
+# ════════════════════════════════════════════════════════════════════════
 
 jobs:
   # Day-shard the live states across the week. The crawl runs DAILY, but each
@@ -111,6 +133,7 @@ jobs:
   # finish + the upsert. fail-fast=false so one shard's error can't cancel
   # siblings. Empty matrix (an idle weekday with no state assigned) simply skips.
   crawl-venues:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_ai }}
     runs-on: ubuntu-latest
     needs: compute-states
     timeout-minutes: 300
@@ -171,7 +194,7 @@ jobs:
     # irrelevant; anything that didn't load is caught next run.
     runs-on: ubuntu-latest
     needs: [crawl-venues, sync-municipal-feeds]
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.run_ai }}
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -209,6 +232,7 @@ jobs:
         run: node extract_venues_from_events.js
 
   discover-municipal-feeds:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_ai }}
     runs-on: ubuntu-latest
     # The script self-limits via DISCOVER_MAX_MINUTES and exits 0 gracefully,
     # resuming uncovered cities next run. This job timeout is the hard backstop
@@ -251,7 +275,7 @@ jobs:
     # already applied to classify-events above.
     runs-on: ubuntu-latest
     needs: discover-municipal-feeds
-    if: ${{ always() }}
+    if: ${{ always() && github.event_name == 'workflow_dispatch' && inputs.run_ai }}
     timeout-minutes: 30
     # Best-effort backstop: the SYNC_MAX_MINUTES budget already exits this green,
     # but in case a slow feed straddles the budget check and trips the 30m cap,
@@ -410,6 +434,7 @@ jobs:
   # state. ANTHROPIC/GOOGLE keys are read from the secrets table via
   # SUPABASE_SERVICE_KEY. Independent of the crawl chain.
   refresh-curated-events:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_ai }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
