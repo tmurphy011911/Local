@@ -64,13 +64,32 @@ function cors(): Record<string, string> {
 
 interface GenQuestion { question: string; answers: string[]; correct_index: number; }
 
+// Slice out the first complete top-level JSON array in Claude's reply. Matches
+// brackets (string-aware) instead of first "[" .. last "]", so a trailing note
+// that itself contains brackets doesn't corrupt the parse. null if none.
+function firstJsonArray(raw: string): string | null {
+  const start = raw.indexOf("[");
+  if (start < 0) return null;
+  let depth = 0, inStr = false, esc = false;
+  for (let i = start; i < raw.length; i++) {
+    const ch = raw[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === "\\") esc = true;
+      else if (ch === '"') inStr = false;
+    } else if (ch === '"') inStr = true;
+    else if (ch === "[") depth++;
+    else if (ch === "]" && --depth === 0) return raw.slice(start, i + 1);
+  }
+  return null;
+}
+
 // Extract the first JSON array from Claude's reply (tolerates prose wrappers).
 function parseQuestions(raw: string): GenQuestion[] {
-  const start = raw.indexOf("[");
-  const end = raw.lastIndexOf("]");
-  if (start < 0 || end <= start) return [];
+  const json = firstJsonArray(raw);
+  if (!json) return [];
   try {
-    const arr = JSON.parse(raw.slice(start, end + 1));
+    const arr = JSON.parse(json);
     return Array.isArray(arr) ? arr : [];
   } catch {
     return [];
@@ -151,10 +170,9 @@ async function verifyQuestions(
   const user = `Fact-check these ${candidates.length} ${stateName} trivia questions:\n\n${list}`;
 
   const raw = await callClaude(anthropicKey, system, user, VERIFY_MODEL);
-  const start = raw.indexOf("[");
-  const end = raw.lastIndexOf("]");
-  if (start < 0 || end <= start) throw new Error("verifier returned no JSON array");
-  const verdicts = JSON.parse(raw.slice(start, end + 1)) as Array<{ i: number; verdict: string }>;
+  const json = firstJsonArray(raw);
+  if (!json) throw new Error("verifier returned no JSON array");
+  const verdicts = JSON.parse(json) as Array<{ i: number; verdict: string }>;
 
   // Default to reject: anything the verifier didn't explicitly keep is dropped.
   const keep = new Array(candidates.length).fill(false);
