@@ -117,7 +117,7 @@ async function copyTable({ name, filter, transform, orderBy }, now) {
       page = await readPage(name, resolvedFilter, offset, orderBy);
     } catch (err) {
       console.warn(`  [${name}] read failed, skipping table: ${err.message}`);
-      return;
+      return { name, ok: false, reason: err.message, copied };
     }
     if (!page.length) break;
     if (transform) page = page.map(transform);
@@ -139,6 +139,7 @@ async function copyTable({ name, filter, transform, orderBy }, now) {
   }
 
   console.log(`  [${name}] synced ${copied} rows`);
+  return { name, ok: true, copied };
 }
 
 async function main() {
@@ -149,11 +150,36 @@ async function main() {
   console.log(`  target: ${DEV_URL}`);
   console.log(`  cutoff (events start_at >=): ${now}\n`);
 
+  const results = [];
   for (const table of TABLES) {
-    await copyTable(table, now);
+    results.push(await copyTable(table, now));
   }
 
-  console.log("\nDone.");
+  // Previously this loop swallowed every per-table read failure and main()
+  // still exited 0. During the 2026-10-11 Supabase egress restriction, EVERY
+  // table 402'd and this workflow was the only green check in the repo while
+  // prod was completely down — it actively hid a total outage. A sync that
+  // read nothing is a failure, not a no-op.
+  const failed = results.filter((r) => !r.ok);
+  const totalCopied = results.reduce((n, r) => n + (r.copied || 0), 0);
+
+  console.log(`\n${results.length - failed.length}/${results.length} tables synced, ${totalCopied} rows total.`);
+  if (failed.length) {
+    console.error(`\n${failed.length} table(s) failed to read:`);
+    for (const f of failed) console.error(`  - ${f.name}: ${f.reason}`);
+  }
+
+  // Hard-fail when the source was unreadable across the board (outage, revoked
+  // key, restriction) — that is never a legitimate sync. A partial failure is
+  // surfaced as a non-zero exit too, so dev drift can't accumulate unnoticed.
+  if (failed.length === results.length) {
+    throw new Error(`Sync read NOTHING — all ${results.length} tables failed. Source project is unreachable or restricted.`);
+  }
+  if (failed.length) {
+    throw new Error(`Sync incomplete — ${failed.length}/${results.length} table(s) failed.`);
+  }
+
+  console.log("Done.");
 }
 
 main().catch((err) => {

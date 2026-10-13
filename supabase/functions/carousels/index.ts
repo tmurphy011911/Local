@@ -2702,8 +2702,16 @@ async function fetchAllEvents(
   // venue diversity that the "At <venue>" rails need (BPL's high venue
   // rank crowds out Brighton Branch, Hummingbird Books, etc., for the
   // for-kids subcategory). This parallel call returns top 12 venues × top
-  // 6 events for the focused subcategory only — bounded payload, zero
+  // N events for the focused subcategory only — bounded payload, zero
   // added latency because it runs in the same Promise.all.
+  //
+  // p_events_per_venue is CAROUSEL_DISPLAY_LIMIT (not 6): the "At <venue>"
+  // rail renders up to CAROUSEL_DISPLAY_LIMIT events, so fetching only 6
+  // per venue capped every venue rail at ~6 shows regardless of how many
+  // the venue actually programs (e.g. The Wilbur has 36 upcoming comedy
+  // shows but the rail showed 4-6). Worst case 12×25 = 300 rows, still far
+  // under PostgREST's 1000-row wire cap. The rail's own slice keeps the
+  // final card count at CAROUSEL_DISPLAY_LIMIT.
   const venueDiverseRpc = subcategoryFocus
     ? supabase.rpc("mv_events_for_subcategory_venues", {
         p_lat: lat,

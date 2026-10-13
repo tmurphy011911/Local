@@ -32,8 +32,22 @@ const STATE_FILTER = (process.env.STATE || "").trim() || null;
 // Optional metro_area scope (e.g. METRO_AREA=nantucket). Narrower than STATE so a
 // single-island/city crawl can't touch venues elsewhere in the same state.
 const METRO_AREA_FILTER = (process.env.METRO_AREA || "").trim().toLowerCase() || null;
+// Comma-separated city list to scope within STATE_FILTER (or globally).
+// Empty = all cities. For onboarding runs that should crawl only a freshly-
+// inserted subset, not the full state's venues.
+const CITIES_FILTER = (process.env.CITIES || "").split(",").map((c) => c.trim()).filter(Boolean);
+// ISO timestamp — only crawl venues whose row was created on/after.
+const CREATED_AFTER = (process.env.CREATED_AFTER || "").trim() || null;
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || "3", 10);
 const MAX_VENUES = parseInt(process.env.MAX_VENUES || "0", 10);
+// Wall-clock budget in minutes. When set, the crawl stops pulling NEW venues
+// once the budget is hit (in-flight venues finish), then upserts what it got.
+// Combined with the stalest-first ordering in fetchVenues(), this makes a
+// timeout structurally impossible: each run drains the most-stale venues it
+// can within the budget, and the rest are picked up next run (their
+// last_crawled_at is now newer, so they sort to the back). 0 = no budget
+// (crawl everything — used for manual single-venue/VENUE_NAME runs).
+const MAX_MINUTES = parseInt(process.env.CRAWL_MAX_MINUTES || "0", 10);
 // NPS Developer API — falls back to api.data.gov DEMO_KEY (30 req/hr, 50/day)
 // when NPS_API_KEY isn't set. DEMO_KEY is fine for our 6 NPS venues weekly.
 const NPS_API_KEY = process.env.NPS_API_KEY || "DEMO_KEY";
@@ -400,7 +414,18 @@ async function fetchVenues() {
   if (METRO_AREA_FILTER) {
     baseUrl += `&metro_area=eq.${encodeURIComponent(METRO_AREA_FILTER)}`;
   }
-  baseUrl += "&order=events_url.desc.nullslast,crawl_success_rate.desc";
+  if (CITIES_FILTER.length) {
+    const quoted = CITIES_FILTER.map((c) => `"${c.replace(/"/g, '\\"')}"`).join(",");
+    baseUrl += `&city=in.(${encodeURIComponent(quoted)})`;
+  }
+  if (CREATED_AFTER) baseUrl += `&created_at=gte.${encodeURIComponent(CREATED_AFTER)}`;
+  // Stalest-first: among crawlable venues (events_url present), crawl the ones
+  // not touched in the longest time — never-crawled (null) first. Paired with
+  // the CRAWL_MAX_MINUTES budget this gives a rolling crawl that always makes
+  // progress on the oldest data and never re-starts from the same head, so no
+  // venue is permanently starved when a run is time-boxed. crawl_success_rate
+  // is the final tiebreak so reliably-productive venues win ties.
+  baseUrl += "&order=events_url.desc.nullslast,last_crawled_at.asc.nullsfirst,crawl_success_rate.desc";
 
   if (MAX_VENUES > 0) {
     baseUrl += `&limit=${MAX_VENUES}`;
@@ -470,8 +495,17 @@ async function fetchPage(url, { stealth = false } = {}) {
     }
   }
 
+  // Direct fetch. On Cloudflare/WAF-shaped failures (403/429/503/520) or
+  // network-level resets (ECONNRESET, fetch failed), retry via Scrapfly with
+  // asp=true before giving up — same anti-bot bypass fix_venue_urls.js uses
+  // for URL discovery. Without this, manually-added flagship venues (JFK
+  // Presidential Library, Museum of Science, dozens of museums + theaters
+  // behind Cloudflare) all returned HTTP 403 on the actual crawl despite the
+  // URL being correct.
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 30_000);
+  let directErr = null;
+  let directStatus = 0;
   try {
     const res = await fetch(url, {
       headers: FETCH_HEADERS,
@@ -479,12 +513,48 @@ async function fetchPage(url, { stealth = false } = {}) {
       redirect: "follow",
     });
     clearTimeout(timeout);
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.text();
+    if (res.ok) return await res.text();
+    directStatus = res.status;
+    directErr = new Error(`HTTP ${res.status}`);
   } catch (err) {
     clearTimeout(timeout);
-    throw err;
+    directErr = err;
   }
+
+  const isWafShape = directStatus && [403, 429, 503, 520, 1020].includes(directStatus);
+  const isNetworkReset = directErr && /ECONNRESET|ETIMEDOUT|fetch failed|aborted/i.test(
+    String(directErr.message || directErr.cause?.code || directErr)
+  );
+  if (SCRAPFLY_API_KEY && (isWafShape || isNetworkReset) && !stealth) {
+    // Tier 1: asp=true alone. Bypasses common Cloudflare/Datadome rule sets
+    // without paying the JS-render tax (~10–15s per venue).
+    try {
+      const { html } = await scrapflyFetchHtml(url, {
+        scrapflyKey: SCRAPFLY_API_KEY,
+        renderJs: false,
+        timeoutMs: 45_000,
+      });
+      return html;
+    } catch (_) { /* fall through to tier 2 */ }
+
+    // Tier 2: asp=true + render_js. Some sites (JFK Library, Harvard museums,
+    // boston.gov/mass.gov parks, theatre & college sites with JS-rendered
+    // challenge pages) need the headless browser to actually execute the
+    // Cloudflare interstitial JS before serving content. Paying the latency
+    // is justified here — these are flagship venues that otherwise stay empty.
+    try {
+      const { html } = await scrapflyFetchHtml(url, {
+        scrapflyKey: SCRAPFLY_API_KEY,
+        renderJs: true,
+        timeoutMs: 60_000,
+        renderingWait: 4000,
+      });
+      return html;
+    } catch (_) {
+      // fall through to throw the original error so caller sees the real reason
+    }
+  }
+  throw directErr;
 }
 
 function stripHtml(html) {
@@ -620,8 +690,13 @@ ${html}`;
  */
 function tagEasternTime(isoDate) {
   if (!isoDate) return null;
-  // Already has timezone offset or Z — leave it alone
-  if (/[Zz]$/.test(isoDate) || /[+-]\d{2}:\d{2}$/.test(isoDate)) return isoDate;
+  // Already has timezone offset or Z — leave it alone. Accept both the
+  // colon form (-04:00) and the colon-less form (-0400) that some sources
+  // emit; without the colon-less check we'd append a second offset and
+  // produce the Postgres-rejected "2026-08-08T19:00:00-0400-05:00".
+  // Note: only match a 4-digit offset, never a bare ±HH — a date-only
+  // "2026-08-08" ends in "-08" and would otherwise false-match.
+  if (/[Zz]$/.test(isoDate) || /[+-]\d{2}:?\d{2}$/.test(isoDate)) return isoDate;
   // Date-only values (YYYY-MM-DD) need a time component before we can tack on
   // the offset, otherwise Postgres rejects "2026-07-10-04:00" as invalid.
   const normalized = /^\d{4}-\d{2}-\d{2}$/.test(isoDate) ? isoDate + "T00:00:00" : isoDate;
@@ -642,6 +717,27 @@ function tagEasternTime(isoDate) {
 function normalizeEvent(event, venue) {
   const now = new Date().toISOString();
   const venueCity = (venue.city || "unknown").toLowerCase();
+  // Per-event venue override (event._venue) — set by adapters when the feed
+  // carries real per-event venue data (e.g. a Tribe aggregator like Waltham
+  // Times whose every event names its actual venue). Attribution fields come
+  // from the override; sourceId/dedupe_hash still hash the DB venue row's
+  // name so a re-crawl after an attribution fix UPDATES the same rows
+  // in place instead of duplicating them.
+  const attr = event._venue && event._venue.name
+    ? {
+        name: decodeXmlEntities(event._venue.name).trim(),
+        city: event._venue.city || venue.city,
+        state: event._venue.state || venue.state || null,
+        lat: event._venue.lat ?? venue.lat,
+        lng: event._venue.lng ?? venue.lng,
+      }
+    : {
+        name: decodeXmlEntities(venue.name),
+        city: venue.city,
+        state: venue.state || null,
+        lat: venue.lat,
+        lng: venue.lng,
+      };
   // Decode HTML entities before hashing so "Pattern &amp; Place" and
   // "Pattern & Place" produce the same dedupe_hash across crawl paths.
   const title = decodeXmlEntities(event.title || "").trim();
@@ -697,12 +793,12 @@ function normalizeEvent(event, venue) {
     // venue's photo. The migration backfill query handles existing rows.
     image_url: event.image_url || venue.photo_url || null,
     status: "active",
-    venue_name: decodeXmlEntities(venue.name),
+    venue_name: attr.name,
     venue_address: null,
-    venue_city: venue.city,
-    venue_state: venue.state || null,
-    venue_lat: venue.lat ? parseFloat(venue.lat) : null,
-    venue_lng: venue.lng ? parseFloat(venue.lng) : null,
+    venue_city: attr.city,
+    venue_state: attr.state,
+    venue_lat: attr.lat ? parseFloat(attr.lat) : null,
+    venue_lng: attr.lng ? parseFloat(attr.lng) : null,
     source: "crawl",
     source_id: sourceId,
     // For aggregator venues (Harvard Square, Creative Legion, etc.) padding
@@ -761,13 +857,20 @@ function shadowKey(title, startAt, venueName) {
 }
 
 async function filterDateOnlyShadows(batch) {
-  // Guard against malformed start_at (e.g. a doubled timezone like
-  // "2026-07-28T20:00:00-0400-05:00"): a bad value slices to an unparseable date
-  // → NaN maxDateMs → new Date(NaN).toISOString() throws and takes down the whole
-  // upsert batch. Only keep date-only rows whose date part actually parses.
-  const dateOnly = batch.filter((r) =>
-    r.time_known === false && r.start_at && r.venue_name &&
-    !Number.isNaN(Date.parse(String(r.start_at).slice(0, 10) + "T00:00:00Z")));
+  // Guard against malformed start_at values (e.g. a bad timezone displacement
+  // that Postgres rejects with 22009). An unparseable date here used to reach
+  // `new Date(NaN).toISOString()` below and throw "Invalid time value", killing
+  // the entire crawl upsert — which in turn skipped the whole downstream
+  // classify/split/dedupe chain for the week. Exclude rows whose date prefix
+  // can't be parsed; they still flow through to upsert (Postgres rejects the
+  // bad row non-fatally), they just don't participate in the shadow check.
+  const isParseableDate = (s) =>
+    typeof s === "string" &&
+    /^\d{4}-\d{2}-\d{2}/.test(s) &&
+    !Number.isNaN(Date.parse(s.slice(0, 10) + "T00:00:00Z"));
+  const dateOnly = batch.filter(
+    (r) => r.time_known === false && r.start_at && r.venue_name && isParseableDate(r.start_at),
+  );
   if (dateOnly.length === 0) return batch;
 
   const venues = [...new Set(dateOnly.map((r) => r.venue_name))];
@@ -775,6 +878,9 @@ async function filterDateOnlyShadows(batch) {
   const minDate = dates[0];
   // Add one day to the max so the half-open range covers the last day's events
   const maxDateMs = Date.parse(dates[dates.length - 1] + "T00:00:00Z") + 86_400_000;
+  // Belt-and-suspenders: if the max somehow still can't be computed, fail open
+  // rather than crash the upsert.
+  if (Number.isNaN(maxDateMs)) return batch;
   const maxDate = new Date(maxDateMs).toISOString().slice(0, 10);
 
   const venueIn = venues.map((v) => `"${v.replace(/"/g, '\\"')}"`).join(",");
@@ -1207,6 +1313,32 @@ async function crawlLocalist(venue, baseUrl) {
 
 // ── WordPress REST API crawler ──
 
+/**
+ * Per-event venue from a Tribe REST event, for AGGREGATOR feeds only.
+ * A Tribe aggregator (e.g. a local-news calendar like Waltham Times) names the
+ * real venue on every event; attributing those rows to the aggregator hides
+ * them from every per-venue surface. For normal single-venue feeds we keep the
+ * DB venue row's identity — feed-side name variants ("MFA Boston" vs our
+ * "Museum of Fine Arts") would fragment carousels otherwise.
+ * Returns null (no override) unless the crawled venue is an aggregator and the
+ * event carries a usable venue name. Skips virtual/online pseudo-venues so
+ * Zoom meetings stay on the aggregator row instead of minting "Zoom" venues.
+ */
+function tribeEventVenue(evt, venue) {
+  if (!venue.is_aggregator) return null;
+  const v = evt.venue && !Array.isArray(evt.venue) ? evt.venue : (Array.isArray(evt.venue) ? evt.venue[0] : null);
+  const name = (v && (v.venue || v.name) || "").trim();
+  if (!name) return null;
+  if (/^(zoom|online|virtual|webinar|tbd|tba)$/i.test(name)) return null;
+  return {
+    name,
+    city: (v.city || "").trim() || null,
+    state: (v.state_province || v.state || v.province || "").trim() || null,
+    lat: v.geo_lat != null && v.geo_lat !== "" ? v.geo_lat : null,
+    lng: v.geo_lng != null && v.geo_lng !== "" ? v.geo_lng : null,
+  };
+}
+
 async function crawlWordPress(venue, baseUrl) {
   const allEvents = [];
 
@@ -1253,6 +1385,7 @@ async function crawlWordPress(venue, baseUrl) {
             source_url: evt.url || evt.link || null,
             is_free: evt.cost === "Free" || evt.cost === "" || evt.cost === "$0" || false,
             ticket_url: evt.website || evt.url || null,
+            _venue: tribeEventVenue(evt, venue),
           });
         }
 
@@ -1275,6 +1408,7 @@ async function crawlWordPress(venue, baseUrl) {
                 title, start_date: startDate, end_date: evt.end_date || null,
                 description: desc || null, source_url: evt.url || evt.link || null,
                 is_free: evt.cost === "Free" || false, ticket_url: evt.website || null,
+                _venue: tribeEventVenue(evt, venue),
               });
             }
             nextUrl = nextData.next_rest_url || null;
@@ -1923,6 +2057,47 @@ async function detectAndCrawlPlatform(venue) {
   return null; // No platform detected pre-fetch
 }
 
+// ── Date-token expansion for month-paginated URLs ──
+
+const DATE_TOKEN_RE = /\{(YYYY-MM|YYYY\/MM|YYYY|YY|MMMM|MMM|mmmm|mmm|MM|M|DD|D)\}/;
+const DATE_MONTHS_AHEAD = parseInt(process.env.URL_DATE_MONTHS_AHEAD || "2", 10);
+
+function applyDateTokens(url, date) {
+  const yyyy = String(date.getFullYear());
+  const yy = yyyy.slice(2);
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const m = String(date.getMonth() + 1);
+  const dd = String(date.getDate()).padStart(2, "0");
+  const d = String(date.getDate());
+  const monthShort = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][date.getMonth()];
+  const monthLong = ["January", "February", "March", "April", "May", "June",
+    "July", "August", "September", "October", "November", "December"][date.getMonth()];
+  return url
+    .replace(/\{YYYY-MM\}/g, `${yyyy}-${mm}`)
+    .replace(/\{YYYY\/MM\}/g, `${yyyy}/${mm}`)
+    .replace(/\{YYYY\}/g, yyyy)
+    .replace(/\{YY\}/g, yy)
+    .replace(/\{MMMM\}/g, monthLong)
+    .replace(/\{MMM\}/g, monthShort)
+    .replace(/\{mmmm\}/g, monthLong.toLowerCase())
+    .replace(/\{mmm\}/g, monthShort.toLowerCase())
+    .replace(/\{MM\}/g, mm)
+    .replace(/\{M\}/g, m)
+    .replace(/\{DD\}/g, dd)
+    .replace(/\{D\}/g, d);
+}
+
+function expandDateTokens(url) {
+  if (!DATE_TOKEN_RE.test(url)) return [url];
+  const today = new Date();
+  const out = [];
+  for (let offset = 0; offset <= DATE_MONTHS_AHEAD; offset++) {
+    const d = new Date(today.getFullYear(), today.getMonth() + offset, 1);
+    out.push(applyDateTokens(url, d));
+  }
+  return [...new Set(out)];
+}
+
 // ── Crawl a single venue ──
 
 async function crawlVenue(venue) {
@@ -1930,19 +2105,39 @@ async function crawlVenue(venue) {
     return { venue: venue.name, events: 0, status: "skipped", reason: "no events_url" };
   }
 
-  // Support multiple URLs separated by commas
-  const urls = venue.events_url.split(",").map((u) => u.trim()).filter(Boolean);
+  // Support multiple URLs separated by commas, plus date-token expansion for
+  // month-paginated sites (TEC, custom calendars, etc.). Tokens supported:
+  //   {YYYY}  4-digit year       {YY}    2-digit year
+  //   {MM}    zero-padded month  {M}     un-padded month
+  //   {MMMM}  full month name    {MMM}   abbreviated month name
+  //   {mmmm}/{mmm}               lowercase variants
+  //   {DD}    zero-padded day    {D}     un-padded day
+  //   {YYYY-MM} / {YYYY/MM}      common combined forms
+  // Each token-bearing URL expands to current month + next 2 months. So a row
+  // like "https://brooklinebooksmith.com/events/{YYYY}/{MM}" stays valid
+  // forever instead of rotting when the month changes.
+  const rawUrls = venue.events_url.split(",").map((u) => u.trim()).filter(Boolean);
+  const urls = [...new Set(rawUrls.flatMap(expandDateTokens))];
   if (urls.length > 1) {
-    let totalEvents = 0;
+    const mergedRows = [];
     let anySuccess = false;
     for (const url of urls) {
       const subVenue = { ...venue, events_url: url };
       const result = await crawlVenue(subVenue);
       if (result.status?.startsWith("ok")) anySuccess = true;
-      totalEvents += result.events || 0;
+      // Collect the actual rows from each sub-URL — not just the count. Without
+      // this the caller's `results.flatMap(r => r.rows)` gets nothing for any
+      // multi-URL / date-token venue, so everything crawled here is silently
+      // dropped before the upsert (Brookline Booksmith extracted 59, saved 0).
+      if (result.rows?.length) mergedRows.push(...result.rows);
     }
     await updateVenueCrawlStatus(venue.id, anySuccess, venue.crawl_success_rate);
-    return { venue: venue.name, events: totalEvents, status: anySuccess ? "ok (multi-url)" : "error" };
+    return {
+      venue: venue.name,
+      events: mergedRows.length,
+      rows: mergedRows,
+      status: anySuccess ? "ok (multi-url)" : "error",
+    };
   }
 
   try {
@@ -2070,8 +2265,18 @@ async function crawlWithConcurrency(venues, concurrency) {
   const results = [];
   let index = 0;
 
+  // Hard wall-clock budget (see MAX_MINUTES). Once hit, workers stop claiming
+  // new venues; in-flight crawls finish and we upsert what we have. Infinity
+  // when no budget is set.
+  const deadlineMs = MAX_MINUTES > 0 ? Date.now() + MAX_MINUTES * 60_000 : Infinity;
+  let budgetHit = false;
+
   async function worker() {
     while (index < venues.length) {
+      if (Date.now() >= deadlineMs) {
+        budgetHit = true;
+        break;
+      }
       const i = index++;
       const venue = venues[i];
       console.log(`  [${i + 1}/${venues.length}] ${venue.name} (${venue.category})...`);
@@ -2104,6 +2309,14 @@ async function crawlWithConcurrency(venues, concurrency) {
 
   const workers = Array.from({ length: Math.min(concurrency, venues.length) }, () => worker());
   await Promise.all(workers);
+
+  if (budgetHit) {
+    const remaining = venues.length - index;
+    console.log(
+      `\n  ⏱  CRAWL_MAX_MINUTES (${MAX_MINUTES}m) budget reached — crawled ${results.length}, ` +
+        `${remaining} venue(s) deferred to next run (they remain the stalest, so they go first then).`,
+    );
+  }
 
   return results;
 }
@@ -2144,7 +2357,17 @@ async function main() {
   const allRows = results.flatMap((r) => r.rows || []);
 
   if (allRows.length === 0) {
-    console.log("\nNo events extracted. Check venue URLs and try again.");
+    // Platform adapters (Tribe/Localist/BiblioCommons/…) upsert their events
+    // INLINE and report only a count — they never hand rows back to this loop.
+    // An adapter-only run therefore has zero allRows while having persisted
+    // everything; saying "No events extracted" here was a lie that repeatedly
+    // sent operators hunting for a failure that didn't exist.
+    const adapterEvents = results.reduce((s, r) => s + (r?.events || 0), 0);
+    if (adapterEvents > 0) {
+      console.log(`\nAll ${adapterEvents} events were extracted and upserted inline by platform adapters. Done.`);
+    } else {
+      console.log("\nNo events extracted. Check venue URLs and try again.");
+    }
     return;
   }
 

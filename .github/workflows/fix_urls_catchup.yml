@@ -1,0 +1,60 @@
+name: Ad-hoc — Fix Venue URLs (retry-gate catch-up)
+
+# Manually-dispatched RETRY_GATE run to burn down the events_url backlog between
+# monthly runs. Same gated behavior as the monthly fix-venue-urls job — only
+# attempts venues worth a token (active, has a website, missing events_url,
+# rank >= MIN_RANK or unranked), skips ones already tried-and-failed within the
+# backoff window, records every attempt, and NEVER deactivates. On-demand with a
+# tunable per-run cap so several runs can chew down the backlog before the next
+# scheduled monthly run.
+#
+# Targets PROD (default SUPABASE_URL) via the SUPABASE_SERVICE_KEY repo secret.
+# Requires migration 20260706120000_venue_events_url_retry_state.sql (already
+# applied to prod 2026-07-06) — the attempt-tracking columns it selects on.
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_venues:
+        description: "Max venues to attempt this run (stalest-first; bounds runtime)"
+        required: false
+        type: string
+        default: "6000"
+      min_rank:
+        description: "Only attempt venues at/above this public_interest_rank (unranked always included)"
+        required: false
+        type: string
+        default: "40"
+      state:
+        description: "Optional state scope (e.g. MA); blank = all live states"
+        required: false
+        type: string
+        default: ""
+      concurrency:
+        description: "Parallel venue workers"
+        required: false
+        type: string
+        default: "6"
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  fix-venue-urls:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Fix Venue URLs (retry-gate catch-up)
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          RETRY_GATE: '1'
+          MAX_VENUES: ${{ inputs.max_venues }}
+          MIN_RANK: ${{ inputs.min_rank }}
+          STATE: ${{ inputs.state }}
+          CONCURRENCY: ${{ inputs.concurrency }}
+        run: node fix_venue_urls.js

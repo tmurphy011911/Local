@@ -109,7 +109,9 @@ async function rankBatch(venues) {
       "anthropic-version": "2023-06-01",
     },
     body: JSON.stringify({
-      model: "claude-sonnet-4-20250514",
+      // Haiku 4.5 — name+category ranking doesn't need Sonnet, and the old
+      // pinned Sonnet 4 snapshot was retired (every call 404'd on 2026-08-01).
+      model: "claude-haiku-4-5",
       max_tokens: 4096,
       messages: [
         {
@@ -132,7 +134,10 @@ async function rankBatch(venues) {
     const rankings = JSON.parse(text);
     if (!Array.isArray(rankings)) throw new Error("Not an array");
     return rankings
-      .filter((r) => r.id && typeof r.rank === "number" && r.rank >= 1 && r.rank <= 100)
+      // rank 0 is valid — the HARD ZERO rubric (adult venues, golf) returns it.
+      // Dropping 0s left those venues null-ranked, so every non-FORCE run
+      // re-sent them to Claude forever.
+      .filter((r) => r.id && typeof r.rank === "number" && r.rank >= 0 && r.rank <= 100)
       .map((r) => ({ id: r.id, rank: Math.round(r.rank) }));
   } catch (err) {
     console.error(`  Failed to parse Claude response: ${err.message}`);
