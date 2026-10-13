@@ -452,6 +452,7 @@ async function upsert(rows) {
   const url = `${SUPABASE_URL}/rest/v1/events?on_conflict=dedupe_hash`;
   const batchSize = 50;
   let ok = 0, errors = 0;
+  const written = new Set(); // dedupe_hashes that actually landed
   for (let i = 0; i < rows.length; i += batchSize) {
     const batch = rows.slice(i, i + batchSize);
     const res = await fetch(url, {
@@ -468,9 +469,12 @@ async function upsert(rows) {
       const body = await res.text();
       console.error(`  Upsert batch ${Math.floor(i / batchSize)}: ${res.status} ${body.slice(0, 240)}`);
       errors += batch.length;
-    } else ok += batch.length;
+    } else {
+      ok += batch.length;
+      for (const r of batch) written.add(r.dedupe_hash);
+    }
   }
-  return { ok, errors };
+  return { ok, errors, written };
 }
 
 // When a promo is rescued from "Dates TBD" to a real dated edition via the
@@ -550,6 +554,7 @@ async function main() {
   const rescuedRows = new Set();  // rows whose dates came from the organizer page
   const inactiveRows = new Set(); // rows marked inactive (known not active)
   const deadLinkReview = [];      // stale + dead-deep-link → kept TBD, flagged
+  const seenHashes = new Set();   // dedupe_hashes already queued for upsert
   let scanned = 0, droppedCity = 0, droppedGeo = 0, rescued = 0, inactivated = 0;
 
   for (const code of codes) {
@@ -602,15 +607,25 @@ async function main() {
       const row = buildEvent(promo, code, coords, page.ogImage, opts);
       if (promo !== p && promo.start) {
         rescuedRows.add(row);
-        staleTbdHashes.push(`frw:${code}:${slugOf(p.name)}:tbd`);
+        staleTbdHashes.push({ tbd: `frw:${code}:${slugOf(p.name)}:tbd`, dated: row.dedupe_hash });
       }
       if (opts.active === false) inactiveRows.add(row);
       return row;
     });
 
+    // Two FRW listings can resolve to the same dedupe_hash (same slug + same
+    // edition month). Postgres rejects the WHOLE upsert batch when a hash
+    // repeats within it ("ON CONFLICT DO UPDATE cannot affect row a second
+    // time"), so keep only the first occurrence.
     let kept = 0;
     for (const ev of built) {
-      if (ev) { rows.push(ev); kept++; }
+      if (!ev) continue;
+      if (seenHashes.has(ev.dedupe_hash)) {
+        console.log(`  [${code}] duplicate ${ev.dedupe_hash} ("${ev.title}") — skipped`);
+        continue;
+      }
+      seenHashes.add(ev.dedupe_hash);
+      rows.push(ev); kept++;
     }
     console.log(`  [${code}] ${promos.length} listed → ${kept} events`);
   }
@@ -639,18 +654,25 @@ async function main() {
         `${r.image_url ? "[img]" : "[no-img]"}${tag}`,
       );
     }
-    const uniqStale = [...new Set(staleTbdHashes)];
+    const uniqStale = [...new Set(staleTbdHashes.map((h) => h.tbd))];
     if (uniqStale.length) {
       console.log(`\nWould deactivate ${uniqStale.length} orphaned TBD row(s): ${uniqStale.join(", ")}`);
     }
     return;
   }
 
-  const { ok, errors } = await upsert(rows);
+  const { ok, errors, written } = await upsert(rows);
   console.log(`Upserted ${ok} rows (${errors} errors).`);
 
-  const deactivated = await deactivateHashes(staleTbdHashes);
+  // Only retire a TBD twin once its dated replacement has actually been written —
+  // otherwise a failed upsert batch would drop the promo from the rail entirely.
+  const deactivated = await deactivateHashes(
+    staleTbdHashes.filter((h) => written.has(h.dated)).map((h) => h.tbd),
+  );
   if (deactivated) console.log(`Deactivated ${deactivated} orphaned TBD row(s) (promo now has a dated edition).`);
+
+  // Fail loud: a partial write must not show green in Actions.
+  if (errors) process.exitCode = 1;
 }
 
 if (require.main === module) {
