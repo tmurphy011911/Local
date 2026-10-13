@@ -36,8 +36,21 @@
 const STORAGE_OBJECT = "/storage/v1/object/public/";
 const STORAGE_RENDER = "/storage/v1/render/image/public/";
 
-/** Response fields that carry a displayable image URL. */
-const IMAGE_KEYS = new Set(["image_url", "photo_url", "venue_photo_url"]);
+// Response fields that carry a displayable PHOTO url.
+//
+// Compared case- and underscore-insensitively because the endpoints disagree on
+// casing: carousels emits snake_case (image_url, venue_photo_url) while
+// explore-events / explore-places emit camelCase (imageUrl, photoUrl). Matching
+// only snake_case silently missed 220 images on a single explore-places
+// response — caught on dev before this ever reached prod.
+//
+// `icon_url` is deliberately NOT here: those are small category icons, not
+// photos, so resizing them buys nothing and risks mangling non-photo assets.
+const IMAGE_KEYS = new Set(["imageurl", "photourl", "venuephotourl"]);
+
+function isImageKey(key: string): boolean {
+  return IMAGE_KEYS.has(key.replace(/_/g, "").toLowerCase());
+}
 
 export const DEFAULT_THUMB_WIDTH = 400;
 export const DEFAULT_THUMB_QUALITY = 70;
@@ -74,7 +87,7 @@ export function thumbnailStorageImages<T>(
     if (v !== null && typeof v === "object") {
       const out: Record<string, unknown> = {};
       for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-        out[k] = typeof val === "string" && IMAGE_KEYS.has(k)
+        out[k] = typeof val === "string" && isImageKey(k)
           ? thumbUrl(val, width, quality)
           : walk(val);
       }
