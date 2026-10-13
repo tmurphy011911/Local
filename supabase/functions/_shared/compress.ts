@@ -17,6 +17,8 @@
 // The helper preserves any extra headers the caller wants to inject
 // (e.g. cache diagnostics), so existing telemetry is untouched.
 
+import { thumbnailStorageImages } from "./images.ts";
+
 export const CORS_HEADERS_BASE: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
   "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
@@ -34,6 +36,13 @@ const JSON_HEADERS_BASE: Record<string, string> = {
 interface CompressOptions {
   status?: number;
   extraHeaders?: Record<string, string>;
+  /**
+   * Rewrite Supabase Storage image URLs to the CDN-cached render endpoint at
+   * card width (see ./images.ts). Defaults to true — these endpoints are the
+   * card/list surfaces. Set false for a payload whose image URLs must stay at
+   * source resolution.
+   */
+  transformImages?: boolean;
 }
 
 function pickEncoding(req: Request): "gzip" | "deflate" | null {
@@ -53,8 +62,17 @@ export function jsonCompressed(
   value: unknown,
   options: CompressOptions = {},
 ): Response {
-  const { status = 200, extraHeaders = {} } = options;
-  const body = JSON.stringify(value);
+  const { status = 200, extraHeaders = {}, transformImages = true } = options;
+
+  // Serve Storage photos at card size rather than source size. Applied here
+  // because this is the single serialization chokepoint for the three
+  // high-volume card/list endpoints (carousels, explore-events,
+  // explore-places) — the only importers of this module. See
+  // ./images.ts for the measurements and why detail screens are excluded.
+  // A payload with no Supabase Storage URLs passes through unchanged, so this
+  // is a no-op for Google-hosted rows. Pass transformImages:false to opt out.
+  const payload = transformImages ? thumbnailStorageImages(value) : value;
+  const body = JSON.stringify(payload);
   const encoding = pickEncoding(req);
 
   if (!encoding) {
