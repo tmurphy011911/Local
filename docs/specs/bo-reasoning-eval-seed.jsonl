@@ -1,0 +1,56 @@
+{"id":"es01","utterance":"live music this week","context":"none","intent":"events_search","target":"new"}
+{"id":"es02","utterance":"things to do tonight","context":"none","intent":"events_search","target":"new"}
+{"id":"es03","utterance":"free events this weekend in cambridge","context":"none","intent":"events_search","target":"new"}
+{"id":"es04","utterance":"any comedy shows coming up","context":"none","intent":"events_search","target":"new"}
+{"id":"es05","utterance":"outdoor stuff for the kids saturday","context":"none","intent":"events_search","target":"new"}
+{"id":"es06","utterance":"trivia nights near me","context":"none","intent":"events_search","target":"new"}
+{"id":"es07","utterance":"surprise me","context":"none","intent":"events_search","target":"new"}
+{"id":"es08","utterance":"i'm bored","context":"none","intent":"events_search","target":"new"}
+{"id":"em01","utterance":"only the free ones","context":"suggestions(mixed events, some free)","intent":"events_modify","target":"current"}
+{"id":"em02","utterance":"anything cheaper","context":"suggestions(paid shows)","intent":"events_modify","target":"current"}
+{"id":"em03","utterance":"drop the outdoor ones","context":"suggestions(mixed events)","intent":"events_modify","target":"current"}
+{"id":"em04","utterance":"show me more","context":"suggestions(7 events)","intent":"events_modify","target":"current"}
+{"id":"em05","utterance":"sort by soonest","context":"suggestions(open)","intent":"events_modify","target":"current"}
+{"id":"em06","utterance":"more like the first one","context":"suggestions(open)","intent":"events_modify","target":"current"}
+{"id":"em07","utterance":"any of these tonight instead","context":"suggestions(this weekend)","intent":"events_modify","target":"current"}
+{"id":"em08","utterance":"what about next weekend","context":"suggestions(this weekend)","intent":"events_modify","target":"current"}
+{"id":"vs01","utterance":"what's going on at fenway?","context":"none","intent":"venue_single","target":"new"}
+{"id":"vs02","utterance":"tell me about the sinclair","context":"none","intent":"venue_single","target":"new"}
+{"id":"vs03","utterance":"what's the deal with time out market","context":"none","intent":"venue_single","target":"new"}
+{"id":"vs04","utterance":"is the paradise any good","context":"none","intent":"venue_single","target":"new"}
+{"id":"ev01","utterance":"is the celtics game sold out","context":"none","intent":"event_single","target":"new"}
+{"id":"ev02","utterance":"tell me more about that first one","context":"suggestions(open)","intent":"event_single","target":"new"}
+{"id":"ev03","utterance":"when does the beyonce show start","context":"none","intent":"event_single","target":"new"}
+{"id":"qf01","utterance":"how much is the aquarium","context":"none","intent":"quick_fact","target":"new"}
+{"id":"qf02","utterance":"is the ica open on mondays","context":"none","intent":"quick_fact","target":"new"}
+{"id":"qf03","utterance":"what time does the mfa close","context":"none","intent":"quick_fact","target":"new"}
+{"id":"in01","utterance":"what's new in town","context":"none","intent":"info","target":"new"}
+{"id":"in02","utterance":"what's the vibe in somerville","context":"none","intent":"info","target":"new"}
+{"id":"in03","utterance":"what should i know about the north end","context":"none","intent":"info","target":"new"}
+{"id":"pb01","utterance":"plan my saturday","context":"none (device location known)","intent":"plan_build","target":"new"}
+{"id":"pb02","utterance":"plan a date night","context":"none","intent":"plan_build","target":"new"}
+{"id":"pb03","utterance":"build me a day in providence","context":"none","intent":"plan_build","target":"new"}
+{"id":"pb04","utterance":"make a plan with these","context":"suggestions(3 selected)","intent":"plan_build","target":"new"}
+{"id":"pb05","utterance":"plan something","context":"none","intent":"plan_build","target":"new","note":"classifier emits plan_build+low-conf; precondition gate converts to a clarify downstream (spec 15.3)"}
+{"id":"pb06","utterance":"help me plan","context":"none","intent":"plan_build","target":"new","note":"gate-driven clarify, not classifier-driven"}
+{"id":"pm01","utterance":"swap the 7pm","context":"plan(2 days)","intent":"plan_modify","target":"current"}
+{"id":"pm02","utterance":"move dinner earlier","context":"plan(open)","intent":"plan_modify","target":"current"}
+{"id":"pm03","utterance":"add fenway to that","context":"plan(open)","intent":"plan_modify","target":"current"}
+{"id":"pm04","utterance":"drop the last stop","context":"plan(open)","intent":"plan_modify","target":"current"}
+{"id":"pm05","utterance":"can we do sunday instead","context":"plan(saturday)","intent":"plan_modify","target":"current"}
+{"id":"os01","utterance":"write me a poem","context":"none","intent":"out_of_scope","target":"new"}
+{"id":"os02","utterance":"what's the weather in tokyo","context":"none","intent":"out_of_scope","target":"new"}
+{"id":"os03","utterance":"help me with my taxes","context":"none","intent":"out_of_scope","target":"new"}
+{"id":"os04","utterance":"who won the game last night","context":"none","intent":"out_of_scope","target":"new"}
+{"id":"cl01","utterance":"what should i do","context":"none","intent":"events_search","target":"new","note":"present-over-ask: answerable by a sensible default"}
+{"id":"cl02","utterance":"help","context":"none","intent":"clarify","target":"na"}
+{"id":"co01","utterance":"what's at fenway this weekend","context":"none","intent":"venue_single","target":"new","secondary_intent":"events_search"}
+{"id":"co02","utterance":"any live music, and what's that new brewery about","context":"none","intent":"events_search","target":"new","secondary_intent":"venue_single"}
+{"id":"hc01","utterance":"what about sunday","context":"suggestions(saturday events)","intent":"events_modify","target":"current"}
+{"id":"hc02","utterance":"what about sunday","context":"none","intent":"events_search","target":"new"}
+{"id":"hc03","utterance":"just jazz","context":"suggestions(rock shows)","intent":"events_modify","target":"current"}
+{"id":"hc04","utterance":"live jazz","context":"suggestions(rock shows)","intent":"events_search","target":"new"}
+{"id":"hc05","utterance":"add thai food","context":"plan(open)","intent":"plan_modify","target":"current"}
+{"id":"hc06","utterance":"thai food near me","context":"none","intent":"events_search","target":"new"}
+{"id":"hc07","utterance":"more","context":"suggestions(open)","intent":"events_modify","target":"current"}
+{"id":"hc08","utterance":"more","context":"plan(open)","intent":"plan_modify","target":"current"}
