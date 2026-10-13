@@ -91,6 +91,16 @@ actual suspend fun checkInstallReferrerForDeepLink(): String? {
         null
     } ?: return null
 
+    // Acquisition attribution rides the same one-shot read: any Play link with
+    // a `referrer` param passes utm_* pairs through (organic installs report
+    // utm_source=google-play). Must happen before the dl= early-return below —
+    // most campaign installs carry no deep link.
+    val utmSource = referrer.split("&")
+        .firstOrNull { it.startsWith("utm_source=") }
+        ?.removePrefix("utm_source=")
+        ?.let { runCatching { java.net.URLDecoder.decode(it, "UTF-8") }.getOrNull() }
+    live.localapp.local.feature.attribution.SignupAttribution.record(utmSource, referrer)
+
     // Referrer carries our deep link as `dl=/p/{token}` (URL-decoded by Play).
     // Other utm_* pairs may be appended; split and find ours.
     val dl = referrer.split("&")

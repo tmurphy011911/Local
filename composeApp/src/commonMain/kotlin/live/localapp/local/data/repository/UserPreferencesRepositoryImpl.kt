@@ -7,6 +7,7 @@ import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.query.Order
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import live.localapp.local.feature.attribution.SignupAttribution
 import live.localapp.local.domain.repository.CachedManualLocation
 import live.localapp.local.domain.repository.CachedRadiusFilter
 import live.localapp.local.domain.repository.ProfileStatus
@@ -58,6 +59,10 @@ private data class UserProfileDto(
     @SerialName("trial_ends_at") val trialEndsAt: String? = null,
     // Server-owned join timestamp (DEFAULT NOW()); read-only on the client.
     @SerialName("created_at") val createdAt: String? = null,
+    // Acquisition attribution, sent only on the initial insert (null on
+    // updates → omitted by encodeDefaults=false, so saves never clobber it).
+    @SerialName("signup_source") val signupSource: String? = null,
+    @SerialName("signup_referrer") val signupReferrer: String? = null,
 )
 
 @Serializable
@@ -139,9 +144,13 @@ class UserPreferencesRepositoryImpl(
                 }
             existingId
         } else {
-            // Insert new profile, get back the generated ID
+            // Insert new profile, get back the generated ID. Attribution is
+            // stamped only here (write-once; updates omit it via null default).
             val inserted = supabaseClient.from("user_profiles")
-                .insert(dto) {
+                .insert(dto.copy(
+                    signupSource = SignupAttribution.source(),
+                    signupReferrer = SignupAttribution.rawReferrer(),
+                )) {
                     select()
                 }
                 .decodeSingle<UpsertResult>()
@@ -365,8 +374,12 @@ class UserPreferencesRepositoryImpl(
             supabaseClient.from("user_profiles")
                 .update(dto) { filter { eq("id", id) } }
         } else {
+            // Attribution stamped only on the initial insert (write-once).
             supabaseClient.from("user_profiles")
-                .insert(dto) { select() }
+                .insert(dto.copy(
+                    signupSource = SignupAttribution.source(),
+                    signupReferrer = SignupAttribution.rawReferrer(),
+                )) { select() }
                 .decodeSingle<UpsertResult>()
         }
 

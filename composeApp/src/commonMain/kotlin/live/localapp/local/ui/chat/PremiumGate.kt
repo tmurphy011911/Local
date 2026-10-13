@@ -83,6 +83,30 @@ class PremiumGate {
         set(value) = settings.putBoolean(KEY_HAS_SEEN_PAYWALL, value)
 
     /**
+     * Number of app opens counted for the soft-paywall nudge. Incremented once
+     * per app launch (see [recordAppOpenForNudge]). Cleared on logout so the
+     * cadence is per-user. Opening events is free; this drives a periodic,
+     * dismissible paywall nudge instead of a hard gate.
+     */
+    var appOpenCount: Int
+        get() = settings.getInt(KEY_APP_OPEN_COUNT, 0)
+        private set(value) = settings.putInt(KEY_APP_OPEN_COUNT, value)
+
+    /**
+     * Count this app open and decide whether to surface the soft paywall nudge.
+     * Returns true when the user is NOT premium and this open lands on the
+     * [interval]th open (every 3rd by default, remotely tunable via the
+     * `paywall_nudge_interval` app_config key). Premium users and non-positive
+     * intervals never nudge. Call exactly once per launch.
+     */
+    fun recordAppOpenForNudge(interval: Int): Boolean {
+        val next = appOpenCount + 1
+        appOpenCount = next
+        if (isPremium || interval <= 0) return false
+        return next % interval == 0
+    }
+
+    /**
      * ISO local date (yyyy-MM-dd) on which the user last dismissed the home
      * trial-countdown banner, or empty if never. Dismissal only suppresses the
      * banner for that calendar day — it re-appears each new day. Only honored
@@ -154,6 +178,7 @@ class PremiumGate {
         settings.remove(KEY_HAS_SEEN_PAYWALL)
         settings.remove(KEY_TRIAL_BANNER_DISMISSED_ON)
         settings.remove(KEY_TRIAL_ENDS_AT)
+        settings.remove(KEY_APP_OPEN_COUNT)
     }
 
     companion object {
@@ -166,6 +191,7 @@ class PremiumGate {
         private const val KEY_REWARD_EXPIRY = "yocal_reward_expiry"
         private const val KEY_LAST_REWARDED_TIER = "yocal_last_rewarded_tier"
         private const val KEY_HAS_SEEN_PAYWALL = "yocal_has_seen_paywall"
+        private const val KEY_APP_OPEN_COUNT = "local_app_open_count"
         private const val KEY_TRIAL_BANNER_DISMISSED_ON = "local_trial_banner_dismissed_on"
         // Written by UserPreferencesRepositoryImpl.loadPreferences — keep the literal in sync.
         const val KEY_TRIAL_ENDS_AT = "local_trial_ends_at"

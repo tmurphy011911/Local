@@ -95,10 +95,10 @@ fun CreatePlanButton(
     Box(
         modifier = modifier
             .height(52.dp) // 48 face + 4 lip
-            // Full: pinned to the old "Create Plan" footprint so the shorter
-            // "Ask Bo" label doesn't shrink the pill. Compact (large fonts):
-            // icon-only square so the nav pill can reclaim the width.
-            .width(if (compact) 56.dp else 156.dp)
+            // Full: widened past the old "Create Plan" footprint to give "Ask Bo"
+            // more presence and let the 4-tab nav pill shrink a touch. Compact
+            // (large fonts): icon-only square so the nav pill can reclaim the width.
+            .width(if (compact) 56.dp else 176.dp)
             // Merge into one focusable node reading "Ask Bo" — keeps the button
             // labeled for screen readers when compact drops the visible text, and
             // avoids a double announce from the child Text in full mode.

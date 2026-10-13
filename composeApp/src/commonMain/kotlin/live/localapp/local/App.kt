@@ -465,6 +465,9 @@ fun App() {
                     showUpdateBanner = !updateBannerDismissed && versionResult?.status == live.localapp.local.domain.service.VersionStatus.UPDATE_AVAILABLE,
                     onDismissUpdateBanner = { updateBannerDismissed = true },
                     showTutorial = justOnboarded,
+                    // Null until the launch version-check resolves; the nudge waits
+                    // for it so a remotely-tuned cadence isn't missed on first open.
+                    paywallNudgeInterval = versionResult?.paywallNudgeInterval,
                 )
             }
         }

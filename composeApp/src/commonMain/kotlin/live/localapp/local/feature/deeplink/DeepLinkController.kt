@@ -13,6 +13,7 @@ import live.localapp.local.domain.model.Venue
 import live.localapp.local.domain.repository.EventRepository
 import live.localapp.local.domain.repository.PlanRepository
 import live.localapp.local.domain.repository.VenueRepository
+import live.localapp.local.feature.attribution.SignupAttribution
 import live.localapp.local.observability.Analytics
 import live.localapp.local.observability.AnalyticsEvent
 import live.localapp.local.platform.checkClipboardForDeepLink
@@ -94,8 +95,14 @@ class DeepLinkController(
         // we've successfully turned it into a payload so we don't re-open it.
         scope.launch {
             val deferred = checkInstallReferrerForDeepLink() ?: checkClipboardForDeepLink()
-            if (deferred != null && resolve(deferred)) {
-                clearClipboardDeepLink()
+            if (deferred != null) {
+                // A deferred link on a fresh install means this user arrived via
+                // a share — the only pre-signup signal iOS gives us. No-op if a
+                // stronger source (Play utm_*) was already recorded.
+                SignupAttribution.record("share-link")
+                if (resolve(deferred)) {
+                    clearClipboardDeepLink()
+                }
             }
         }
     }

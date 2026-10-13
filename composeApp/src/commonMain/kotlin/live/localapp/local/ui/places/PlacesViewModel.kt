@@ -122,6 +122,10 @@ data class PlacesUiState(
     val hasMore: Boolean = false,
     val eventCursor: String? = null,
     val eventsHasMore: Boolean = false,
+    // Server-reported totals for the CURRENT filters + location (not the loaded
+    // page size). Drive the map sheet's "{n} events / {n} places" count.
+    val eventsTotal: Int = 0,
+    val venuesTotal: Int = 0,
     // Window-limit fields kept for API compatibility with the existing screen,
     // but unused internally.
     val visibleLimit: Int = 50,
@@ -464,6 +468,7 @@ class PlacesViewModel(
                         venues = hit.page.items,
                         venueCursor = hit.page.cursor,
                         hasMore = hit.page.hasMore,
+                        venuesTotal = hit.page.total,
                         cityFacets = hit.page.cityFacets,
                         categoryFacets = hit.page.categoryFacets,
                         isLoading = false,
@@ -523,6 +528,7 @@ class PlacesViewModel(
                         venues = merged,
                         venueCursor = page.cursor,
                         hasMore = page.hasMore,
+                        venuesTotal = page.total,
                         // Facets are computed over the full scored list, so
                         // they're identical across pages — safe to set always.
                         cityFacets = page.cityFacets,
@@ -570,6 +576,7 @@ class PlacesViewModel(
                         events = hit.page.items,
                         eventCursor = hit.page.cursor,
                         eventsHasMore = hit.page.hasMore,
+                        eventsTotal = hit.page.total,
                         isEventsLoading = false,
                         error = null,
                     )
@@ -643,6 +650,7 @@ class PlacesViewModel(
                         events = merged,
                         eventCursor = page.cursor,
                         eventsHasMore = page.hasMore,
+                        eventsTotal = page.total,
                         isEventsLoading = false,
                         error = null,
                     )

@@ -14,6 +14,7 @@ import kotlinx.coroutines.launch
 import live.localapp.local.domain.repository.UserPreferencesRepository
 import live.localapp.local.observability.Analytics
 import live.localapp.local.observability.AnalyticsEvent
+import live.localapp.local.observability.MetaAppEvents
 
 enum class AuthStep { PHONE, OTP }
 
@@ -196,6 +197,11 @@ class PhoneAuthViewModel(
                 } else {
                     // New user: straight to onboarding (email step removed)
                     Analytics.track(AnalyticsEvent.signedUp(method = "phone_otp", entryPoint = "organic"))
+                    // Meta Ads conversion: fb_mobile_complete_registration.
+                    // Deliberately in the `else` (new user) branch only — the
+                    // `hasProfile` branch above is an existing user signing back
+                    // in, which is not a registration.
+                    MetaAppEvents.completeRegistration(method = "phone_otp")
                     _state.update {
                         it.copy(
                             isLoading = false,

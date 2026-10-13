@@ -19,7 +19,14 @@ data class VersionCheckResult(
     val status: VersionStatus,
     val message: String = "",
     val storeUrl: String = "",
+    // Soft-paywall nudge cadence: show the (dismissible) paywall every Nth app
+    // open for non-premium users. Read from the `paywall_nudge_interval`
+    // app_config key so it's tunable without a release; defaults to 3.
+    val paywallNudgeInterval: Int = DEFAULT_PAYWALL_NUDGE_INTERVAL,
 )
+
+/** Default nudge cadence when app_config is unavailable/unset. */
+const val DEFAULT_PAYWALL_NUDGE_INTERVAL = 3
 
 class VersionCheckService(
     private val supabaseClient: SupabaseClient,
@@ -40,7 +47,7 @@ class VersionCheckService(
             val configs = supabaseClient.from("app_config")
                 .select {
                     filter {
-                        isIn("key", listOf("min_version", "latest_version", "force_message"))
+                        isIn("key", listOf("min_version", "latest_version", "force_message", "paywall_nudge_interval"))
                     }
                 }
                 .decodeList<AppConfigRow>()
@@ -55,21 +62,25 @@ class VersionCheckService(
             val minVersion = configMap["min_version"] ?: "1.0"
             val latestVersion = configMap["latest_version"] ?: currentVersion
             val forceMessage = configMap["force_message"] ?: "Please update Local to continue."
+            // Positive int only; anything unparseable/≤0 falls back to the default
+            // (a 0/negative value would otherwise disable the nudge entirely).
+            val nudgeInterval = configMap["paywall_nudge_interval"]?.toIntOrNull()
+                ?.takeIf { it > 0 } ?: DEFAULT_PAYWALL_NUDGE_INTERVAL
 
             when {
                 compareVersions(currentVersion, minVersion) < 0 -> {
-                    VersionCheckResult(VersionStatus.FORCE_UPDATE, forceMessage)
+                    VersionCheckResult(VersionStatus.FORCE_UPDATE, forceMessage, paywallNudgeInterval = nudgeInterval)
                 }
                 compareVersions(currentVersion, latestVersion) < 0 -> {
-                    VersionCheckResult(VersionStatus.UPDATE_AVAILABLE, "A new version of Local is available.")
+                    VersionCheckResult(VersionStatus.UPDATE_AVAILABLE, "A new version of Local is available.", paywallNudgeInterval = nudgeInterval)
                 }
                 else -> {
-                    VersionCheckResult(VersionStatus.UP_TO_DATE)
+                    VersionCheckResult(VersionStatus.UP_TO_DATE, paywallNudgeInterval = nudgeInterval)
                 }
             }
         } catch (e: Throwable) {
             println("VersionCheck: error ${e.message}")
-            VersionCheckResult(VersionStatus.UP_TO_DATE) // Fail open
+            VersionCheckResult(VersionStatus.UP_TO_DATE) // Fail open (default nudge interval)
         }
     }
 

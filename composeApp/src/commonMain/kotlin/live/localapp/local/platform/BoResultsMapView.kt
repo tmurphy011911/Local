@@ -3,11 +3,14 @@ package live.localapp.local.platform
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import live.localapp.local.domain.model.Event
+import live.localapp.local.domain.repository.VenueWithMeta
 
 /**
  * One map pin = one venue (a distinct rounded coordinate). Multiple events at
  * the same venue collapse into a single pin whose [eventIds] the carousel
  * disambiguates — mirrors the iOS `pinGroups` behaviour in ChatView.swift.
+ * A pin carries [eventIds] when built from events and [venueIds] when built from
+ * venues; the caller resolves the tapped pin's ids back to a detail action.
  */
 data class MapPin(
     /** Stable id = the rounded "lat,lng" coordinate key. */
@@ -15,8 +18,35 @@ data class MapPin(
     val lat: Double,
     val lng: Double,
     /** All events (in tray order) that live at this venue. */
-    val eventIds: List<String>,
+    val eventIds: List<String> = emptyList(),
+    /** All venues at this coordinate (Places-tab map). */
+    val venueIds: List<String> = emptyList(),
 )
+
+/**
+ * Group hydrated venues into one pin per coordinate for the Places-tab map.
+ * Mirrors [venuePins] but keyed on the venue's own lat/lng; coordinate-less
+ * venues are dropped (they can't be placed).
+ */
+fun venuePinsFromVenues(venues: List<VenueWithMeta>): List<MapPin> {
+    fun round4(v: Double): Double = kotlin.math.round(v * 10_000.0) / 10_000.0
+    val byCoord = LinkedHashMap<String, MutableList<VenueWithMeta>>()
+    for (vm in venues) {
+        val lat = vm.venue.latitude ?: continue
+        val lng = vm.venue.longitude ?: continue
+        val key = "${round4(lat)},${round4(lng)}"
+        byCoord.getOrPut(key) { mutableListOf() }.add(vm)
+    }
+    return byCoord.map { (key, vms) ->
+        val first = vms.first().venue
+        MapPin(
+            id = key,
+            lat = first.latitude ?: 0.0,
+            lng = first.longitude ?: 0.0,
+            venueIds = vms.map { it.venue.id },
+        )
+    }
+}
 
 /**
  * Group a day/category group's hydrated events into one pin per venue.

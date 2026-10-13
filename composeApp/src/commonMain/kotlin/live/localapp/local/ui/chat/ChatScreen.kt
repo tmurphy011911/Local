@@ -388,10 +388,7 @@ fun ChatScreen(
     // Load event when slot is tapped
     LaunchedEffect(selectedEventId) {
         val id = selectedEventId ?: return@LaunchedEffect
-        // Gate 1 (from Bo results): non-premium users can't open an event detail.
-        var allowed = false
-        gate { allowed = true }
-        if (!allowed) { selectedEventId = null; return@LaunchedEffect }
+        // Opening an event detail from Bo results is free (soft nudge, not a gate).
         val event = viewModel.getEventById(id) ?: return@LaunchedEffect
         // If the DB event has no image, fall back to the slot's image (often a venue photo)
         selectedEvent = if (event.imageUrl == null) {

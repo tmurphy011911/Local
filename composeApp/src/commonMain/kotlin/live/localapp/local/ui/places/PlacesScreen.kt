@@ -55,6 +55,17 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Map
+import androidx.compose.foundation.layout.consumeWindowInsets
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
+import live.localapp.local.platform.MapPin
+import live.localapp.local.platform.ResultsMapInline
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.filled.Favorite
 import androidx.compose.material.icons.filled.Star
@@ -166,6 +177,15 @@ private fun gradientForCategory(cat: String?): Brush {
 @Composable
 fun PlacesScreen(
     viewModel: PlacesViewModel,
+    // When non-null, the screen is locked to this sub-view and its internal
+    // Events|Places sub-tab row is hidden — used when Events and Places are
+    // separate top-level bottom tabs (each passes its own forcedTab). Null keeps
+    // the legacy combined "Explore" behavior with the in-screen sub-tab row.
+    forcedTab: SearchTab? = null,
+    // Airbnb-style map+sheet: the map is the background and the list rides in a
+    // draggable sheet below the persistent header + filters. Reports "map active"
+    // (sheet collapsed to the peek) so the caller can hide the bottom nav.
+    onMapActiveChange: (Boolean) -> Unit = {},
     onProfileClick: () -> Unit = {},
     onLocationClick: () -> Unit = {},
     userInitial: String = "",
@@ -177,6 +197,12 @@ fun PlacesScreen(
     gate: ((() -> Unit) -> Unit) = { it() },
 ) {
     val state by viewModel.uiState.collectAsState()
+    // Lock the active sub-view to the bottom tab that hosts this screen. setActiveTab
+    // no-ops when already on that tab, so it never clobbers filters set via
+    // openEventsFiltered (Home "See All" deep-link into the Events tab).
+    if (forcedTab != null) {
+        LaunchedEffect(forcedTab) { viewModel.setActiveTab(forcedTab) }
+    }
     val homeViewModel = remember { KoinPlatform.getKoin().get<HomeViewModel>() }
     val homeState by homeViewModel.uiState.collectAsState()
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
@@ -218,24 +244,19 @@ fun PlacesScreen(
                 )
 
             // ── Events | Places sub-tab row ──
-            SearchSubTabRow(
-                active = state.activeTab,
-                onSelect = {
-                    if (it != state.activeTab) hapticSelection()
-                    viewModel.setActiveTab(it)
-                },
-            )
-
-            // ── Search bar — placeholder flips with active tab ──
-            Box(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
-                SearchBar(
-                    query = state.searchQuery,
-                    onQueryChange = { viewModel.setSearchQuery(it) },
-                    placeholder = searchPlaceholder(state.activeTab, cityLabel),
+            // Hidden when the tab is forced from the bottom nav (Events / Places are
+            // their own top-level tabs); shown only in the legacy combined mode.
+            if (forcedTab == null) {
+                SearchSubTabRow(
+                    active = state.activeTab,
+                    onSelect = {
+                        if (it != state.activeTab) hapticSelection()
+                        viewModel.setActiveTab(it)
+                    },
                 )
             }
- 
-            // ── Per-tab filter chips ──
+
+            // ── Per-tab filter chips (above the search bar) ──
             when (state.activeTab) {
                 SearchTab.EVENTS -> EventDateFilterRow(
                     selected = state.dateFilter,
@@ -264,7 +285,37 @@ fun PlacesScreen(
                 )
             }
 
-            // ── Content ──
+            // ── Search bar — placeholder flips with active tab ──
+            Box(modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp)) {
+                SearchBar(
+                    query = state.searchQuery,
+                    onQueryChange = { viewModel.setSearchQuery(it) },
+                    placeholder = searchPlaceholder(state.activeTab, cityLabel),
+                )
+            }
+
+            // ── Content: map background + draggable list sheet (Airbnb-style).
+            // The list below is the sheet's content; the map, "X events" peek,
+            // card carousel, and Map pill are drawn by MapSheetExperience. ──
+            MapSheetExperience(
+                modifier = Modifier.weight(1f).fillMaxWidth(),
+                isEvents = state.activeTab == SearchTab.EVENTS,
+                events = state.filteredEvents,
+                venues = state.filteredVenues,
+                favoriteEventIds = state.favoriteEventIds,
+                favoriteVenueIds = state.favoriteVenueIds,
+                onOpenEvent = { event -> focusManager.clearFocus(); onEventClick?.invoke(event, androidx.compose.ui.geometry.Rect.Zero) },  // opening an event is free (soft nudge, not a gate)
+                onOpenVenue = { venue ->
+                    focusManager.clearFocus()
+                    gate {
+                        if (onVenueClickWithBounds != null) onVenueClickWithBounds(venue, androidx.compose.ui.geometry.Rect.Zero)
+                        else viewModel.selectVenue(venue)
+                    }
+                },
+                onToggleEventFav = { event -> gate { viewModel.toggleEventFavorite(event.id, event.subcategory ?: event.category) } },
+                onToggleVenueFav = { venue -> gate { viewModel.toggleVenueFavorite(venue.venue.id, venue.primaryCategory) } },
+                onMapActiveChange = onMapActiveChange,
+            ) { sheetListState ->
             AppRefreshBox(
                 isRefreshing = state.isRefreshing,
                 onRefresh = { viewModel.refresh() },
@@ -333,6 +384,7 @@ fun PlacesScreen(
                                 searchQuery = state.searchQuery,
                                 onClearSearch = { viewModel.setSearchQuery("") },
                                 scrollResetKey = state.placeSort,
+                                listState = sheetListState,
                             )
                         }
                     }
@@ -362,9 +414,8 @@ fun PlacesScreen(
                                     // doesn't open behind a soft keyboard the
                                     // user left up after typing in the search.
                                     focusManager.clearFocus()
-                                    gate {  // gate 1: open event detail
-                                        onEventClick?.invoke(event, bounds)
-                                    }
+                                    // Opening an event is free (soft nudge, not a gate).
+                                    onEventClick?.invoke(event, bounds)
                                 },
                                 onFavoriteToggle = { event ->
                                     gate {  // gate 2: save an event
@@ -374,10 +425,12 @@ fun PlacesScreen(
                                 searchQuery = state.searchQuery,
                                 onClearSearch = { viewModel.setSearchQuery("") },
                                 scrollResetKey = Triple(state.dateFilter, state.customStart, state.customEnd),
+                                listState = sheetListState,
                             )
                         }
                     }
                 }
+            }
             }
         }
     }
@@ -1221,8 +1274,9 @@ private fun VenueGrid(
     /** When this changes, the list jumps to the top — pass the sort enum so
      *  switching sort doesn't strand the user mid-list. */
     scrollResetKey: Any? = null,
+    // Hoistable so the map sheet can watch scroll direction (Map-pill hide).
+    listState: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(),
 ) {
-    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     LaunchedEffect(scrollResetKey) {
         if (scrollResetKey != null) listState.scrollToItem(0)
     }
@@ -2430,8 +2484,9 @@ private fun EventGrid(
     /** When this changes, the list jumps to the top — pass the date filter
      *  so switching filters doesn't strand the user mid-list. */
     scrollResetKey: Any? = null,
+    // Hoistable so the map sheet can watch scroll direction (Map-pill hide).
+    listState: androidx.compose.foundation.lazy.LazyListState = androidx.compose.foundation.lazy.rememberLazyListState(),
 ) {
-    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
     LaunchedEffect(scrollResetKey) {
         if (scrollResetKey != null) listState.scrollToItem(0)
     }
@@ -2688,11 +2743,17 @@ private fun EventRowCard(
             .testTag("explore_event_card"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Thumbnail — flush to card edge (top/left/bottom), full card height
+        // Thumbnail — fixed 92×92 tile, top-aligned and flush to the card's
+        // top-left. Must be a FIXED height, not fillMaxHeight: the row is
+        // heightIn(min = 92.dp) (unbounded max, so text can grow without
+        // clipping — see e5268ae), and under an unbounded max, fillMaxHeight
+        // let the AsyncImage's own dimensions drive the row height, so every
+        // card sized to its image (uneven list, some cards ballooning). Pinning
+        // the tile decouples image size from card height → uniform thumbnails.
         Box(
             modifier = Modifier
-                .width(92.dp)
-                .fillMaxHeight()
+                .align(Alignment.Top)
+                .size(92.dp)
                 .onGloballyPositioned { imageBounds = it.boundsInRoot() }
                 .background(gradientForCategory(event.subcategory ?: event.category)),
             contentAlignment = Alignment.Center,
@@ -2848,4 +2909,203 @@ private fun distanceLabel(
     val miles = live.localapp.local.domain.model.distanceMiles(userLat, userLng, lat, lng)
     if (miles <= 0.0 || miles > 500.0) return ""
     return if (miles < 1.0) "<1 mi" else "${miles.toInt()} mi"
+}
+
+// ─── Inline results map (rendered below the filters, not a separate screen) ──
+
+private data class MapItem(
+    val id: String,
+    val lat: Double,
+    val lng: Double,
+    val title: String,
+    val subtitle: String,
+    val imageUrl: String?,
+    val event: live.localapp.local.domain.model.Event? = null,
+    val venue: VenueWithMeta? = null,
+)
+
+@OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
+@Composable
+private fun MapSheetExperience(
+    modifier: Modifier,
+    isEvents: Boolean,
+    events: List<live.localapp.local.domain.model.Event>,
+    venues: List<VenueWithMeta>,
+    favoriteEventIds: Set<String>,
+    favoriteVenueIds: Set<String>,
+    onOpenEvent: (live.localapp.local.domain.model.Event) -> Unit,
+    onOpenVenue: (VenueWithMeta) -> Unit,
+    onToggleEventFav: (live.localapp.local.domain.model.Event) -> Unit,
+    onToggleVenueFav: (VenueWithMeta) -> Unit,
+    onMapActiveChange: (Boolean) -> Unit,
+    // Receives the hoisted list scroll state so the list uses it (and we can watch
+    // scroll direction to hide/show the Map pill).
+    listContent: @Composable androidx.compose.foundation.layout.ColumnScope.(androidx.compose.foundation.lazy.LazyListState) -> Unit,
+) {
+    // One item (and one pin) per result so pin <-> card stays 1:1.
+    val items = remember(isEvents, events, venues) {
+        if (isEvents) {
+            events.mapNotNull { e ->
+                val lat = e.venueLat ?: e.eventLat
+                val lng = e.venueLng ?: e.eventLng
+                if (lat != null && lng != null)
+                    MapItem(e.id, lat, lng, e.title, e.venueName ?: e.venueCity ?: "", e.imageUrl, event = e)
+                else null
+            }
+        } else {
+            venues.mapNotNull { vm ->
+                val v = vm.venue
+                val lat = v.latitude
+                val lng = v.longitude
+                if (lat != null && lng != null)
+                    MapItem(v.id, lat, lng, v.name, v.category ?: v.city ?: "", v.photoUrl ?: v.imageUrl, venue = vm)
+                else null
+            }
+        }
+    }
+    val pins = remember(items) { items.map { MapPin(id = it.id, lat = it.lat, lng = it.lng, eventIds = listOf(it.id)) } }
+    val scope = rememberCoroutineScope()
+    val pagerState = rememberPagerState(pageCount = { items.size })
+    val sheetState = androidx.compose.material3.rememberStandardBottomSheetState(
+        initialValue = androidx.compose.material3.SheetValue.Expanded,
+        skipHiddenState = true,
+    )
+    val scaffoldState = androidx.compose.material3.rememberBottomSheetScaffoldState(bottomSheetState = sheetState)
+    // targetValue (not currentValue) so the nav + Map pill start moving the moment
+    // the sheet starts animating — otherwise they lag ~0.5s until the sheet settles.
+    val collapsed = sheetState.targetValue == androidx.compose.material3.SheetValue.PartiallyExpanded
+    LaunchedEffect(collapsed) { onMapActiveChange(collapsed) }
+
+    // Hoisted list scroll state (passed into the list) → drives Map-pill hide.
+    // The pill hides the moment the user scrolls DOWN and STAYS hidden after the
+    // scroll settles; it only returns when the user scrolls up or reaches the top.
+    val listState = androidx.compose.foundation.lazy.rememberLazyListState()
+    var pillVisible by androidx.compose.runtime.remember { androidx.compose.runtime.mutableStateOf(true) }
+    androidx.compose.runtime.LaunchedEffect(listState) {
+        var prevIndex = listState.firstVisibleItemIndex
+        var prevOffset = listState.firstVisibleItemScrollOffset
+        androidx.compose.runtime.snapshotFlow {
+            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+        }.collect { (index, offset) ->
+            val atTop = index == 0 && offset == 0
+            val scrolledUp = index < prevIndex || (index == prevIndex && offset < prevOffset)
+            val scrolledDown = index > prevIndex || (index == prevIndex && offset > prevOffset)
+            when {
+                atTop || scrolledUp -> pillVisible = true
+                scrolledDown -> pillVisible = false
+            }
+            prevIndex = index
+            prevOffset = offset
+        }
+    }
+    val focusedId = items.getOrNull(pagerState.currentPage)?.id
+
+    // Collapsed peek shows the grab handle PLUS a slice of the list (its first row),
+    // so the list never fully disappears and the user always sees they can pull it
+    // back up. The swipeable card row floats just above this peek.
+    val peekHeight = 104.dp
+
+    Box(
+        modifier = modifier
+            .background(AppColors.Snow)
+            // The scaffold reserves a TOP safe-area inset the expanded sheet won't
+            // cover, leaving a thin map band under the search bar; consume just the
+            // status bar so the expanded sheet reaches flush ("morphs into" the top
+            // bar). We keep the navigation-bar inset so the Map pill can clear the
+            // bottom nav.
+            .consumeWindowInsets(WindowInsets.statusBars),
+    ) {
+        androidx.compose.material3.BottomSheetScaffold(
+            scaffoldState = scaffoldState,
+            // Peek = grab handle + a slice of the list so it's always discoverable.
+            sheetPeekHeight = peekHeight,
+            sheetContainerColor = AppColors.White,
+            // Flat top so a fully-expanded sheet reads as a continuation of the
+            // top bar (no rounded-corner map peek). Airbnb-style "morph".
+            sheetShape = androidx.compose.foundation.shape.RoundedCornerShape(topStart = 0.dp, topEnd = 0.dp),
+            sheetShadowElevation = 16.dp,
+            sheetDragHandle = {
+                // Just a grab handle — the result count is intentionally not shown.
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 12.dp),
+                ) {
+                    Box(Modifier.width(36.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(AppColors.Mist))
+                }
+            },
+            sheetContent = { listContent(listState) },
+        ) {
+            // Map background + the swipeable card row. The carousel lives INSIDE
+            // the sheet's body (behind the sheet), so as the sheet is dragged up
+            // it slides over the cards instead of the cards floating in front.
+            // It floats just above the collapsed peek.
+            Box(Modifier.fillMaxSize()) {
+                ResultsMapInline(
+                    pins = pins,
+                    focusedPinId = focusedId,
+                    onPinTap = { pinId ->
+                        val idx = items.indexOfFirst { it.id == pinId }
+                        if (idx >= 0) scope.launch { pagerState.animateScrollToPage(idx) }
+                    },
+                    modifier = Modifier.fillMaxSize(),
+                )
+                if (items.isNotEmpty()) {
+                    HorizontalPager(
+                        state = pagerState,
+                        modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(bottom = peekHeight + 12.dp),
+                        pageSpacing = 12.dp,
+                        contentPadding = PaddingValues(start = 16.dp, end = 48.dp),
+                    ) { page ->
+                        val item = items[page]
+                        val event = item.event
+                        val venue = item.venue
+                        if (event != null) {
+                            EventRowCard(
+                                event = event,
+                                isFavorited = event.id in favoriteEventIds,
+                                onClick = { _ -> onOpenEvent(event) },
+                                onFavoriteToggle = { onToggleEventFav(event) },
+                            )
+                        } else if (venue != null) {
+                            VenueCard(
+                                vm = venue,
+                                isFavorited = venue.venue.id in favoriteVenueIds,
+                                onClick = { _ -> onOpenVenue(venue) },
+                                onFavoriteToggle = { onToggleVenueFav(venue) },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Expanded (list up): "Map" pill floats above the bottom nav — tapping it
+        // collapses the sheet to reveal the map. windowInsetsPadding(navigationBars)
+        // + bottom padding keeps it clear of (and above) the tab bar; it fades in/out
+        // smoothly with the nav rather than popping.
+        androidx.compose.animation.AnimatedVisibility(
+            visible = !collapsed && pillVisible,
+            modifier = Modifier.align(Alignment.BottomCenter),
+            enter = androidx.compose.animation.fadeIn() + androidx.compose.animation.slideInVertically { it },
+            exit = androidx.compose.animation.fadeOut() + androidx.compose.animation.slideOutVertically { it },
+        ) {
+            Row(
+                modifier = Modifier
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(bottom = 64.dp)
+                    .shadow(8.dp, RoundedCornerShape(24.dp))
+                    .background(AppColors.Ink, RoundedCornerShape(24.dp))
+                    .pressable(onClick = { scope.launch { sheetState.partialExpand() } })
+                    .padding(horizontal = 18.dp, vertical = 11.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(7.dp),
+            ) {
+                Text(
+                    "Map",
+                    style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.Bold, fontSize = 14.sp, color = AppColors.White),
+                )
+                Icon(Icons.Outlined.Map, contentDescription = "Show map", tint = AppColors.White, modifier = Modifier.size(18.dp))
+            }
+        }
+    }
 }

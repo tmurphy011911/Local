@@ -8,30 +8,34 @@ import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.LocalOverscrollFactory
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
+import androidx.compose.material3.pulltorefresh.pullToRefresh
+import androidx.compose.material3.pulltorefresh.rememberPullToRefreshState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.unit.IntOffset
-import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import live.localapp.local.Config
@@ -43,7 +47,6 @@ import live.localapp.local.platform.isReduceMotionEnabled
 import live.localapp.local.ui.character.Bo
 import live.localapp.local.ui.character.BoExpression
 import kotlin.math.PI
-import kotlin.math.roundToInt
 import kotlin.math.sin
 
 /**
@@ -52,9 +55,6 @@ import kotlin.math.sin
  * otherwise it falls back to the stock Material3 spinner. The `content` keeps
  * the same `BoxScope` receiver as `PullToRefreshBox`, so a call site only swaps
  * the function name.
- *
- * @param refreshFailed forwarded to [BoRefreshControl] to pick the settle
- *   haptic; ignored by the spinner fallback.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -86,30 +86,32 @@ fun AppRefreshBox(
 
 /**
  * Bo pull-to-refresh — the coral-mascot loading indicator that replaces the
- * generic Material3 spinner on the app's top-level feeds. See the "Bo
- * Pull-to-Refresh" developer spec; this is the single shared control every
- * feed reuses, differing only in its [onRefresh] callback.
+ * generic Material3 spinner on the app's top-level feeds.
  *
- * State machine: idle → pulling → ready → refreshing → settle → idle, with a
- * snap-back branch when released below the trigger threshold. Bo holds still
- * while the finger drags (only fading in + scaling up), and only starts his
- * squish/float bounce loop once a refresh actually fires on release.
+ * BEHAVIOR (Reddit / SwipeRefreshLayout style): the feed CONTENT is pushed DOWN
+ * as the user pulls, and Bo sits in the revealed gap at the top. Content locks
+ * ~104dp down while refreshing (Bo bouncing in the gap) and slides back up on
+ * finish. This is deliberately NOT an overlay — product wants the content to
+ * move.
  *
- * The gesture is hand-rolled over [NestedScrollConnection] so it (a) arms only
- * when the inner scroll container is already at the top — leftover downward
- * scroll bubbles up here exactly then — and (b) matches the prototype physics
- * precisely: 0.5 rubber-band resistance, 72dp trigger threshold, 104dp locked
- * tray, and a once-per-drag threshold haptic latch that Material3's control
- * can't express.
+ * ARCHITECTURE: Material3's own [pullToRefresh] modifier owns the entire gesture
+ * — arming only at scroll-top, the 0.5 drag multiplier (== the spec's rubber-band
+ * resistance), the 72dp threshold, snap-back below threshold, and distance-based
+ * (not velocity-based) release. We write NO nested-scroll code. The content push
+ * is a single VISUAL graphicsLayer translation driven off [PullToRefreshState].
+ * distanceFraction + one lock animator — it never consumes scroll and Material3
+ * doesn't block scrolling during a refresh, so the feed still scrolls 1:1 while
+ * pushed down (this is what the old hand-rolled version got wrong).
  *
- * @param isRefreshing driven by the screen's ViewModel; the tray stays up
- *   until this clears AND the [MIN_DISPLAY_MS] floor has elapsed, so the bounce
- *   always reads even when the fetch is faster.
- * @param onRefresh fires the real data-fetch on release past threshold. This is
- *   the whole point — the gesture must actually refetch, not just animate.
- * @param refreshFailed picks the settle haptic (error vs. success). The result
- *   toast + NEW ribbons are owned by the screen, not this control.
+ * A thin coordinator adds the three things Material3 can't express: the
+ * once-per-drag threshold haptic, the [MIN_DISPLAY_MS] floor (via a derived
+ * `held` flag fed back into the engine), and the release bounce.
+ *
+ * Empty/short feeds must still be a scrollable container (a `LazyColumn` with a
+ * `fillParentMaxSize` item, or `verticalScroll`) — any pull-to-refresh needs a
+ * scrolling child to arm.
  */
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun BoRefreshControl(
     isRefreshing: Boolean,
@@ -119,193 +121,155 @@ fun BoRefreshControl(
     enabled: Boolean = true,
     content: @Composable () -> Unit,
 ) {
-    val density = LocalDensity.current
-    val thresholdPx = with(density) { TRIGGER_THRESHOLD.dp.toPx() }
-    val maxPullPx = with(density) { MAX_PULL.dp.toPx() }
-    val lockedPx = with(density) { LOCKED_HEIGHT.dp.toPx() }
-    val opacityDivPx = with(density) { OPACITY_DIVISOR.dp.toPx() }
     val reduceMotion = remember { isReduceMotionEnabled() }
+    val state = rememberPullToRefreshState()
 
-    var phase by remember { mutableStateOf(Phase.Idle) }
-    // Raw finger travel past the top; display pull = overscroll * resistance.
-    var overscrollPx by remember { mutableStateOf(0f) }
-    var latched by remember { mutableStateOf(false) }
-    var minDisplayDone by remember { mutableStateOf(false) }
+    // ── Coordinator ─────────────────────────────────────────────────────────
+    // Min-display floor: hold the indicator up until BOTH the real fetch clears
+    // AND the floor elapses. `held` is what we feed the engine as "isRefreshing",
+    // so Material3 keeps distanceFraction anchored (≈1) meanwhile.
+    var floorElapsed by remember { mutableStateOf(true) }
+    val held = isRefreshing || !floorElapsed
 
-    val pullPx = (overscrollPx * PULL_RESISTANCE).coerceIn(0f, maxPullPx)
-    // Animatable that owns the tray height for every non-drag transition
-    // (lock at 104, snap-back to 0, post-fetch collapse).
-    val trayAnim = remember { Animatable(0f) }
-
-    val trayHeightPx = when (phase) {
-        Phase.Pulling, Phase.Ready -> pullPx
-        Phase.Idle -> 0f
-        else -> trayAnim.value // Refreshing / SnapBack / Settling
+    val wrappedOnRefresh: () -> Unit = {
+        floorElapsed = false     // start the min-display floor
+        hapticImpactLight()      // release-triggers-refresh cue
+        onRefresh()              // the real fetch
     }
 
-    val connection = remember(enabled, thresholdPx, maxPullPx) {
+    LaunchedEffect(held) {
+        if (held && !floorElapsed) {
+            delay(MIN_DISPLAY_MS)
+            floorElapsed = true
+        }
+    }
+
+    // Threshold cue: fire ONCE when the pull first crosses the line, re-arm only
+    // after it returns near zero (a new drag). Suppressed while refreshing.
+    LaunchedEffect(state) {
+        var latched = false
+        snapshotFlow { state.distanceFraction }.collect { f ->
+            if (f >= 1f && !latched && !held) {
+                hapticImpactMedium()
+                latched = true
+            }
+            if (f <= 0.05f) latched = false
+        }
+    }
+
+    // Settle cue on the falling edge of `held`.
+    var wasHeld by remember { mutableStateOf(false) }
+    LaunchedEffect(held) {
+        if (wasHeld && !held) {
+            if (refreshFailed) hapticNotifyError() else hapticNotifySuccess()
+        }
+        wasHeld = held
+    }
+
+    // Lock owns the gap once a refresh fires. On release we SEED it to the
+    // release position (so the content settles monotonically down to 104 with no
+    // dip — the old `max()` of a falling distanceFraction and a rising lock is
+    // what caused the release bounce on iOS), then ramp to the 104dp rest; on
+    // finish it slides back to 0. While lock is engaged the gap is driven purely
+    // by lock, so Material3's distanceFraction settle can't cross it.
+    val lock = remember { Animatable(0f) }
+    // Scroll-to-dismiss: once the tray is up, the first scroll into the feed
+    // animates it away into the top. We only OBSERVE the scroll (return Zero,
+    // never consume), so the list scrolls 1:1, Material3's gesture is untouched,
+    // and a later pull re-arms normally — the consuming version broke exactly
+    // that. `dismissAway` 0→1 folds the gap closed independently of `lock`.
+    var dismissed by remember { mutableStateOf(false) }
+    val dismissAway = remember { Animatable(0f) }
+    LaunchedEffect(held) {
+        if (held) {
+            dismissed = false
+            dismissAway.snapTo(0f)
+            val releaseFrac = (state.distanceFraction.coerceAtLeast(0f) * TRIGGER_THRESHOLD / LOCKED_HEIGHT)
+                .coerceIn(0f, 1f)
+            lock.snapTo(releaseFrac.coerceAtLeast(0.0001f)) // >0 so the gap switches to the lock term
+            lock.animateTo(1f, tween(LOCK_MS, easing = LinearEasing))
+        } else {
+            lock.animateTo(0f, tween(COLLAPSE_MS, easing = CollapseEasing))
+            dismissed = false
+            dismissAway.snapTo(0f)
+        }
+    }
+    LaunchedEffect(dismissed) {
+        if (dismissed) dismissAway.animateTo(1f, tween(DISMISS_MS, easing = CollapseEasing))
+    }
+
+    val heldState = rememberUpdatedState(held)
+    val dismissObserver = remember {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (!enabled) return Offset.Zero
-                // Consume upward drag into shrinking an existing pull before the
-                // list itself scrolls, so releasing the pull feels 1:1.
-                if (source == NestedScrollSource.Drag && available.y < 0 && overscrollPx > 0f &&
-                    (phase == Phase.Pulling || phase == Phase.Ready)
-                ) {
-                    val consume = (-available.y).coerceAtMost(overscrollPx)
-                    overscrollPx -= consume
-                    updateDragPhase(
-                        pullPx = (overscrollPx * PULL_RESISTANCE).coerceIn(0f, maxPullPx),
-                        thresholdPx = thresholdPx,
-                        setPhase = { phase = it },
-                        latched = latched,
-                        onLatch = { latched = true },
-                    )
-                    return Offset(0f, -consume)
+                if (heldState.value && source == NestedScrollSource.Drag && available.y < 0f) {
+                    dismissed = true
                 }
-                return Offset.Zero
-            }
-
-            override fun onPostScroll(
-                consumed: Offset,
-                available: Offset,
-                source: NestedScrollSource,
-            ): Offset {
-                if (!enabled) return Offset.Zero
-                // Downward scroll the child didn't use => the list is at the top
-                // and the user is pulling. Accumulate it as overscroll.
-                if (source == NestedScrollSource.Drag && available.y > 0f &&
-                    phase != Phase.Refreshing && phase != Phase.Settling
-                ) {
-                    overscrollPx = (overscrollPx + available.y)
-                        .coerceAtMost(maxPullPx / PULL_RESISTANCE)
-                    updateDragPhase(
-                        pullPx = (overscrollPx * PULL_RESISTANCE).coerceIn(0f, maxPullPx),
-                        thresholdPx = thresholdPx,
-                        setPhase = { phase = it },
-                        latched = latched,
-                        onLatch = { latched = true },
-                    )
-                    return Offset(0f, available.y)
-                }
-                return Offset.Zero
-            }
-
-            override suspend fun onPreFling(available: Velocity): Velocity {
-                // Drag ended (fires even at zero velocity) — decide the release.
-                if (!enabled || overscrollPx <= 0f) return Velocity.Zero
-                val released = (overscrollPx * PULL_RESISTANCE).coerceIn(0f, maxPullPx)
-                // Clear the raw pull immediately on release. Otherwise it lingers
-                // at its full value all through the refresh, and any drag handling
-                // that reads overscrollPx sees a stale non-zero pull.
-                overscrollPx = 0f
-                latched = false
-                // Seed the tray animator to the current pull BEFORE switching
-                // phase, so the frame that first reads trayAnim.value (instead of
-                // pullPx) already holds the release position — otherwise the tray
-                // snaps to a stale value for one frame and the content jitters.
-                return if (released >= thresholdPx) {
-                    hapticImpactLight()
-                    trayAnim.snapTo(released)
-                    phase = Phase.Refreshing
-                    onRefresh()
-                    available // consume so the list doesn't fling
-                } else if (released > 0f) {
-                    trayAnim.snapTo(released)
-                    phase = Phase.SnapBack
-                    available
-                } else {
-                    Velocity.Zero
-                }
+                return Offset.Zero // observe only — never consume
             }
         }
     }
 
-    // Tray height transitions for every non-drag phase.
-    LaunchedEffect(phase) {
-        when (phase) {
-            Phase.Refreshing -> {
-                // trayAnim already seeded to the release position in onPreFling.
-                trayAnim.animateTo(lockedPx, tween(LOCK_MS, easing = LinearEasing))
-            }
-            Phase.SnapBack -> {
-                // trayAnim already seeded to the release position in onPreFling.
-                trayAnim.animateTo(0f, tween(COLLAPSE_MS, easing = CollapseEasing))
-                overscrollPx = 0f
-                phase = Phase.Idle
-            }
-            Phase.Settling -> {
-                trayAnim.animateTo(0f, tween(COLLAPSE_MS, easing = CollapseEasing))
-                overscrollPx = 0f
-                phase = Phase.Idle
-            }
-            Phase.Idle -> {
-                overscrollPx = 0f
-                latched = false
-                trayAnim.snapTo(0f)
-            }
-            else -> {}
+    // Revealed gap / content-push distance, in px. Single source of truth: track
+    // the finger via distanceFraction while idle; once lock engages (release →
+    // refresh) it owns the gap, folded closed by any scroll-dismiss.
+    // (Read inside graphicsLayer lambdas → deferred, no recomposition storm.)
+    fun androidx.compose.ui.graphics.GraphicsLayerScope.gapPx(): Float {
+        return if (lock.value > 0f) {
+            lock.value * LOCKED_HEIGHT.dp.toPx() * (1f - dismissAway.value)
+        } else {
+            state.distanceFraction.coerceAtLeast(0f) * TRIGGER_THRESHOLD.dp.toPx()
         }
     }
 
-    // Min-display floor: keep Bo up for at least MIN_DISPLAY_MS after a refresh
-    // starts so the bounce reads even when the fetch resolves instantly.
-    LaunchedEffect(phase) {
-        if (phase == Phase.Refreshing) {
-            minDisplayDone = false
-            delay(MIN_DISPLAY_MS)
-            minDisplayDone = true
-        }
-    }
-    // Settle once the fetch is done AND the floor has passed.
-    LaunchedEffect(phase, isRefreshing, minDisplayDone) {
-        if (phase == Phase.Refreshing && minDisplayDone && !isRefreshing) {
-            if (refreshFailed) hapticNotifyError() else hapticNotifySuccess()
-            phase = Phase.Settling
-        }
-    }
-
-    Box(modifier.nestedScroll(connection)) {
-        // Content, pushed down by the live tray height.
+    // ── Layout ──────────────────────────────────────────────────────────────
+    Box(
+        modifier = modifier
+            // Observe-only: while refreshing, the first scroll dismisses the tray
+            // (animates it away). Never consumes, so scrolling stays 1:1.
+            .nestedScroll(dismissObserver)
+            .pullToRefresh(
+                isRefreshing = held,
+                state = state,
+                enabled = enabled,
+                threshold = TRIGGER_THRESHOLD.dp,
+                onRefresh = wrappedOnRefresh,
+            )
+            .clipToBounds(), // content pushed past the bottom edge is clipped
+    ) {
+        // CONTENT — pushed DOWN by the gap (Reddit-style). Purely visual; the
+        // LazyColumn's scroll + Material3's gesture are untouched. Overscroll
+        // factory nulled so the feed's own top stretch can't fight the pull.
         Box(
             Modifier
                 .fillMaxSize()
-                .offset { IntOffset(0, trayHeightPx.roundToInt()) },
+                .graphicsLayer { translationY = gapPx() },
         ) {
-            content()
+            CompositionLocalProvider(LocalOverscrollFactory provides null) {
+                content()
+            }
         }
-        // The Bo tray, occupying the exposed strip at the top.
-        BoRefreshTray(
-            phase = phase,
-            trayHeightPx = trayHeightPx,
-            pullPx = pullPx,
-            thresholdPx = thresholdPx,
-            lockedPx = lockedPx,
-            opacityDivPx = opacityDivPx,
+
+        // Bo — centered in the revealed gap at the top.
+        BoRefreshIndicator(
+            gapPx = { gapPx() },
+            distanceFraction = { state.distanceFraction },
+            held = held,
             reduceMotion = reduceMotion,
-            density = density,
             modifier = Modifier.align(Alignment.TopCenter),
         )
     }
 }
 
-/** The coral Bo indicator drawn in the exposed tray strip. */
+/** Coral Bo, centered in the revealed pull-to-refresh gap at the top. */
 @Composable
-private fun BoRefreshTray(
-    phase: Phase,
-    trayHeightPx: Float,
-    pullPx: Float,
-    thresholdPx: Float,
-    lockedPx: Float,
-    opacityDivPx: Float,
+private fun BoRefreshIndicator(
+    gapPx: androidx.compose.ui.graphics.GraphicsLayerScope.() -> Float,
+    distanceFraction: () -> Float,
+    held: Boolean,
     reduceMotion: Boolean,
-    density: androidx.compose.ui.unit.Density,
     modifier: Modifier = Modifier,
 ) {
-    if (trayHeightPx <= 0.5f) return
-    val trayHeightDp = with(density) { trayHeightPx.toDp() }
-
-    // Refreshing bounce loop — squish (scaleX/scaleY wobble) + vertical float.
     val bounce = rememberInfiniteTransition(label = "bo-ptr-bounce")
     val bouncePhase by bounce.animateFloat(
         initialValue = 0f,
@@ -317,99 +281,54 @@ private fun BoRefreshTray(
         label = "bo-ptr-bounce-phase",
     )
 
-    val boAlpha: Float
-    var boScale = 1f
-    var squishX = 1f
-    var squishY = 1f
-    var floatDy = 0f
-
-    when (phase) {
-        Phase.Pulling, Phase.Ready -> {
-            boAlpha = if (reduceMotion) 1f else (pullPx / opacityDivPx).coerceIn(0f, 1f)
-            boScale = if (reduceMotion) 1f else (0.5f + 0.5f * (pullPx / thresholdPx)).coerceIn(0.5f, 1f)
-        }
-        Phase.Refreshing -> {
-            boAlpha = 1f
-            if (!reduceMotion) {
-                val s = sin(bouncePhase * 2f * PI.toFloat())
-                squishX = 1f + BOUNCE_SQUISH * s
-                squishY = 1f - BOUNCE_SQUISH * s
-                floatDy = -BOUNCE_FLOAT_PX * ((sin(bouncePhase * 2f * PI.toFloat()) + 1f) / 2f)
-            }
-        }
-        Phase.SnapBack, Phase.Settling -> {
-            // Shrink away with the collapsing tray.
-            val k = (trayHeightPx / lockedPx).coerceIn(0f, 1f)
-            boAlpha = if (reduceMotion) k else (trayHeightPx / thresholdPx).coerceIn(0f, 1f)
-            boScale = if (reduceMotion) 1f else k
-        }
-        Phase.Idle -> boAlpha = 0f
-    }
-
-    Box(
-        modifier = modifier
-            .fillMaxWidth()
-            .height(trayHeightDp),
-        contentAlignment = Alignment.BottomCenter,
-    ) {
+    Box(modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
         Bo(
             size = BO_SIZE.dp,
-            expression = if (phase == Phase.Refreshing) BoExpression.Happy else BoExpression.Default,
+            expression = if (held) BoExpression.Happy else BoExpression.Default,
             showSparkles = false,
             showShadow = false,
             modifier = Modifier.graphicsLayer {
-                alpha = boAlpha
-                scaleX = boScale * squishX
-                scaleY = boScale * squishY
-                translationY = floatDy
-                // Pivot at the bottom so the squish reads as landing weight.
-                transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0.5f, 1f)
+                val gap = gapPx()
+                val f = distanceFraction().coerceAtLeast(0f)
+                val boPx = BO_SIZE.dp.toPx()
+
+                val bouncing = held && !reduceMotion
+                val floatPx = if (bouncing) {
+                    -BOUNCE_FLOAT.dp.toPx() * ((sin(bouncePhase * TWO_PI) + 1f) / 2f)
+                } else 0f
+                // Center Bo vertically in the 0..gap strip.
+                translationY = gap / 2f - boPx / 2f + floatPx
+
+                alpha = if (held) {
+                    // Full while the tray is up; fades out as it scrolls away.
+                    (gap / (LOCKED_HEIGHT * 0.5f).dp.toPx()).coerceIn(0f, 1f)
+                } else {
+                    (f * TRIGGER_THRESHOLD.dp.toPx() / OPACITY_DIVISOR.dp.toPx()).coerceIn(0f, 1f)
+                }
+
+                val base = if (reduceMotion || held) 1f else (0.5f + 0.5f * f).coerceIn(0.5f, 1f)
+                val squish = if (bouncing) BOUNCE_SQUISH * sin(bouncePhase * TWO_PI) else 0f
+                scaleX = base * (1f + squish)
+                scaleY = base * (1f - squish)
+                transformOrigin = TransformOrigin(0.5f, 0.5f)
             },
         )
     }
 }
 
-private enum class Phase { Idle, Pulling, Ready, Refreshing, SnapBack, Settling }
-
-/**
- * Recompute the drag-phase (pulling vs. ready) from the current pull and fire
- * the threshold haptic exactly once per drag on the first crossing. The latch
- * is only reset on release/idle — dipping back below the line mid-drag never
- * re-fires (spec: "do not repeat while the finger hovers around the line").
- */
-private inline fun updateDragPhase(
-    pullPx: Float,
-    thresholdPx: Float,
-    setPhase: (Phase) -> Unit,
-    latched: Boolean,
-    onLatch: () -> Unit,
-) {
-    when {
-        pullPx >= thresholdPx -> {
-            setPhase(Phase.Ready)
-            if (!latched) {
-                hapticImpactMedium()
-                onLatch()
-            }
-        }
-        pullPx > 0f -> setPhase(Phase.Pulling)
-        else -> setPhase(Phase.Idle)
-    }
-}
-
 // ── Physics & timing (from the prototype) ─────────────────────────────────────
-private const val PULL_RESISTANCE = 0.5f   // rubber-band; halves finger travel
-private const val MAX_PULL = 132f          // hard cap while dragging (dp)
-private const val TRIGGER_THRESHOLD = 72f  // release >= this => refresh (dp)
-private const val LOCKED_HEIGHT = 104f     // tray height during load (dp)
-private const val OPACITY_DIVISOR = 26f    // Bo fades in over the first ~26dp of pull (converted to px)
-private const val BO_SIZE = 44f            // Bo canvas size (dp)
+private const val TRIGGER_THRESHOLD = 72f  // dp — distanceFraction == 1.0 here
+private const val LOCKED_HEIGHT = 104f     // dp — content push / gap while refreshing
+private const val OPACITY_DIVISOR = 26f    // dp — Bo fades in over first ~26dp of pull
+private const val BO_SIZE = 44f            // dp
 
 private const val MIN_DISPLAY_MS = 1500L   // keep Bo up at least this long
-private const val LOCK_MS = 220            // settle into the 104 lock on release
-private const val COLLAPSE_MS = 500        // snap-back / post-fetch collapse
-private const val BOUNCE_PERIOD_MS = 1000  // one squish+float cycle (~0.9–1.05s)
+private const val LOCK_MS = 220            // settle into the 104 gap on release
+private const val COLLAPSE_MS = 500        // slide back up on settle / snap-back
+private const val DISMISS_MS = 260         // tray folds away when scrolled during refresh
+private const val BOUNCE_PERIOD_MS = 1000  // one squish+float cycle
 private const val BOUNCE_SQUISH = 0.06f    // ± scale wobble
-private const val BOUNCE_FLOAT_PX = 8f     // vertical float travel
+private const val BOUNCE_FLOAT = 8f        // dp — vertical float travel
 
+private const val TWO_PI = (2.0 * PI).toFloat()
 private val CollapseEasing = CubicBezierEasing(0.2f, 0.9f, 0.2f, 1f)

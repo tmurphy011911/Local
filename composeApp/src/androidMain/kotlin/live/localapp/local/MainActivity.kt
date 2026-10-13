@@ -19,6 +19,7 @@ import com.revenuecat.purchases.PurchasesConfiguration
 import live.localapp.local.di.initKoin
 import live.localapp.local.observability.Analytics
 import live.localapp.local.observability.AnalyticsEvent
+import live.localapp.local.observability.MetaAppEvents
 
 class MainActivity : ComponentActivity() {
     @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
@@ -51,6 +52,12 @@ class MainActivity : ComponentActivity() {
             platform = "android",
         )
         Analytics.track(AnalyticsEvent.appOpened(coldStart = savedInstanceState == null))
+
+        // Meta (Facebook) app events — boots the SDK and logs
+        // `fb_mobile_activate_app`. No-op until META_CLIENT_TOKEN is set in
+        // local.properties. After Analytics so an init failure is reportable.
+        MetaAppEvents.bind(this)
+        MetaAppEvents.activateApp()
 
         initKoin()
         ActivityProvider.activity = this

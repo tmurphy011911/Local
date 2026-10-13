@@ -52,7 +52,9 @@ import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.ConfirmationNumber
 import androidx.compose.material.icons.outlined.Home
+import androidx.compose.material.icons.outlined.Map
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Place
 import androidx.compose.material.icons.outlined.Search
@@ -102,6 +104,7 @@ import live.localapp.local.ui.home.HomeViewModel
 import live.localapp.local.domain.repository.VenueWithMeta
 import live.localapp.local.ui.places.PlacesScreen
 import live.localapp.local.ui.places.PlacesViewModel
+import live.localapp.local.ui.places.SearchTab
 import live.localapp.local.ui.places.VenueDetailPage
 import live.localapp.local.ui.places.VenueDetailSheet
 import live.localapp.local.ui.plans.PlanDetailScreen
@@ -142,9 +145,11 @@ import org.koin.mp.KoinPlatform
 
 enum class Tab(val label: String, val icon: ImageVector) {
     HOME("Home", Icons.Outlined.Home),
-    // Enum name kept as PLACES to avoid churning every call site; user-facing label
-    // is "Explore" (rebuilt into a dual Events/Places experience).
-    PLACES("Explore", Icons.Outlined.Search),
+    // Events and Places were formerly a single combined "Explore" tab with an
+    // internal Events|Places sub-tab row (SearchTab). They are now two top-level
+    // bottom tabs, both rendered by PlacesScreen (driven by its `forcedTab`).
+    EVENTS("Events", Icons.Outlined.ConfirmationNumber),
+    PLACES("Places", Icons.Outlined.Place),
     PLANS("Plans", Icons.Outlined.CalendarMonth),
     CHAT("Chat", Icons.Outlined.AutoAwesome), // AI concierge — not shown in tab bar
     PROFILE("Profile", Icons.Outlined.Person),
@@ -156,9 +161,14 @@ enum class Tab(val label: String, val icon: ImageVector) {
 // removes its own user-pref keys).
 private const val KEY_PENDING_PAYWALL_AFTER_AUTH = "pending_paywall_after_auth"
 
+// Process-global guard so the app-open paywall nudge counts + fires at most once
+// per launch, even if AppNavigation remounts (e.g. logout → login) within the
+// same process. Resets naturally on a real relaunch (new process).
+private var paywallNudgeFiredThisLaunch = false
+
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: () -> Unit = {}, showUpdateBanner: Boolean = false, onDismissUpdateBanner: () -> Unit = {}, showTutorial: Boolean = false) {
+fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: () -> Unit = {}, showUpdateBanner: Boolean = false, onDismissUpdateBanner: () -> Unit = {}, showTutorial: Boolean = false, paywallNudgeInterval: Int? = null) {
     val koin = KoinPlatform.getKoin()
     val scope = rememberCoroutineScope()
     val eventRepo: EventRepository = remember { koin.get() }
@@ -185,18 +195,28 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     val userPrefsRepo: UserPreferencesRepository = remember { koin.get() }
     val isLoggedIn = userPrefsRepo.getLocalUserId() != null
     var showLocationSheet by remember { mutableStateOf(false) }
+    // Inline results map ("Map" pill). The map renders in PlacesScreen's content
+    // area BELOW the persistent header + filters; here we only track whether it's
+    // showing so the bottom tab bar + Ask Bo pill hide while it's up. Reset on
+    // tab switch (below).
+    var showMap by remember { mutableStateOf(false) }
     // The "Ask Bo" button opens the Bo chat directly — the old Create Plan
     // menu (Ask Bo / Build Manually) and the manual-plan sheet are no longer
     // wired up. ManualPlanSheet.kt is retained as dead code.
 
-    // ── Premium gating (paywall gates 1–4 + 6, and Bo) ──────────────────────
+    // ── Premium gating ──────────────────────────────────────────────────────
+    // Opening (and sharing) an event detail is FREE for everyone — no gate.
+    // Instead, non-premium users see a dismissible paywall *nudge* every Nth app
+    // open (see the app-open nudge LaunchedEffect below; cadence from the
+    // `paywall_nudge_interval` app_config key, default 3).
+    //
     // A non-premium user — no active Local Pro trial AND no paid subscription —
-    // is blocked from: opening an event detail, saving an event, opening a place
-    // detail, saving a place, opening a plan, and creating a plan from Bo. The
-    // paywall appears instead of performing the action. `premiumGate` reads the
-    // same persisted Settings the RevenueCat sync writes, so `isPremium` is
-    // current at tap time. The paywall reuses the global account paywall (native
-    // on iOS, Compose dialog on Android) — same surface as the "Upgrade" button.
+    // is still HARD-gated from: saving an event, opening a place detail, saving a
+    // place, opening a plan, and creating a plan from Bo. The paywall appears
+    // instead of performing those actions. `premiumGate` reads the same persisted
+    // Settings the RevenueCat sync writes, so `isPremium` is current at tap time.
+    // The paywall reuses the global account paywall (native on iOS, Compose dialog
+    // on Android) — same surface as the "Upgrade" button.
     val premiumGate = remember { live.localapp.local.ui.chat.PremiumGate() }
     val showPaywallGate: () -> Unit = {
         // A logged-out user must never see the paywall — send them to sign-in
@@ -288,6 +308,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         if (homeState.locationName.isNotBlank()) placesVm.setLocationName(homeState.locationName)
     }
     val placesState by placesVm.uiState.collectAsState()
+
 
     // Route logged-out saves (home/places cards + event/venue detail, on both
     // platforms — iOS native detail favorites also flow through these VM toggles)
@@ -444,6 +465,22 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
         }
     }
 
+    // Soft paywall nudge. Opening events is free; instead we surface the
+    // dismissible paywall to non-premium users every Nth app open. Fires at most
+    // once per launch (guarded), only after the app_config-driven interval has
+    // resolved, and only for a signed-in user — a guest is never yanked to
+    // sign-in by merely opening the app. Counting happens inside
+    // recordAppOpenForNudge so the cadence advances once per eligible launch.
+    LaunchedEffect(paywallNudgeInterval, currentUserId) {
+        val interval = paywallNudgeInterval ?: return@LaunchedEffect
+        if (paywallNudgeFiredThisLaunch) return@LaunchedEffect
+        if (userPrefsRepo.getLocalUserId() == null || premiumGate.isPremium) return@LaunchedEffect
+        paywallNudgeFiredThisLaunch = true
+        if (premiumGate.recordAppOpenForNudge(interval)) {
+            showPaywallGate()
+        }
+    }
+
     val openChatOrLogin: () -> Unit = {
         val userId = userPrefsRepo.getLocalUserId()
         if (userId != null) {
@@ -527,6 +564,8 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
     // Cleaner than instrumenting every assignment site (there are 20+).
     var lastTab by remember { mutableStateOf(selectedTab) }
     LaunchedEffect(selectedTab) {
+        // Leaving a tab drops out of the inline map back to the list.
+        showMap = false
         if (selectedTab != lastTab) {
             live.localapp.local.observability.Analytics.track(
                 live.localapp.local.observability.AnalyticsEvent.tabSwitched(
@@ -577,7 +616,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         HomeScreen(
                             homeVm,
                             onEventClick = { event, transitionInfo ->
-                                if (!premiumGate.isPremium) { showPaywallGate(); return@HomeScreen }
+                                // Opening an event is free (see nudge model above).
                                 homeVm.recordEventClick(event.id, event.subcategory ?: event.category)
                                 if (hasNativeHeroTransition) {
                                     // iOS: show native SwiftUI detail with transition
@@ -656,7 +695,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                             },
                             onSeeAllEvents = { category, dateFilter ->
                                 placesVm.openEventsFiltered(category, dateFilter)
-                                selectedTab = Tab.PLACES
+                                selectedTab = Tab.EVENTS
                             },
                         )
                     }
@@ -665,7 +704,13 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         openChatOrLogin()
                         selectedTab = Tab.HOME
                     }
-                    Tab.PLACES -> {
+                    Tab.EVENTS, Tab.PLACES -> {
+                        // Events and Places are two top-level tabs backed by the same
+                        // PlacesScreen + PlacesViewModel. `forcedTab` locks the screen to
+                        // one sub-view and hides its internal Events|Places sub-tab row
+                        // (now redundant with the bottom tabs).
+                        val forcedSearchTab =
+                            if (selectedTab == Tab.EVENTS) SearchTab.EVENTS else SearchTab.PLACES
                         // Sync location from home state (includes lat/lng for geo queries).
                         // Keyed LaunchedEffect so these side-effects fire once per real
                         // change — running them inline in the composable body re-fired on
@@ -690,6 +735,10 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
                         val initial = homeState.userName.firstOrNull()?.uppercase() ?: ""
                         PlacesScreen(
                             placesVm,
+                            forcedTab = forcedSearchTab,
+                            // Reports when the map is "active" (list sheet collapsed)
+                            // so the bottom nav hides; PlacesScreen owns the sheet.
+                            onMapActiveChange = { showMap = it },
                             gate = gateOrPaywall,
                             onProfileClick = { selectedTab = Tab.PROFILE },
                             onLocationClick = { showLocationSheet = true },
@@ -1203,18 +1252,29 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
 
             }
 
-            // Floating tab bar — overlays content at bottom
-            Box(modifier = Modifier.align(Alignment.BottomCenter)) {
-                val tabInitial = homeState.userName.firstOrNull()?.uppercase() ?: ""
-                BottomTabBar(
-                    selectedTab,
-                    onSelect = { selectedTab = it },
-                    // "Ask Bo" pill opens the Bo chat directly (no more
-                    // Ask Bo / Build Manually menu).
-                    onCreatePlanClick = { openChatOrLogin() },
-                    userInitial = tabInitial,
-                )
+            // Floating tab bar — hidden while the map sheet is collapsed. Fades +
+            // slides with the Map pill (smooth, Airbnb-style) instead of popping.
+            AnimatedVisibility(
+                visible = !showMap,
+                modifier = Modifier.align(Alignment.BottomCenter),
+                enter = fadeIn() + slideInVertically { it },
+                exit = fadeOut() + slideOutVertically { it },
+            ) {
+                Box {
+                    val tabInitial = homeState.userName.firstOrNull()?.uppercase() ?: ""
+                    BottomTabBar(
+                        selectedTab,
+                        onSelect = { selectedTab = it },
+                        // "Ask Bo" pill opens the Bo chat directly (no more
+                        // Ask Bo / Build Manually menu).
+                        onCreatePlanClick = { openChatOrLogin() },
+                        userInitial = tabInitial,
+                    )
+                }
             }
+
+            // The "Map" pill now lives inside PlacesScreen (over the list sheet),
+            // since it depends on the sheet's expand/collapse + scroll state.
 
         // Plan detail — spring slide up with scale (matches native event detail feel)
         AnimatedVisibility(
@@ -2238,7 +2298,7 @@ fun AppNavigation(userLat: Double? = null, userLng: Double? = null, onLogout: ()
 }
 
 /** Tabs rendered in the bar: 4 standard + AI concierge on the right. */
-private val NAV_TABS = listOf(Tab.HOME, Tab.PLACES, Tab.PLANS)
+private val NAV_TABS = listOf(Tab.HOME, Tab.EVENTS, Tab.PLACES, Tab.PLANS)
 
 @Composable
 private fun BottomTabBar(
@@ -2254,10 +2314,12 @@ private fun BottomTabBar(
     // collides with this nav pill (both are fixed-width with scaling text). Above
     // ~1.3× we collapse the CTA to an icon-only button and hand the freed width
     // back to the nav pill so the two never overlap.
-    val ctaCompact = LocalDensity.current.fontScale >= 1.3f
-    // Reserved right-margin must track the button width: 156→56 face + 16 end
-    // padding + a small gap.
-    val ctaReserve = if (ctaCompact) 78.dp else 178.dp
+    // Ask Bo is an icon-only Bo button (56.dp face + 16.dp end padding + a small
+    // gap = 78.dp). The nav pill reserves exactly that on its right; its tab tiles
+    // are weight(1f), so they expand to fill the rest of the width. (The old
+    // fontScale>=1.3 "collapse to icon" path is obsolete now that the button
+    // never carries a text label that could overrun the pill.)
+    val ctaReserve = 78.dp
 
     Box(
         modifier = Modifier
@@ -2327,17 +2389,17 @@ private fun BottomTabBar(
                             Icon(
                                 tab.icon,
                                 contentDescription = tab.label,
-                                modifier = Modifier.size(20.dp),
+                                modifier = Modifier.size(22.dp),
                                 tint = if (isSelected) AppColors.Coral else AppColors.Ink3,
                             )
                         }
-                        Spacer(Modifier.height(2.dp))
+                        Spacer(Modifier.height(3.dp))
                         Text(
                             tab.label,
                             style = TextStyle(
                                 fontFamily = AppFonts.Body,
                                 fontWeight = if (isSelected) FontWeight.ExtraBold else FontWeight.Bold,
-                                fontSize = 8.sp,
+                                fontSize = 10.sp,
                                 color = if (isSelected) AppColors.Coral else AppColors.Ink3,
                             ),
                         )
@@ -2349,7 +2411,7 @@ private fun BottomTabBar(
         // Ask Bo pill — bottom right. Collapses to icon-only at large font scales.
         live.localapp.local.ui.plans.CreatePlanButton(
             onClick = onCreatePlanClick,
-            compact = ctaCompact,
+            compact = true, // always icon-only; nav pill expands to fill the rest
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(end = 16.dp),
