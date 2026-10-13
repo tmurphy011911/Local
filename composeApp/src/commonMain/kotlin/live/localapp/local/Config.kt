@@ -114,16 +114,32 @@ object Config {
 
     /**
      * Build-time gate for the Bo mascot pull-to-refresh (replaces the generic
-     * Material3 spinner on the Home / Explore / Plans / Profile feeds). Flip to
-     * false to fall back to the stock [PullToRefreshBox] spinner in a shipped
-     * binary while the control is still being tuned; the elimination pass then
-     * drops the BoRefreshControl path as dead code.
+     * Material3 spinner on the Home / Explore / Plans / Profile feeds). When
+     * false, [AppRefreshBox] falls back to the stock [PullToRefreshBox] spinner.
      *
-     * OFF for v1.2.0 — the control still has scroll-interaction rough edges (see
-     * project_bo_pull_to_refresh memory). The full implementation is preserved on
-     * `develop` (2998808) for a v1.3.0 refinement pass; re-enable then.
+     * DEV-ONLY while the v1.3.0 (Material3-engine + Bo-overlay) rewrite is being
+     * device-tested: ON in DEBUG + STAGING (`.dev`) builds, OFF in a plain
+     * RELEASE — so v1.2.0 ships the stock spinner while dev builds exercise Bo.
+     * `isDebugBuild`/`isStagingBuild` both fold to a constant false in release, so
+     * the elimination pass still drops the BoRefreshControl path from the shipped
+     * binary. When the rewrite is signed off, switch this to `const val … = true`.
      */
-    const val FEATURE_BO_PTR_ENABLED = false
+    val FEATURE_BO_PTR_ENABLED: Boolean
+        get() = live.localapp.local.platform.isDebugBuild ||
+            live.localapp.local.platform.isStagingBuild
+
+    /**
+     * Gate for the Bo reasoning layer (intent classifier → deterministic routing).
+     * See `docs/specs/bo-reasoning-layer.md`. Phase 1 is DARK in release and ON in
+     * DEBUG + STAGING (`.dev`) builds, so prod ships unaffected while dev/staging
+     * dogfoods it. `isDebugBuild`/`isStagingBuild` fold to a constant false in
+     * release, so the classifier call is eliminated from the shipped binary.
+     * Later phases move the rollout to PostHog flags (spec §13.4) with app_config
+     * as the global kill switch; this build-time gate is the Phase-1 start.
+     */
+    val FEATURE_BO_REASONING_ENABLED: Boolean
+        get() = live.localapp.local.platform.isDebugBuild ||
+            live.localapp.local.platform.isStagingBuild
 
     // --- Backend environment (prod vs dev) -------------------------------------
     //

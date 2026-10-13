@@ -2033,12 +2033,41 @@ class ChatViewModel(
             // absent from the tools array exactly when Bo is told to call it.
             val buildFromWeb = historyText == BUILD_FROM_WEB_INTENT
 
+            // Reasoning layer (spec §5.1, docs/specs/bo-reasoning-layer.md): when the
+            // regex browse fast-path did NOT already commit to a browse, ask the
+            // dedicated classifier and route deterministically. Flag-gated (dark in
+            // release) + confidence-gated; ANY failure or low confidence falls through
+            // to today's inline routing (tier-3 safety). Phase 1 handles only
+            // events_search (reuses primeBrowseSearch) and out_of_scope (needs no
+            // data); all other intents fall through to the normal flow for now.
+            var reasoningForcedTool: String? = null
+            var reasoningForcePresent = false
+            if (live.localapp.local.Config.FEATURE_BO_REASONING_ENABLED &&
+                !forcePresentSuggestions && browseInput == null && historyText == text
+            ) {
+                val classification = BoClassification.parse(
+                    claudeApi.classifyTurn(conversationHistory.toList(), buildSurfaceStateJson()),
+                )
+                if (classification != null && classification.isConfident()) {
+                    when (classification.intent) {
+                        BoRoutedIntent.EVENTS_SEARCH -> {
+                            val input = browseInputFromClassification(classification)
+                            if (input != null && primeBrowseSearch(input)) reasoningForcePresent = true
+                        }
+                        BoRoutedIntent.OUT_OF_SCOPE -> reasoningForcedTool = "present_scope_redirect"
+                        else -> Unit // venue/event/quick_fact/plan/modify → later phases; fall through
+                    }
+                    println("bo-reasoning: intent=${classification.intent} conf=${classification.confidence} forcePresent=$reasoningForcePresent forcedTool=$reasoningForcedTool :: ${classification.rationale}")
+                }
+            }
+            val effectiveForcePresent = forcePresentSuggestions || reasoningForcePresent
+
             var attempts = 0
             val maxAttempts = 2
             while (attempts < maxAttempts) {
                 try {
                     val systemPrompt = buildSystemPrompt()
-                    val parsed = sendWithToolLoop(systemPrompt, forcePresentSuggestions, buildFromWeb)
+                    val parsed = sendWithToolLoop(systemPrompt, effectiveForcePresent, buildFromWeb, forceTerminalTool = reasoningForcedTool)
                     val shape = when (parsed.type) {
                         ParsedResponseType.SUGGESTIONS -> {
                             val sj = parsed.structuredJson?.jsonObject
@@ -2636,10 +2665,95 @@ class ChatViewModel(
         return true
     }
 
+    /**
+     * Compact snapshot of the surface currently on screen for the classifier
+     * (spec §5.3). Lets the classifier tell a fresh ask ("live jazz") from a
+     * delta on the open tray ("just jazz") and resolve positional references
+     * ("the first one", "more like the first"). An open plan takes precedence as
+     * the current surface; else the most recent event tray; else none.
+     */
+    private fun buildSurfaceStateJson(): String {
+        val state = _uiState.value
+        val obj = kotlinx.serialization.json.buildJsonObject {
+            if (state.days.isNotEmpty()) {
+                put("kind", JsonPrimitive("PLAN"))
+                put("plan", kotlinx.serialization.json.buildJsonObject {
+                    put("title", JsonPrimitive(state.planTitle))
+                    put("dayCount", JsonPrimitive(state.days.size))
+                })
+            } else {
+                val lastTray = state.messages.asReversed().firstNotNullOfOrNull { msg ->
+                    (msg.content as? MessageContent.Structured)?.let { c ->
+                        (c.response as? live.localapp.local.domain.model.BoStructuredResponse.Suggestions)?.let { sug -> c to sug }
+                    }
+                }
+                if (lastTray == null) {
+                    put("kind", JsonPrimitive("NONE"))
+                } else {
+                    val (content, sug) = lastTray
+                    put("kind", JsonPrimitive("SUGGESTIONS"))
+                    put("suggestions", kotlinx.serialization.json.buildJsonObject {
+                        put("headline", JsonPrimitive(sug.headline))
+                        put("items", kotlinx.serialization.json.buildJsonArray {
+                            sug.groups.flatMap { it.events }.take(20).forEach { ref ->
+                                content.hydratedEvents[ref.eventId]?.let { ev ->
+                                    add(kotlinx.serialization.json.buildJsonObject {
+                                        put("id", JsonPrimitive(ev.id))
+                                        put("title", JsonPrimitive(ev.title))
+                                    })
+                                }
+                            }
+                        })
+                        put("categories", kotlinx.serialization.json.buildJsonArray {
+                            sug.groups.flatMap { g -> g.events.mapNotNull { content.hydratedEvents[it.eventId]?.category } }
+                                .distinct().take(8).forEach { add(JsonPrimitive(it)) }
+                        })
+                    })
+                }
+            }
+        }
+        return obj.toString()
+    }
+
+    /**
+     * Build a search_events input (the shape [primeBrowseSearch] expects) from a
+     * classifier result's params, so a classifier-detected events_search reuses
+     * the proven pre-fetch-then-force path instead of a parallel mechanism.
+     * Returns null when there's nothing concrete to search on (→ no force; the
+     * normal LLM flow handles it).
+     */
+    private fun browseInputFromClassification(c: BoClassification): JsonObject? {
+        val p = c.params ?: return null
+        val category = p["category"]?.jsonPrimitive?.contentOrNull
+        val keyword = p["keyword"]?.jsonPrimitive?.contentOrNull
+        val location = p["location"]?.jsonPrimitive?.contentOrNull
+        val startDate = p["start_date"]?.jsonPrimitive?.contentOrNull
+        val dateRange = when (p["time_window"]?.jsonPrimitive?.contentOrNull) {
+            "tonight" -> "today"
+            "today", "this_weekend", "next_weekend", "this_week", "next_week", "this_month" ->
+                p["time_window"]?.jsonPrimitive?.contentOrNull
+            else -> null
+        }
+        if (category == null && dateRange == null && keyword == null && startDate == null) return null
+        return kotlinx.serialization.json.buildJsonObject {
+            if (category != null) put("category", JsonPrimitive(category))
+            if (dateRange != null) put("date_range", JsonPrimitive(dateRange))
+            if (keyword != null) put("keyword", JsonPrimitive(keyword))
+            if (location != null) put("location", JsonPrimitive(location))
+            if (startDate != null) put("start_date", JsonPrimitive(startDate))
+        }
+    }
+
     private suspend fun sendWithToolLoop(
         systemPrompt: String,
         forcePresentSuggestions: Boolean = false,
         buildFromWeb: Boolean = false,
+        // Reasoning layer: a terminal tool to force on round 0 (e.g.
+        // present_scope_redirect for a classified out_of_scope turn). Null = no
+        // reasoning-driven force. Only used for tools that need no pre-fetch;
+        // data-backed intents (events_search) go through forcePresentSuggestions
+        // after priming. Mutually exclusive with forcePresentSuggestions in practice.
+        forceTerminalTool: String? = null,
     ): ParsedChatResponse {
         val maxToolRounds = 5
         var toolRounds = 0
@@ -2774,6 +2888,12 @@ class ChatViewModel(
                     kotlinx.serialization.json.buildJsonObject {
                         put("type", JsonPrimitive("tool"))
                         put("name", JsonPrimitive("present_suggestions"))
+                    }
+                // Reasoning layer: force a no-data-needed terminal tool on round 0.
+                toolRounds == 0 && forceTerminalTool != null ->
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("type", JsonPrimitive("tool"))
+                        put("name", JsonPrimitive(forceTerminalTool))
                     }
                 toolRounds == 0 -> null
                 else -> kotlinx.serialization.json.buildJsonObject { put("type", JsonPrimitive("any")) }
