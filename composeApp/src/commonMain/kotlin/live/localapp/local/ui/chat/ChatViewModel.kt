@@ -2785,7 +2785,7 @@ class ChatViewModel(
             BoRoutedIntent.PLAN_MODIFY ->
                 "editing the plan already on screen. Use update_plan."
             BoRoutedIntent.EVENTS_MODIFY ->
-                "refining the events already on screen (the tray below). Re-run search_events with the user's delta applied, then call present_suggestions again. Current surface: $surfaceStateJson"
+                "refining the events ALREADY on screen (the tray in the current surface below). KEEP that tray's existing filters — its category/keyword/day, visible in the headline and categories — and ADD the user's delta ON TOP. Re-run search_events with the MERGED filters (e.g. a 'only free' delta on a live-music tray stays MUSIC + adds is_free; do NOT broaden to categories that weren't already in the tray), then call present_suggestions again with a headline that reflects the merged filters. Current surface: $surfaceStateJson"
             BoRoutedIntent.CLARIFY ->
                 "genuinely underspecified. Ask ONE short clarifying question."
             else -> return "" // events_search / out_of_scope are hard-forced, not steered
