@@ -2042,22 +2042,29 @@ class ChatViewModel(
             // data); all other intents fall through to the normal flow for now.
             var reasoningForcedTool: String? = null
             var reasoningForcePresent = false
+            var reasoningHint = ""
             if (live.localapp.local.Config.FEATURE_BO_REASONING_ENABLED &&
                 !forcePresentSuggestions && browseInput == null && historyText == text
             ) {
+                val surfaceState = buildSurfaceStateJson()
                 val classification = BoClassification.parse(
-                    claudeApi.classifyTurn(conversationHistory.toList(), buildSurfaceStateJson()),
+                    claudeApi.classifyTurn(conversationHistory.toList(), surfaceState),
                 )
                 if (classification != null && classification.isConfident()) {
                     when (classification.intent) {
+                        // Deterministic forces — no model judgment needed.
                         BoRoutedIntent.EVENTS_SEARCH -> {
                             val input = browseInputFromClassification(classification)
                             if (input != null && primeBrowseSearch(input)) reasoningForcePresent = true
+                            else reasoningHint = reasoningHintFor(classification, surfaceState)
                         }
                         BoRoutedIntent.OUT_OF_SCOPE -> reasoningForcedTool = "present_scope_redirect"
-                        else -> Unit // venue/event/quick_fact/plan/modify → later phases; fall through
+                        // Data-backed / judgment intents: steer the main loop with an
+                        // authoritative intent hint rather than hard-forcing a terminal
+                        // tool (which would risk an empty brief before any search).
+                        else -> reasoningHint = reasoningHintFor(classification, surfaceState)
                     }
-                    println("bo-reasoning: intent=${classification.intent} conf=${classification.confidence} forcePresent=$reasoningForcePresent forcedTool=$reasoningForcedTool :: ${classification.rationale}")
+                    println("bo-reasoning: intent=${classification.intent} conf=${classification.confidence} forcePresent=$reasoningForcePresent forcedTool=$reasoningForcedTool hint=${reasoningHint.isNotEmpty()} :: ${classification.rationale}")
                 }
             }
             val effectiveForcePresent = forcePresentSuggestions || reasoningForcePresent
@@ -2066,7 +2073,7 @@ class ChatViewModel(
             val maxAttempts = 2
             while (attempts < maxAttempts) {
                 try {
-                    val systemPrompt = buildSystemPrompt()
+                    val systemPrompt = buildSystemPrompt() + reasoningHint
                     val parsed = sendWithToolLoop(systemPrompt, effectiveForcePresent, buildFromWeb, forceTerminalTool = reasoningForcedTool)
                     val shape = when (parsed.type) {
                         ParsedResponseType.SUGGESTIONS -> {
@@ -2742,6 +2749,53 @@ class ChatViewModel(
             if (location != null) put("location", JsonPrimitive(location))
             if (startDate != null) put("start_date", JsonPrimitive(startDate))
         }
+    }
+
+    /**
+     * An authoritative routing hint appended to the main turn's system prompt when
+     * the classifier is confident but the intent is data-backed or needs model
+     * judgment — so we STEER the existing search→present loop rather than hard-force
+     * a terminal tool (which would risk an empty brief before any search runs).
+     * Spec §5.1. Returns "" when there's nothing useful to add.
+     */
+    private fun reasoningHintFor(c: BoClassification, surfaceStateJson: String): String {
+        fun param(key: String): String? = c.params?.get(key)?.jsonPrimitive?.contentOrNull
+        val route = when (c.intent) {
+            BoRoutedIntent.VENUE_SINGLE ->
+                "a single named venue${param("venue_ref")?.let { " (\"$it\")" } ?: ""}. Search that venue, then call present_venue_brief with its upcoming events."
+            BoRoutedIntent.EVENT_SINGLE ->
+                "one specific event${param("event_ref")?.let { " (\"$it\")" } ?: ""}. Answer it with present_event_brief."
+            BoRoutedIntent.QUICK_FACT ->
+                "a short factual question. Answer with present_quick_fact (one line)."
+            BoRoutedIntent.INFO ->
+                "general local information, not a list of events. Answer briefly in prose — do NOT call present_suggestions."
+            BoRoutedIntent.PLAN_BUILD -> {
+                // Precondition gate (spec §15.3): don't build a plan from too little
+                // info. Need seeds (draft picks / an open tray) OR a day OR a vibe;
+                // location is usually known from the device, so it alone isn't a blocker.
+                val hasSeeds = _uiState.value.draftTray.isNotEmpty() ||
+                    surfaceStateJson.contains("\"kind\":\"SUGGESTIONS\"")
+                val hasWhen = param("time_window") != null || param("start_date") != null
+                val hasVibe = param("category") != null || param("keyword") != null || param("occasion") != null
+                if (hasSeeds || hasWhen || hasVibe)
+                    "building a plan. Gather picks and call present_plan."
+                else
+                    "asking to plan but with no day, vibe, or picks yet. Do NOT build a plan — ask ONE short question: what day, and what's the vibe (chill, big night out, something with the kids)?"
+            }
+            BoRoutedIntent.PLAN_MODIFY ->
+                "editing the plan already on screen. Use update_plan."
+            BoRoutedIntent.EVENTS_MODIFY ->
+                "refining the events already on screen (the tray below). Re-run search_events with the user's delta applied, then call present_suggestions again. Current surface: $surfaceStateJson"
+            BoRoutedIntent.CLARIFY ->
+                "genuinely underspecified. Ask ONE short clarifying question."
+            else -> return "" // events_search / out_of_scope are hard-forced, not steered
+        }
+        val secondary = c.secondaryIntent?.let {
+            "\n- Secondary intent: ${it.wireName} — also address it (e.g. embed its results in the primary surface)."
+        } ?: ""
+        return "\n\nREASONING LAYER (a dedicated classifier analyzed this turn — treat as authoritative routing):\n" +
+            "- The user's intent is ${c.intent.wireName}: $route$secondary\n" +
+            "Follow this routing unless the message clearly contradicts it."
     }
 
     private suspend fun sendWithToolLoop(
