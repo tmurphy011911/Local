@@ -170,6 +170,15 @@ const PARTICIPANT_ONLY_TITLE = [
   /\b\d+(st|nd|rd|th)\s+annual\s+recital\b/i,
   /\b(19|20)\d{2}\s+(annual\s+)?recital\b/i,
   /\bpicture\s+(day|week)\b(?!\s+tour)/i,
+  // Youth / all-star cheer & dance competitions (2026-10-13). Rosters are
+  // minors (Pop Warner "Tiny Mites" = age 5-7); audience is competing
+  // families only, and surfacing them to strangers reads as creepy. Title
+  // only so NFL/college game blurbs mentioning cheerleaders aren't caught.
+  // The youth-sports pattern missed these: `\bcheer\b` fails on "Cheerleading".
+  /\b(pop\s+warner|tiny\s+mites?|mitey\s+mites?|jamfest|cheersport|ayf|ayc)\b/i,
+  /\bcheer\s*(&|and)\s*dance\b/i,
+  /\b(cheer|cheerleading|all[\s-]?stars?\s+cheer)\b[\s\S]{0,40}\b(competition|championships?|regionals?|nationals|worlds|invitational|classic)\b/i,
+  /\bcheerleading\s+worlds\b/i,
 ];
 // Bare "Recital"/"Rehearsal" is too generic for an all-venue rule (it would catch
 // public music recitals), so it only excludes when the VENUE is a dance studio.
