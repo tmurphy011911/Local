@@ -5,6 +5,37 @@
 
 ---
 
+## 0. Implementation status (2026-10-13)
+
+Built on `develop` (commits `09d274c`, `a743600`, `a52d52e`, `db52707`), flag-gated
+`FEATURE_BO_REASONING_ENABLED` (dark in release, on in debug/staging), all
+compile-verified (`compileKotlinIosArm64`) and dogfooded on the Staging `.dev`
+build against prod.
+
+| Piece | Status |
+|---|---|
+| Classifier call + parse (`classifyTurn`, `BoClassification`) | ✅ done |
+| Routing — `out_of_scope` (hard-force `present_scope_redirect`) | ✅ verified on-device |
+| Routing — `events_search` (prime + force `present_suggestions`) | ✅ verified on-device |
+| Routing — venue/event/quick_fact/info/plan/modify (steering hint) | ✅ built; `venue_single` + `events_modify` verified on-device |
+| Surface-state snapshot (§5.3) | ✅ done |
+| `events_modify` (re-search steering) | ✅ functional — ⚠️ constraint-drift: re-search can drop the original filter (e.g. "free" kept, "music" lost). **Local re-filter (§5.4) is the correctness fix, not just perf.** |
+| Precondition gate (§5.5a, guard 3a) | ✅ built — outcome correct, but bare "plan something" classifies `clarify@<0.6` → low-conf fall-through does the asking, not the gate's crisp template (tuning item) |
+| Confidence fall-through (tier-3 safety) | ✅ verified under a real outage (Anthropic credit 400s → clean degrade to baseline) |
+
+**Verified behaviors on-device:** events tray, scope-redirect, venue page (the
+Fenway example), plan-precondition ask, events_modify filter.
+
+**Remaining / punch list:**
+1. **Local re-filter for `events_modify`** (§5.4) — fixes the constraint-drift correctness gap above. Highest-value next.
+2. **Output validator + bounded retry (§5.5b, guard 3b)** — not built (spec-designated stretch).
+3. **§5.7 map-carousel interaction** — BLOCKED: `platform/BoResultsMapView.kt` is in active v1.4.0 WIP; can't touch without entangling. Needs that WIP to land, then Xcode.
+4. **Steering → crisp templates** — steering is soft (e.g. a venue with many events rendered as a tray, not a brief); tighten where determinism matters.
+5. **Shadow mode + PostHog rollout plumbing** (§13.2/§13.4) — not built; current gate is build-time only.
+6. **Rotate** the Anthropic key pasted in-session; **confirm** the Anthropic account the `claude-proxy` key belongs to stays funded (prod Bo went down mid-session on a credit-balance 400).
+
+---
+
 ## 1. Problem
 
 Bo frequently picks the wrong *action* for a request — answering in prose when the user wanted the event tray, missing that "what's at fenway?" is a single-venue ask, treating a refinement as a brand-new search. The root cause is architectural, not prompt-tuning:
