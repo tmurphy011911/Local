@@ -141,6 +141,21 @@ const CAROUSEL_DISPLAY_LIMIT = 25;
 // gives the diversity gate room to surface 5+ distinct categories.
 const HERO_CAROUSEL_DISPLAY_LIMIT = 40;
 const MIN_CAROUSEL_SIZE = 15;
+// "At {Venue}" rails (both the favorited-venue rails and the per-subcategory-tab
+// venue rails) show a venue's full upcoming slate in chronological order rather
+// than a relevance-ranked slice — for a single venue, "what's on and when" is
+// the useful framing. Capped higher than the generic rail so a busy venue's
+// season is browsable inline before the "See all" sheet.
+const VENUE_RAIL_DISPLAY_LIMIT = 40;
+
+// Chronological comparator (soonest first). ISO-8601 start_at strings sort
+// lexicographically = chronologically; null start_at sorts last.
+function byStartAtAsc(
+  a: { start_at?: string | null },
+  b: { start_at?: string | null },
+): number {
+  return (a.start_at ?? "9999-12-31").localeCompare(b.start_at ?? "9999-12-31");
+}
 // Scoring reach is density-adaptive (see adaptiveRadiusMiles / weightsForUser),
 // derived from the actual local event supply rather than distance to any
 // hardcoded metro center — so it scales to every current and future market.
@@ -1317,8 +1332,13 @@ function buildDynamicSubcarousels(
 ): CarouselSection[] {
   const result: CarouselSection[] = [];
 
-  function addCarousel(slug: string, title: string, items: ProcessedEvent[]) {
-    const capped = items.slice(0, CAROUSEL_DISPLAY_LIMIT);
+  function addCarousel(
+    slug: string,
+    title: string,
+    items: ProcessedEvent[],
+    cap: number = CAROUSEL_DISPLAY_LIMIT,
+  ) {
+    const capped = items.slice(0, cap);
     if (capped.length < 4) return;
     result.push({ slug, title, subtitle: null, filter_type: "dynamic_sub", events: capped });
   }
@@ -1367,6 +1387,7 @@ function buildDynamicSubcarousels(
     .filter(([, v]) => v.length >= 4)
     .sort((a, b) => b[1].length - a[1].length)
     .slice(0, SUBCATEGORY_VENUE_RAIL_CAP);
+  const nowStr = nowIso();
   for (const [normKey, venueEvents] of sortedVenues) {
     // Display name: the most common raw spelling in the bucket (deterministic
     // tie-break: shortest, then alphabetical). Keeps the rail title a real
@@ -1381,10 +1402,18 @@ function buildDynamicSubcarousels(
     const venueName = [...spellingCounts.entries()]
       .sort((a, b) =>
         b[1] - a[1] || a[0].length - b[0].length || a[0].localeCompare(b[0]))[0][0];
+    // Venue rails show the venue's full upcoming slate in chronological order
+    // (soonest first) and cap higher than generic rails — for a single venue,
+    // "what's on and when" beats the relevance-ranked order of the incoming pool.
+    // Filter to upcoming first (mirroring the client's past-event filter) so past
+    // events don't consume cap slots the client would then strip.
     addCarousel(
       `${subcategory}-venue-${normKey.replace(/ /g, "-").substring(0, 30)}`,
       `At ${venueName}`,
-      venueEvents,
+      venueEvents
+        .filter(e => !e.start_at || e.start_at >= nowStr)
+        .sort(byStartAtAsc),
+      VENUE_RAIL_DISPLAY_LIMIT,
     );
   }
 
@@ -1926,9 +1955,12 @@ function buildCarousels(
       for (const venue of prefs.selected_venues) {
         const venueRailEvents = favVenuePool
           .filter(e => (e.venue_name ?? "").toLowerCase().includes(venue.toLowerCase()))
+          // Upcoming only, mirroring the client's own past-event filter, so the
+          // chronological order starts at "now" and the cap counts real slots.
+          .filter(e => !e.start_at || e.start_at >= nowIsoRw)
           .map(e => withDistance(e, userLat, userLng))
-          .sort(sortFn)
-          .slice(0, CAROUSEL_DISPLAY_LIMIT);
+          .sort(byStartAtAsc)
+          .slice(0, VENUE_RAIL_DISPLAY_LIMIT);
         if (venueRailEvents.length === 0) continue;
         favVenueCarousels.push({
           slug: `fav-venue-${venue.toLowerCase().replace(/ /g, "-")}`,
