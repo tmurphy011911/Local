@@ -28,6 +28,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import live.localapp.local.data.bo.BoClassifierPrompt
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -988,6 +989,44 @@ class ClaudeApiService(
         }
 
         return json.decodeFromString<ClaudeResponse>(rawBody)
+    }
+
+    /**
+     * Reasoning-layer classifier (spec §5.1 tier 2, §15.1). One small Haiku call
+     * with the `classify` tool forced, so the output is schema-validated. Returns
+     * the classify tool's input JsonObject (intent/confidence/params/...) for the
+     * ui layer to parse, or null if the call failed or emitted no classify block.
+     *
+     * Callers MUST treat null as "fall through to today's inline routing" (the
+     * §5.1 tier-3 safety property) — the classifier may never harden a failure
+     * into an experience worse than the baseline.
+     *
+     * [surfaceStateJson] is the compact on-screen-surface snapshot (§5.3);
+     * [messages] is the recent (trimmed) conversation so follow-ups and positional
+     * references have context. NOTE: the classifier prompt is below Haiku's 2048-
+     * token cache minimum, so the cache_control [cacheableSystem] adds is a no-op
+     * here — fine, the call is small.
+     */
+    suspend fun classifyTurn(
+        messages: List<ClaudeMessage>,
+        surfaceStateJson: String,
+    ): JsonObject? {
+        return try {
+            val resp = sendRaw(
+                systemPrompt = BoClassifierPrompt.systemPrompt(surfaceStateJson),
+                messages = messages,
+                tools = buildJsonArray { add(BoClassifierPrompt.classifyTool()) },
+                model = MODEL_CHAT,
+                toolChoice = buildJsonObject {
+                    put("type", "tool")
+                    put("name", BoClassifierPrompt.TOOL_NAME)
+                },
+            )
+            resp.content.firstOrNull { it.type == "tool_use" && it.name == BoClassifierPrompt.TOOL_NAME }?.input
+        } catch (e: Exception) {
+            println("ClaudeApiService.classifyTurn failed: ${e.message}")
+            null
+        }
     }
 
     /**
