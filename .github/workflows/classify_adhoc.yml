@@ -28,6 +28,10 @@ on:
         description: "Follow-up dispatches to chain after this run (0 = none)"
         required: false
         default: "0"
+      dry_run:
+        description: "Preview only — no DB writes and NO Claude calls. Use to inspect the auto-exclusion breakdown before a real run."
+        type: boolean
+        default: false
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -47,6 +51,12 @@ jobs:
           CLASSIFY_LIMIT: ${{ inputs.classify_limit }}
           WRITE_CONCURRENCY: ${{ inputs.write_concurrency }}
           WRITE_DELAY_MS: ${{ inputs.write_delay_ms }}
+          # DRY_RUN=1 short-circuits before every write AND before the Claude
+          # batch (classify_events.js:524 "DRY RUN — no API calls"), so a preview
+          # run is free. Added 2026-10-13: the auto-exclusion guard had no safe
+          # inspection path from CI, which is why its 2026-09-02 abort went
+          # undiagnosed for a month.
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
         run: node classify_events.js
 
   # Serial self-chaining: workflow_dispatch fired with the repo GITHUB_TOKEN is
