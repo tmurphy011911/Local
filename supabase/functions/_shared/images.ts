@@ -44,16 +44,29 @@ const STORAGE_RENDER = "/storage/v1/render/image/public/";
 // only snake_case silently missed 220 images on a single explore-places
 // response — caught on dev before this ever reached prod.
 //
-// `icon_url` is deliberately NOT here: those are small category icons, not
-// photos, so resizing them buys nothing and risks mangling non-photo assets.
-const IMAGE_KEYS = new Set(["imageurl", "photourl", "venuephotourl"]);
-
-function isImageKey(key: string): boolean {
-  return IMAGE_KEYS.has(key.replace(/_/g, "").toLowerCase());
-}
-
 export const DEFAULT_THUMB_WIDTH = 400;
 export const DEFAULT_THUMB_QUALITY = 70;
+
+// `icon_url` WAS excluded here on the assumption that category icons are small.
+// Measured on prod 2026-10-13, they are not: arts.png 1,200 KB, food.png 1,373 KB,
+// comedy.png 675 KB — 12 distinct icons averaging ~740 KB, ~8.9 MB per home-feed
+// load. They render at icon size, so they get a much smaller width than photos.
+// Verified the render endpoint returns image/png for a PNG source, so alpha
+// survives (a JPEG conversion would have put a black box behind every icon).
+const ICON_WIDTH = 128;
+
+/** image-bearing response field -> render width. Key compared case/underscore-insensitively. */
+const IMAGE_KEYS = new Map<string, number>([
+  ["imageurl", DEFAULT_THUMB_WIDTH],
+  ["photourl", DEFAULT_THUMB_WIDTH],
+  ["venuephotourl", DEFAULT_THUMB_WIDTH],
+  ["iconurl", ICON_WIDTH],
+]);
+
+function imageKeyWidth(key: string): number | undefined {
+  return IMAGE_KEYS.get(key.replace(/_/g, "").toLowerCase());
+}
+
 
 /**
  * Rewrite one Supabase Storage public-object URL to its render-endpoint
@@ -87,8 +100,9 @@ export function thumbnailStorageImages<T>(
     if (v !== null && typeof v === "object") {
       const out: Record<string, unknown> = {};
       for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
-        out[k] = typeof val === "string" && isImageKey(k)
-          ? thumbUrl(val, width, quality)
+        const keyWidth = typeof val === "string" ? imageKeyWidth(k) : undefined;
+        out[k] = keyWidth !== undefined
+          ? thumbUrl(val as string, Math.min(keyWidth, width), quality)
           : walk(val);
       }
       return out;
