@@ -12,6 +12,7 @@
 		5E1C2C182F9187330057E9F9 /* Products.storekit in Resources */ = {isa = PBXBuildFile; fileRef = 5E1C2C172F9187330057E9F9 /* Products.storekit */; };
 		5E84B18C2FBEAA0F00B1A75B /* PostHog in Frameworks */ = {isa = PBXBuildFile; productRef = 5E84B18B2FBEAA0F00B1A75B /* PostHog */; };
 		FA115011000163E3003B9202 /* OneSignalFramework in Frameworks */ = {isa = PBXBuildFile; productRef = FA115011000163E3003B9201 /* OneSignalFramework */; };
+		FB5D0A030000000000000003 /* FacebookCore in Frameworks */ = {isa = PBXBuildFile; productRef = FB5D0A020000000000000002 /* FacebookCore */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -54,6 +55,7 @@
 				5E84B18C2FBEAA0F00B1A75B /* PostHog in Frameworks */,
 				5E0B24E02FD3409300162445 /* Sentry-Dynamic in Frameworks */,
 				FA115011000163E3003B9202 /* OneSignalFramework in Frameworks */,
+				FB5D0A030000000000000003 /* FacebookCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -112,6 +114,7 @@
 				5E84B18B2FBEAA0F00B1A75B /* PostHog */,
 				5E0B24DF2FD3409300162445 /* Sentry-Dynamic */,
 				FA115011000163E3003B9201 /* OneSignalFramework */,
+				FB5D0A020000000000000002 /* FacebookCore */,
 			);
 			productName = iosApp;
 			productReference = EEB79C38E91BB2244F08BFBD /* Local.app */;
@@ -146,6 +149,7 @@
 				5E84B1892FBEA9F200B1A75B /* XCRemoteSwiftPackageReference "sentry-cocoa" */,
 				5E84B18A2FBEAA0F00B1A75B /* XCRemoteSwiftPackageReference "posthog-ios" */,
 				5E346405300163E3003B920F /* XCRemoteSwiftPackageReference "OneSignal-iOS-SDK" */,
+				FB5D0A010000000000000001 /* XCRemoteSwiftPackageReference "facebook-ios-sdk" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 46A8AB7EB05E776F34C7FBE8 /* Products */;
@@ -535,6 +539,14 @@
 				minimumVersion = 5.5.4;
 			};
 		};
+		FB5D0A010000000000000001 /* XCRemoteSwiftPackageReference "facebook-ios-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/facebook/facebook-ios-sdk";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 18.0.0;
+			};
+		};
 		5E84B1892FBEA9F200B1A75B /* XCRemoteSwiftPackageReference "sentry-cocoa" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/getsentry/sentry-cocoa";
@@ -573,6 +585,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 5E346405300163E3003B920F /* XCRemoteSwiftPackageReference "OneSignal-iOS-SDK" */;
 			productName = OneSignalFramework;
+		};
+		FB5D0A020000000000000002 /* FacebookCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = FB5D0A010000000000000001 /* XCRemoteSwiftPackageReference "facebook-ios-sdk" */;
+			productName = FacebookCore;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

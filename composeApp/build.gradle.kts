@@ -19,6 +19,11 @@ val sentryDsnAndroid: String = localProps.getProperty("SENTRY_DSN_ANDROID", "")
 val sentryDsnIos: String = localProps.getProperty("SENTRY_DSN_IOS", "")
 val postHogKey: String = localProps.getProperty("POSTHOG_KEY", "")
 val postHogHost: String = localProps.getProperty("POSTHOG_HOST", "https://us.i.posthog.com")
+// Meta (Facebook) SDK. App ID is public; client token is kept in local.properties
+// with the other observability keys. Both empty => the SDK is never initialized
+// (see MetaAppEvents.android.kt), so the app still builds and runs without them.
+val metaAppId: String = localProps.getProperty("META_APP_ID", "")
+val metaClientToken: String = localProps.getProperty("META_CLIENT_TOKEN", "")
 
 kotlin {
     androidTarget {
@@ -57,6 +62,12 @@ kotlin {
             // iOS uses MapKit via PlanDetailView.swift).
             implementation("com.google.android.gms:play-services-maps:19.0.0")
             implementation("com.google.maps.android:maps-compose:6.1.2")
+            // Meta (Facebook) SDK — app-events only (install + registration
+            // attribution for Meta Ads). We deliberately depend on the
+            // `facebook-core` artifact rather than the umbrella
+            // `facebook-android-sdk`, which also drags in Login/Share/Gaming
+            // and their extra manifest entries + permissions we don't use.
+            implementation("com.facebook.android:facebook-core:18.0.3")
             // Observability
             implementation(libs.sentry.android)
             implementation(libs.posthog.android)
@@ -143,6 +154,13 @@ android {
         manifestPlaceholders["appLabel"] = "Local"
         // Default: not the staging (.dev) build. Overridden in the staging type.
         buildConfigField("boolean", "IS_STAGING", "false")
+        // Meta SDK reads these from <meta-data> in the manifest. They MUST be
+        // string *resources*, not inline android:value literals: a bare numeric
+        // app id like 6761425705 is parsed by aapt as an integer, and the SDK
+        // then throws "App ID must be a string" at init. resValue always emits
+        // a <string>, which sidesteps that.
+        resValue("string", "facebook_app_id", metaAppId)
+        resValue("string", "facebook_client_token", metaClientToken)
     }
     buildFeatures {
         buildConfig = true
@@ -197,6 +215,8 @@ val generateBuildKeys = tasks.register("generateBuildKeys") {
     val dsnIos = sentryDsnIos
     val phKey = postHogKey
     val phHost = postHogHost
+    val fbAppId = metaAppId
+    val fbClientToken = metaClientToken
     // Declare the key values as inputs so editing local.properties invalidates
     // this task. Without these, Gradle treats the task as up-to-date whenever
     // the output dir exists, and a changed DSN/key silently won't take effect
@@ -205,6 +225,8 @@ val generateBuildKeys = tasks.register("generateBuildKeys") {
     inputs.property("dsnIos", dsnIos)
     inputs.property("phKey", phKey)
     inputs.property("phHost", phHost)
+    inputs.property("fbAppId", fbAppId)
+    inputs.property("fbClientToken", fbClientToken)
     doLast {
         val pkgDir = outDir.get().asFile.resolve("live/localapp/local/observability")
         pkgDir.mkdirs()
@@ -217,6 +239,8 @@ val generateBuildKeys = tasks.register("generateBuildKeys") {
                 const val SENTRY_DSN_IOS: String = "$dsnIos"
                 const val POSTHOG_KEY: String = "$phKey"
                 const val POSTHOG_HOST: String = "$phHost"
+                const val META_APP_ID: String = "$fbAppId"
+                const val META_CLIENT_TOKEN: String = "$fbClientToken"
             }
             """.trimIndent() + "\n"
         )

@@ -29,6 +29,25 @@
             android:name="io.sentry.auto-init"
             android:value="false" />
 
+        <!-- Meta (Facebook) SDK. Values come from local.properties via the
+             resValue strings in build.gradle.kts, so no key is committed. -->
+        <meta-data
+            android:name="com.facebook.sdk.ApplicationId"
+            android:value="@string/facebook_app_id" />
+        <meta-data
+            android:name="com.facebook.sdk.ClientToken"
+            android:value="@string/facebook_client_token" />
+
+        <!-- Same reasoning as Sentry's auto-init above: FacebookInitProvider is a
+             ContentProvider that initializes the SDK at process start, before any
+             of our code runs. If the client token is still blank (a fresh clone,
+             or CI without local.properties) that throws and takes the process
+             down at launch. We init explicitly in MainActivity instead, guarded
+             on both keys being present — see MetaAppEvents.android.kt. -->
+        <meta-data
+            android:name="com.facebook.sdk.AutoInitEnabled"
+            android:value="false" />
+
         <activity
             android:exported="true"
             android:launchMode="singleTask"

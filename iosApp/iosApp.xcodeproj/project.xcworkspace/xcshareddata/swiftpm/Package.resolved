@@ -1,6 +1,15 @@
 {
-  "originHash" : "40290c45166f422006df4d11e6331bb69cb1834005489947deb2e0ff02bcf0e0",
+  "originHash" : "598b69799e72d93549d443bb8d4f8da754c48c4c007c760d274d9d7037a7f8f8",
   "pins" : [
+    {
+      "identity" : "facebook-ios-sdk",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/facebook/facebook-ios-sdk",
+      "state" : {
+        "revision" : "3818dd2ccb6547c6d320ff68a1bd599789c3a44f",
+        "version" : "18.1.0"
+      }
+    },
     {
       "identity" : "onesignal-ios-sdk",
       "kind" : "remoteSourceControl",

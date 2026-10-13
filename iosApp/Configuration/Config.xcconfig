@@ -17,3 +17,9 @@ MARKETING_VERSION=1.3.0
 // the KMP isStagingBuild actual to lock the build to the dev backend.
 IS_STAGING=NO
 
+
+// Meta (Facebook) SDK keys. Optional include (`#include?`) so a clone without
+// the file still builds — the SDK just stays disabled. Copy the .template
+// alongside this file to populate it. Feeds FacebookAppID / FacebookClientToken
+// and the fb<APPID> URL scheme in Info.plist.
+#include? "Config-Secrets.xcconfig"

@@ -5,6 +5,10 @@ import OneSignalFramework
 
 @main
 struct iOSApp: App {
+    // SwiftUI has no AppDelegate of its own, but FBSDK's install attribution
+    // needs the real didFinishLaunchingWithOptions / open-url callbacks.
+    // AppDelegate (MetaBridge.swift) supplies them and starts the Meta SDK.
+    @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -51,6 +55,13 @@ struct iOSApp: App {
         // granted, which we request from onboarding via the PushBridge
         // (wired in ContentView.setupPushBridge).
         OneSignal.initialize("bdbdc7ed-00db-4961-9ad7-67ec3a5cba9f", withLaunchOptions: nil)
+
+        // Install the Meta (Facebook) bridge closures so shared Kotlin can log
+        // fb_mobile_complete_registration. The SDK itself is started from
+        // AppDelegate.didFinishLaunchingWithOptions, which UIKit calls *after*
+        // this initializer — installing the closures here is safe because
+        // nothing logs a Meta event before the user reaches signup.
+        MetaBridge.install()
     }
 
     var body: some Scene {

@@ -20,5 +20,24 @@
 		<key>UIColorName</key>
 		<string>SplashCream</string>
 	</dict>
+	<!-- Meta (Facebook) SDK. Values are substituted at build time from
+	     Config-Secrets.xcconfig (gitignored) via Config.xcconfig, so no key is
+	     committed. FBSDKCoreKit reads FacebookAppID/FacebookClientToken itself
+	     when ApplicationDelegate is initialized. -->
+	<key>FacebookAppID</key>
+	<string>$(FACEBOOK_APP_ID)</string>
+	<key>FacebookClientToken</key>
+	<string>$(FACEBOOK_CLIENT_TOKEN)</string>
+	<key>FacebookDisplayName</key>
+	<string>Local</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>fb$(FACEBOOK_APP_ID)</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
