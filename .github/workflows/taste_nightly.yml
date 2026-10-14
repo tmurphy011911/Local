@@ -1,0 +1,50 @@
+name: Nightly — Taste Profiles & Feature Affinity
+
+# Keeps the taste graph LEARNING: refreshes every user's taste summary and the
+# collaborative feature-affinity matrix from the latest interactions + tags.
+# Without this the profiles/matrix are a one-shot snapshot and go stale.
+#
+# Runs against PROD (SUPABASE_URL defaults to prod in scripts/lib/secrets.js,
+# same as the daily/weekly jobs). Depends on the taste migrations being live —
+# before they land, a run just no-ops with an error (no data harm); use the
+# manual trigger to kick the first real run once prod schema is in.
+#
+# New events keep getting tagged by the WEEKLY classify job, so this only needs
+# to rebuild the aggregates over the current tags.
+
+on:
+  schedule:
+    - cron: '0 10 * * *'  # 10am UTC / ~5am ET — after the daily event sync settles
+  workflow_dispatch: {}
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
+jobs:
+  build-taste-profiles:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build per-user taste profiles (user_taste_summary)
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node scripts/taste/build_taste_profiles.js
+
+  build-feature-affinity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Independent of profiles, but chained so the two don't hit the DB at once.
+    needs: [build-taste-profiles]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Build collaborative feature-affinity matrix (feature_affinity)
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: node scripts/taste/build_feature_affinity.js

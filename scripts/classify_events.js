@@ -31,6 +31,7 @@
  */
 
 const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
+const { TAG_VOCAB_VERSION, TAG_MIN, TAG_MAX, TAG_FACETS, ALL_TAGS } = require("./taste/tag_vocabulary");
 const MODEL = "claude-haiku-4-5-20251001";
 const API_BASE = "https://api.anthropic.com/v1";
 
@@ -39,6 +40,36 @@ const BATCH_SIZE = parseInt(process.env.BATCH_SIZE || "50", 10);
 const DRY_RUN = process.env.DRY_RUN === "1";
 const FORCE = process.env.FORCE === "1";
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL || "60", 10) * 1000;
+
+// Write throttle — the result-write loop must NEVER saturate the Nano prod DB's
+// IO again (an unthrottled concurrency-10 / no-delay write took prod down on
+// 2026-07-20). Low concurrency + a pause between waves + an adaptive health
+// probe that backs off when the DB warms. Safe defaults; tunable via env.
+const WRITE_CONCURRENCY = parseInt(process.env.WRITE_CONCURRENCY || "5", 10);
+let WRITE_WAVE_DELAY_MS = parseInt(process.env.WRITE_WAVE_DELAY_MS || "300", 10);
+const WRITE_PROBE_SLOW_MS = 1500;
+const WRITE_PROBE_HARD_MS = 8000;
+const WRITE_MAX_DELAY_MS = 5000;
+let _writeWaveCount = 0;
+const _sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Cheap DB health probe; grows the inter-wave delay when the DB is warm and
+// pauses when it's unreachable, so a big backfill can't repeat the outage.
+async function probeDbHealth() {
+  const start = Date.now();
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), WRITE_PROBE_HARD_MS);
+    const res = await fetch(`${SUPABASE_URL}/rest/v1/app_config?limit=1&select=key`, {
+      headers: { apikey: SUPABASE_SERVICE_KEY, Authorization: `Bearer ${SUPABASE_SERVICE_KEY}` },
+      signal: ctrl.signal,
+    });
+    clearTimeout(t);
+    return { ok: res.ok, ms: Date.now() - start };
+  } catch {
+    return { ok: false, ms: Date.now() - start };
+  }
+}
 
 const REVERT_MODE = process.argv.includes("--revert");
 // When set, skip the Claude batch and only apply the pattern-based auto-exclusion
@@ -67,6 +98,18 @@ const BBOX = (() => {
   }
   return { latMin: p[0], latMax: p[1], lngMin: p[2], lngMax: p[3] };
 })();
+// Scope a forced reclassification to a single existing subcategory (e.g.
+// ONLY_SUBCATEGORY=other to re-home the legacy 'other' bucket after it was
+// removed from the vocabulary). Implies FORCE-style "re-send already-classified".
+const ONLY_SUBCATEGORY = process.env.ONLY_SUBCATEGORY || null;
+// Cap the number of events sent to Claude in one run. Use for cheap eyeball
+// test passes (e.g. MAX_EVENTS=30 FORCE=1) before a full backfill. 0 = no cap.
+const MAX_EVENTS = parseInt(process.env.MAX_EVENTS || "0", 10);
+// TAGS_ONLY: enrich rows with the new tag vocabulary + performers/brands WITHOUT
+// touching category/subcategory/sub_subcategory/team_name. Safe for a prod
+// backfill — the working taxonomy is preserved. Targets rows not yet on the
+// current TAG_VOCAB_VERSION. The fetch already scopes to active + upcoming events.
+const TAGS_ONLY = process.env.TAGS_ONLY === "1";
 // Events deliberately tagged subcategory="no-public-interest" are hidden from
 // every user-facing surface (carousels filter them out). They carry subcategory
 // but NOT sub_subcategory/tags, so the "unclassified" filter below would
@@ -214,16 +257,12 @@ function autoExcludeReason(event) {
 // type of event. Deterministic, cheap, runs outside the Claude batch.
 
 const SUBCATEGORY_RECLASSIFY_PATTERNS = [
-  // Educational / networking / talks → "other"
-  {
-    subcategory: "other",
-    re: /\b(lunch\s*(&|and|&amp;|n)?\s*learn|luncheon\s*(&|and|&amp;)?\s*learn|breakfast\s*(&|and|&amp;)?\s*learn|workshop|seminar|symposium|lecture|panel discussion|panel talk|networking|open house|meet\s*(&|and|&amp;)?\s*greet|professional development|training session|community forum|town hall|round\s?table|info session|information session|fireside chat|guest speaker|keynote|distinguished lecture|colloquium|speaker series)\b/i,
-  },
-  // Fundraising / social / reception → "other"
-  {
-    subcategory: "other",
-    re: /\b(gala|fundraiser|fundraising|charity benefit|annual benefit|bake sale|raffle|cocktail reception|awards ceremony|awards gala|opening reception|annual meeting|member reception)\b/i,
-  },
+  // NOTE: the "other" catch-all was removed (2026). Educational/talks,
+  // networking, and fundraising/reception events are NO LONGER force-mapped to
+  // a bucket here — they are too varied (a charity concert vs a corporate awards
+  // gala) for a blunt regex. The LLM classifier routes them by actual activity
+  // (talks/lectures → libraries, charity concert → music, etc.), and genuinely
+  // private/corporate ones fall to no-public-interest via the auto-exclusion pass.
   // Film screenings → "arts"
   {
     subcategory: "arts",
@@ -311,9 +350,10 @@ async function applyReclassifications(events, skipIds = new Set()) {
         }),
       });
       if (res.ok) updated++;
+      await _sleep(WRITE_WAVE_DELAY_MS); // throttle — never saturate Nano IO
     }
   }
-  await Promise.all(Array.from({ length: 5 }, worker));
+  await Promise.all(Array.from({ length: WRITE_CONCURRENCY }, worker));
   console.log(`  updated: ${updated}/${matches.length}\n`);
   return new Set(matches.map((m) => m.id));
 }
@@ -375,9 +415,10 @@ async function applyAutoExclusions(events) {
         }),
       });
       if (res.ok) updated++;
+      await _sleep(WRITE_WAVE_DELAY_MS); // throttle — never saturate Nano IO
     }
   }
-  await Promise.all(Array.from({ length: 5 }, worker));
+  await Promise.all(Array.from({ length: WRITE_CONCURRENCY }, worker));
   console.log(`  updated: ${updated}/${matches.length}\n`);
   return new Set(matches.map((m) => m.id));
 }
@@ -388,7 +429,7 @@ const VALID_PARENT_CATEGORIES = ["upcoming", "always_on"];
 
 const VALID_SUBCATEGORIES = [
   "music", "arts", "theatre", "food", "comedy", "sports",
-  "museums", "tours", "libraries", "outdoors", "for-kids", "other",
+  "museums", "tours", "libraries", "outdoors", "for-kids",
   "no-public-interest",
 ];
 
@@ -431,27 +472,32 @@ const VALID_SUB_SUBCATEGORIES = [
   "meetup", "open-house", "volunteer", "fundraiser",
 ];
 
-const VALID_TAGS = [
-  // audience
-  "family-friendly", "kids", "adults-only", "date-night", "solo-friendly",
-  "group-activity", "seniors", "teens", "21+",
-  // vibe
-  "chill", "high-energy", "intimate", "epic", "quirky", "romantic",
-  "educational", "competitive", "nostalgic", "spooky",
-  // format
-  "recurring", "one-time", "outdoor", "indoor", "virtual", "livestream",
-  "free", "cheap", "splurge",
-  // interest
-  "live-music", "local-artist", "touring-act", "pro-sports", "college-sports",
-  "film-screening", "art-exhibit", "craft-beer", "wine", "foodie",
-  "literary", "history", "science", "wellness", "fitness",
-  "comedy-show", "open-mic", "trivia", "drag-show", "dance-party",
-  "theatre", "musical", "opera", "classical-music",
-  "walking-tour", "food-tour", "boat-tour", "ghost-tour",
-  "farmers-market", "holiday-event", "festival",
-  "community-event", "fundraiser", "networking",
-  "boston-essential", "hidden-gem",
-];
+// Tags come from the faceted controlled vocabulary
+// (scripts/taste/tag_vocabulary.js). VALID_TAGS is kept as an alias so the
+// rest of this file is unchanged; VALID_TAGS_SET is O(1) for validation.
+const VALID_TAGS = ALL_TAGS;
+const VALID_TAGS_SET = new Set(ALL_TAGS);
+
+// High-cardinality entities (performers, brands) are canonicalized to
+// lowercase underscore slugs and capped, so "Shane Gillis" and "SHANE GILLIS!"
+// collapse to the same feature. Kept OUT of the tag vocabulary on purpose.
+function sanitizeEntities(arr, max = 6) {
+  if (!Array.isArray(arr)) return [];
+  const out = [];
+  const seen = new Set();
+  for (const raw of arr) {
+    if (typeof raw !== "string") continue;
+    const slug = raw.trim().toLowerCase()
+      .replace(/&/g, " and ")
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    if (slug.length < 2 || slug.length > 60 || seen.has(slug)) continue;
+    seen.add(slug);
+    out.push(slug);
+    if (out.length >= max) break;
+  }
+  return out;
+}
 
 // ── Prompt builder ──
 
@@ -462,7 +508,10 @@ For each event below, determine:
 1. The correct **category** (parent type — one of: ${VALID_PARENT_CATEGORIES.join(", ")})
 2. The correct **subcategory** (one of: ${VALID_SUBCATEGORIES.join(", ")})
 3. An optional **sub_subcategory** for deeper personalization (one of: ${VALID_SUB_SUBCATEGORIES.join(", ")}, or null)
-4. Up to 5 **tags** from this list: ${VALID_TAGS.join(", ")}
+4. Between ${TAG_MIN} and ${TAG_MAX} **tags** describing the event, chosen ONLY from the faceted vocabulary below. Never invent tags. Pick the most specific applicable token from as many facets as fit — include at least one from audience, setting, format, vibe, and commitment whenever they apply:
+${Object.entries(TAG_FACETS).map(([facet, toks]) => `   • ${facet}: ${toks.join(", ")}`).join("\n")}
+5. **performers**: canonical names of any headlining people, acts, artists, or teams named in the title (e.g. "Matt Maeson", "Shane Gillis", "Boston Bruins"). Empty array if none. Do NOT include the venue.
+6. **brands**: canonical names of a recurring event BRAND only — a festival, series, tour, or promoter (e.g. "Boston Calling", "Restaurant Week", "First Fridays"). Do NOT put the venue, host organization, library, museum, studio, or business name here — that is captured separately. Most events have NO brand; return [] unless there is a clear festival/series/tour name.
 
 CATEGORY RULES (this is the most important classification):
 - **upcoming**: Events with a specific scheduled date that customers would NOT expect to see repeating regularly. Concerts, one-off shows, specific game days, special exhibits, festivals, galas, etc.
@@ -480,7 +529,6 @@ SUBCATEGORY RULES:
 - "libraries" — book clubs, author events, library programs, readings
 - "outdoors" — hiking, cycling, kayaking, beach events, nature walks, cleanups, gardening
 - "for-kids" — storytime, kids camps, children's theatre, kids science, outdoor play
-- "other" — workshops, lectures, networking, community events, wellness, charity, religious, markets
 - "no-public-interest" — events that no member of the general public would be excited to discover and attend. If a random person browsing the app would not want to attend, classify it here. Examples:
   • Recovery / support groups — AA / NA / OA / GA / Al-Anon / Alateen / 12-step / SMART Recovery / Refuge Recovery / sober support meetings / grief groups
   • Youth / scholastic sports games, practices, or tryouts — JV, varsity, freshman, middle school, high school, AAU, little league, pee-wee, pop warner, U-league (U10/U12/U14 etc.). Even state championship HS games are too niche.
@@ -490,6 +538,12 @@ SUBCATEGORY RULES:
   • Routine worship services (weekly prayer, daily prayer, Sunday service, mass). Church concerts, festivals, or special community events are NOT this — they go to music/arts/other.
 
 IMPORTANT classification rules:
+- There is NO "other" catch-all — it has been removed. EVERY event MUST be assigned one of the real subcategories above (or "no-public-interest"). Never return "other". Choose the single closest subcategory by the event's core activity:
+  • workshops / classes → the subject: art/craft-making → "arts", cooking/tasting → "food", fitness/yoga/wellness → "sports", gardening/nature/hikes → "outdoors", anything kid-focused → "for-kids"
+  • lectures / author talks / readings / book events / discussion groups → "libraries"
+  • markets → craft/vintage/art markets → "arts"; farmers/food/maker-food markets → "food"
+  • networking / business mixers / charity galas / community festivals / religious festivals / cultural celebrations → classify by the ACTUAL activity (charity concert → "music", community art fair → "arts", food-truck festival → "food", cultural dance festival → "arts")
+  • Only use "no-public-interest" when the event genuinely has no consumer appeal (per the list above) — it is NOT a replacement dumping ground for "other". When in doubt between a real subcategory and "no-public-interest", prefer the real subcategory.
 - Film screenings and movie showings are "arts" with sub_subcategory "film"
 - A venue's default classification is often WRONG. Classify by the EVENT content, not the venue.
 - ANY event whose title pits two sides against each other is almost certainly "sports" — games, matches, competitions. This includes "vs", "vs.", a standalone single-letter " v " or " v. " (Ticketmaster's format, e.g. "New England Patriots v Buffalo Bills", "2026 World Cup: Haiti v Scotland"), and "@" (e.g. "Yankees @ Red Sox"). It still applies when the matchup follows a prefix like "Preseason Game 1: Team A v Team B". Never classify these as music/arts/etc. For these matchup titles, ALWAYS populate team_name with the local/home team (the side belonging to the event's metro), using the canonical "City Nickname" form.
@@ -507,7 +561,9 @@ Respond with a JSON array. Each element must have:
 - "subcategory": one of the valid subcategories (string)
 - "sub_subcategory": deeper classification or null (string or null)
 - "team_name": for sports events, the team name exactly as commonly known — pro, college, or minor-league — in the metro the event belongs to (e.g. "Boston Bruins", "Philadelphia Eagles", "Northeastern Huskies", "Worcester Red Sox", "Lehigh Valley IronPigs"). Use the canonical "City Nickname" form. null for non-sports events or sports events not tied to a specific team (string or null)
-- "tags": array of tag strings (max 5)
+- "tags": array of ${TAG_MIN}-${TAG_MAX} tag strings, each from the faceted vocabulary above
+- "performers": array of performer/act/artist/team names (strings), or [] if none
+- "brands": array of festival/series/promoter brand names (strings), or [] if none
 
 ONLY output the JSON array, no other text.
 
@@ -533,6 +589,7 @@ async function main() {
   if (DRY_RUN) console.log("DRY RUN — no API calls\n");
   if (FORCE) console.log("FORCE — re-classifying all events\n");
   if (ONLY_CATEGORY) console.log(`ONLY_CATEGORY=${ONLY_CATEGORY} — scoping to active events with category="${ONLY_CATEGORY}", overriding unclassified-only filter\n`);
+  if (ONLY_SUBCATEGORY) console.log(`ONLY_SUBCATEGORY=${ONLY_SUBCATEGORY} — scoping to active events with subcategory="${ONLY_SUBCATEGORY}", forced reclassification\n`);
 
   // 1. Fetch events to classify
   const events = await fetchAllEvents();
@@ -542,14 +599,17 @@ async function main() {
   //    sports, civic board meetings, etc. Deterministic, cheap, no Claude call.
   //    Runs against ALL future events (not just unclassified) so backfills
   //    already-misclassified events as well.
-  const autoExcludedIds = await applyAutoExclusions(events);
+  // TAGS_ONLY preserves taxonomy: skip the pattern passes, which WRITE
+  // subcategory/category directly. Auto-exclusion / reclassification belong to a
+  // normal run, not a tags-only enrichment.
+  const autoExcludedIds = TAGS_ONLY ? new Set() : await applyAutoExclusions(events);
 
   // 3. Pattern-based reclassification — fixes obvious category mistakes
   //    like speaker series at sports_venues inheriting "sports". Also runs
   //    on already-classified events so it backfills stale data. Skip any
   //    events that auto-exclusion just tagged as no-public-interest —
   //    otherwise reclassifier patterns like "info session" would undo it.
-  const reclassifiedIds = await applyReclassifications(events, autoExcludedIds);
+  const reclassifiedIds = TAGS_ONLY ? new Set() : await applyReclassifications(events, autoExcludedIds);
 
   if (PREFILTER_ONLY) {
     console.log("PREFILTER_ONLY=1 — skipping Claude batch\n");
@@ -573,12 +633,22 @@ async function main() {
   // never-classified rows (category='other', subcategory NULL), and the old
   // tags-only test read those as "done" — leaving them invisible to every
   // category rail forever.
-  let toClassify = (FORCE || ONLY_CATEGORY)
-    ? remaining
-    : remaining.filter(
-        (e) => !e.subcategory || (!e.sub_subcategory && (!e.tags || e.tags.length === 0)),
-      );
-  console.log(`${toClassify.length} events need Claude classification${FORCE ? " (forced)" : ONLY_CATEGORY ? ` (scoped to category=${ONLY_CATEGORY})` : ""}\n`);
+  let toClassify;
+  if (TAGS_ONLY) {
+    // Only rows not yet tagged under the current vocab — idempotent across re-runs.
+    toClassify = remaining.filter((e) => e.tag_vocab_version !== TAG_VOCAB_VERSION);
+  } else if (FORCE || ONLY_CATEGORY || ONLY_SUBCATEGORY) {
+    toClassify = remaining;
+  } else {
+    toClassify = remaining.filter(
+      (e) => !e.subcategory || (!e.sub_subcategory && (!e.tags || e.tags.length === 0)),
+    );
+  }
+  if (MAX_EVENTS && toClassify.length > MAX_EVENTS) {
+    console.log(`MAX_EVENTS=${MAX_EVENTS} — capping run to first ${MAX_EVENTS} of ${toClassify.length} events\n`);
+    toClassify = toClassify.slice(0, MAX_EVENTS);
+  }
+  console.log(`${toClassify.length} events need Claude classification${TAGS_ONLY ? " (TAGS-ONLY — taxonomy preserved)" : FORCE ? " (forced)" : ONLY_CATEGORY ? ` (scoped to category=${ONLY_CATEGORY})` : ""}\n`);
   // CLASSIFY_LIMIT caps one run's bite (soonest start_at first — rows are
   // already ordered by start_at, so visible-soon events get fixed first).
   // Lets a huge backlog be worked off across bounded runs instead of one
@@ -787,7 +857,10 @@ async function processResults(batchId, chunks, allEvents) {
         subcategory: c.subcategory && VALID_SUBCATEGORIES.includes(c.subcategory) ? c.subcategory : null,
         sub_subcategory: c.sub_subcategory && VALID_SUB_SUBCATEGORIES.includes(c.sub_subcategory) ? c.sub_subcategory : null,
         team_name: c.team_name || null,
-        tags: Array.isArray(c.tags) ? c.tags.filter(t => VALID_TAGS.includes(t)).slice(0, 5) : [],
+        tags: Array.isArray(c.tags) ? [...new Set(c.tags.filter(t => VALID_TAGS_SET.has(t)))].slice(0, TAG_MAX) : [],
+        performers: sanitizeEntities(c.performers),
+        brands: sanitizeEntities(c.brands),
+        tag_vocab_version: TAG_VOCAB_VERSION,
       };
 
       if (!validated.category || !validated.subcategory) continue;
@@ -798,7 +871,8 @@ async function processResults(batchId, chunks, allEvents) {
       const changed = original.category !== validated.category ||
                       original.subcategory !== validated.subcategory;
 
-      if (changed || validated.tags.length > 0 || validated.sub_subcategory) {
+      if (changed || validated.tags.length > 0 || validated.sub_subcategory ||
+          validated.performers.length > 0 || validated.brands.length > 0) {
         updates.push(validated);
         if (changed) batchChanges++;
       }
@@ -837,13 +911,14 @@ async function fetchAllEvents() {
       `&venue_lat=gte.${BBOX.latMin}&venue_lat=lte.${BBOX.latMax}` +
       `&venue_lng=gte.${BBOX.lngMin}&venue_lng=lte.${BBOX.lngMax}`;
   }
+  if (ONLY_SUBCATEGORY) baseScope += `&subcategory=eq.${encodeURIComponent(ONLY_SUBCATEGORY)}`;
 
   const nowIso = new Date().toISOString();
   let cursor = nowIso;       // first page: start_at >= now
   let firstPage = true;
 
   while (true) {
-    let selectCols = "id,title,description,category,subcategory,sub_subcategory,tags,venue_name,venue_city,is_free,source,original_category,original_subcategory,start_at";
+    let selectCols = "id,title,description,category,subcategory,sub_subcategory,tags,tag_vocab_version,venue_name,venue_city,is_free,source,original_category,original_subcategory,start_at";
     // strict `gt` for subsequent pages so we don't re-fetch the cursor row;
     // first page uses `gte` so events starting exactly at the script start
     // time still get picked up.
@@ -860,7 +935,7 @@ async function fetchAllEvents() {
     // If new columns don't exist yet, retry without them
     if (!res.ok) {
       const errText = await res.text();
-      if (errText.includes("original_category") || errText.includes("sub_subcategory") || errText.includes("tags")) {
+      if (errText.includes("original_category") || errText.includes("sub_subcategory") || errText.includes("tags") || errText.includes("tag_vocab_version") || errText.includes("performers") || errText.includes("brands")) {
         selectCols = "id,title,description,category,subcategory,venue_name,venue_city,is_free,source,start_at";
         url = `${SUPABASE_URL}/rest/v1/events?start_at=${cmp}.${encodeURIComponent(cursor)}${baseScope}&select=${selectCols}&order=start_at.asc&limit=${pageSize}`;
         res = await fetch(url, {
@@ -878,6 +953,14 @@ async function fetchAllEvents() {
     const rows = await res.json();
     allEvents.push(...rows);
     process.stdout.write(`  fetched ${allEvents.length}\r`);
+
+    // MAX_EVENTS cap: stop paging once we have plenty to satisfy the cap after
+    // filtering (5× buffer for no-public-interest / already-tagged rows that get
+    // dropped). Avoids paging the entire corpus for a capped/test run.
+    if (MAX_EVENTS > 0 && allEvents.length >= MAX_EVENTS * 5) {
+      process.stdout.write(`  fetched ${allEvents.length} (capped early for MAX_EVENTS=${MAX_EVENTS})\n`);
+      break;
+    }
 
     if (rows.length < pageSize) break;
     // Advance the cursor to the last row's start_at. If a cluster of rows
@@ -905,31 +988,61 @@ async function writeUpdates(updates, originalEvents) {
   for (let i = 0; i < updates.length; i += concurrency) {
     if (i > 0 && delayMs > 0) await new Promise((r) => setTimeout(r, delayMs));
     const batch = updates.slice(i, i + concurrency);
+
+    // Throttle: pause between waves, and every 25 waves probe DB health and
+    // back off if it's warming (protects the Nano prod DB from IO exhaustion).
+    if (_writeWaveCount > 0) await _sleep(WRITE_WAVE_DELAY_MS);
+    if (++_writeWaveCount % 25 === 0) {
+      const h = await probeDbHealth();
+      if (!h.ok || h.ms > WRITE_PROBE_HARD_MS) {
+        WRITE_WAVE_DELAY_MS = Math.min(WRITE_MAX_DELAY_MS, Math.round(WRITE_WAVE_DELAY_MS * 1.5));
+        console.warn(`  ⚠ DB slow/unreachable (${h.ms}ms) — pausing 30s, delay→${WRITE_WAVE_DELAY_MS}ms`);
+        await _sleep(30000);
+      } else if (h.ms > WRITE_PROBE_SLOW_MS) {
+        WRITE_WAVE_DELAY_MS = Math.min(WRITE_MAX_DELAY_MS, Math.round(WRITE_WAVE_DELAY_MS * 1.3));
+        console.warn(`  ↑ DB warm (${h.ms}ms) — delay→${WRITE_WAVE_DELAY_MS}ms`);
+      }
+    }
+
     await Promise.all(batch.map(async (u) => {
       const original = originalEvents.find(e => e.id === u.id);
       const url = `${SUPABASE_URL}/rest/v1/events?id=eq.${u.id}`;
 
-      const body = {
+      // TAGS_ONLY: write only tag/entity fields, never the taxonomy — the
+      // existing category/subcategory/sub_subcategory/team_name are preserved.
+      const body = TAGS_ONLY ? {} : {
         category: u.category,
         subcategory: u.subcategory,
       };
 
-      if (u.sub_subcategory) {
+      if (!TAGS_ONLY && u.sub_subcategory) {
         body.sub_subcategory = u.sub_subcategory;
       }
 
-      if (u.team_name) {
+      if (!TAGS_ONLY && u.team_name) {
         body.team_name = u.team_name;
       }
 
       // Preserve original values for revert — only set if not already saved
-      if (original && !original.original_category) {
+      if (!TAGS_ONLY && original && !original.original_category) {
         body.original_category = original.category;
         body.original_subcategory = original.subcategory || null;
       }
 
       if (u.tags && u.tags.length > 0) {
         body.tags = u.tags;
+      }
+
+      // Taste-graph entity features (may not exist on prod until the
+      // 20260716140000 migration lands — the retry below handles that).
+      if (u.performers && u.performers.length > 0) {
+        body.performers = u.performers;
+      }
+      if (u.brands && u.brands.length > 0) {
+        body.brands = u.brands;
+      }
+      if (u.tag_vocab_version) {
+        body.tag_vocab_version = u.tag_vocab_version;
       }
 
       const res = await fetch(url, {
@@ -946,7 +1059,14 @@ async function writeUpdates(updates, originalEvents) {
       if (!res.ok) {
         const errBody = await res.text();
         // If new columns don't exist yet, retry with just category/subcategory
-        if (errBody.includes("original_category") || errBody.includes("tags") || errBody.includes("sub_subcategory")) {
+        if (errBody.includes("original_category") || errBody.includes("tags") || errBody.includes("sub_subcategory") || errBody.includes("performers") || errBody.includes("brands") || errBody.includes("tag_vocab_version")) {
+          // In TAGS_ONLY the tag columns are the whole point — if they're
+          // missing there's nothing safe to write (and we must NOT touch
+          // taxonomy). Skip rather than fall back to a category write.
+          if (TAGS_ONLY) {
+            console.error(`  Skipped ${u.id}: tag columns missing (run the migration first)`);
+            return;
+          }
           const fallback = {
             category: u.category,
             subcategory: u.subcategory,

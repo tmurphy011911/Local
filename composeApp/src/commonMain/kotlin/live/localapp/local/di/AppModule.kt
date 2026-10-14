@@ -12,6 +12,7 @@ import live.localapp.local.data.sync.PlanRealtimeWatcher
 import live.localapp.local.data.sync.PlanSyncer
 import live.localapp.local.data.repository.ServerCarouselRepository
 import live.localapp.local.data.repository.CommunityInterestRepositoryImpl
+import live.localapp.local.data.repository.ImpressionRepositoryImpl
 import live.localapp.local.data.repository.EventRepositoryImpl
 import live.localapp.local.data.repository.OnboardingRepositoryImpl
 import live.localapp.local.data.repository.PlanChatRepositoryImpl
@@ -23,6 +24,7 @@ import live.localapp.local.data.repository.VenueRepositoryImpl
 import live.localapp.local.domain.repository.BadgeRepository
 import live.localapp.local.domain.repository.CarouselRepository
 import live.localapp.local.domain.repository.CommunityInterestRepository
+import live.localapp.local.domain.repository.ImpressionRepository
 import live.localapp.local.domain.repository.EventRepository
 import live.localapp.local.domain.repository.ExploreRepository
 import live.localapp.local.domain.repository.OnboardingRepository
@@ -47,6 +49,7 @@ import org.koin.dsl.module
 val appModule = module {
     single { SupabaseClientFactory.create() }
     single<CommunityInterestRepository> { CommunityInterestRepositoryImpl(get(), get()) }
+    single<ImpressionRepository> { ImpressionRepositoryImpl(get(), get()) }
     single<EventRepository> { EventRepositoryImpl(get()) }
     single<CarouselRepository> { ServerCarouselRepository(get()) }
     single<OnboardingRepository> { OnboardingRepositoryImpl(get()) }
@@ -83,7 +86,7 @@ val appModule = module {
     single<live.localapp.local.domain.repository.BoChipsRepository> { live.localapp.local.data.repository.HttpBoChipsRepository() }
     single { HomeViewModel(get(), get(), get(), get(), get(), get(), get()) }
     single { ChatViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get(), get()) }
-    single { PlacesViewModel(get(), get(), get(), get(), get(), get()) }
+    single { PlacesViewModel(get(), get(), get(), get(), get(), get(), get()) }
     single { PlansViewModel(get(), get(), get(), get(), get(), get(), get(), get(), get()) }
     single { ProgressViewModel(get(), get(), get(), get()) }
     single { live.localapp.local.ui.leaderboard.LeaderboardViewModel(get(), get(), get()) }

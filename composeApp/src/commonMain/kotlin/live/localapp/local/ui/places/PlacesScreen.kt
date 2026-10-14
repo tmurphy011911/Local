@@ -205,6 +205,12 @@ fun PlacesScreen(
     }
     val homeViewModel = remember { KoinPlatform.getKoin().get<HomeViewModel>() }
     val homeState by homeViewModel.uiState.collectAsState()
+    // Taste graph (spec §4.2): log an impression for the ranked list the user is
+    // actually seeing. Fires when results settle or the tab flips; the repo
+    // dedups per session, so recompositions don't double-count.
+    LaunchedEffect(state.activeTab, state.filteredEvents.size, state.filteredVenues.size) {
+        viewModel.onResultsDisplayed(state.activeTab)
+    }
     val focusManager = androidx.compose.ui.platform.LocalFocusManager.current
     val keyboardController = androidx.compose.ui.platform.LocalSoftwareKeyboardController.current
     // Collapse the soft keyboard the moment the user scrolls a results list.

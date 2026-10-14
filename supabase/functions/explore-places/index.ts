@@ -340,6 +340,36 @@ function venueCategoryToAffinityKey(category: string | null): string | null {
   return null;
 }
 
+// ── Taste graph (spec §6): richer per-user taste vector ──
+// Normalized 0-1 subcategory weights from user_taste_summary. Venue categories
+// map to the same affinity keys via venueCategoryToAffinityKey, so the event-
+// derived taste applies to places too. Graceful: null when no row / cold-start
+// / table absent → taste term is 0 → ranking unchanged.
+interface UserTaste {
+  subcat: Record<string, number>;
+}
+
+async function fetchUserTaste(supabase: any, userId: string | null): Promise<UserTaste | null> {
+  if (!userId) return null;
+  try {
+    const { data } = await supabase
+      .from("user_taste_summary")
+      .select("subcategory_scores,interaction_count")
+      .eq("user_id", userId)
+      .maybeSingle();
+    if (!data || (data.interaction_count ?? 0) < 3) return null;
+    const entries = Object.entries((data.subcategory_scores ?? {}) as Record<string, number>)
+      .filter(([, v]) => (v as number) > 0);
+    if (entries.length === 0) return null;
+    const max = Math.max(...entries.map(([, v]) => v as number));
+    const subcat: Record<string, number> = {};
+    for (const [k, v] of entries) subcat[k.toLowerCase()] = (v as number) / max;
+    return { subcat };
+  } catch {
+    return null;
+  }
+}
+
 // ── Scoring ──
 
 function scoreVenue(
@@ -349,6 +379,7 @@ function scoreVenue(
   prefs: UserPrefs | null,
   affinityMap: Record<string, number>,
   maxRank: number,
+  userTaste: UserTaste | null,
 ): number {
   const proxScore = 1 / (1 + distance / 8); // falls off ~8mi — places lookups tolerate more radius than events
   const rankScore = maxRank > 0 ? (v.public_interest_rank ?? 0) / maxRank : 0;
@@ -365,6 +396,12 @@ function scoreVenue(
   // rest of the score — better than wrong-bucket bias.
   const affinityKey = venueCategoryToAffinityKey(v.category);
   const affinity = affinityKey ? (affinityMap[affinityKey] ?? 0) : 0;
+
+  // Taste-vector term (spec §6): the user's learned weight for this venue's
+  // mapped category. Additive and 0 when no taste summary, so ranking is
+  // unchanged until profiles are built. Tunable weight.
+  const tasteVec = affinityKey ? (userTaste?.subcat[affinityKey] ?? 0) : 0;
+  const wTasteVec = 0.30;
 
   // Option A weighting — personal-dominant Places feed:
   //   hot user (any affinity history): aff 30 · taste 20 · saved 10 · prox 25 · rank 10 · density 5 = 100
@@ -385,7 +422,8 @@ function scoreVenue(
     savedVenueBoost * wSaved +
     proxScore * wProx +
     rankScore * wRank +
-    eventDensity * wDensity
+    eventDensity * wDensity +
+    tasteVec * wTasteVec
   );
 }
 
@@ -509,7 +547,7 @@ Deno.serve(async (req) => {
       // category-complete within scope (drill-down + facets are post-fetch);
       // city IS pushed down so a city-filtered list is COMPLETE, not a slice of
       // the top-500 (which dropped mid-rank venues in smaller cities).
-      const [fetchedBuckets, fetchedRawVenues, prefs, affinityMap] = await Promise.all([
+      const [fetchedBuckets, fetchedRawVenues, prefs, affinityMap, userTaste] = await Promise.all([
         eventBuckets
           ? Promise.resolve(eventBuckets)
           : fetchEventsByVenue(supabase, lat, lng, radiusMiles),
@@ -518,6 +556,7 @@ Deno.serve(async (req) => {
           : fetchVenues(supabase, lat, lng, query, null, radiusMiles, city),
         userId ? fetchUserPrefs(supabase, userId) : Promise.resolve(null),
         fetchCategoryAffinity(supabase, userId),
+        fetchUserTaste(supabase, userId),
       ]);
 
       if (!eventBuckets) {
@@ -544,7 +583,7 @@ Deno.serve(async (req) => {
             dist,
             eventCount,
             events,
-            score: scoreVenue(v, dist, eventCount, prefs, affinityMap, maxRank),
+            score: scoreVenue(v, dist, eventCount, prefs, affinityMap, maxRank, userTaste),
           };
         })
         .filter((x) => x.dist <= radiusMiles)

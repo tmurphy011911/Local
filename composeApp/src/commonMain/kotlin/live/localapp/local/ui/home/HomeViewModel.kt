@@ -443,6 +443,9 @@ class HomeViewModel(
                 prefs.city.replaceFirstChar { c -> c.uppercase() }
             } else current.locationName
             _uiState.update { it.copy(userLat = lat, userLng = lng, gpsLat = lat, gpsLng = lng, locationName = locName, isUnsupportedState = !isLocationInSupportedState(lat, lng)) }
+            // Taste graph (spec §5.4): stamp active location onto interactions so
+            // travel propensity is learned from where the user actually is.
+            communityInterestRepository.setActiveLocation(lat, lng)
             reloadCarouselsForLocationChange()
             fetchYocalPromptsIfNeeded(lat, lng)
             fetchWeatherIfNeeded(lat, lng)

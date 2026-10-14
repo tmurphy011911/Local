@@ -21,12 +21,35 @@ private data class CommunityInteractionDto(
     @SerialName("category") val category: String? = null,
 )
 
+// Minimal shape to read back the inserted interaction's id.
+@Serializable
+private data class InsertedInteraction(
+    @SerialName("id") val id: String,
+)
+
+// Actor location lives in the own-RLS interaction_context table (spec §5.4),
+// NEVER on the broadly-readable community_interactions row.
+@Serializable
+private data class InteractionContextDto(
+    @SerialName("community_interaction_id") val communityInteractionId: String,
+    @SerialName("user_id") val userId: String,
+    @SerialName("actor_lat") val actorLat: Double? = null,
+    @SerialName("actor_lng") val actorLng: Double? = null,
+)
+
 class CommunityInterestRepositoryImpl(
     private val supabaseClient: SupabaseClient,
     private val userPreferencesRepository: UserPreferencesRepository,
 ) : CommunityInterestRepository {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    // User's active/set location (GPS or manual), pushed in by the location
+    // chokepoint (HomeViewModel.setUserLocation) and stamped onto each
+    // interaction. Plain vars (no @Volatile to stay KMP-portable) — location
+    // changes slowly so a rare stale read across threads is harmless.
+    private var activeLat: Double? = null
+    private var activeLng: Double? = null
 
     // Personal interaction maps (current user only)
     private val personalClicks = mutableMapOf<String, Int>()
@@ -130,6 +153,7 @@ class CommunityInterestRepositoryImpl(
         "favorite" -> 2.0
         "share" -> 4.0
         "plan_add" -> 6.0
+        "not_interested" -> -3.0
         else -> 1.0
     }
 
@@ -176,6 +200,17 @@ class CommunityInterestRepositoryImpl(
         personalPlanAdds[id] = (personalPlanAdds[id] ?: 0) + 1
         trackCategoryWeight(category, 6.0)
         persistInteraction(id, type, "plan_add", category)
+    }
+
+    override fun recordNotInterested(id: String, type: InteractionType, category: String?) {
+        // Soft negative: pull the category weight down and record server-side.
+        trackCategoryWeight(category, -3.0)
+        persistInteraction(id, type, "not_interested", category)
+    }
+
+    override fun setActiveLocation(lat: Double?, lng: Double?) {
+        activeLat = lat
+        activeLng = lng
     }
 
     private fun trackCategoryWeight(category: String?, weight: Double) {
@@ -237,16 +272,23 @@ class CommunityInterestRepositoryImpl(
             println("persistInteraction: SKIPPED — no userId")
             return
         }
+        val lat = activeLat
+        val lng = activeLng
+        val itemTypeStr = when (type) {
+            InteractionType.EVENT -> "event"
+            InteractionType.PLACE -> "place"
+        }
         scope.launch {
+            // Critical path: record the interaction with a PLAIN insert (no
+            // returning/decode that could throw AFTER the row is already saved).
+            // Favoriting / clicks / plan-adds must never break because of the
+            // taste-graph location capture below.
             try {
                 supabaseClient.from("community_interactions").insert(
                     CommunityInteractionDto(
                         userId = userId,
                         itemId = itemId,
-                        itemType = when (type) {
-                            InteractionType.EVENT -> "event"
-                            InteractionType.PLACE -> "place"
-                        },
+                        itemType = itemTypeStr,
                         interactionType = interaction,
                         category = category,
                     )
@@ -254,6 +296,37 @@ class CommunityInterestRepositoryImpl(
                 println("persistInteraction: SUCCESS $interaction $itemId for user $userId")
             } catch (e: Exception) {
                 println("persistInteraction: FAILED $interaction $itemId — ${e.message}")
+                return@launch
+            }
+
+            // Best-effort, FULLY ISOLATED: stamp the user's active location into
+            // the own-RLS interaction_context table, linked to the row we just
+            // wrote. Anything failing here has ZERO effect on the interaction.
+            if (lat != null && lng != null) {
+                try {
+                    val row = supabaseClient.from("community_interactions")
+                        .select {
+                            filter {
+                                eq("user_id", userId)
+                                eq("item_id", itemId)
+                                eq("interaction_type", interaction)
+                                eq("item_type", itemTypeStr)
+                            }
+                            order("created_at", io.github.jan.supabase.postgrest.query.Order.DESCENDING)
+                            limit(1)
+                        }
+                        .decodeSingle<InsertedInteraction>()
+                    supabaseClient.from("interaction_context").insert(
+                        InteractionContextDto(
+                            communityInteractionId = row.id,
+                            userId = userId,
+                            actorLat = lat,
+                            actorLng = lng,
+                        )
+                    )
+                } catch (_: Exception) {
+                    // Location capture is best-effort — never affects the interaction.
+                }
             }
         }
     }

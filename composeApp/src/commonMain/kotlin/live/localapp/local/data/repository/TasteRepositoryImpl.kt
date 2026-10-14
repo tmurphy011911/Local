@@ -2,14 +2,29 @@ package live.localapp.local.data.repository
 
 import io.github.jan.supabase.SupabaseClient
 import io.github.jan.supabase.postgrest.from
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
 import live.localapp.local.data.remote.dto.PriceComfortDto
 import live.localapp.local.data.remote.dto.TasteProfileDto
 import live.localapp.local.data.remote.dto.TasteProfileInsertDto
 import live.localapp.local.domain.model.Event
 import live.localapp.local.domain.model.PriceComfort
 import live.localapp.local.domain.model.TasteProfile
+import live.localapp.local.domain.repository.InterestSummary
 import live.localapp.local.domain.repository.TasteRepository
 import live.localapp.local.ui.chat.ItinerarySlot
+
+@Serializable
+private data class TasteSummaryDto(
+    @SerialName("interest_1") val interest1: String? = null,
+    @SerialName("interest_2") val interest2: String? = null,
+    @SerialName("interest_3") val interest3: String? = null,
+    @SerialName("interest_4") val interest4: String? = null,
+    @SerialName("interest_5") val interest5: String? = null,
+    @SerialName("top_entities") val topEntities: List<String> = emptyList(),
+    @SerialName("travel_propensity") val travelPropensity: Double? = null,
+    @SerialName("interaction_count") val interactionCount: Int = 0,
+)
 
 class TasteRepositoryImpl(
     private val supabaseClient: SupabaseClient,
@@ -23,6 +38,25 @@ class TasteRepositoryImpl(
             dto?.toDomain()
         } catch (e: Exception) {
             println("TasteRepo: failed to load profile: ${e.message}")
+            null
+        }
+    }
+
+    override suspend fun getInterestSummary(userId: String): InterestSummary? {
+        return try {
+            val dto = supabaseClient.from("user_taste_summary")
+                .select { filter { eq("user_id", userId) } }
+                .decodeSingleOrNull<TasteSummaryDto>()
+            dto?.let {
+                InterestSummary(
+                    interests = listOfNotNull(it.interest1, it.interest2, it.interest3, it.interest4, it.interest5),
+                    topEntities = it.topEntities,
+                    travelPropensity = it.travelPropensity,
+                    interactionCount = it.interactionCount,
+                )
+            }
+        } catch (_: Exception) {
+            // Table may not exist yet / no row — Bo just falls back to its other signals.
             null
         }
     }
