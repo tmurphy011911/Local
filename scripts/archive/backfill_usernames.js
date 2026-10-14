@@ -30,7 +30,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
+const { getSecrets, SUPABASE_URL } = require("../lib/secrets");
 
 const WRITE = process.env.WRITE === "1";
 const REVERT = process.env.REVERT || null;

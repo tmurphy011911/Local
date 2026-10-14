@@ -15,7 +15,7 @@
  *   SUPABASE_SERVICE_KEY=ey... node scripts/classify_needs_reservation.js
  */
 
-const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
+const { getSecrets, SUPABASE_URL } = require("../lib/secrets");
 
 const DRY_RUN = process.argv.includes("--dry-run");
 const LIMIT_ARG = process.argv.find((a) => a.startsWith("--limit="));

@@ -11,8 +11,8 @@
  *   SUPABASE_SERVICE_KEY=ey... SAMPLE=30 WRITE=1 node scripts/backfill_event_descriptions.js
  */
 
-const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
-const { extractDescriptionFromHtml } = require("./run_crawls");
+const { getSecrets, SUPABASE_URL } = require("../lib/secrets");
+const { extractDescriptionFromHtml } = require("../run_crawls");
 
 const SAMPLE = parseInt(process.env.SAMPLE || "20", 10);
 const WRITE = process.env.WRITE === "1";

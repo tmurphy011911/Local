@@ -17,7 +17,7 @@
  *   SUPABASE_SERVICE_KEY=ey... LIMIT=20 node scripts/create_venue_stubs.js                 # cap calls
  */
 
-const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
+const { getSecrets, SUPABASE_URL } = require("../lib/secrets");
 const SERVICE_KEY = (process.env.SUPABASE_SERVICE_KEY || "").replace(/\s/g, "");
 const WRITE = process.env.WRITE === "1";
 const STATE = process.env.STATE || null;

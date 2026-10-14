@@ -15,7 +15,7 @@
  *   SUPABASE_SERVICE_KEY=ey... STATE=MA node scripts/dedup_events.js       # scope by state
  */
 
-const { SUPABASE_URL } = require("./lib/secrets");
+const { SUPABASE_URL } = require("../lib/secrets");
 const SERVICE_KEY = (process.env.SUPABASE_SERVICE_KEY || "").replace(/\s/g, "");
 const WRITE = process.env.WRITE === "1";
 const STATE = process.env.STATE || null;

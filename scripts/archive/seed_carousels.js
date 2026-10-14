@@ -1,4 +1,4 @@
-const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
+const { getSecrets, SUPABASE_URL } = require("../lib/secrets");
 
 let SUPABASE_SERVICE_KEY;
 
