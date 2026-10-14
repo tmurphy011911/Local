@@ -457,7 +457,7 @@ struct DailyQuizView: View {
     }
 
     private func boImage(_ size: CGFloat) -> some View {
-        Image("BoDefaultClean").resizable().scaledToFit().frame(width: size, height: size)
+        Image(BoArt.clean).resizable().scaledToFit().frame(width: size, height: size)
     }
 
     /// Reveals a streaming string WITHOUT reflow: the full line is always laid out

@@ -43,7 +43,6 @@ import live.localapp.local.domain.service.UpdateTone
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
 import local.composeapp.generated.resources.Res
-import local.composeapp.generated.resources.bo_tiny
 import org.jetbrains.compose.resources.painterResource
 import org.koin.mp.KoinPlatform
 
@@ -143,7 +142,7 @@ fun UpdateAvailableBanner(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Image(
-            painter = painterResource(Res.drawable.bo_tiny),
+            painter = painterResource(live.localapp.local.ui.character.boTinyRes),
             contentDescription = null,
             modifier = Modifier.size(20.dp),
         )
@@ -215,7 +214,7 @@ fun ForceUpdateScreen(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Image(
-                    painter = painterResource(Res.drawable.bo_tiny),
+                    painter = painterResource(live.localapp.local.ui.character.boTinyRes),
                     contentDescription = null,
                     modifier = Modifier.size(40.dp),
                 )

@@ -61,7 +61,6 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import local.composeapp.generated.resources.Res
-import local.composeapp.generated.resources.bo_tiny
 import org.jetbrains.compose.resources.painterResource
 import live.localapp.local.ui.common.pressable
 import live.localapp.local.ui.theme.AppColors
@@ -339,7 +338,7 @@ private fun PaywallBoTagline(text: String) {
         horizontalArrangement = Arrangement.Center,
     ) {
         Image(
-            painter = painterResource(Res.drawable.bo_tiny),
+            painter = painterResource(live.localapp.local.ui.character.boTinyRes),
             contentDescription = null,
             modifier = Modifier
                 .size(26.dp)

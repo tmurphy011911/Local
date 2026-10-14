@@ -23,6 +23,7 @@ import androidx.compose.ui.unit.dp
  * Bo — Local's mascot character.
  *
  * A coral wisp/sprite with a wavy bottom, big anime eyes, and idle blinking.
+ * In October it wears its pumpkin skin (see [BoSeason]).
  *
  * Usage:
  *   var trigger by remember { mutableStateOf(0) }
@@ -35,9 +36,10 @@ import androidx.compose.ui.unit.dp
  */
 
 object BoColors {
-    val coral      = Color(0xFFFF6B6B)
-    val coralLight = Color(0xFFFFB3B3)
-    val coralDeep  = Color(0xFFE85555)
+    // Body tones follow the seasonal skin (pumpkin orange in October).
+    val coral: Color      get() = if (BoSeason.isHalloween) BoSeason.pumpkin else Color(0xFFFF6B6B)
+    val coralLight: Color get() = if (BoSeason.isHalloween) BoSeason.pumpkinLight else Color(0xFFFFB3B3)
+    val coralDeep: Color  get() = if (BoSeason.isHalloween) BoSeason.pumpkinDeep else Color(0xFFE85555)
     val sage       = Color(0xFF4ECBA0)
     val sun        = Color(0xFFFFB830)
     val ink        = Color(0xFF1A1523)
@@ -147,7 +149,7 @@ fun Bo(
                 translate(left = tx.dx, top = tx.dy) {
                     rotate(degrees = tx.rotationDeg, pivot = Offset(50f, 50f)) {
                         scale(tx.scaleX, tx.scaleY, pivot = Offset(50f, 80f)) {
-                            drawBody()
+                            drawBody(withStem = true)
                             drawCheeks()
                             drawEyes(expression, blinkProgress)
                             drawMouth(expression)
@@ -181,7 +183,7 @@ fun Bo(
                         translate(left = tx.dx, top = tx.dy) {
                             rotate(degrees = tx.rotationDeg, pivot = Offset(50f, 50f)) {
                                 scale(tx.scaleX, tx.scaleY, pivot = Offset(50f, 80f)) {
-                                    drawBody()
+                                    drawBody(withStem = !levelWearsHat(lvl))
                                     drawCheeks()
                                     if (lvl == 4) drawPennant()
                                     drawLevelEyes(lvl, blinkProgress)
@@ -205,7 +207,7 @@ fun Bo(
 }
 
 // ─── Body ───────────────────────────────────────────────────────────────────
-private fun DrawScope.drawBody() {
+private fun DrawScope.drawBody(withStem: Boolean) {
     val path = Path().apply {
         moveTo(50f, 22f)
         cubicTo(76f, 22f, 88f, 36f, 88f, 52f)
@@ -224,7 +226,10 @@ private fun DrawScope.drawBody() {
         cubicTo(12f, 36f, 24f, 22f, 50f, 22f)
         close()
     }
+    val halloween = BoSeason.isHalloween
+    if (halloween && withStem) drawPumpkinStem(BoColors.ink)
     drawPath(path, BoColors.coral)
+    if (halloween) drawPumpkinRibs()
     drawPath(path, BoColors.ink, style = Stroke(width = 3.5f, join = StrokeJoin.Round))
 }
 

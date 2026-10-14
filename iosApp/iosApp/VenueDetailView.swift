@@ -1100,7 +1100,7 @@ private struct BoTypewriterEmptyState: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
-            Image("BoTiny")
+            Image(BoArt.tiny)
                 .resizable()
                 .scaledToFit()
                 .frame(width: 28, height: 28)

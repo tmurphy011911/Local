@@ -65,7 +65,6 @@ import kotlinx.coroutines.launch
 import live.localapp.local.domain.service.SplashGreetingService
 import org.koin.mp.KoinPlatform
 import local.composeapp.generated.resources.Res
-import local.composeapp.generated.resources.bo_tiny
 import org.jetbrains.compose.resources.painterResource
 import live.localapp.local.platform.isReducedMotionEnabled
 import live.localapp.local.ui.theme.AppColors
@@ -1128,7 +1127,7 @@ private fun BoTapLine(visible: Boolean, reduceMotion: Boolean) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Image(
-            painter = painterResource(Res.drawable.bo_tiny),
+            painter = painterResource(live.localapp.local.ui.character.boTinyRes),
             contentDescription = null,
             modifier = Modifier
                 .size(28.dp)

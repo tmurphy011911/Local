@@ -16,6 +16,8 @@ import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.vector.PathParser
+import live.localapp.local.ui.character.BoColors
+import live.localapp.local.ui.character.BoSeason
 import live.localapp.local.ui.character.drawBeret
 import live.localapp.local.ui.character.drawBinoculars
 import live.localapp.local.ui.character.drawCoffee
@@ -26,7 +28,10 @@ import live.localapp.local.ui.character.drawLevelMouth
 import live.localapp.local.ui.character.drawMap
 import live.localapp.local.ui.character.drawPennant
 import live.localapp.local.ui.character.drawPlant
+import live.localapp.local.ui.character.drawPumpkinRibs
+import live.localapp.local.ui.character.drawPumpkinStem
 import live.localapp.local.ui.character.drawSunglasses
+import live.localapp.local.ui.character.levelWearsHat
 
 /**
  * "Stubby Bo" — the mascot, rendered as a Compose vector from the canonical
@@ -39,8 +44,9 @@ import live.localapp.local.ui.character.drawSunglasses
  */
 enum class BoExpression { Default, Happy, Excited }
 
-private val BoCoral = Color(0xFFFF6B6B)
-private val BoCoralDeep = Color(0xFFE85555)
+// Seasonal — pumpkin orange in October (see BoSeason).
+private val BoCoral: Color get() = BoColors.coral
+private val BoCoralDeep: Color get() = BoColors.coralDeep
 private val BoInk = Color(0xFF1A1523)
 private val BoPaper = Color(0xFFFAF7F2)
 
@@ -91,8 +97,7 @@ fun BoCharacter(
                     translate(left = 20f, top = 26f) {
                         if (showShadow) ellipse(50f, 88f, 26f, 3f, BoInk, alpha = 0.18f)
                         if (lvl == 8) drawLegendHalo(0f)
-                        drawPath(bodyPath, BoCoral)
-                        drawPath(bodyPath, BoInk, style = Stroke(width = 3.5f, join = StrokeJoin.Round))
+                        drawSeasonalBody(bodyPath, withStem = !levelWearsHat(lvl))
                         ellipse(28f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
                         ellipse(72f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
                         if (lvl == 4) drawPennant()
@@ -125,12 +130,7 @@ fun BoCharacter(
                 ellipse(50f, 88f, 26f, 3f, BoInk, alpha = 0.18f)
             }
             // Body
-            drawPath(bodyPath, BoCoral)
-            drawPath(
-                bodyPath,
-                BoInk,
-                style = Stroke(width = 3.5f, join = StrokeJoin.Round),
-            )
+            drawSeasonalBody(bodyPath, withStem = true)
             // Cheeks
             ellipse(28f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
             ellipse(72f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
@@ -195,4 +195,12 @@ private fun DrawScope.ellipse(
 
 private fun DrawScope.strokePath(path: Path, color: Color, width: Float) {
     drawPath(path, color, style = Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round))
+}
+
+private fun DrawScope.drawSeasonalBody(bodyPath: Path, withStem: Boolean) {
+    val halloween = BoSeason.isHalloween
+    if (halloween && withStem) drawPumpkinStem(BoInk)
+    drawPath(bodyPath, BoCoral)
+    if (halloween) drawPumpkinRibs()
+    drawPath(bodyPath, BoInk, style = Stroke(width = 3.5f, join = StrokeJoin.Round))
 }

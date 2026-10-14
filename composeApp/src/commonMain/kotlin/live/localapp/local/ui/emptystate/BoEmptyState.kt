@@ -49,7 +49,6 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.coroutineScope
 import local.composeapp.generated.resources.Res
-import local.composeapp.generated.resources.bo_tiny
 import org.jetbrains.compose.resources.painterResource
 import live.localapp.local.ui.theme.AppColors
 import live.localapp.local.ui.theme.AppFonts
@@ -212,7 +211,7 @@ private fun BoTapLine(
         horizontalArrangement = Arrangement.Center,
     ) {
         Image(
-            painter = painterResource(Res.drawable.bo_tiny),
+            painter = painterResource(live.localapp.local.ui.character.boTinyRes),
             contentDescription = null,
             modifier = Modifier
                 .size(28.dp)

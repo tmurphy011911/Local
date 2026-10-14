@@ -112,7 +112,6 @@ import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.ui.layout.ContentScale
 import coil3.compose.AsyncImage
 import local.composeapp.generated.resources.Res
-import local.composeapp.generated.resources.bo_tiny
 import org.jetbrains.compose.resources.painterResource
 import live.localapp.local.platform.PlaceSuggestion
 import live.localapp.local.platform.RadiusMapPreview
@@ -1136,11 +1135,11 @@ private fun MessageRow(role: MessageRole, text: String, messageId: String? = nul
                             fontFamily = AppFonts.Body,
                             fontWeight = FontWeight.Bold,
                             fontSize = 11.sp,
-                            color = AppColors.Coral,
+                            color = live.localapp.local.ui.character.BoColors.coral,
                         ),
                     )
                     Image(
-                        painter = painterResource(Res.drawable.bo_tiny),
+                        painter = painterResource(live.localapp.local.ui.character.boTinyRes),
                         contentDescription = null,
                         modifier = Modifier.size(16.dp),
                     )
@@ -1428,7 +1427,7 @@ private fun SearchingIndicator(
                 verticalAlignment = Alignment.Top,
             ) {
                 Image(
-                    painter = painterResource(Res.drawable.bo_tiny),
+                    painter = painterResource(live.localapp.local.ui.character.boTinyRes),
                     contentDescription = null,
                     modifier = Modifier.size(20.dp).padding(top = 1.dp),
                 )
@@ -1453,7 +1452,7 @@ private fun SearchingIndicator(
                 verticalAlignment = Alignment.Top,
             ) {
                 Image(
-                    painter = painterResource(Res.drawable.bo_tiny),
+                    painter = painterResource(live.localapp.local.ui.character.boTinyRes),
                     contentDescription = null,
                     modifier = Modifier.size(20.dp).padding(top = 1.dp),
                 )
@@ -1494,7 +1493,7 @@ private fun SearchingIndicator(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Image(
-                painter = painterResource(Res.drawable.bo_tiny),
+                painter = painterResource(live.localapp.local.ui.character.boTinyRes),
                 contentDescription = null,
                 modifier = Modifier.size(20.dp),
             )

@@ -1889,6 +1889,15 @@ private fun AiConciergeCard(
         }
     }
 
+    // October: night-sky Halloween card with a pumpkin rim, moon and bats
+    // around pumpkin Bo (see BoSeason). Otherwise the standard coral card.
+    val halloween = live.localapp.local.ui.character.BoSeason.isHalloween
+    val season = live.localapp.local.ui.character.BoSeason
+    val cardShape = RoundedCornerShape(20.dp)
+    val lipColor = if (halloween) season.nightLip else AppColors.CoralDk
+    val rimColor = if (halloween) season.pumpkin else AppColors.CoralDk
+    val accent = if (halloween) season.pumpkin else AppColors.Coral
+
     Box(
         modifier = Modifier
             .padding(horizontal = 20.dp)
@@ -1901,28 +1910,42 @@ private fun AiConciergeCard(
                 .fillMaxWidth()
                 .matchParentSize()
                 .offset(y = 5.dp)
-                .background(AppColors.CoralDk, RoundedCornerShape(20.dp)),
+                .background(lipColor, cardShape),
         )
 
         // Card content
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(20.dp))
-                .background(AppColors.Coral, RoundedCornerShape(20.dp))
-                .border(2.dp, AppColors.CoralDk, RoundedCornerShape(20.dp))
+                .clip(cardShape)
+                .then(
+                    if (halloween) {
+                        Modifier.background(
+                            Brush.verticalGradient(listOf(season.nightTop, season.nightBottom)),
+                            cardShape,
+                        )
+                    } else {
+                        Modifier.background(AppColors.Coral, cardShape)
+                    },
+                )
+                .border(2.dp, rimColor, cardShape)
                 .drawBehind {
-                    // Decorative shine — drawn as paint, not a layout child, so it
-                    // doesn't force the card's minimum height to the circle's size.
-                    val r = 65.dp.toPx()
-                    drawCircle(
-                        color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.13f),
-                        radius = r,
-                        center = androidx.compose.ui.geometry.Offset(
-                            x = size.width - 5.dp.toPx(),
-                            y = 17.dp.toPx(),
-                        ),
-                    )
+                    // Decorative paint, not layout children, so it doesn't force
+                    // the card's minimum height.
+                    if (halloween) {
+                        drawHalloweenSky()
+                    } else {
+                        // Shine
+                        val r = 65.dp.toPx()
+                        drawCircle(
+                            color = androidx.compose.ui.graphics.Color.White.copy(alpha = 0.13f),
+                            radius = r,
+                            center = androidx.compose.ui.geometry.Offset(
+                                x = size.width - 5.dp.toPx(),
+                                y = 17.dp.toPx(),
+                            ),
+                        )
+                    }
                 }
                 .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 14.dp),
         ) {
@@ -1943,7 +1966,10 @@ private fun AiConciergeCard(
                     Text("Ask ", style = AppType.AiTitle)
                     Text(
                         "Bo",
-                        style = AppType.AiTitle.copy(fontStyle = FontStyle.Italic),
+                        style = AppType.AiTitle.copy(
+                            fontStyle = FontStyle.Italic,
+                            color = if (halloween) season.pumpkin else AppType.AiTitle.color,
+                        ),
                     )
                     Spacer(Modifier.weight(1f))
                     // Bo keeps its 72dp drawn size but lives in a shorter box so
@@ -1990,7 +2016,8 @@ private fun AiConciergeCard(
                             androidx.compose.foundation.text.selection.LocalTextSelectionColors provides
                                 androidx.compose.foundation.text.selection.TextSelectionColors(
                                     handleColor = AppColors.White,
-                                    backgroundColor = androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.28f),
+                                    backgroundColor = if (halloween) season.pumpkin.copy(alpha = 0.45f)
+                                        else androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.28f),
                                 ),
                         ) {
                         androidx.compose.foundation.text.BasicTextField(
@@ -2056,12 +2083,62 @@ private fun AiConciergeCard(
                             .testTag("home_concierge_send"),
                         contentAlignment = Alignment.Center,
                     ) {
-                        Icon(Icons.Outlined.Send, contentDescription = "Send", modifier = Modifier.size(14.dp), tint = AppColors.Coral)
+                        Icon(Icons.Outlined.Send, contentDescription = "Send", modifier = Modifier.size(14.dp), tint = accent)
                     }
                 }
             }
         }
     }
+}
+
+/**
+ * Halloween backdrop for the Ask Bo card: a glowing moon tucked behind Bo
+ * (top-right), a few stars, and a small flight of bats.
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHalloweenSky() {
+    val season = live.localapp.local.ui.character.BoSeason
+    val white = androidx.compose.ui.graphics.Color.White
+    fun o(x: Float, y: Float) = androidx.compose.ui.geometry.Offset(x, y)
+
+    // Moon + glow, sitting behind Bo
+    val moonCenter = o(size.width - 58.dp.toPx(), 26.dp.toPx())
+    drawCircle(season.moon.copy(alpha = 0.10f), radius = 46.dp.toPx(), center = moonCenter)
+    drawCircle(season.moon.copy(alpha = 0.16f), radius = 34.dp.toPx(), center = moonCenter)
+    drawCircle(season.moon.copy(alpha = 0.9f), radius = 24.dp.toPx(), center = moonCenter)
+
+    // Stars
+    listOf(0.38f to 10f, 0.52f to 22f, 0.64f to 8f, 0.30f to 30f, 0.92f to 64f).forEach { (fx, y) ->
+        drawCircle(white.copy(alpha = 0.55f), radius = 1.3.dp.toPx(), center = o(size.width * fx, y.dp.toPx()))
+    }
+
+    // Bats — wingspan in px, positioned between the title and the moon
+    drawBat(o(size.width * 0.44f, 16.dp.toPx()), 16.dp.toPx())
+    drawBat(o(size.width * 0.56f, 30.dp.toPx()), 11.dp.toPx())
+    drawBat(o(size.width - 104.dp.toPx(), 10.dp.toPx()), 9.dp.toPx())
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBat(
+    c: androidx.compose.ui.geometry.Offset,
+    span: Float,
+) {
+    val h = span / 2f
+    val path = androidx.compose.ui.graphics.Path().apply {
+        moveTo(c.x, c.y - h * 0.15f)
+        // Right wing: up to the tip, then scalloped trailing edge back to the body
+        quadraticBezierTo(c.x + h * 0.45f, c.y - h * 0.65f, c.x + h, c.y - h * 0.25f)
+        quadraticBezierTo(c.x + h * 0.78f, c.y - h * 0.05f, c.x + h * 0.7f, c.y + h * 0.2f)
+        quadraticBezierTo(c.x + h * 0.52f, c.y + h * 0.02f, c.x + h * 0.36f, c.y + h * 0.18f)
+        quadraticBezierTo(c.x + h * 0.2f, c.y + h * 0.02f, c.x, c.y + h * 0.3f)
+        // Left wing (mirror)
+        quadraticBezierTo(c.x - h * 0.2f, c.y + h * 0.02f, c.x - h * 0.36f, c.y + h * 0.18f)
+        quadraticBezierTo(c.x - h * 0.52f, c.y + h * 0.02f, c.x - h * 0.7f, c.y + h * 0.2f)
+        quadraticBezierTo(c.x - h * 0.78f, c.y - h * 0.05f, c.x - h, c.y - h * 0.25f)
+        quadraticBezierTo(c.x - h * 0.45f, c.y - h * 0.65f, c.x, c.y - h * 0.15f)
+        close()
+    }
+    drawPath(path, androidx.compose.ui.graphics.Color(0xFF0E0816))
+    // Ears
+    drawCircle(androidx.compose.ui.graphics.Color(0xFF0E0816), radius = h * 0.16f, center = androidx.compose.ui.geometry.Offset(c.x, c.y - h * 0.12f))
 }
 
 // ── Saved Events Album Carousel ──

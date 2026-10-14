@@ -90,8 +90,16 @@ fun CreatePlanButton(
     val scope = rememberCoroutineScope()
 
     // Chunky 3D "Duolingo" edge — deeper than the gradient's CoralDk so the
-    // 4.dp lip reads as depth beneath the coral-glow face.
-    val edge = Color(0xFFC94A4A)
+    // 4.dp lip reads as depth beneath the coral-glow face. Pumpkin orange in
+    // October to match pumpkin Bo (see BoSeason).
+    val halloween = live.localapp.local.ui.character.BoSeason.isHalloween
+    val edge = if (halloween) live.localapp.local.ui.character.BoSeason.pumpkinEdge else Color(0xFFC94A4A)
+    val glow = if (halloween) live.localapp.local.ui.character.BoSeason.pumpkin else AppColors.Coral
+    val faceColors = if (halloween) {
+        listOf(Color(0xFFFFB060), live.localapp.local.ui.character.BoSeason.pumpkin, live.localapp.local.ui.character.BoSeason.pumpkinDeep)
+    } else {
+        listOf(Color(0xFFFF8A8A), AppColors.Coral, AppColors.CoralDk)
+    }
     Box(
         modifier = modifier
             .height(52.dp) // 48 face + 4 lip
@@ -147,17 +155,11 @@ fun CreatePlanButton(
                 .shadow(
                     elevation = 12.dp,
                     shape = RoundedCornerShape(26.dp),
-                    ambientColor = AppColors.Coral,
-                    spotColor = AppColors.Coral,
+                    ambientColor = glow,
+                    spotColor = glow,
                 )
                 .background(
-                    Brush.linearGradient(
-                        colors = listOf(
-                            Color(0xFFFF8A8A),
-                            AppColors.Coral,
-                            AppColors.CoralDk,
-                        ),
-                    ),
+                    Brush.linearGradient(colors = faceColors),
                     RoundedCornerShape(26.dp),
                 )
                 .border(1.5.dp, edge, RoundedCornerShape(26.dp))

@@ -260,10 +260,10 @@ struct PlanChatView: View {
         VStack(alignment: .leading, spacing: 3) {
             Text("Bo")
                 .font(PF.body(11, .bold))
-                .foregroundColor(PC.coral)
+                .foregroundColor(BoArt.nameColor)
                 .padding(.leading, 28) // line up with text after the sparkle
             HStack(alignment: .top, spacing: 8) {
-                Image("BoTiny")
+                Image(BoArt.tiny)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 20, height: 20)
@@ -375,7 +375,7 @@ struct PlanChatView: View {
     @ViewBuilder
     private func avatar(msg: PlanChatMessageSnapshot) -> some View {
         if msg.isYocal {
-            Image("BoTiny")
+            Image(BoArt.tiny)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .frame(width: 28, height: 28)
@@ -399,10 +399,10 @@ struct PlanChatView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Bo")
                     .font(PF.body(11, .bold))
-                    .foregroundColor(PC.coral)
+                    .foregroundColor(BoArt.nameColor)
                     .padding(.leading, 28)
                 HStack(alignment: .top, spacing: 8) {
-                    Image("BoTiny")
+                    Image(BoArt.tiny)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 20, height: 20)

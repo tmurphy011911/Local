@@ -1437,7 +1437,7 @@ struct PlanDetailView: View {
             // reads as "this is a Bo invitation" rather than a stock icon.
             ZStack {
                 Circle().fill(pdCoralSoft).frame(width: 64, height: 64)
-                Image("BoDefaultClean")
+                Image(BoArt.clean)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 56, height: 56)

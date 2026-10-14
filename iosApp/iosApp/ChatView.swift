@@ -2,6 +2,19 @@ import SwiftUI
 import ComposeApp
 import MapKit
 
+// MARK: - Seasonal Bo art
+//
+// Native screens draw Bo from asset-catalog SVGs. The season is decided once,
+// in shared Kotlin (`BoSeason` — pumpkin Bo all of October), so the SwiftUI
+// and Compose Bos always match.
+enum BoArt {
+    static let isHalloween: Bool = BoSeason.shared.isHalloween
+    static var tiny: String { isHalloween ? "BoTinyPumpkin" : "BoTiny" }
+    static var clean: String { isHalloween ? "BoDefaultCleanPumpkin" : "BoDefaultClean" }
+    /// Tint for the "Bo" sender label next to the avatar.
+    static var nameColor: Color { isHalloween ? Color(red: 1.0, green: 0.541, blue: 0.122) : Color(red: 1.0, green: 0.42, blue: 0.42) }
+}
+
 // MARK: - Typewriter Completion Store
 //
 // `ChatView` is built fresh every time the chat sheet is presented. Its
@@ -749,7 +762,7 @@ struct ChatView: View {
                 Text("Ask Bo")
                     .font(F.display(22, .black))
                     .foregroundColor(C.ink)
-                Image("BoDefaultClean")
+                Image(BoArt.clean)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 30, height: 30)
@@ -938,8 +951,8 @@ struct ChatView: View {
             HStack(spacing: 6) {
                 Text("Bo")
                     .font(F.body(11, .bold))
-                    .foregroundColor(C.coral)
-                Image("BoTiny")
+                    .foregroundColor(BoArt.nameColor)
+                Image(BoArt.tiny)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 16, height: 16)
@@ -1814,7 +1827,7 @@ private struct SearchingIndicatorView: View {
             // the Bo avatar like the rows below it.
             if !opener.isEmpty {
                 HStack(alignment: .top, spacing: 8) {
-                    Image("BoTiny")
+                    Image(BoArt.tiny)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 20, height: 20)
@@ -1832,7 +1845,7 @@ private struct SearchingIndicatorView: View {
             // lone Bo floating above the idiom line.
             if !narration.prefix(visibleSteps).isEmpty {
                 HStack(alignment: .top, spacing: 8) {
-                    Image("BoTiny")
+                    Image(BoArt.tiny)
                         .resizable()
                         .aspectRatio(contentMode: .fit)
                         .frame(width: 20, height: 20)
@@ -1860,7 +1873,7 @@ private struct SearchingIndicatorView: View {
                 // Bo stays put the whole time — only the idiom text fades and
                 // re-appears as phrases rotate. Applying `opacity` to this whole
                 // row (as it used to) made Bo blink out with every rotation.
-                Image("BoTiny")
+                Image(BoArt.tiny)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 20, height: 20)
@@ -2238,8 +2251,8 @@ private struct TypewritingAiBubble: View {
             HStack(spacing: 6) {
                 Text("Bo")
                     .font(F.body(11, .bold))
-                    .foregroundColor(C.coral)
-                Image("BoTiny")
+                    .foregroundColor(BoArt.nameColor)
+                Image(BoArt.tiny)
                     .resizable()
                     .aspectRatio(contentMode: .fit)
                     .frame(width: 16, height: 16)
