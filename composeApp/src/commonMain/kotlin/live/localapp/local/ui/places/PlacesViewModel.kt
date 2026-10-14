@@ -145,6 +145,10 @@ class PlacesViewModel(
      *  sign-in flow. Invoked instead of persisting when there's no user id. */
     var onAuthRequired: ((itemId: String, type: InteractionType, category: String?) -> Unit)? = null
 
+    // State lives in Settings (shared, persistent), so a per-VM instance is fine —
+    // mirrors HomeViewModel / ChatViewModel.
+    private val reviewPromptService = live.localapp.local.domain.service.ReviewPromptService()
+
     private val _uiState = MutableStateFlow(PlacesUiState())
     val uiState: StateFlow<PlacesUiState> = _uiState.asStateFlow()
 
@@ -681,6 +685,7 @@ class PlacesViewModel(
 
     fun selectVenue(venue: VenueWithMeta) {
         communityInterestRepository.recordClick(venue.venue.id, InteractionType.PLACE, venue.primaryCategory)
+        reviewPromptService.recordPlaceOpened()
         _uiState.update {
             it.copy(
                 selectedVenue = venue,
@@ -765,6 +770,10 @@ class PlacesViewModel(
             }
             // Badge: track place saved (mirrors EVENT_SAVED in HomeViewModel)
             badgeService.recordAction(BadgeAction.PLACE_SAVED, deriveUserState())
+            // Review prompt on first place save (current is the set before this add)
+            if (current.isEmpty()) {
+                reviewPromptService.onPositiveMoment(live.localapp.local.domain.service.ReviewTrigger.PLACE_SAVED_1ST)
+            }
         }
     }
 

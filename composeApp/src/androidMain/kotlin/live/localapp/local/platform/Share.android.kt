@@ -248,6 +248,11 @@ actual fun openAppStoreListing() {
     activity.startActivity(intent)
 }
 
+actual fun openWriteReview() {
+    // Play has no write-review deep link; the listing surfaces the rating control.
+    openAppStoreListing()
+}
+
 actual fun openAppSettings() {
     val activity = live.localapp.local.ActivityProvider.activity ?: return
     val intent = android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {

@@ -116,6 +116,12 @@ actual fun openAppStoreListing() {
     platform.UIKit.UIApplication.sharedApplication.openURL(url, emptyMap<Any?, Any>()) { _ -> }
 }
 
+actual fun openWriteReview() {
+    // ?action=write-review opens the App Store straight to the review composer.
+    val url = platform.Foundation.NSURL(string = "https://apps.apple.com/app/local/id6761425705?action=write-review")!!
+    platform.UIKit.UIApplication.sharedApplication.openURL(url, emptyMap<Any?, Any>()) { _ -> }
+}
+
 actual fun openAppSettings() {
     val url = platform.Foundation.NSURL(string = platform.UIKit.UIApplicationOpenSettingsURLString)!!
     platform.UIKit.UIApplication.sharedApplication.openURL(url, emptyMap<Any?, Any>()) { _ -> }

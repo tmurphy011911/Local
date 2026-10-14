@@ -65,6 +65,14 @@ expect fun composeSupportEmail(recipient: String)
 /** Open the app's App Store / Play Store page for updating. */
 expect fun openAppStoreListing()
 
+/**
+ * Open the store review composer for a user-initiated "Rate" tap.
+ * iOS lands directly on the write-review sheet; Android opens the Play listing
+ * (Play has no write-review deep link). Distinct from [requestAppReview], which is
+ * the silent, system-rate-limited API meant only for automatic positive-moment prompts.
+ */
+expect fun openWriteReview()
+
 /** Request the native App Store / Play Store review prompt. */
 expect fun requestAppReview()
 
