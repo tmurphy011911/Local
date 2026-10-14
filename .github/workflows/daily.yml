@@ -83,5 +83,10 @@ jobs:
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # Fallback for when the Supabase secrets table is unreachable. PREFILTER_ONLY
+          # doesn't actually use Claude but the script still benefits from a stable
+          # key path; matches what classify_events.js's full-classify run gets in
+          # weekly.yml.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           PREFILTER_ONLY: '1'
         run: node classify_events.js

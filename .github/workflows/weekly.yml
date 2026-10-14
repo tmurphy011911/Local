@@ -1,12 +1,20 @@
-name: Weekly — Crawl Venues & Classify Events
+name: Daily — Crawl (day-sharded) + Classify; weekly aggregator/dedupe tail
 
 on:
   schedule:
-    - cron: '0 9 * * 0'  # 9am UTC / 4am EST every Sunday
+    - cron: '0 9 * * *'  # 9am UTC / 4am EST EVERY DAY (states are day-sharded)
   workflow_dispatch:
     inputs:
       venue_filter:
         description: 'Comma-separated venue names to crawl (empty = all venues)'
+        required: false
+        default: ''
+      all_states:
+        description: 'Crawl ALL live states this run instead of just today''s shard'
+        required: false
+        default: 'false'
+      states_override:
+        description: 'Comma-separated state codes (e.g. "MA,NJ,NY,PA,RI"). When set, bypasses both the is_live=true filter AND the day-shard — useful for one-off catch-up runs that need to crawl states regardless of their DB live status.'
         required: false
         default: ''
 
@@ -16,36 +24,92 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
-  # Compute the list of active states from the `states` table at workflow
-  # start so adding a new state (UPDATE states SET is_live=true WHERE code=…)
-  # automatically expands the crawl-venues matrix on the next weekly run —
-  # no workflow YAML edit required.
+  # Day-shard the live states across the week. The crawl runs DAILY, but each
+  # state is assigned to one weekday (sorted index i → weekday i % 7), so only
+  # that day's subset crawls — spreading DB write pressure off the shared Nano
+  # instead of hammering it with every state at once on one Sunday burst.
+  # Adding a state (UPDATE states SET is_live=true …) auto-slots it into the
+  # rotation; no YAML edit needed. Coverage is still complete because each
+  # state's crawl is stalest-first and time-boxed (CRAWL_MAX_MINUTES) so it
+  # drains its backlog over successive weeks without ever timing out.
+  #
+  # `run_heavy` is true only on Sundays — the expensive tail (aggregator split,
+  # dedupe, city photos) stays weekly while crawl + classify run daily.
   compute-states:
     runs-on: ubuntu-latest
     outputs:
       states: ${{ steps.fetch.outputs.states }}
+      run_heavy: ${{ steps.fetch.outputs.run_heavy }}
     steps:
       - id: fetch
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          VENUE_FILTER: ${{ github.event.inputs.venue_filter }}
+          ALL_STATES: ${{ github.event.inputs.all_states }}
+          STATES_OVERRIDE: ${{ github.event.inputs.states_override }}
         run: |
-          STATES=$(curl -sf \
+          DOW=$(date -u +%w)   # 0=Sun .. 6=Sat
+          # states_override (manual dispatch input) skips the is_live filter
+          # entirely — useful when we want to crawl a state regardless of its
+          # DB live status (e.g. a catch-up run before flipping is_live=true).
+          if [ -n "$STATES_OVERRIDE" ]; then
+            STATES=$(echo "$STATES_OVERRIDE" | jq -Rc 'split(",") | map(ascii_upcase | gsub("\\s"; ""))')
+            ALL="$STATES"
+            RUN_HEAVY=true
+            echo "Using states_override: $STATES (bypassing is_live + day-shard)"
+            echo "states=$STATES" >> "$GITHUB_OUTPUT"
+            echo "run_heavy=$RUN_HEAVY" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ALL=$(curl -sf \
             "https://blifubxslaucshmlphdc.supabase.co/rest/v1/states?is_live=eq.true&select=code&order=code.asc" \
             -H "apikey: $SUPABASE_SERVICE_KEY" \
             -H "Authorization: Bearer $SUPABASE_SERVICE_KEY" \
             | jq -c '[.[].code]')
-          if [ -z "$STATES" ] || [ "$STATES" = "[]" ]; then
+          if [ -z "$ALL" ] || [ "$ALL" = "[]" ]; then
             echo "No active states found, falling back to MA,RI,PA"
-            STATES='["MA","RI","PA"]'
+            ALL='["MA","RI","PA"]'
           fi
-          echo "Active states: $STATES"
+          # Manual full crawl (all_states=true) or a venue_filter run ignores the
+          # day-shard so the target is found regardless of which weekday it is.
+          if [ "$ALL_STATES" = "true" ] || [ -n "$VENUE_FILTER" ]; then
+            STATES="$ALL"
+          else
+            STATES=$(echo "$ALL" | jq -c --argjson dow "$DOW" \
+              '[ to_entries[] | select((.key % 7) == $dow) | .value ]')
+            # Big-state second shard day. One 240-min slot/week can't drain the
+            # largest catalogs (CA ~6.5k crawlable venues covered only ~58%/wk,
+            # NY ~3.5k at ~72%/wk measured 2026-07-25), so their stalest tail
+            # sat 10+ days between crawls and upcoming events aged out — venues
+            # "decayed" back to zero between visits. Give them a second weekly
+            # slot: NY also runs Saturday (otherwise an idle shard day with 6
+            # live states), CA also runs Wednesday. Max two states on any day,
+            # so shared-Nano write pressure stays far below the old all-states
+            # Sunday burst this sharding replaced. Revisit the map when a new
+            # state goes live (index shift) or a catalog outgrows one slot:
+            # weekly capacity/state ≈ CRAWL_MAX_MINUTES × CONCURRENCY ÷ ~15s-per-venue.
+            EXTRA=$(jq -nc --argjson dow "$DOW" \
+              '{"3":["CA"],"6":["NY"]}[$dow|tostring] // []')
+            # Intersect with ALL so a state dropped from is_live can't sneak
+            # back in via the extra-day map.
+            STATES=$(jq -nc --argjson a "$STATES" --argjson b "$EXTRA" --argjson all "$ALL" \
+              '$a + ($b | map(select(. as $s | $all | index($s)))) | unique')
+          fi
+          if [ "$DOW" = "0" ]; then RUN_HEAVY=true; else RUN_HEAVY=false; fi
+          echo "DOW=$DOW  all=$ALL  today=$STATES  run_heavy=$RUN_HEAVY"
           echo "states=$STATES" >> "$GITHUB_OUTPUT"
+          echo "run_heavy=$RUN_HEAVY" >> "$GITHUB_OUTPUT"
 
-  # crawl-venues was a single 6h+ job that hit GitHub Actions' hard 6h max
-  # every weekend, killing itself and skipping the 4 downstream jobs that
-  # depended on it. Sharding by state runs each in a parallel runner, each
-  # finishing well under 2h. fail-fast=false so one shard hitting a transient
-  # venue error doesn't cancel the others.
+  # crawl-venues used to be a single job that ran until GitHub's 6h max killed
+  # it (or its 300m cap), skipping every downstream job. Now it's bounded two
+  # ways that make a timeout structurally impossible:
+  #   - day-sharded (only today's state subset runs), and
+  #   - CRAWL_MAX_MINUTES per leg: run_crawls.js stops claiming new venues once
+  #     the budget is hit and crawls stalest-first, so each run drains the
+  #     oldest data and defers the rest to tomorrow instead of dying.
+  # 240m budget under a 300m runner cap leaves headroom for in-flight venues to
+  # finish + the upsert. fail-fast=false so one shard's error can't cancel
+  # siblings. Empty matrix (an idle weekday with no state assigned) simply skips.
   crawl-venues:
     runs-on: ubuntu-latest
     needs: compute-states
@@ -63,10 +127,24 @@ jobs:
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # run_crawls falls back to Claude HTML extraction for venues that
+          # don't expose a structured API — needs Anthropic. Same outage
+          # resilience reason as classify_events: env-var fallback when the
+          # secrets table is unreachable.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           VENUE_NAME: ${{ github.event.inputs.venue_filter }}
           STATE: ${{ matrix.state }}
+          CRAWL_MAX_MINUTES: '240'
+          # 5 parallel venue crawls (script default is 3). Raises per-slot
+          # throughput ~1.7× so big-state slots drain their whole stalest tail
+          # within the 240m budget instead of leaving 28-42% uncrawled each
+          # week (measured NY 72% / CA 58% weekly coverage at the default).
+          # 5 is the level every manual catch-up crawl has run at against the
+          # same shared Nano with zero upsert errors; per-venue inline upserts
+          # keep write bursts small and steady rather than one end-of-run bulk.
+          CONCURRENCY: '5'
           # Optional — falls back to DEMO_KEY if secret not set. For production
-          # weekly crawls, set an NPS_API_KEY secret (free, from api.data.gov).
+          # crawls, set an NPS_API_KEY secret (free, from api.data.gov).
           NPS_API_KEY: ${{ secrets.NPS_API_KEY }}
         run: node run_crawls.js
 
@@ -81,14 +159,19 @@ jobs:
     # downstream chain (extract → split → dedupe → backfill). The result is
     # crawler-ingested events piling up at category="other" for weeks.
     #
-    # The `if` guard runs classify whenever crawl-venues SUCCEEDED, regardless
-    # of the municipal branch's outcome (success / failure / skipped). Municipal
-    # events that did load still get picked up; any that didn't are caught next
-    # run (classify scopes to unclassified rows). always() is required so the
-    # job is still evaluated when an upstream need failed.
+    # crawl-venues is a MATRIX (one leg per state). Its aggregate `result` is
+    # 'success' ONLY if EVERY leg passes — so a single state crashing (e.g. a
+    # malformed timestamp in MA) or hitting its 300m timeout (CA/NY) made the
+    # whole chain SKIP, leaving every freshly-crawled event unclassified for
+    # weeks. We don't need a clean sweep: each leg upserts its events as it goes,
+    # and classify scopes to unclassified rows, so partial progress is worth
+    # classifying. `!cancelled()` runs classify whenever the crawl stage ran at
+    # all (success / partial / failed / timed-out leg) and only bails if the
+    # whole workflow was manually cancelled. Municipal-branch outcome is likewise
+    # irrelevant; anything that didn't load is caught next run.
     runs-on: ubuntu-latest
     needs: [crawl-venues, sync-municipal-feeds]
-    if: ${{ always() && needs.crawl-venues.result == 'success' }}
+    if: ${{ !cancelled() }}
     timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
@@ -99,11 +182,20 @@ jobs:
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # Fallback for when the Supabase secrets table is unreachable
+          # (Cloudflare 520, brief Supabase outage). Without this, every weekly
+          # classify run fails when the DB-secrets fetch fails — even though
+          # the env var is the documented fallback in lib/secrets.js.
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: node classify_events.js
 
   extract-venues:
     runs-on: ubuntu-latest
     needs: classify-events
+    # Run even if a prior step failed/timed out — these jobs read from the DB
+    # independently and shouldn't cascade-skip off one weak link. `needs` still
+    # enforces ordering; `!cancelled()` just drops the implicit success-gate.
+    if: ${{ !cancelled() }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -118,12 +210,24 @@ jobs:
 
   discover-municipal-feeds:
     runs-on: ubuntu-latest
-    # The script self-limits via DISCOVER_MAX_MINUTES (default 22m) and exits
-    # 0 gracefully, resuming uncovered cities next run. This job timeout is the
-    # hard backstop only — kept comfortably above the script budget so the job
-    # finishes green instead of being killed mid-probe (which used to skip the
-    # downstream sync).
-    timeout-minutes: 30
+    # The script self-limits via DISCOVER_MAX_MINUTES and exits 0 gracefully,
+    # resuming uncovered cities next run. This job timeout is the hard backstop
+    # only — kept comfortably above the script budget so the job finishes green
+    # instead of being killed mid-probe (which used to skip the downstream sync).
+    #
+    # Bumped from 30→60: high-WAF tourism domains routed through Scrapfly
+    # (asp+render_js) routinely sit at 30–35s per probe. The budget is checked
+    # once per city, but a single city fires many sequential probes, so one slow
+    # city near the mark can overshoot ~10m. 50m budget under a 60m cap left only
+    # ~10m headroom → ~2/9 runs still tripped the cap. DISCOVER_MAX_MINUTES=45
+    # widens that to ~15m so the script exits 0 (green) on its own; the
+    # continue-on-error below is the final backstop.
+    timeout-minutes: 60
+    # Best-effort: discover upserts feeds as it goes and resumes uncovered
+    # cities next run, so a straddled budget check that trips the 60m hard cap
+    # (~2/9 runs) must NOT red the whole daily crawl. Downstream already runs
+    # via if:!cancelled()/always(); this drops the timeout from the run outcome.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -133,6 +237,7 @@ jobs:
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          DISCOVER_MAX_MINUTES: '45'
         run: node discover_municipal_feeds.js
 
   sync-municipal-feeds:
@@ -148,6 +253,10 @@ jobs:
     needs: discover-municipal-feeds
     if: ${{ always() }}
     timeout-minutes: 30
+    # Best-effort backstop: the SYNC_MAX_MINUTES budget already exits this green,
+    # but in case a slow feed straddles the budget check and trips the 30m cap,
+    # don't let it red the daily crawl. Stalest feeds resume next run.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -157,6 +266,10 @@ jobs:
         working-directory: scripts
         env:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          # Self-limit under the 30m hard cap so the job exits green and defers
+          # the stalest feeds to the next daily run (ordered last_synced_at.asc).
+          # ~6m of headroom below timeout-minutes: 30. Mirrors DISCOVER_MAX_MINUTES.
+          SYNC_MAX_MINUTES: '24'
         run: node sync_municipal_feeds.js
 
   split-aggregator-events:
@@ -165,7 +278,10 @@ jobs:
     # extract-venues (so newly-discovered venues are matchable) and BEFORE
     # dedupe-pass (so dedupe groups by the corrected lat/lng).
     runs-on: ubuntu-latest
-    needs: extract-venues
+    # Weekly (Sundays) only — Scrapfly-fetches every aggregator event, too
+    # expensive to run on the daily crawl. run_heavy gates it.
+    needs: [extract-venues, compute-states]
+    if: ${{ !cancelled() && needs.compute-states.outputs.run_heavy == 'true' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
@@ -181,7 +297,9 @@ jobs:
 
   dedupe-pass:
     runs-on: ubuntu-latest
-    needs: split-aggregator-events
+    # Weekly (Sundays) only — DB-heavy on the shared Nano. run_heavy gates it.
+    needs: [split-aggregator-events, compute-states]
+    if: ${{ !cancelled() && needs.compute-states.outputs.run_heavy == 'true' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -196,7 +314,9 @@ jobs:
 
   backfill-city-photos:
     runs-on: ubuntu-latest
-    needs: dedupe-pass
+    # Weekly (Sundays) only — Google Places API spend. run_heavy gates it.
+    needs: [dedupe-pass, compute-states]
+    if: ${{ !cancelled() && needs.compute-states.outputs.run_heavy == 'true' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -209,6 +329,59 @@ jobs:
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
           GOOGLE_PLACES_API_KEY: ${{ secrets.GOOGLE_PLACES_API_KEY }}
         run: node backfill_city_photos.js
+
+  # Detect venues that SILENTLY went dark — reliably carried upcoming events and
+  # collapsed to ~none without any hard crawl error (e.g. ICA Boston, whose
+  # calendar moved to a JS widget so the crawl still 200s but yields nothing).
+  # Runs AFTER dedupe-pass so counts reflect this run's fully-attributed events.
+  # Weekly (run_heavy) only — snapshots the crawl's own output, so it must ride
+  # the same Sunday gate as the crawl chain. Emails a digest ONLY when a venue
+  # newly goes dark; needs ~2 weekly runs of history before it flags anything.
+  venue-health:
+    runs-on: ubuntu-latest
+    needs: [dedupe-pass, compute-states]
+    if: ${{ !cancelled() && needs.compute-states.outputs.run_heavy == 'true' }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Snapshot venue health + detect silent failures
+        id: detect
+        working-directory: scripts
+        env:
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          MIN_RANK: '25'
+        run: node venue_health_snapshot.js
+      - name: Email the silent-failure digest (Resend)
+        if: ${{ steps.detect.outputs.has_alerts == 'true' }}
+        working-directory: scripts
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          ALERT_EMAIL_TO: ${{ secrets.ALERT_EMAIL_TO }}
+        run: |
+          if [ -z "$RESEND_API_KEY" ]; then
+            echo "RESEND_API_KEY not set; skipping email (full report is in the run summary)."
+            exit 0
+          fi
+          if [ ! -f venue_alert_email.html ]; then
+            echo "No email body produced; skipping."
+            exit 0
+          fi
+          TO="${ALERT_EMAIL_TO:-tom@localapp.live}"
+          SUBJECT="$(cat venue_alert_subject.txt)"
+          jq -n \
+            --arg from "Local Alerts <onboarding@resend.dev>" \
+            --arg to "$TO" \
+            --arg subject "$SUBJECT" \
+            --rawfile html venue_alert_email.html \
+            '{from:$from, to:[$to], subject:$subject, html:$html}' \
+          | curl -sf -X POST "https://api.resend.com/emails" \
+              -H "Authorization: Bearer $RESEND_API_KEY" \
+              -H "Content-Type: application/json" \
+              --data @- \
+          && echo "Silent-failure digest emailed to $TO."
 
   # Independent of the crawl→classify chain: the adapter writes fully-classified
   # rows (category=always_on, subcategory=farmers-market, tags set), so it needs
