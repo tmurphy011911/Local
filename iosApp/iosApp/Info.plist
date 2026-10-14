@@ -24,6 +24,10 @@
 	     Config-Secrets.xcconfig (gitignored) via Config.xcconfig, so no key is
 	     committed. FBSDKCoreKit reads FacebookAppID/FacebookClientToken itself
 	     when ApplicationDelegate is initialized. -->
+	<!-- Required before ATTrackingManager can show the tracking prompt. Without
+	     this key iOS silently denies the request rather than prompting. -->
+	<key>NSUserTrackingUsageDescription</key>
+	<string>Local uses this to measure how well our ads work and keep showing you events worth going to. It doesn't change anything you see in the app.</string>
 	<key>FacebookAppID</key>
 	<string>$(FACEBOOK_APP_ID)</string>
 	<key>FacebookClientToken</key>

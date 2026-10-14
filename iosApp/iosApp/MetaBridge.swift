@@ -1,6 +1,7 @@
 import Foundation
 import UIKit
 import ComposeApp
+import AppTrackingTransparency
 
 #if canImport(FBSDKCoreKit)
 import FBSDKCoreKit
@@ -38,6 +39,7 @@ enum MetaBridge {
         let bridge = IosMetaBridge.shared
         bridge.activateApp = { activateApp() }
         bridge.completeRegistration = { method in completeRegistration(method) }
+        bridge.requestTracking = { requestTracking() }
     }
 
     /// Boot the SDK. Called from `AppDelegate.application(_:didFinishLaunchingWithOptions:)`.
@@ -67,6 +69,26 @@ enum MetaBridge {
     /// IS the required explicit call.
     static func activateApp() {
         // Intentionally empty. See the doc comment above before adding a call here.
+    }
+
+    /// Show the ATT prompt.
+    ///
+    /// We only PRESENT it — we never report the answer to FBSDK. On iOS 17+
+    /// with FBSDK v17+, the SDK reads `ATTrackingManager.trackingAuthorizationStatus`
+    /// itself, and `Settings.isAdvertiserTrackingEnabled` is a deprecated no-op.
+    /// Our deployment target is 18.2, so that is always the case here.
+    ///
+    /// Apple shows this once per install, and only while the app is `.active` —
+    /// a later call just returns the stored answer. So the placement of the
+    /// first call is the only chance we get, which is why it is chained onto
+    /// the onboarding notifications step rather than fired at launch.
+    static func requestTracking() {
+        // Let the notification prompt finish dismissing first — two system
+        // alerts racing each other means the second silently fails to present.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
+            guard UIApplication.shared.applicationState == .active else { return }
+            ATTrackingManager.requestTrackingAuthorization { _ in }
+        }
     }
 
     /// Logs `fb_mobile_complete_registration`.
