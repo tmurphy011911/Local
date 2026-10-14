@@ -9,8 +9,18 @@ class VenueDetailTransitionController {
     /// Upcoming Events section. Set to true by the chat-card slot tap path
     /// (`ChatView` → `ChatBridge.onVenueTap`) so a venue opened from inside
     /// a Bo-built plan reads as "this is part of your plan", not as a
-    /// generic venue lookup. Reset to false on dismiss.
+    /// generic venue lookup. Consumed (read + cleared) by every presentation via
+    /// `consumeFromPlanContext()` so it applies to exactly one open — a reset
+    /// only on dismiss leaked: the zero-frame pageSheet path never ran
+    /// `dismiss()`, so one plan-slot open hid events on every later See All /
+    /// Bo venue open until relaunch.
     static var fromPlanContext: Bool = false
+
+    static func consumeFromPlanContext() -> Bool {
+        let value = fromPlanContext
+        fromPlanContext = false
+        return value
+    }
 
     // MARK: - State
     private var hostingController: UIHostingController<VenueDetailView>?
@@ -66,7 +76,8 @@ class VenueDetailTransitionController {
             onDismiss: { [weak self] in self?.dismiss() },
             isFavorited: isFavorited,
             onFavorite: onFavorite,
-            hidesPrimaryCTAs: hidesPrimaryCTAs
+            hidesPrimaryCTAs: hidesPrimaryCTAs,
+            fromPlanContext: Self.consumeFromPlanContext()
         )
         let hosting = UIHostingController(rootView: detailView)
         hosting.view.backgroundColor = .white

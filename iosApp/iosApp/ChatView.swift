@@ -910,7 +910,8 @@ struct ChatView: View {
     // resolved the venue in our DB, so it never dead-ends.
     private func venueLinkChip(_ venueName: String) -> some View {
         Button {
-            VenueDetailTransitionController.fromPlanContext = true
+            // NOT a plan slot — the user asked Bo about this venue, so keep
+            // Directions + Upcoming Events visible (no fromPlanContext).
             ChatBridge.shared.onVenueTap?(venueName)
         } label: {
             HStack(spacing: 5) {

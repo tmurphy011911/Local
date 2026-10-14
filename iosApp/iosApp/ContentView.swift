@@ -407,7 +407,8 @@ struct ComposeView: UIViewControllerRepresentable {
                         },
                         isFavorited: isFavorited.boolValue,
                         onFavorite: { vid in venueBridge.onFavorited?(vid) },
-                        hidesPrimaryCTAs: hidesPrimaryCTAs.boolValue
+                        hidesPrimaryCTAs: hidesPrimaryCTAs.boolValue,
+                        fromPlanContext: VenueDetailTransitionController.consumeFromPlanContext()
                     )
                     let hostingVC = UIHostingController(rootView: detailView)
                     weakHostingVC = hostingVC

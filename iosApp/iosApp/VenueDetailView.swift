@@ -184,6 +184,9 @@ struct VenueDetailView: View {
     /// detail is opened from a chat plan slot — the user is mid-planning, not
     /// ready to book or leave the app.
     let hidesPrimaryCTAs: Bool
+    /// Opened from a Bo plan slot — hides Directions + Upcoming Events. Captured
+    /// per presentation (see VenueDetailTransitionController.consumeFromPlanContext).
+    let fromPlanContext: Bool
 
     @State private var showDirections = false
     // nil = no filter (show all loaded events), mirroring Explore's default.
@@ -202,12 +205,14 @@ struct VenueDetailView: View {
         onDismiss: @escaping () -> Void,
         isFavorited: Bool = false,
         onFavorite: ((String) -> Void)? = nil,
-        hidesPrimaryCTAs: Bool = false
+        hidesPrimaryCTAs: Bool = false,
+        fromPlanContext: Bool = false
     ) {
         self.venue = venue
         self.onDismiss = onDismiss
         self.onFavorite = onFavorite
         self.hidesPrimaryCTAs = hidesPrimaryCTAs
+        self.fromPlanContext = fromPlanContext
         self._isFavorited = State(initialValue: isFavorited)
         self._liveEvents = State(initialValue: venue.upcomingEvents)
         self._isLoadingEvents = State(initialValue: venue.upcomingEvents.isEmpty)
@@ -516,7 +521,7 @@ struct VenueDetailView: View {
             // a Bo plan slot. The plan detail page already has its own
             // Directions chip per stop, so showing it here too is redundant
             // and visually heavy.
-            if venue.hasLocation && !VenueDetailTransitionController.fromPlanContext {
+            if venue.hasLocation && !fromPlanContext {
                 Button(action: { showDirections = true }) {
                     HStack(spacing: 6) {
                         Image(systemName: "mappin.and.ellipse")
@@ -553,7 +558,7 @@ struct VenueDetailView: View {
             // Upcoming Events — hidden when accessed from a Bo plan slot.
             // The plan slot itself is already an event/venue selection;
             // showing other upcoming events here is noise in that context.
-            if !VenueDetailTransitionController.fromPlanContext, isLoadingEvents {
+            if !fromPlanContext, isLoadingEvents {
                 Spacer().frame(height: 8)
 
                 Text("Upcoming Events")
@@ -563,7 +568,7 @@ struct VenueDetailView: View {
                 Spacer().frame(height: 12)
 
                 eventSkeleton()
-            } else if !liveEvents.isEmpty && !VenueDetailTransitionController.fromPlanContext {
+            } else if !liveEvents.isEmpty && !fromPlanContext {
                 Spacer().frame(height: 8)
 
                 Text("Upcoming Events")
@@ -627,7 +632,7 @@ struct VenueDetailView: View {
                         }
                     }
                 }
-            } else if !VenueDetailTransitionController.fromPlanContext {
+            } else if !fromPlanContext {
                 Spacer().frame(height: 8)
 
                 Text("Upcoming Events")

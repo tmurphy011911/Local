@@ -143,7 +143,7 @@ android {
         //        restyle, tutorial trim, location-persistence fix, Bo radius sync,
         //        unified radius picker).
         // 302 = v1.3.0 RC. 400 = v1.3.0 submission build (round number for the cut).
-        versionCode = 500
+        versionCode = 501
         versionName = "1.4.0"
         // Used by AndroidManifest's <meta-data android:value="${MAPS_API_KEY}" />
         // and read at runtime by the Directions API client.
