@@ -52,8 +52,8 @@ kotlin {
             implementation("com.google.android.play:review-ktx:2.0.2")
             implementation("com.android.installreferrer:installreferrer:2.2")
             implementation("com.google.android.gms:play-services-location:21.3.0")
-            implementation("com.revenuecat.purchases:purchases:8.12.1")
-            implementation("com.revenuecat.purchases:purchases-ui:8.12.1")
+            implementation("com.revenuecat.purchases:purchases:10.27.1")
+            implementation("com.revenuecat.purchases:purchases-ui:10.27.1")
             // Push notifications. OneSignal handles FCM registration itself —
             // no google-services.json / Firebase SDK needed. Version range per
             // OneSignal's official 5.x Android setup docs.
