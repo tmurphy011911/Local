@@ -3006,10 +3006,10 @@ private fun MapSheetExperience(
     }
     val focusedId = items.getOrNull(pagerState.currentPage)?.id
 
-    // Collapsed peek shows the grab handle PLUS a slice of the list (its first row),
-    // so the list never fully disappears and the user always sees they can pull it
-    // back up. The swipeable card row floats just above this peek.
-    val peekHeight = 104.dp
+    // Collapsed peek is just the grab handle + a "See list of …" label (no list
+    // slice), so the map gets the room. The label also expands the sheet on tap.
+    // The swipeable card row floats just above this peek.
+    val peekHeight = 56.dp
 
     Box(
         modifier = modifier
@@ -3023,7 +3023,7 @@ private fun MapSheetExperience(
     ) {
         androidx.compose.material3.BottomSheetScaffold(
             scaffoldState = scaffoldState,
-            // Peek = grab handle + a slice of the list so it's always discoverable.
+            // Peek = grab handle + "See list of …" label.
             sheetPeekHeight = peekHeight,
             sheetContainerColor = AppColors.White,
             // Flat top so a fully-expanded sheet reads as a continuation of the
@@ -3031,12 +3031,23 @@ private fun MapSheetExperience(
             sheetShape = androidx.compose.foundation.shape.RoundedCornerShape(topStart = 0.dp, topEnd = 0.dp),
             sheetShadowElevation = 16.dp,
             sheetDragHandle = {
-                // Just a grab handle — the result count is intentionally not shown.
+                // Grab handle; when collapsed, a "See list of …" label sits under it
+                // (tap expands). The result count is intentionally not shown.
                 Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
-                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp, bottom = 12.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .pressable(enabled = collapsed, scale = 1f, onClick = { scope.launch { sheetState.expand() } })
+                        .padding(top = 10.dp, bottom = 10.dp),
                 ) {
                     Box(Modifier.width(36.dp).height(4.dp).clip(RoundedCornerShape(2.dp)).background(AppColors.Mist))
+                    if (collapsed) {
+                        Text(
+                            if (isEvents) "See list of events" else "See list of places",
+                            modifier = Modifier.padding(top = 8.dp),
+                            style = TextStyle(fontFamily = AppFonts.Body, fontWeight = FontWeight.SemiBold, fontSize = 14.sp, color = AppColors.Ink),
+                        )
+                    }
                 }
             },
             sheetContent = { listContent(listState) },
