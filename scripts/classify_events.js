@@ -377,12 +377,46 @@ async function applyAutoExclusions(events) {
   // Safety bound: a sudden spike almost always means an upstream title-format
   // change or a too-greedy pattern, not a real flood of excludable events. Abort
   // the write rather than silently suppress thousands of events from carousels.
-  // Inspect with DRY_RUN=1; raise AUTO_EXCLUDE_MAX if the spike is legitimate.
-  const maxExclusions = parseInt(process.env.AUTO_EXCLUDE_MAX || "2000", 10);
+  //
+  // This guard used to be a FLAT count (AUTO_EXCLUDE_MAX=2000). That is the wrong
+  // shape: the auto-exclusion pass scans ALL future events, not just new ones, so
+  // the match count grows with the catalog. It tripped on 2026-09-02 at 2,119
+  // matches — a normal distribution across eight legitimate reasons, not a runaway
+  // pattern — and then failed the daily pipeline every day for over a month.
+  //
+  // Two proportional checks instead, each targeting a real failure mode:
+  //   1. TOTAL share — a greedy pattern sweeps a large fraction of the catalog.
+  //      A healthy run sits in the low single-digit percents.
+  //   2. SINGLE-REASON dominance — the actual signature of one bad pattern is one
+  //      reason swamping the rest, which a total-only check misses on a big catalog.
+  // AUTO_EXCLUDE_MAX still works as an explicit absolute override when set.
+  const scanned = events.length;
+  const maxPct = parseFloat(process.env.AUTO_EXCLUDE_MAX_PCT || "15");
+  const absOverride = process.env.AUTO_EXCLUDE_MAX
+    ? parseInt(process.env.AUTO_EXCLUDE_MAX, 10)
+    : null;
+  // Floor keeps the guard meaningful on a small/early catalog where a percentage
+  // of a few hundred events would be uselessly tight.
+  const maxExclusions = absOverride ?? Math.max(2000, Math.ceil((scanned * maxPct) / 100));
+  const pct = scanned ? ((matches.length / scanned) * 100).toFixed(1) : "0.0";
+  console.log(`  (${matches.length}/${scanned} scanned = ${pct}%, limit ${maxExclusions})`);
+
   if (!DRY_RUN && matches.length > maxExclusions) {
     throw new Error(
-      `Auto-exclusion abort: ${matches.length} matches exceeds AUTO_EXCLUDE_MAX=${maxExclusions}. ` +
-        `Re-run with DRY_RUN=1 to inspect the matches, or set AUTO_EXCLUDE_MAX higher if expected.`
+      `Auto-exclusion abort: ${matches.length} matches (${pct}% of ${scanned} scanned) ` +
+        `exceeds limit ${maxExclusions}` +
+        (absOverride ? ` (AUTO_EXCLUDE_MAX override)` : ` (${maxPct}% of scanned)`) +
+        `. Re-run with DRY_RUN=1 to inspect, or raise AUTO_EXCLUDE_MAX_PCT if legitimate.`
+    );
+  }
+
+  // One pattern swamping every other reason is the real runaway signature.
+  const [topReason, topCount] = Object.entries(byReason).sort((a, b) => b[1] - a[1])[0];
+  if (!DRY_RUN && matches.length >= 500 && topCount / matches.length > 0.75) {
+    throw new Error(
+      `Auto-exclusion abort: reason "${topReason}" accounts for ${topCount}/${matches.length} ` +
+        `(${((topCount / matches.length) * 100).toFixed(0)}%) of matches — that is the signature of a ` +
+        `too-greedy pattern, not a real flood. Re-run with DRY_RUN=1 to inspect.`
     );
   }
 
