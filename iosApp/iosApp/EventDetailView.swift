@@ -37,6 +37,10 @@ struct EventDetailData {
     /// Upcoming-event count at this venue. Resolved async (events carry no
     /// venue FK) and pushed via the bridge after present; 0 until known.
     var venueUpcomingEventCount: Int = 0
+    /// The tapped card's already-decoded image (from Compose's image cache).
+    /// Painted as the hero immediately so the expand never shows an empty hero
+    /// while the full-size [imageUrl] downloads; replaced once that loads.
+    var cardImage: UIImage? = nil
 
     var ctaUrl: String? { ticketUrl ?? sourceUrl }
     var hasLocation: Bool { venueLat != 0 && venueLng != 0 }
@@ -419,15 +423,17 @@ struct EventDetailView: View {
                                 .frame(width: geo.size.width, height: 280)
                                 .clipped()
                         case .failure:
-                            placeholderGradient
+                            cardImageOr(placeholderGradient, width: geo.size.width)
                         case .empty:
-                            AppColor.mist
+                            // Card's image until the full-size one arrives — keeps
+                            // the card→detail expand seamless.
+                            cardImageOr(AppColor.mist, width: geo.size.width)
                         @unknown default:
                             placeholderGradient
                         }
                     }
                 } else {
-                    placeholderGradient
+                    cardImageOr(placeholderGradient, width: geo.size.width)
                 }
 
                 // Gradient fade at bottom
@@ -492,6 +498,18 @@ struct EventDetailView: View {
             }
         }
         .frame(height: 280)
+    }
+
+    /// The handed-over card image at hero size, or [fallback] when there is none.
+    @ViewBuilder
+    private func cardImageOr<F: View>(_ fallback: F, width: CGFloat) -> some View {
+        if let card = event.cardImage {
+            Image(uiImage: card).resizable().scaledToFill()
+                .frame(width: width, height: 280)
+                .clipped()
+        } else {
+            fallback
+        }
     }
 
     private var placeholderGradient: some View {

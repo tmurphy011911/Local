@@ -235,8 +235,10 @@ struct ComposeView: UIViewControllerRepresentable {
                     isFavorited: isFavorited.boolValue,
                     timeKnown: timeKnown.boolValue,
                     venueDistanceMiles: venueDistanceMiles.doubleValue,
-                    venueUpcomingEventCount: 0
+                    venueUpcomingEventCount: 0,
+                    cardImage: detailBridge.cardHeroImageData.flatMap { UIImage(data: $0) }
                 )
+                detailBridge.cardHeroImageData = nil
 
                 let cardFrame = CGRect(
                     x: CGFloat(cardX),

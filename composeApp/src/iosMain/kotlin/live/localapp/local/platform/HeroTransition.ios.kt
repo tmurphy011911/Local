@@ -1,5 +1,8 @@
 package live.localapp.local.platform
 
+import platform.Foundation.create
+import kotlinx.cinterop.addressOf
+import kotlinx.cinterop.usePinned
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
 import live.localapp.local.ChatBridge
@@ -267,6 +270,8 @@ actual fun showNativeEventDetail(
     EventDetailBridge.onFavorited = onFavorited
     EventDetailBridge.onShare = onShare
     EventDetailBridge.showDirections = showDirections
+    EventDetailBridge.cardHeroImageData =
+        cardImageUrl?.let(::cachedCardImageJpeg) ?: event.imageUrl?.let(::cachedCardImageJpeg)
 
     // Tapping the venue card on the native event detail opens that venue's
     // native detail screen. Events carry no venue FK, so resolve by name+city.
@@ -700,4 +705,30 @@ actual fun updateNativeVenueDetailEvents(
         }
     }.toString()
     VenueDetailBridge.updateVenueEvents?.invoke(venueId, eventsJson)
+}
+
+/**
+ * The card's decoded image for [url] from Coil's memory cache, re-encoded as
+ * JPEG for the Swift hero (see [EventDetailBridge.cardHeroImageData]). Matches on
+ * the request key alone — the cache key's extras also carry the card's size,
+ * which the caller doesn't know. Null on any miss/failure; the hero then just
+ * falls back to its normal loading state.
+ */
+@OptIn(kotlinx.cinterop.ExperimentalForeignApi::class, kotlinx.cinterop.BetaInteropApi::class)
+private fun cachedCardImageJpeg(url: String): platform.Foundation.NSData? = try {
+    val cache = coil3.SingletonImageLoader.get(coil3.PlatformContext.INSTANCE).memoryCache
+    val key = cache?.keys?.firstOrNull { it.key == url }
+    val image = key?.let { cache[it]?.image } as? coil3.BitmapImage
+    val bytes = image?.let {
+        org.jetbrains.skia.Image.makeFromBitmap(it.bitmap)
+            .encodeToData(org.jetbrains.skia.EncodedImageFormat.JPEG, 90)?.bytes
+    }
+    bytes?.toNSData()
+} catch (_: Throwable) {
+    null
+}
+
+@OptIn(kotlinx.cinterop.ExperimentalForeignApi::class, kotlinx.cinterop.BetaInteropApi::class)
+private fun ByteArray.toNSData(): platform.Foundation.NSData = usePinned { pinned ->
+    platform.Foundation.NSData.create(bytes = pinned.addressOf(0), length = size.toULong())
 }

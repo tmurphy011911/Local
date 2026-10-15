@@ -37,7 +37,9 @@ class EventDetailTransitionController {
 
         self.originalFrame = cardFrame
         self.onDismissed = onDismissed
-        self.cachedHeroImage = nil
+        // Seed with the card's image so the collapse animation has a hero even
+        // if the full-size download below hasn't finished.
+        self.cachedHeroImage = event.cardImage
 
         // Pre-download the hero image for the dismiss animation
         if let urlStr = event.imageUrl, let url = URL(string: urlStr) {
