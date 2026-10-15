@@ -90,15 +90,22 @@ fun CreatePlanButton(
     val scope = rememberCoroutineScope()
 
     // Chunky 3D "Duolingo" edge — deeper than the gradient's CoralDk so the
-    // 4.dp lip reads as depth beneath the coral-glow face. Pumpkin orange in
-    // October to match pumpkin Bo (see BoSeason).
-    val halloween = live.localapp.local.ui.character.BoSeason.isHalloween
-    val edge = if (halloween) live.localapp.local.ui.character.BoSeason.pumpkinEdge else Color(0xFFC94A4A)
-    val glow = if (halloween) live.localapp.local.ui.character.BoSeason.pumpkin else AppColors.Coral
-    val faceColors = if (halloween) {
-        listOf(Color(0xFFFFB060), live.localapp.local.ui.character.BoSeason.pumpkin, live.localapp.local.ui.character.BoSeason.pumpkinDeep)
-    } else {
-        listOf(Color(0xFFFF8A8A), AppColors.Coral, AppColors.CoralDk)
+    // 4.dp lip reads as depth beneath the coral-glow face. Follows Bo's
+    // seasonal skin: pumpkin orange in October, harvest amber in November.
+    val season = live.localapp.local.ui.character.BoSeason
+    val (edge, glow, faceColors) = when (season.current) {
+        live.localapp.local.ui.character.BoSeason.Season.Halloween -> Triple(
+            season.pumpkinEdge, season.pumpkin,
+            listOf(Color(0xFFFFB060), season.pumpkin, season.pumpkinDeep),
+        )
+        live.localapp.local.ui.character.BoSeason.Season.Thanksgiving -> Triple(
+            season.harvestEdge, season.harvest,
+            listOf(season.harvestLight, season.harvest, season.harvestDeep),
+        )
+        live.localapp.local.ui.character.BoSeason.Season.None -> Triple(
+            Color(0xFFC94A4A), AppColors.Coral,
+            listOf(Color(0xFFFF8A8A), AppColors.Coral, AppColors.CoralDk),
+        )
     }
     Box(
         modifier = modifier

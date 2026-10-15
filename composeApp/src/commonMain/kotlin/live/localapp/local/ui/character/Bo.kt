@@ -23,7 +23,7 @@ import androidx.compose.ui.unit.dp
  * Bo — Local's mascot character.
  *
  * A coral wisp/sprite with a wavy bottom, big anime eyes, and idle blinking.
- * In October it wears its pumpkin skin (see [BoSeason]).
+ * Wears seasonal skins — pumpkin in October, turkey in November (see [BoSeason]).
  *
  * Usage:
  *   var trigger by remember { mutableStateOf(0) }
@@ -36,10 +36,10 @@ import androidx.compose.ui.unit.dp
  */
 
 object BoColors {
-    // Body tones follow the seasonal skin (pumpkin orange in October).
-    val coral: Color      get() = if (BoSeason.isHalloween) BoSeason.pumpkin else Color(0xFFFF6B6B)
-    val coralLight: Color get() = if (BoSeason.isHalloween) BoSeason.pumpkinLight else Color(0xFFFFB3B3)
-    val coralDeep: Color  get() = if (BoSeason.isHalloween) BoSeason.pumpkinDeep else Color(0xFFE85555)
+    // Body tones follow the seasonal skin (pumpkin in October, turkey in November).
+    val coral: Color      get() = BoSeason.body ?: Color(0xFFFF6B6B)
+    val coralLight: Color get() = BoSeason.bodyLight ?: Color(0xFFFFB3B3)
+    val coralDeep: Color  get() = BoSeason.bodyDeep ?: Color(0xFFE85555)
     val sage       = Color(0xFF4ECBA0)
     val sun        = Color(0xFFFFB830)
     val ink        = Color(0xFF1A1523)
@@ -149,10 +149,11 @@ fun Bo(
                 translate(left = tx.dx, top = tx.dy) {
                     rotate(degrees = tx.rotationDeg, pivot = Offset(50f, 50f)) {
                         scale(tx.scaleX, tx.scaleY, pivot = Offset(50f, 80f)) {
-                            drawBody(withStem = true)
+                            drawBody(level = null)
                             drawCheeks()
                             drawEyes(expression, blinkProgress)
                             drawMouth(expression)
+                            drawSeasonOnFace(BoColors.ink)
                         }
                     }
                 }
@@ -183,12 +184,13 @@ fun Bo(
                         translate(left = tx.dx, top = tx.dy) {
                             rotate(degrees = tx.rotationDeg, pivot = Offset(50f, 50f)) {
                                 scale(tx.scaleX, tx.scaleY, pivot = Offset(50f, 80f)) {
-                                    drawBody(withStem = !levelWearsHat(lvl))
+                                    drawBody(level = lvl)
                                     drawCheeks()
                                     if (lvl == 4) drawPennant()
                                     drawLevelEyes(lvl, blinkProgress)
                                     if (lvl == 5) drawSunglasses()
                                     drawLevelMouth(lvl)
+                                    drawSeasonOnFace(BoColors.ink)
                                     if (lvl == 2) drawPlant()
                                     if (lvl == 3) drawBinoculars()
                                     if (lvl == 1) drawMap()
@@ -207,7 +209,7 @@ fun Bo(
 }
 
 // ─── Body ───────────────────────────────────────────────────────────────────
-private fun DrawScope.drawBody(withStem: Boolean) {
+private fun DrawScope.drawBody(level: Int?) {
     val path = Path().apply {
         moveTo(50f, 22f)
         cubicTo(76f, 22f, 88f, 36f, 88f, 52f)
@@ -226,10 +228,9 @@ private fun DrawScope.drawBody(withStem: Boolean) {
         cubicTo(12f, 36f, 24f, 22f, 50f, 22f)
         close()
     }
-    val halloween = BoSeason.isHalloween
-    if (halloween && withStem) drawPumpkinStem(BoColors.ink)
+    drawSeasonBehindBody(BoColors.ink, level)
     drawPath(path, BoColors.coral)
-    if (halloween) drawPumpkinRibs()
+    drawSeasonOnBody()
     drawPath(path, BoColors.ink, style = Stroke(width = 3.5f, join = StrokeJoin.Round))
 }
 
@@ -344,6 +345,7 @@ private fun DrawScope.drawThinkingEyes(blinkScale: Float) {
 
 // ─── Mouth ──────────────────────────────────────────────────────────────────
 private fun DrawScope.drawMouth(expression: BoExpression) {
+    if (BoSeason.hidesMouth) return
     when (expression) {
         BoExpression.Default, BoExpression.Sleepy -> {
             // Soft upward smile
@@ -465,6 +467,7 @@ internal fun DrawScope.drawLevelEyesScaled(level: Int, openFraction: Float) {
 }
 
 internal fun DrawScope.drawLevelMouth(level: Int) {
+    if (BoSeason.hidesMouth) return
     // emotion per level: 0 happy (default), 1 curious, 2 cozy, 3 happy, 4 proud,
     //                    5 cool, 6 cozy, 7 charming, 8 radiant, 9 cozy
     val ink = BoColors.ink

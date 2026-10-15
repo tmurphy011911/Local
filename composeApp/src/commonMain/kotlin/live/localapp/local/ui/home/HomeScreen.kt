@@ -101,6 +101,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.foundation.Image
 import coil3.compose.AsyncImage
 import coil3.compose.AsyncImagePainter
@@ -1889,14 +1890,31 @@ private fun AiConciergeCard(
         }
     }
 
-    // October: night-sky Halloween card with a pumpkin rim, moon and bats
-    // around pumpkin Bo (see BoSeason). Otherwise the standard coral card.
-    val halloween = live.localapp.local.ui.character.BoSeason.isHalloween
+    // Follows Bo's seasonal skin (see BoSeason):
+    //   October  — night-sky card, pumpkin rim, moon + bats around pumpkin Bo
+    //   November — harvest card, amber rim, low sun + falling leaves around turkey Bo
+    //   otherwise — the standard coral card
     val season = live.localapp.local.ui.character.BoSeason
+    val current = season.current
+    val themed = current != live.localapp.local.ui.character.BoSeason.Season.None
     val cardShape = RoundedCornerShape(20.dp)
-    val lipColor = if (halloween) season.nightLip else AppColors.CoralDk
-    val rimColor = if (halloween) season.pumpkin else AppColors.CoralDk
-    val accent = if (halloween) season.pumpkin else AppColors.Coral
+    val accent = season.accent ?: AppColors.Coral
+    val rimColor = season.accent ?: AppColors.CoralDk
+    val lipColor = when (current) {
+        live.localapp.local.ui.character.BoSeason.Season.Halloween -> season.nightLip
+        live.localapp.local.ui.character.BoSeason.Season.Thanksgiving -> season.harvestLip
+        live.localapp.local.ui.character.BoSeason.Season.None -> AppColors.CoralDk
+    }
+    val cardGradient = when (current) {
+        live.localapp.local.ui.character.BoSeason.Season.Halloween -> listOf(season.nightTop, season.nightBottom)
+        live.localapp.local.ui.character.BoSeason.Season.Thanksgiving -> listOf(season.harvestTop, season.harvestBottom)
+        live.localapp.local.ui.character.BoSeason.Season.None -> null
+    }
+    val titleBoColor = when (current) {
+        live.localapp.local.ui.character.BoSeason.Season.Halloween -> season.pumpkin
+        live.localapp.local.ui.character.BoSeason.Season.Thanksgiving -> season.featherYellow
+        live.localapp.local.ui.character.BoSeason.Season.None -> null
+    }
 
     Box(
         modifier = Modifier
@@ -1919,11 +1937,8 @@ private fun AiConciergeCard(
                 .fillMaxWidth()
                 .clip(cardShape)
                 .then(
-                    if (halloween) {
-                        Modifier.background(
-                            Brush.verticalGradient(listOf(season.nightTop, season.nightBottom)),
-                            cardShape,
-                        )
+                    if (cardGradient != null) {
+                        Modifier.background(Brush.verticalGradient(cardGradient), cardShape)
                     } else {
                         Modifier.background(AppColors.Coral, cardShape)
                     },
@@ -1932,9 +1947,10 @@ private fun AiConciergeCard(
                 .drawBehind {
                     // Decorative paint, not layout children, so it doesn't force
                     // the card's minimum height.
-                    if (halloween) {
-                        drawHalloweenSky()
-                    } else {
+                    when (current) {
+                        live.localapp.local.ui.character.BoSeason.Season.Halloween -> drawHalloweenSky()
+                        live.localapp.local.ui.character.BoSeason.Season.Thanksgiving -> drawHarvestSky()
+                        live.localapp.local.ui.character.BoSeason.Season.None -> {
                         // Shine
                         val r = 65.dp.toPx()
                         drawCircle(
@@ -1945,6 +1961,7 @@ private fun AiConciergeCard(
                                 y = 17.dp.toPx(),
                             ),
                         )
+                        }
                     }
                 }
                 .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 14.dp),
@@ -1968,7 +1985,7 @@ private fun AiConciergeCard(
                         "Bo",
                         style = AppType.AiTitle.copy(
                             fontStyle = FontStyle.Italic,
-                            color = if (halloween) season.pumpkin else AppType.AiTitle.color,
+                            color = titleBoColor ?: AppType.AiTitle.color,
                         ),
                     )
                     Spacer(Modifier.weight(1f))
@@ -2016,7 +2033,7 @@ private fun AiConciergeCard(
                             androidx.compose.foundation.text.selection.LocalTextSelectionColors provides
                                 androidx.compose.foundation.text.selection.TextSelectionColors(
                                     handleColor = AppColors.White,
-                                    backgroundColor = if (halloween) season.pumpkin.copy(alpha = 0.45f)
+                                    backgroundColor = if (themed) accent.copy(alpha = 0.45f)
                                         else androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.28f),
                                 ),
                         ) {
@@ -2115,6 +2132,57 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHalloweenSky() 
     drawBat(o(size.width * 0.44f, 16.dp.toPx()), 16.dp.toPx())
     drawBat(o(size.width * 0.56f, 30.dp.toPx()), 11.dp.toPx())
     drawBat(o(size.width - 104.dp.toPx(), 10.dp.toPx()), 9.dp.toPx())
+}
+
+/**
+ * Thanksgiving backdrop for the Ask Bo card: a low golden sun glowing behind
+ * Bo (top-right) and a scatter of falling autumn leaves.
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHarvestSky() {
+    val season = live.localapp.local.ui.character.BoSeason
+    fun o(x: Float, y: Float) = androidx.compose.ui.geometry.Offset(x, y)
+
+    // Sun glow behind Bo
+    val sunCenter = o(size.width - 58.dp.toPx(), 28.dp.toPx())
+    drawCircle(season.harvestGlow.copy(alpha = 0.10f), radius = 50.dp.toPx(), center = sunCenter)
+    drawCircle(season.harvestGlow.copy(alpha = 0.18f), radius = 36.dp.toPx(), center = sunCenter)
+    drawCircle(season.harvestGlow.copy(alpha = 0.55f), radius = 25.dp.toPx(), center = sunCenter)
+
+    // Falling leaves — (x fraction, y dp, size dp, rotation°, color)
+    listOf(
+        Leaf(0.40f, 12f, 11f, -30f, season.featherOrange),
+        Leaf(0.52f, 30f, 9f, 40f, season.featherYellow),
+        Leaf(0.62f, 9f, 8f, 110f, season.featherRed),
+        Leaf(0.33f, 34f, 7f, 70f, season.featherYellow),
+        Leaf(0.94f, 66f, 9f, -60f, season.featherOrange),
+    ).forEach { drawLeaf(o(size.width * it.fx, it.yDp.dp.toPx()), it.sizeDp.dp.toPx(), it.deg, it.color) }
+}
+
+private class Leaf(val fx: Float, val yDp: Float, val sizeDp: Float, val deg: Float, val color: androidx.compose.ui.graphics.Color)
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLeaf(
+    c: androidx.compose.ui.geometry.Offset,
+    len: Float,
+    deg: Float,
+    color: androidx.compose.ui.graphics.Color,
+) {
+    val h = len / 2f
+    rotate(deg, pivot = c) {
+        val blade = androidx.compose.ui.graphics.Path().apply {
+            moveTo(c.x, c.y - h)
+            quadraticBezierTo(c.x + h * 0.75f, c.y - h * 0.1f, c.x, c.y + h)
+            quadraticBezierTo(c.x - h * 0.75f, c.y - h * 0.1f, c.x, c.y - h)
+            close()
+        }
+        drawPath(blade, color.copy(alpha = 0.85f))
+        // Midrib + stem
+        drawLine(
+            androidx.compose.ui.graphics.Color(0xFF4E2612).copy(alpha = 0.45f),
+            androidx.compose.ui.geometry.Offset(c.x, c.y - h * 0.8f),
+            androidx.compose.ui.geometry.Offset(c.x, c.y + h * 1.25f),
+            strokeWidth = len * 0.08f,
+        )
+    }
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBat(

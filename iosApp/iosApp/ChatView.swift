@@ -5,14 +5,32 @@ import MapKit
 // MARK: - Seasonal Bo art
 //
 // Native screens draw Bo from asset-catalog SVGs. The season is decided once,
-// in shared Kotlin (`BoSeason` — pumpkin Bo all of October), so the SwiftUI
+// in shared Kotlin (`BoSeason` — pumpkin in October, turkey in November), so the SwiftUI
 // and Compose Bos always match.
 enum BoArt {
-    static let isHalloween: Bool = BoSeason.shared.isHalloween
-    static var tiny: String { isHalloween ? "BoTinyPumpkin" : "BoTiny" }
-    static var clean: String { isHalloween ? "BoDefaultCleanPumpkin" : "BoDefaultClean" }
+    private static var season: BoSeason.Season { BoSeason.shared.current }
+    static var tiny: String {
+        switch season {
+        case .halloween: return "BoTinyPumpkin"
+        case .thanksgiving: return "BoTinyTurkey"
+        default: return "BoTiny"
+        }
+    }
+    static var clean: String {
+        switch season {
+        case .halloween: return "BoDefaultCleanPumpkin"
+        case .thanksgiving: return "BoDefaultCleanTurkey"
+        default: return "BoDefaultClean"
+        }
+    }
     /// Tint for the "Bo" sender label next to the avatar.
-    static var nameColor: Color { isHalloween ? Color(red: 1.0, green: 0.541, blue: 0.122) : Color(red: 1.0, green: 0.42, blue: 0.42) }
+    static var nameColor: Color {
+        switch season {
+        case .halloween: return Color(red: 1.0, green: 0.541, blue: 0.122)     // #FF8A1F pumpkin
+        case .thanksgiving: return Color(red: 0.659, green: 0.420, blue: 0.235) // #A86B3C turkey
+        default: return Color(red: 1.0, green: 0.42, blue: 0.42)               // #FF6B6B coral
+        }
+    }
 }
 
 // MARK: - Typewriter Completion Store
