@@ -92,29 +92,10 @@ fun CreatePlanButton(
     // Chunky 3D "Duolingo" edge — deeper than the gradient's CoralDk so the
     // 4.dp lip reads as depth beneath the coral-glow face. Follows Bo's
     // seasonal skin (pumpkin, harvest amber, Santa red, Valentine pink).
-    val season = live.localapp.local.ui.character.BoSeason
-    val (edge, glow, faceColors) = when (season.current) {
-        live.localapp.local.ui.character.BoSeason.Season.Halloween -> Triple(
-            season.pumpkinEdge, season.pumpkin,
-            listOf(Color(0xFFFFB060), season.pumpkin, season.pumpkinDeep),
-        )
-        live.localapp.local.ui.character.BoSeason.Season.Thanksgiving -> Triple(
-            season.harvestEdge, season.harvest,
-            listOf(season.harvestLight, season.harvest, season.harvestDeep),
-        )
-        live.localapp.local.ui.character.BoSeason.Season.Christmas -> Triple(
-            season.santaEdge, season.santaRed,
-            listOf(season.santaRedLight, season.santaRed, season.santaRedDeep),
-        )
-        live.localapp.local.ui.character.BoSeason.Season.Valentines -> Triple(
-            season.roseDeep, season.pink,
-            listOf(season.pinkLight, season.pink, season.rose),
-        )
-        live.localapp.local.ui.character.BoSeason.Season.None -> Triple(
-            Color(0xFFC94A4A), AppColors.Coral,
-            listOf(Color(0xFFFF8A8A), AppColors.Coral, AppColors.CoralDk),
-        )
-    }
+    val surface = live.localapp.local.ui.character.BoSeason.surface
+    val edge = surface?.buttonEdge ?: Color(0xFFC94A4A)
+    val glow = surface?.buttonFace?.get(1) ?: AppColors.Coral
+    val faceColors = surface?.buttonFace ?: listOf(Color(0xFFFF8A8A), AppColors.Coral, AppColors.CoralDk)
     Box(
         modifier = modifier
             .height(52.dp) // 48 face + 4 lip

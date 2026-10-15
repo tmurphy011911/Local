@@ -4,39 +4,22 @@ import MapKit
 
 // MARK: - Seasonal Bo art
 //
-// Native screens draw Bo from asset-catalog SVGs. The season is decided once,
-// in shared Kotlin (`BoSeason` — pumpkin Oct, turkey Nov, Santa hat Dec 1–25,
-// hearts Feb 1–14), so the SwiftUI
-// and Compose Bos always match.
+// Native screens draw Bo from asset-catalog SVGs (`BoTiny…`, `BoDefaultClean…`).
+// The season — and therefore the asset suffix and accent colour — is decided in
+// shared Kotlin (`BoSeason`), so the SwiftUI and Compose Bos always match and a
+// new season needs no Swift change (just its imagesets, which
+// scripts/gen_bo_season_art.py writes for the generated seasons).
 enum BoArt {
-    private static var season: BoSeason.Season { BoSeason.shared.current }
-    static var tiny: String {
-        switch season {
-        case .halloween: return "BoTinyPumpkin"
-        case .thanksgiving: return "BoTinyTurkey"
-        case .christmas: return "BoTinyChristmas"
-        case .valentines: return "BoTinyValentine"
-        default: return "BoTiny"
-        }
-    }
-    static var clean: String {
-        switch season {
-        case .halloween: return "BoDefaultCleanPumpkin"
-        case .thanksgiving: return "BoDefaultCleanTurkey"
-        case .christmas: return "BoDefaultCleanChristmas"
-        case .valentines: return "BoDefaultCleanValentine"
-        default: return "BoDefaultClean"
-        }
-    }
+    static var tiny: String { "BoTiny" + BoSeason.shared.assetSuffix }
+    static var clean: String { "BoDefaultClean" + BoSeason.shared.assetSuffix }
     /// Tint for the "Bo" sender label next to the avatar.
     static var nameColor: Color {
-        switch season {
-        case .halloween: return Color(red: 1.0, green: 0.541, blue: 0.122)     // #FF8A1F pumpkin
-        case .thanksgiving: return Color(red: 0.659, green: 0.420, blue: 0.235) // #A86B3C turkey
-        case .christmas: return Color(red: 0.843, green: 0.149, blue: 0.239)    // #D7263D Santa red
-        case .valentines: return Color(red: 0.878, green: 0.271, blue: 0.482)   // #E0457B rose
-        default: return Color(red: 1.0, green: 0.42, blue: 0.42)               // #FF6B6B coral
-        }
+        let argb = UInt32(bitPattern: BoSeason.shared.accentArgb)
+        return Color(
+            red: Double((argb >> 16) & 0xFF) / 255,
+            green: Double((argb >> 8) & 0xFF) / 255,
+            blue: Double(argb & 0xFF) / 255
+        )
     }
 }
 

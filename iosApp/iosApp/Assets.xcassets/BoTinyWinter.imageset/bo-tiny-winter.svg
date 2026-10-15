@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  
+  
+  <g id="bo-body">
+    <path d="M50 22
+                C76 22 88 36 88 52
+                C88 64 86 72 86 76
+                Q82 80 78 78
+                Q74 82 70 78
+                Q66 82 62 78
+                Q58 82 54 78
+                Q50 82 46 78
+                Q42 82 38 78
+                Q34 82 30 78
+                Q26 82 22 78
+                Q18 80 14 76
+                C14 72 12 64 12 52
+                C12 36 24 22 50 22 Z"
+          fill="#FF6B6B" stroke="#1A1523" stroke-width="3.5" stroke-linejoin="round"/>
+    
+  <ellipse cx="28" cy="58" rx="4.5" ry="3" fill="#E85555" opacity="0.7"/>
+  <ellipse cx="72" cy="58" rx="4.5" ry="3" fill="#E85555" opacity="0.7"/>
+
+    
+  <g id="bo-eyes">
+    <ellipse cx="38" cy="50" rx="5.5" ry="7" fill="#1A1523"/>
+    <ellipse cx="62" cy="50" rx="5.5" ry="7" fill="#1A1523"/>
+    <ellipse cx="40" cy="48" rx="2.2" ry="2.7" fill="#FAF7F2"/>
+    <ellipse cx="64" cy="48" rx="2.2" ry="2.7" fill="#FAF7F2"/>
+  </g>
+    <path d="M44 64 Q50 68 56 64" stroke="#1A1523" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  </g>
+  <g id="bo-winter-front">
+    <path d="M14 66 Q50 76 86 66 L86 74 Q50 84 14 74 Z" fill="#2A9D8F" stroke="#1A1523" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M66 74 L70 94 L80 92 L76 72 Z" fill="#2A9D8F" stroke="#1A1523" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M30 70 L32 77" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.55"/>
+    <path d="M42 73 L43 80" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.55"/>
+    <path d="M56 73 L56 80" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.55"/>
+    <path d="M69 84 L78 82" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" stroke-opacity="0.55"/>
+    <path d="M18 44 C18 8 82 8 82 44" fill="none" stroke="#5B9BD5" stroke-width="4.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M6 48 a9 9 0 1 0 18 0 a9 9 0 1 0 -18 0 Z" fill="#EAF4FF" stroke="#1A1523" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M76 48 a9 9 0 1 0 18 0 a9 9 0 1 0 -18 0 Z" fill="#EAF4FF" stroke="#1A1523" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+  </g>
+</svg>
