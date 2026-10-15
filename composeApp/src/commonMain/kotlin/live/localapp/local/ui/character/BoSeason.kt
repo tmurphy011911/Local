@@ -13,17 +13,21 @@ import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import local.composeapp.generated.resources.Res
 import local.composeapp.generated.resources.bo_tiny
+import local.composeapp.generated.resources.bo_tiny_christmas
 import local.composeapp.generated.resources.bo_tiny_pumpkin
 import local.composeapp.generated.resources.bo_tiny_turkey
+import local.composeapp.generated.resources.bo_tiny_valentine
 import org.jetbrains.compose.resources.DrawableResource
 
 /**
  * Seasonal skins for Bo. Date-gated on the device's local calendar so a skin
  * switches itself on and off without a release, in whatever build is installed:
  *
- *   October  → [Season.Halloween]     pumpkin Bo, night-sky lobby card
- *   November → [Season.Thanksgiving]  turkey Bo, harvest lobby card
- *   else     → [Season.None]          classic coral Bo
+ *   Oct 1–31  → [Season.Halloween]     pumpkin Bo, night-sky lobby card
+ *   Nov 1–30  → [Season.Thanksgiving]  turkey Bo, harvest lobby card
+ *   Dec 1–25  → [Season.Christmas]     Santa-hat Bo, evergreen lobby card
+ *   Feb 1–14  → [Season.Valentines]    pink heart Bo, rose lobby card
+ *   else      → [Season.None]          classic coral Bo
  *
  * Every Bo renderer reads from here: [Bo] (via [BoColors]), the splash
  * [live.localapp.local.feature.onboarding.BoCharacter], the static `bo_tiny`
@@ -31,13 +35,16 @@ import org.jetbrains.compose.resources.DrawableResource
  * ChatView.swift reads [current]).
  */
 object BoSeason {
-    enum class Season { None, Halloween, Thanksgiving }
+    enum class Season { None, Halloween, Thanksgiving, Christmas, Valentines }
 
-    /** Evaluated once per process — a cold start after midnight picks up a new month. */
+    /** Evaluated once per process — a cold start after midnight picks up a new day. */
     private val dateSeason: Season by lazy {
-        when (kotlin.time.Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).month) {
-            Month.OCTOBER -> Season.Halloween
-            Month.NOVEMBER -> Season.Thanksgiving
+        val today = kotlin.time.Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault())
+        when {
+            today.month == Month.OCTOBER -> Season.Halloween
+            today.month == Month.NOVEMBER -> Season.Thanksgiving
+            today.month == Month.DECEMBER && today.day <= 25 -> Season.Christmas
+            today.month == Month.FEBRUARY && today.day <= 14 -> Season.Valentines
             else -> Season.None
         }
     }
@@ -49,7 +56,7 @@ object BoSeason {
      */
     var debugOverride: Season? = null
 
-    /** iOS-friendly setter for [debugOverride]: "halloween" / "thanksgiving" / "none". */
+    /** iOS-friendly setter for [debugOverride]: "halloween" / "thanksgiving" / "christmas" / "valentines" / "none". */
     fun setDebugOverride(name: String?) {
         debugOverride = Season.entries.firstOrNull { it.name.equals(name, ignoreCase = true) }
     }
@@ -57,6 +64,8 @@ object BoSeason {
     val current: Season get() = debugOverride ?: dateSeason
     val isHalloween: Boolean get() = current == Season.Halloween
     val isThanksgiving: Boolean get() = current == Season.Thanksgiving
+    val isChristmas: Boolean get() = current == Season.Christmas
+    val isValentines: Boolean get() = current == Season.Valentines
 
     // Pumpkin palette (Halloween)
     val pumpkin      = Color(0xFFFF8A1F)
@@ -92,30 +101,57 @@ object BoSeason {
     val harvestLip   = Color(0xFF2E1508)
     val harvestGlow  = Color(0xFFFFD27A)
 
+    // Christmas palette (Bo keeps classic coral; Santa hat + evergreen surfaces)
+    val santaRed     = Color(0xFFD7263D)
+    val santaRedLight = Color(0xFFFF5A6E)
+    val santaRedDeep = Color(0xFFA81C2E)
+    val santaEdge    = Color(0xFF7E1422)
+    val evergreenTop = Color(0xFF1F5C3A)
+    val evergreenBottom = Color(0xFF123A24)
+    val evergreenLip = Color(0xFF0A2416)
+    val gold         = Color(0xFFFFD166)
+
+    // Valentine's palette
+    val pink         = Color(0xFFFF7EB6)
+    val pinkLight    = Color(0xFFFFC2DD)
+    val rose         = Color(0xFFE0457B)
+    val roseDeep     = Color(0xFFB8305F)
+    val roseEdge     = Color(0xFF8E2149)
+    val roseLip      = Color(0xFF6E1A38)
+    val blush        = Color(0xFFFFE3EE)
+
     /** Body fill / light tint / cheek+accent tone for the active season. */
     internal val body: Color? get() = when (current) {
         Season.Halloween -> pumpkin
         Season.Thanksgiving -> turkey
-        Season.None -> null
+        Season.Valentines -> pink
+        Season.Christmas, Season.None -> null
     }
     internal val bodyLight: Color? get() = when (current) {
         Season.Halloween -> pumpkinLight
         Season.Thanksgiving -> turkeyLight
-        Season.None -> null
+        Season.Valentines -> pinkLight
+        Season.Christmas, Season.None -> null
     }
     internal val bodyDeep: Color? get() = when (current) {
         Season.Halloween -> pumpkinDeep
         Season.Thanksgiving -> turkeyCheek
-        Season.None -> null
+        Season.Valentines -> rose
+        Season.Christmas, Season.None -> null
     }
 
     /** The turkey's beak replaces Bo's mouth (they'd overlap); eyes carry the expression. */
     internal val hidesMouth: Boolean get() = isThanksgiving
 
+    /** Valentine's Bo draws heart cheeks (in [drawSeasonOnFace]) instead of the oval blush. */
+    internal val hidesCheeks: Boolean get() = isValentines
+
     /** Primary accent for themed surfaces (Ask Bo button, card rim, "Bo" label); null = classic coral. */
     val accent: Color? get() = when (current) {
         Season.Halloween -> pumpkin
         Season.Thanksgiving -> harvest
+        Season.Christmas -> santaRed
+        Season.Valentines -> rose
         Season.None -> null
     }
 }
@@ -125,18 +161,21 @@ val boTinyRes: DrawableResource
     get() = when (BoSeason.current) {
         BoSeason.Season.Halloween -> Res.drawable.bo_tiny_pumpkin
         BoSeason.Season.Thanksgiving -> Res.drawable.bo_tiny_turkey
+        BoSeason.Season.Christmas -> Res.drawable.bo_tiny_christmas
+        BoSeason.Season.Valentines -> Res.drawable.bo_tiny_valentine
         BoSeason.Season.None -> Res.drawable.bo_tiny
     }
 
 // ─── Season hooks — every Bo renderer calls these around its body/face ──────
 // (100×100 body viewBox — same coordinates as the body path)
 
-/** Before the body fill: things that sit behind Bo (pumpkin stem, turkey tail). */
+/** Before the body fill: things that sit behind Bo (pumpkin stem, turkey tail, floating hearts). */
 internal fun DrawScope.drawSeasonBehindBody(ink: Color, level: Int?) {
     when (BoSeason.current) {
         BoSeason.Season.Halloween -> if (!levelWearsHat(level)) drawPumpkinStem(ink)
         BoSeason.Season.Thanksgiving -> drawTurkeyTail(ink)
-        BoSeason.Season.None -> Unit
+        BoSeason.Season.Valentines -> drawFloatingHearts(ink)
+        BoSeason.Season.Christmas, BoSeason.Season.None -> Unit
     }
 }
 
@@ -145,12 +184,17 @@ internal fun DrawScope.drawSeasonOnBody() {
     if (BoSeason.isHalloween) drawPumpkinRibs()
 }
 
-/** After eyes/mouth: things on the face (turkey beak + wattle). */
-internal fun DrawScope.drawSeasonOnFace(ink: Color) {
-    if (BoSeason.isThanksgiving) drawTurkeyBeak(ink)
+/** After eyes/mouth: things on the face/head (turkey beak, Santa hat, heart cheeks). */
+internal fun DrawScope.drawSeasonOnFace(ink: Color, level: Int?) {
+    when (BoSeason.current) {
+        BoSeason.Season.Thanksgiving -> drawTurkeyBeak(ink)
+        BoSeason.Season.Christmas -> if (!levelWearsHat(level)) drawSantaHat(ink)
+        BoSeason.Season.Valentines -> drawHeartCheeks()
+        BoSeason.Season.Halloween, BoSeason.Season.None -> Unit
+    }
 }
 
-/** Level props that sit on Bo's head and would collide with the pumpkin stem. */
+/** Level props that sit on Bo's head and would collide with a stem or Santa hat. */
 internal fun levelWearsHat(level: Int?): Boolean = level == 7 || level == 8 || level == 9
 
 // ─── Pumpkin parts ──────────────────────────────────────────────────────────
@@ -244,4 +288,65 @@ private fun DrawScope.drawTurkeyBeak(ink: Color) {
     drawPath(wattlePath, ink, style = Stroke(width = 1.8f, join = StrokeJoin.Round))
     drawPath(beakPath, BoSeason.beak)
     drawPath(beakPath, ink, style = Stroke(width = 2f, join = StrokeJoin.Round))
+}
+
+// ─── Christmas parts ────────────────────────────────────────────────────────
+
+private val hatCone = Path().apply {
+    moveTo(24f, 30f)
+    cubicTo(26f, 12f, 42f, 4f, 58f, 5f)
+    cubicTo(72f, 6f, 82f, 13f, 90f, 24f)
+    cubicTo(84f, 22f, 78f, 22f, 74f, 25f)
+    cubicTo(76f, 27f, 76f, 29f, 76f, 30f)
+    close()
+}
+private val hatShine = Path().apply {
+    moveTo(32f, 22f)
+    cubicTo(40f, 12f, 52f, 9f, 62f, 10f)
+}
+
+/** Santa hat sitting on Bo's head: red cone flopping right, white fur band, pom-pom. */
+private fun DrawScope.drawSantaHat(ink: Color) {
+    drawPath(hatCone, BoSeason.santaRed)
+    drawPath(hatCone, ink, style = Stroke(width = 3f, join = StrokeJoin.Round))
+    drawPath(hatShine, Color.White.copy(alpha = 0.25f), style = Stroke(width = 3f, cap = StrokeCap.Round))
+    val bandTopLeft = Offset(19f, 24f)
+    val bandSize = androidx.compose.ui.geometry.Size(62f, 11f)
+    val bandCorner = androidx.compose.ui.geometry.CornerRadius(5.5f)
+    drawRoundRect(Color.White, bandTopLeft, bandSize, bandCorner)
+    drawRoundRect(ink, bandTopLeft, bandSize, bandCorner, style = Stroke(width = 3f))
+    drawCircle(Color.White, radius = 5.5f, center = Offset(90f, 25f))
+    drawCircle(ink, radius = 5.5f, center = Offset(90f, 25f), style = Stroke(width = 2.5f))
+}
+
+// ─── Valentine's parts ──────────────────────────────────────────────────────
+
+/** Heart centred on (cx, cy), roughly [s]×2 wide. Same curve as the iOS/Android static art. */
+internal fun heartPath(cx: Float, cy: Float, s: Float): Path = Path().apply {
+    moveTo(cx, cy + s * 0.45f)
+    cubicTo(cx - s * 1.1f, cy - s * 0.25f, cx - s * 0.5f, cy - s * 1.05f, cx, cy - s * 0.4f)
+    cubicTo(cx + s * 0.5f, cy - s * 1.05f, cx + s * 1.1f, cy - s * 0.25f, cx, cy + s * 0.45f)
+    close()
+}
+
+private class FloatingHeart(val cx: Float, val cy: Float, val s: Float, val deg: Float, val deep: Boolean, val stroke: Float)
+private val floatingHearts = listOf(
+    FloatingHeart(86f, 18f, 9f, 14f, deep = true, stroke = 2.2f),
+    FloatingHeart(15f, 24f, 6.5f, -16f, deep = false, stroke = 2f),
+    FloatingHeart(73f, 6f, 4.5f, 8f, deep = false, stroke = 1.6f),
+)
+
+private fun DrawScope.drawFloatingHearts(ink: Color) {
+    floatingHearts.forEach { h ->
+        rotate(h.deg, pivot = Offset(h.cx, h.cy)) {
+            val p = heartPath(h.cx, h.cy, h.s)
+            drawPath(p, if (h.deep) BoSeason.rose else BoSeason.pinkLight)
+            drawPath(p, ink, style = Stroke(width = h.stroke, join = StrokeJoin.Round))
+        }
+    }
+}
+
+private fun DrawScope.drawHeartCheeks() {
+    drawPath(heartPath(28f, 58f, 5f), BoSeason.rose)
+    drawPath(heartPath(72f, 58f, 5f), BoSeason.rose)
 }

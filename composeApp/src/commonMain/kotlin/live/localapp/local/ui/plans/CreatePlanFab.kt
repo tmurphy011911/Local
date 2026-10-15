@@ -91,7 +91,7 @@ fun CreatePlanButton(
 
     // Chunky 3D "Duolingo" edge — deeper than the gradient's CoralDk so the
     // 4.dp lip reads as depth beneath the coral-glow face. Follows Bo's
-    // seasonal skin: pumpkin orange in October, harvest amber in November.
+    // seasonal skin (pumpkin, harvest amber, Santa red, Valentine pink).
     val season = live.localapp.local.ui.character.BoSeason
     val (edge, glow, faceColors) = when (season.current) {
         live.localapp.local.ui.character.BoSeason.Season.Halloween -> Triple(
@@ -101,6 +101,14 @@ fun CreatePlanButton(
         live.localapp.local.ui.character.BoSeason.Season.Thanksgiving -> Triple(
             season.harvestEdge, season.harvest,
             listOf(season.harvestLight, season.harvest, season.harvestDeep),
+        )
+        live.localapp.local.ui.character.BoSeason.Season.Christmas -> Triple(
+            season.santaEdge, season.santaRed,
+            listOf(season.santaRedLight, season.santaRed, season.santaRedDeep),
+        )
+        live.localapp.local.ui.character.BoSeason.Season.Valentines -> Triple(
+            season.roseDeep, season.pink,
+            listOf(season.pinkLight, season.pink, season.rose),
         )
         live.localapp.local.ui.character.BoSeason.Season.None -> Triple(
             Color(0xFFC94A4A), AppColors.Coral,

@@ -98,13 +98,15 @@ fun BoCharacter(
                         if (showShadow) ellipse(50f, 88f, 26f, 3f, BoInk, alpha = 0.18f)
                         if (lvl == 8) drawLegendHalo(0f)
                         drawSeasonalBody(bodyPath, level = lvl)
-                        ellipse(28f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
-                        ellipse(72f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
+                        if (!BoSeason.hidesCheeks) {
+                            ellipse(28f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
+                            ellipse(72f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
+                        }
                         if (lvl == 4) drawPennant()
                         drawLevelEyesScaled(lvl, eyeOpen)
                         if (lvl == 5) drawSunglasses()
                         drawLevelMouth(lvl)
-                        drawSeasonOnFace(BoInk)
+                        drawSeasonOnFace(BoInk, level = lvl)
                         if (lvl == 2) drawPlant()
                         if (lvl == 3) drawBinoculars()
                         if (lvl == 1) drawMap()
@@ -133,8 +135,10 @@ fun BoCharacter(
             // Body
             drawSeasonalBody(bodyPath, level = null)
             // Cheeks
-            ellipse(28f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
-            ellipse(72f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
+            if (!BoSeason.hidesCheeks) {
+                ellipse(28f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
+                ellipse(72f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
+            }
 
             // Eyes — blink collapses them vertically around their center line.
             when (expression) {
@@ -174,7 +178,7 @@ fun BoCharacter(
                     drawPath(mouthExcited, BoInk, style = Stroke(width = 2.5f, join = StrokeJoin.Round))
                 }
             }
-            drawSeasonOnFace(BoInk)
+            drawSeasonOnFace(BoInk, level = null)
         }
     }
 }

@@ -153,7 +153,7 @@ fun Bo(
                             drawCheeks()
                             drawEyes(expression, blinkProgress)
                             drawMouth(expression)
-                            drawSeasonOnFace(BoColors.ink)
+                            drawSeasonOnFace(BoColors.ink, level = null)
                         }
                     }
                 }
@@ -190,7 +190,7 @@ fun Bo(
                                     drawLevelEyes(lvl, blinkProgress)
                                     if (lvl == 5) drawSunglasses()
                                     drawLevelMouth(lvl)
-                                    drawSeasonOnFace(BoColors.ink)
+                                    drawSeasonOnFace(BoColors.ink, level = lvl)
                                     if (lvl == 2) drawPlant()
                                     if (lvl == 3) drawBinoculars()
                                     if (lvl == 1) drawMap()
@@ -236,6 +236,7 @@ private fun DrawScope.drawBody(level: Int?) {
 
 // ─── Cheeks ─────────────────────────────────────────────────────────────────
 private fun DrawScope.drawCheeks() {
+    if (BoSeason.hidesCheeks) return
     drawOval(
         color = BoColors.coralDeep.copy(alpha = 0.7f),
         topLeft = Offset(23.5f, 55f),

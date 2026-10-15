@@ -1893,26 +1893,36 @@ private fun AiConciergeCard(
     // Follows Bo's seasonal skin (see BoSeason):
     //   October  — night-sky card, pumpkin rim, moon + bats around pumpkin Bo
     //   November — harvest card, amber rim, low sun + falling leaves around turkey Bo
+    //   Dec 1–25 — evergreen card, red rim, fairy lights + snow around Santa-hat Bo
+    //   Feb 1–14 — rose card, pink rim, soft glow + drifting hearts around heart Bo
     //   otherwise — the standard coral card
     val season = live.localapp.local.ui.character.BoSeason
     val current = season.current
     val themed = current != live.localapp.local.ui.character.BoSeason.Season.None
     val cardShape = RoundedCornerShape(20.dp)
     val accent = season.accent ?: AppColors.Coral
-    val rimColor = season.accent ?: AppColors.CoralDk
+    // Valentine's card is itself rose, so its rim steps lighter to keep the edge.
+    val rimColor = if (current == live.localapp.local.ui.character.BoSeason.Season.Valentines) season.pinkLight
+        else season.accent ?: AppColors.CoralDk
     val lipColor = when (current) {
         live.localapp.local.ui.character.BoSeason.Season.Halloween -> season.nightLip
         live.localapp.local.ui.character.BoSeason.Season.Thanksgiving -> season.harvestLip
+        live.localapp.local.ui.character.BoSeason.Season.Christmas -> season.evergreenLip
+        live.localapp.local.ui.character.BoSeason.Season.Valentines -> season.roseLip
         live.localapp.local.ui.character.BoSeason.Season.None -> AppColors.CoralDk
     }
     val cardGradient = when (current) {
         live.localapp.local.ui.character.BoSeason.Season.Halloween -> listOf(season.nightTop, season.nightBottom)
         live.localapp.local.ui.character.BoSeason.Season.Thanksgiving -> listOf(season.harvestTop, season.harvestBottom)
+        live.localapp.local.ui.character.BoSeason.Season.Christmas -> listOf(season.evergreenTop, season.evergreenBottom)
+        live.localapp.local.ui.character.BoSeason.Season.Valentines -> listOf(season.rose, season.roseDeep)
         live.localapp.local.ui.character.BoSeason.Season.None -> null
     }
     val titleBoColor = when (current) {
         live.localapp.local.ui.character.BoSeason.Season.Halloween -> season.pumpkin
         live.localapp.local.ui.character.BoSeason.Season.Thanksgiving -> season.featherYellow
+        live.localapp.local.ui.character.BoSeason.Season.Christmas -> season.gold
+        live.localapp.local.ui.character.BoSeason.Season.Valentines -> season.blush
         live.localapp.local.ui.character.BoSeason.Season.None -> null
     }
 
@@ -1950,6 +1960,8 @@ private fun AiConciergeCard(
                     when (current) {
                         live.localapp.local.ui.character.BoSeason.Season.Halloween -> drawHalloweenSky()
                         live.localapp.local.ui.character.BoSeason.Season.Thanksgiving -> drawHarvestSky()
+                        live.localapp.local.ui.character.BoSeason.Season.Christmas -> drawWinterSky()
+                        live.localapp.local.ui.character.BoSeason.Season.Valentines -> drawValentineSky()
                         live.localapp.local.ui.character.BoSeason.Season.None -> {
                         // Shine
                         val r = 65.dp.toPx()
@@ -2156,6 +2168,81 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHarvestSky() {
         Leaf(0.33f, 34f, 7f, 70f, season.featherYellow),
         Leaf(0.94f, 66f, 9f, -60f, season.featherOrange),
     ).forEach { drawLeaf(o(size.width * it.fx, it.yDp.dp.toPx()), it.sizeDp.dp.toPx(), it.deg, it.color) }
+}
+
+/**
+ * Christmas backdrop for the Ask Bo card: a soft warm glow behind Bo, a string
+ * of fairy lights swagged along the top edge, and falling snow.
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawWinterSky() {
+    val season = live.localapp.local.ui.character.BoSeason
+    val white = androidx.compose.ui.graphics.Color.White
+    fun o(x: Float, y: Float) = androidx.compose.ui.geometry.Offset(x, y)
+
+    // Warm glow behind Bo
+    val glowCenter = o(size.width - 58.dp.toPx(), 26.dp.toPx())
+    drawCircle(season.gold.copy(alpha = 0.08f), radius = 46.dp.toPx(), center = glowCenter)
+    drawCircle(season.gold.copy(alpha = 0.14f), radius = 32.dp.toPx(), center = glowCenter)
+
+    // Fairy lights: a sagging wire across the top with coloured bulbs
+    val sag = 9.dp.toPx()
+    val wireY = 3.dp.toPx()
+    val wire = androidx.compose.ui.graphics.Path().apply {
+        moveTo(0f, wireY)
+        val spans = 4
+        val w = size.width / spans
+        for (i in 0 until spans) quadraticBezierTo(w * i + w / 2f, wireY + sag * 2f, w * (i + 1), wireY)
+    }
+    drawPath(wire, androidx.compose.ui.graphics.Color(0xFF0A2416), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.2.dp.toPx()))
+    val bulbs = listOf(season.santaRed, season.gold, androidx.compose.ui.graphics.Color(0xFF4FC3F7), androidx.compose.ui.graphics.Color(0xFF7BD389))
+    val count = 14
+    for (i in 0 until count) {
+        val x = size.width * (i + 0.5f) / count
+        val spanW = size.width / 4
+        val t = (x % spanW) / spanW                     // 0..1 within a span
+        val y = wireY + sag * 2f * 2f * t * (1 - t)     // matches the quad sag
+        val c = bulbs[i % bulbs.size]
+        drawCircle(c.copy(alpha = 0.25f), radius = 5.dp.toPx(), center = o(x, y + 3.dp.toPx()))
+        drawCircle(c, radius = 2.6.dp.toPx(), center = o(x, y + 3.dp.toPx()))
+    }
+
+    // Snow
+    listOf(
+        0.36f to 26f, 0.47f to 14f, 0.58f to 34f, 0.30f to 40f, 0.66f to 20f,
+        0.42f to 44f, 0.92f to 62f, 0.85f to 70f, 0.12f to 62f, 0.55f to 52f,
+    ).forEachIndexed { i, (fx, y) ->
+        drawCircle(white.copy(alpha = 0.7f), radius = (if (i % 3 == 0) 1.8f else 1.2f).dp.toPx(), center = o(size.width * fx, y.dp.toPx()))
+    }
+}
+
+/**
+ * Valentine's backdrop for the Ask Bo card: a soft blush glow behind Bo and a
+ * few hearts drifting across.
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawValentineSky() {
+    val season = live.localapp.local.ui.character.BoSeason
+    fun o(x: Float, y: Float) = androidx.compose.ui.geometry.Offset(x, y)
+
+    val glowCenter = o(size.width - 58.dp.toPx(), 26.dp.toPx())
+    drawCircle(season.blush.copy(alpha = 0.10f), radius = 48.dp.toPx(), center = glowCenter)
+    drawCircle(season.blush.copy(alpha = 0.18f), radius = 34.dp.toPx(), center = glowCenter)
+
+    // (x fraction, y dp, size dp, rotation°, alpha)
+    listOf(
+        floatArrayOf(0.40f, 14f, 6f, -14f, 0.55f),
+        floatArrayOf(0.53f, 34f, 4.5f, 12f, 0.45f),
+        floatArrayOf(0.62f, 10f, 3.5f, -6f, 0.5f),
+        floatArrayOf(0.32f, 38f, 3.5f, 18f, 0.4f),
+        floatArrayOf(0.93f, 66f, 5f, 10f, 0.45f),
+    ).forEach { (fx, y, sz, deg, a) ->
+        val c = o(size.width * fx, y.dp.toPx())
+        rotate(deg, pivot = c) {
+            drawPath(
+                live.localapp.local.ui.character.heartPath(c.x, c.y, sz.dp.toPx()),
+                season.blush.copy(alpha = a),
+            )
+        }
+    }
 }
 
 private class Leaf(val fx: Float, val yDp: Float, val sizeDp: Float, val deg: Float, val color: androidx.compose.ui.graphics.Color)
