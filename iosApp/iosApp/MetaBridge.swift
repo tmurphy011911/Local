@@ -39,12 +39,12 @@ enum MetaBridge {
         let bridge = IosMetaBridge.shared
         bridge.activateApp = { activateApp() }
         bridge.completeRegistration = { method in completeRegistration(method) }
-        bridge.requestTracking = { requestTracking() }
     }
 
     /// Boot the SDK. Called from `AppDelegate.application(_:didFinishLaunchingWithOptions:)`.
     static func start(_ application: UIApplication, _ launchOptions: [UIApplication.LaunchOptionsKey: Any]?) {
         #if canImport(FBSDKCoreKit)
+        guard !isEnabled else { return }   // idempotent: two paths can reach this
         guard isConfigured else { return }
         ApplicationDelegate.shared.application(application, didFinishLaunchingWithOptions: launchOptions)
         isEnabled = true
@@ -71,23 +71,61 @@ enum MetaBridge {
         // Intentionally empty. See the doc comment above before adding a call here.
     }
 
-    /// Show the ATT prompt.
+    /// Show the ATT prompt, then start the SDK once the user has answered.
     ///
-    /// We only PRESENT it — we never report the answer to FBSDK. On iOS 17+
-    /// with FBSDK v17+, the SDK reads `ATTrackingManager.trackingAuthorizationStatus`
-    /// itself, and `Settings.isAdvertiserTrackingEnabled` is a deprecated no-op.
-    /// Our deployment target is 18.2, so that is always the case here.
+    /// Apple REJECTED v1.4.0 (502) under Guideline 2.1 because the prompt was
+    /// chained to the onboarding notifications step — behind phone-OTP auth the
+    /// reviewer could not get past, so they never saw it. Apple also requires
+    /// the request to appear BEFORE any data that could track the user is
+    /// collected, and FBSDK pings Meta the moment it starts. Both problems have
+    /// the same fix: ask on first launch, and don't start FBSDK until answered.
     ///
-    /// Apple shows this once per install, and only while the app is `.active` —
-    /// a later call just returns the stored answer. So the placement of the
-    /// first call is the only chance we get, which is why it is chained onto
-    /// the onboarding notifications step rather than fired at launch.
-    static func requestTracking() {
-        // Let the notification prompt finish dismissing first — two system
-        // alerts racing each other means the second silently fails to present.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) {
-            guard UIApplication.shared.applicationState == .active else { return }
-            ATTrackingManager.requestTrackingAuthorization { _ in }
+    /// Must run while the app is `.active` — at `didFinishLaunchingWithOptions`
+    /// it is still `.inactive` and the prompt silently fails to present, which
+    /// is why AppDelegate calls this from `applicationDidBecomeActive`.
+    ///
+    /// iOS asks once per install; later calls return the stored answer without
+    /// prompting, so the `then` block still runs and the SDK still starts.
+    static func requestTrackingThenStart(_ application: UIApplication,
+                                         _ launchOptions: [UIApplication.LaunchOptionsKey: Any]?) {
+
+        func attempt(_ remaining: Int) {
+            // Half a second past activation. Asking the instant the app becomes
+            // active is a known case where iOS declines to present.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+
+                // Already answered (or a retry won the race) — just start.
+                guard ATTrackingManager.trackingAuthorizationStatus == .notDetermined else {
+                    start(application, launchOptions)
+                    return
+                }
+
+                // iOS logs "returning 0 due to backgrounded app" and silently
+                // does NOT prompt if we're not foreground — e.g. a system alert
+                // stole focus. It doesn't consume the one-shot, so retry later.
+                guard application.applicationState == .active else {
+                    if remaining > 0 { attempt(remaining - 1) } else { start(application, launchOptions) }
+                    return
+                }
+
+                ATTrackingManager.requestTrackingAuthorization { status in
+                    DispatchQueue.main.async {
+                        if status == .notDetermined, remaining > 0 {
+                            attempt(remaining - 1)   // prompt never presented; go again
+                        } else {
+                            start(application, launchOptions)
+                        }
+                    }
+                }
+            }
+        }
+
+        attempt(6)
+
+        // Safety net: a missing ATT callback must never cost us the SDK
+        // entirely. start() is idempotent, so whichever path lands first wins.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+            start(application, launchOptions)
         }
     }
 
@@ -123,15 +161,34 @@ enum MetaBridge {
 /// supplies them. Attached via `@UIApplicationDelegateAdaptor` in `iOSApp`.
 final class AppDelegate: NSObject, UIApplicationDelegate {
 
+    private var launchOptions: [UIApplication.LaunchOptionsKey: Any]?
+    private var hasAskedForTracking = false
+
     func application(
         _ application: UIApplication,
         didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
     ) -> Bool {
-        // Starting the SDK here is what makes `fb_mobile_activate_app` fire:
-        // ApplicationDelegate observes didBecomeActive and logs it itself, on
-        // this launch and every subsequent foreground. Do NOT also call
-        // AppEvents.activateApp() — see MetaBridge.activateApp().
-        MetaBridge.start(application, launchOptions)
+        // Deliberately does NOT start FBSDK. Starting it here would ping Meta
+        // before the ATT prompt could appear, which is what Apple rejected 502
+        // for. We only stash the launch options; applicationDidBecomeActive
+        // asks for tracking and starts the SDK afterwards.
+        self.launchOptions = launchOptions
+
+        // NOT applicationDidBecomeActive: SwiftUI apps are scene-based, so UIKit
+        // delivers sceneDidBecomeActive to the scene delegate and never calls
+        // the app delegate's version. This notification fires either way.
+        var token: NSObjectProtocol?
+        token = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, !self.hasAskedForTracking else { return }
+            self.hasAskedForTracking = true
+            if let token { NotificationCenter.default.removeObserver(token) }
+            MetaBridge.requestTrackingThenStart(application, self.launchOptions)
+        }
+
         return true
     }
 

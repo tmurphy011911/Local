@@ -1,6 +1,5 @@
 package live.localapp.local.platform
 
-import live.localapp.local.observability.IosMetaBridge
 import kotlinx.cinterop.ExperimentalForeignApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -150,19 +149,9 @@ actual fun requestNotificationPermission(onResult: (Boolean) -> Unit) {
     // Prefer OneSignal's prompt (Swift, via the bridge) so a grant registers the
     // device for remote notifications and mints an APNs/OneSignal token. Fall
     // back to raw UNUserNotificationCenter only if the bridge isn't wired yet.
-    // ATT is chained onto whichever branch runs below. Rationale: Apple shows
-    // the tracking prompt once per install and only while the app is active, so
-    // the FIRST call is the only chance. Asking here — straight after the user
-    // has just answered the notifications prompt in onboarding — means they are
-    // already in a "granting permissions" frame, which converts far better than
-    // a cold prompt at launch. MetaBridge delays briefly so the two system
-    // alerts don't race.
     val viaOneSignal = live.localapp.local.PushBridge.requestPermission
     if (viaOneSignal != null) {
-        viaOneSignal { granted ->
-            onResult(granted)
-            IosMetaBridge.requestTracking?.invoke()
-        }
+        viaOneSignal(onResult)
         return
     }
     val center = platform.UserNotifications.UNUserNotificationCenter.currentNotificationCenter()
@@ -173,7 +162,6 @@ actual fun requestNotificationPermission(onResult: (Boolean) -> Unit) {
     ) { granted, _ ->
         platform.darwin.dispatch_async(platform.darwin.dispatch_get_main_queue()) {
             onResult(granted)
-            IosMetaBridge.requestTracking?.invoke()
         }
     }
 }
