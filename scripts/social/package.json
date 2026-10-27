@@ -1,0 +1,15 @@
+{
+  "name": "local-social",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Automated Instagram carousels for Local (today / this weekend / this month).",
+  "scripts": {
+    "build": "node build.mjs",
+    "publish": "node publish.mjs"
+  },
+  "dependencies": {
+    "playwright": "1.48.2",
+    "qrcode": "1.5.4"
+  }
+}

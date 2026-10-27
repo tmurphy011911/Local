@@ -1,0 +1,64 @@
+// HTML → PNG renderer. Embeds the app's Fraunces/Nunito fonts, Bo, and the real
+// app icon, generates the download QR server-side, then screenshots each
+// 1080×1350 slide with headless Chromium. One browser, one page, N shots.
+
+import { chromium } from "playwright";
+import QRCode from "qrcode";
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { renderHtml } from "./template.mjs";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const ASSETS = path.join(__dirname, "assets");
+
+async function fontFace(file, family, weight) {
+  const b64 = (await readFile(path.join(ASSETS, file))).toString("base64");
+  return `@font-face{font-family:'${family}';font-style:normal;font-weight:${weight};` +
+    `src:url(data:font/ttf;base64,${b64}) format('truetype');}`;
+}
+
+export async function buildAssets() {
+  const faces = await Promise.all([
+    fontFace("fraunces_700.ttf", "Fraunces", 700),
+    fontFace("fraunces_900.ttf", "Fraunces", 900),
+    fontFace("nunito_600.ttf", "Nunito", 600),
+    fontFace("nunito_700.ttf", "Nunito", 700),
+    fontFace("nunito_800.ttf", "Nunito", 800),
+    fontFace("nunito_900.ttf", "Nunito", 900),
+  ]);
+  const boSvg = await readFile(path.join(ASSETS, "bo.svg"), "utf8");
+  const appiconDataUri = "data:image/png;base64," +
+    (await readFile(path.join(ASSETS, "appicon.png"))).toString("base64");
+  const qrSvg = await QRCode.toString("https://localapp.live", {
+    type: "svg", margin: 0, errorCorrectionLevel: "M",
+    color: { dark: "#1A1523FF", light: "#00000000" },
+  });
+  return { fontCss: faces.join("\n"), boSvg, appiconDataUri, qrSvg };
+}
+
+// Returns an ordered array of PNG paths (hero, events…, download).
+export async function renderSlides({ heroLine, eyebrow, label, events }, outDir) {
+  const assets = await buildAssets();
+  const { html, slideIds } = renderHtml({ heroLine, eyebrow, label, events, ...assets });
+
+  const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-dev-shm-usage"] });
+  try {
+    const page = await browser.newPage({ viewport: { width: 1080, height: 1350 }, deviceScaleFactor: 1 });
+    await page.setContent(html, { waitUntil: "load", timeout: 60000 });
+    await page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => {});
+    await page.evaluate(() => (document.fonts ? document.fonts.ready : null)).catch(() => {});
+
+    const out = [];
+    for (let i = 0; i < slideIds.length; i++) {
+      const el = await page.$("#" + slideIds[i]);
+      if (!el) throw new Error(`slide element missing: ${slideIds[i]}`);
+      const p = path.join(outDir, String(i).padStart(2, "0") + ".png");
+      await el.screenshot({ path: p, type: "png" });
+      out.push(p);
+    }
+    return out;
+  } finally {
+    await browser.close();
+  }
+}
