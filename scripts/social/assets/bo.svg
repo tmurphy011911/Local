@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <ellipse cx="50" cy="88" rx="26" ry="3" fill="#1A1523" opacity="0.18"/>
+  
+  <g id="bo-body">
+    <path d="M50 22
+                C76 22 88 36 88 52
+                C88 64 86 72 86 76
+                Q82 80 78 78
+                Q74 82 70 78
+                Q66 82 62 78
+                Q58 82 54 78
+                Q50 82 46 78
+                Q42 82 38 78
+                Q34 82 30 78
+                Q26 82 22 78
+                Q18 80 14 76
+                C14 72 12 64 12 52
+                C12 36 24 22 50 22 Z"
+          fill="#FF6B6B" stroke="#1A1523" stroke-width="3.5" stroke-linejoin="round"/>
+    
+  <ellipse cx="28" cy="58" rx="4.5" ry="3" fill="#E85555" opacity="0.7"/>
+  <ellipse cx="72" cy="58" rx="4.5" ry="3" fill="#E85555" opacity="0.7"/>
+
+    
+  <g id="bo-eyes">
+    <ellipse cx="38" cy="50" rx="5.5" ry="7" fill="#1A1523"/>
+    <ellipse cx="62" cy="50" rx="5.5" ry="7" fill="#1A1523"/>
+    <ellipse cx="40" cy="48" rx="2.2" ry="2.7" fill="#FAF7F2"/>
+    <ellipse cx="64" cy="48" rx="2.2" ry="2.7" fill="#FAF7F2"/>
+    <circle cx="36" cy="52" r="0.9" fill="#FAF7F2"/>
+    <circle cx="60" cy="52" r="0.9" fill="#FAF7F2"/>
+  </g>
+    <path d="M44 64 Q50 68 56 64" stroke="#1A1523" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  </g>
+</svg>
