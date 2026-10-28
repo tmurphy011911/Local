@@ -35,3 +35,23 @@ export async function uploadImage(localPath, prefix) {
   if (!res.ok) throw new Error(`upload ${objectPath} ${res.status}: ${await res.text()}`);
   return `${url}/storage/v1/object/public/${STORAGE_BUCKET}/${objectPath}`;
 }
+
+// Per-day "already published" marker, so a manual run plus the scheduled run
+// (or a rerun) can't post the same day twice.
+function markerPath(postType, date) { return `${postType}/${date}/published.json`; }
+
+export async function wasPublished(postType, date) {
+  const { url } = supabaseEnv();
+  const res = await fetch(`${url}/storage/v1/object/public/${STORAGE_BUCKET}/${markerPath(postType, date)}`, { method: "HEAD" });
+  return res.ok;
+}
+
+export async function markPublished(postType, date, mediaId) {
+  const { url, key } = supabaseEnv();
+  const res = await fetch(`${url}/storage/v1/object/${STORAGE_BUCKET}/${markerPath(postType, date)}`, {
+    method: "POST",
+    headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", "x-upsert": "true" },
+    body: JSON.stringify({ mediaId, publishedAt: new Date().toISOString() }),
+  });
+  if (!res.ok) throw new Error(`marker ${res.status}: ${await res.text()}`);
+}
