@@ -3,7 +3,7 @@
 
 import { readFile } from "node:fs/promises";
 import path from "node:path";
-import { supabaseEnv, STORAGE_BUCKET } from "./config.mjs";
+import { supabaseEnv, STORAGE_BUCKET, cityPrefix } from "./config.mjs";
 
 export async function ensureBucket() {
   const { url, key } = supabaseEnv();
@@ -38,17 +38,17 @@ export async function uploadImage(localPath, prefix) {
 
 // Per-day "already published" marker, so a manual run plus the scheduled run
 // (or a rerun) can't post the same day twice.
-function markerPath(postType, date) { return `${postType}/${date}/published.json`; }
+function markerPath(city, postType, date) { return `${cityPrefix(city)}${postType}/${date}/published.json`; }
 
-export async function wasPublished(postType, date) {
+export async function wasPublished(city, postType, date) {
   const { url } = supabaseEnv();
-  const res = await fetch(`${url}/storage/v1/object/public/${STORAGE_BUCKET}/${markerPath(postType, date)}`, { method: "HEAD" });
+  const res = await fetch(`${url}/storage/v1/object/public/${STORAGE_BUCKET}/${markerPath(city, postType, date)}`, { method: "HEAD" });
   return res.ok;
 }
 
-export async function markPublished(postType, date, mediaId) {
+export async function markPublished(city, postType, date, mediaId) {
   const { url, key } = supabaseEnv();
-  const res = await fetch(`${url}/storage/v1/object/${STORAGE_BUCKET}/${markerPath(postType, date)}`, {
+  const res = await fetch(`${url}/storage/v1/object/${STORAGE_BUCKET}/${markerPath(city, postType, date)}`, {
     method: "POST",
     headers: { apikey: key, Authorization: `Bearer ${key}`, "Content-Type": "application/json", "x-upsert": "true" },
     body: JSON.stringify({ mediaId, publishedAt: new Date().toISOString() }),

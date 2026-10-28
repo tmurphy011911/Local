@@ -1,8 +1,8 @@
 name: Social — This Weekend
 
-# Builds the "things happening this weekend" carousel every Thursday, emails a
-# preview, and waits for approval of the `instagram-publish` environment before
-# posting. Thursday 15:00 UTC = 11am EDT / 10am EST.
+# Builds the "things happening this weekend" carousel every Thursday, emails a preview,
+# and posts it to @_local.app_. Publishes at most once a day (marker in the
+# social-posts bucket). Thursday 15:00 UTC = 11am EDT / 10am EST.
 on:
   schedule:
     - cron: '0 15 * * 4'

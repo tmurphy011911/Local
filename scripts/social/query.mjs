@@ -1,16 +1,16 @@
 // Event selection for each post type.
 //
-// Pulls the right time window of active Boston-metro events from PostgREST,
+// Pulls the right time window of active metro events (SOCIAL_CITY) from PostgREST,
 // dedupes repeat rows, drops unclassified / no-public-interest / virtual junk,
 // ranks the rest by appeal (shows and one-off nights over classes and weekly
 // repeats), and spreads categories so a carousel isn't eight concerts in a
 // row. All date math is
 // done in America/New_York so "today" / "this weekend" / "this month" mean what
-// a Bostonian means, regardless of the (UTC) runner clock.
+// a local means, regardless of the (UTC) runner clock. (Both cities are ET.)
 
 import { selectEvents } from "./lib/supabase.mjs";
 import { thumbUrl } from "./lib/images.mjs";
-import { BOSTON, RADIUS_MILES, HEADLINE_CAP } from "./lib/config.mjs";
+import { cityConfig, RADIUS_MILES, HEADLINE_CAP } from "./lib/config.mjs";
 
 const TZ = "America/New_York";
 
@@ -170,7 +170,7 @@ function tsOf(iso) { return iso ? new Date(iso).getTime() : Infinity; }
 // event venue). Drops:
 //  - "no-public-interest" (school sports, junk listings) — the app's own floor
 //  - rows with no real classification (unclassified restaurant "specials", etc.)
-//  - virtual / online events — this is a "go out in Boston" feed
+//  - virtual / online events — this is a "go out in the city" feed
 function isQuality(r) {
   const sub = (r.subcategory || "").toLowerCase();
   if (sub === "no-public-interest") return false;
@@ -256,7 +256,8 @@ function dedupeByTitle(rows) {
 
 export async function getPost(postType) {
   const { from, to } = windowFor(postType);
-  const lat = BOSTON.lat, lng = BOSTON.lng;
+  const city = cityConfig();
+  const { lat, lng } = city.center;
   const latD = RADIUS_MILES / 69.0, lngD = RADIUS_MILES / 50.0;
 
   // Fetch the whole window (paged) — a single capped page ordered by start time
@@ -293,8 +294,8 @@ export async function getPost(postType) {
 
   const events = picked.map((r) => ({
     title: cleanTitle(r.title),
-    venueName: (r.venue_name || "Boston").trim(),
-    hood: (r.neighborhood || r.venue_neighborhood || r.venue_city || r.city || "Boston").trim(),
+    venueName: (r.venue_name || city.place).trim(),
+    hood: (r.neighborhood || r.venue_neighborhood || r.venue_city || r.city || city.place).trim(),
     when: whenLabel(postType, r.start_at, r.time_known !== false),
     category: categoryLabel(r),
     accent: accentKey(r),
@@ -303,5 +304,5 @@ export async function getPost(postType) {
     desc: cleanDesc(r.description || r.summary || r.short_description || r.excerpt),
   }));
 
-  return { postType, window: { from: from.toISOString(), to: to.toISOString() }, events, total: qualityRows.length };
+  return { postType, city, window: { from: from.toISOString(), to: to.toISOString() }, events, total: qualityRows.length };
 }
