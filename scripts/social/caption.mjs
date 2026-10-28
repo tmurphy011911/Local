@@ -85,8 +85,7 @@ export function buildCaption(post) {
     const lead = post.postType === "monthly" ? `${i + 1}. ` : `${emojiFor(ev)} `;
     lines.push(`${lead}${ev.title} — ${ev.hood}`);
   });
-  const more = post.total - post.events.length;
-  if (more > 0) lines.push(`…and ${more} more in the app.`);
+  lines.push("…and hundreds more in the app.");
   lines.push("");
   if (post.postType === "weekend") lines.push("Save them, share them, show up. The whole weekend, handled.");
   else if (post.postType === "monthly") lines.push("Bookmark the month. Plan as you go.");

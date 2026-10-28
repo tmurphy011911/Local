@@ -133,15 +133,33 @@ function cleanDesc(s) {
   return t;
 }
 
+const MUSIC_SUBS = new Set([
+  "music", "rock", "pop", "indie", "alternative", "jazz", "hip-hop", "rap", "r-b", "rnb", "soul", "blues",
+  "country", "folk", "americana", "bluegrass", "latin", "reggae", "punk", "metal", "electronic", "edm",
+  "classical", "singer-songwriter", "k-pop", "world", "gospel",
+]);
+
+// Coarse category for the per-post cap, so genre splits (rock, pop, latin…)
+// all count as one "music" bucket.
+function family(r) {
+  const sub = (r.subcategory || "").toLowerCase(), ss = (r.sub_subcategory || "").toLowerCase();
+  const tags = Array.isArray(r.tags) ? r.tags.map((t) => String(t).toLowerCase()) : [];
+  if (["theatre", "theater", "musical", "opera"].includes(sub) || ss === "musical" || tags.includes("musical-theater")) return "theatre";
+  if (MUSIC_SUBS.has(sub) || tags.includes("concert")) return "music";
+  if (ss === "film" || tags.includes("screening")) return "film";
+  return sub || (r.category || "other").toLowerCase();
+}
+
+const CATEGORY_CAP = 3; // hard limit per category in one post
+
 function pickDiverse(sorted, limit) {
-  const perCat = {}, picked = [], leftover = [];
+  const perCat = {}, picked = [];
   for (const row of sorted) {
-    const c = (row.subcategory || row.category || "other").toLowerCase();
-    if (picked.length < limit && (perCat[c] || 0) < 3) {
-      picked.push(row); perCat[c] = (perCat[c] || 0) + 1;
-    } else leftover.push(row);
+    if (picked.length >= limit) break;
+    const c = family(row);
+    if ((perCat[c] || 0) >= CATEGORY_CAP) continue;
+    picked.push(row); perCat[c] = (perCat[c] || 0) + 1;
   }
-  while (picked.length < limit && leftover.length) picked.push(leftover.shift());
   return picked;
 }
 
@@ -168,6 +186,7 @@ function cleanTitle(s) {
   const cleaned = String(s || "")
     .replace(/\s*[-–—]\s*\d{1,2}\/\d{1,2}\/\d{2,4}\b.*$/i, "")
     .replace(/\s*[-–—@]\s*\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)\b.*$/i, "")
+    .replace(/\s*[-–—]\s*available\s+\d.*$/i, "") // "… - Available 6:00 PM or 7:30 PM"
     .trim();
   return cleaned || String(s || "").trim();
 }
