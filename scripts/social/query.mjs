@@ -100,6 +100,25 @@ function isFree(row) {
 // ── selection ───────────────────────────────────────────────────────────────
 function normTitle(s) { return (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
 
+// Plain-text, length-capped event blurb for the card. Strips HTML/entities,
+// collapses whitespace, and trims to a word boundary so it fits the 3-line
+// clamp. Returns "" when the row has no usable description.
+function cleanDesc(s) {
+  if (!s) return "";
+  let t = String(s)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&#3[49];|&rsquo;|&lsquo;|&apos;/gi, "'")
+    .replace(/&quot;|&ldquo;|&rdquo;/gi, '"')
+    .replace(/&[a-z#0-9]+;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const MAX = 160;
+  if (t.length > MAX) t = t.slice(0, MAX).replace(/\s+\S*$/, "").trim() + "…";
+  return t;
+}
+
 function pickDiverse(sorted, limit) {
   const perCat = {}, picked = [], leftover = [];
   for (const row of sorted) {
@@ -151,6 +170,7 @@ export async function getPost(postType) {
     accent: accentKey(r),
     free: isFree(r),
     photo: thumbUrl(r.image_url, 1080, 80),
+    desc: cleanDesc(r.description || r.summary || r.short_description || r.excerpt),
   }));
 
   return { postType, window: { from: from.toISOString(), to: to.toISOString() }, events, total: deduped.length };

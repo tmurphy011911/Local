@@ -57,9 +57,8 @@ function css(fontCss) {
   .ev-title{ font-family:var(--serif); font-weight:900; font-size:7.4cqw; line-height:1.04; color:var(--ink); letter-spacing:-.01em; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   .ev-venue{ display:flex; align-items:center; gap:1.6cqw; font-weight:700; font-size:4cqw; color:var(--ink2); }
   .ev-venue svg{ width:4cqw; height:4cqw; flex:0 0 auto; }
-  .ev-foot{ display:flex; align-items:center; justify-content:space-between; margin-top:1cqw; }
-  .ev-foot .cta{ font-weight:900; font-size:3.2cqw; color:#fff; background:var(--coral); border-radius:20cqw; padding:1.8cqw 4cqw; }
-  .ev-foot .url{ font-weight:800; font-size:3.2cqw; color:var(--ink3); }
+  .ev-desc{ font-weight:600; font-size:3.5cqw; line-height:1.42; color:var(--ink2); margin-top:1.4cqw;
+    display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; overflow:hidden; }
 
   /* DOWNLOAD */
   .s-dl{ background:radial-gradient(120% 80% at 50% 0%, #2A2235 0%, #1A1523 60%); padding:9cqw; display:flex; flex-direction:column; align-items:center; text-align:center; color:#fff; }
@@ -105,7 +104,7 @@ function eventSlide(id, ev, idx, total, label) {
         <div class="ev-when">${esc(ev.when)}</div>
         <div class="ev-title">${esc(ev.title)}</div>
         <div class="ev-venue">${PIN}${esc(ev.venueName + " · " + ev.hood)}</div>
-        <div class="ev-foot"><span class="cta">Save on Local</span><span class="url">localapp.live</span></div>
+        ${ev.desc ? `<div class="ev-desc">${esc(ev.desc)}</div>` : ""}
       </div>
     </div>
   </div>`;
