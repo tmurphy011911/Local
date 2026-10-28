@@ -1,13 +1,13 @@
 // Event selection for each post type.
 //
 // Pulls the right time window of active Boston-metro events from PostgREST,
-// dedupes recurring rows, orders them chronologically (events carry no rank
-// column — that's derived from venues), and spreads categories so a carousel
-// isn't eight concerts in a row. All date math is
+// dedupes recurring rows, drops unclassified / no-public-interest / virtual
+// junk, orders chronologically, and spreads categories so a carousel isn't
+// eight concerts in a row. All date math is
 // done in America/New_York so "today" / "this weekend" / "this month" mean what
 // a Bostonian means, regardless of the (UTC) runner clock.
 
-import { selectEvents, callRpc } from "./lib/supabase.mjs";
+import { selectEvents } from "./lib/supabase.mjs";
 import { thumbUrl } from "./lib/images.mjs";
 import { BOSTON, RADIUS_MILES, HEADLINE_CAP } from "./lib/config.mjs";
 
@@ -136,19 +136,21 @@ function pickDiverse(sorted, limit) {
   return picked;
 }
 
-function normVenue(s) { return (s || "").trim().toLowerCase(); }
 function tsOf(iso) { return iso ? new Date(iso).getTime() : Infinity; }
 
-// Map of venue name → public_interest_rank, from the app's own
-// get_active_venues_lite RPC (all active venues, rank included). This is the
-// quality signal the carousels use; events carry no rank of their own.
-async function venueRankMap() {
-  const venues = await callRpc("get_active_venues_lite");
-  const m = new Map();
-  for (const v of Array.isArray(venues) ? venues : []) {
-    if (v?.name && v.public_interest_rank != null) m.set(normVenue(v.name), v.public_interest_rank);
-  }
-  return m;
+// Quality gate for a highlights post, using the classifier's own fields —
+// venue rank is unusable here (public_interest_rank is null for nearly every
+// event venue). Drops:
+//  - "no-public-interest" (school sports, junk listings) — the app's own floor
+//  - rows with no real classification (unclassified restaurant "specials", etc.)
+//  - virtual / online events — this is a "go out in Boston" feed
+function isQuality(r) {
+  const sub = (r.subcategory || "").toLowerCase();
+  if (sub === "no-public-interest") return false;
+  if (sub === "" && !(r.sub_subcategory || "")) return false;
+  const tags = Array.isArray(r.tags) ? r.tags.map((t) => String(t).toLowerCase()) : [];
+  if (tags.includes("virtual") || tags.includes("online")) return false;
+  return true;
 }
 
 export async function getPost(postType) {
@@ -179,24 +181,10 @@ export async function getPost(postType) {
   }
   const deduped = [...seen.values()];
 
-  // Quality: rank events by their venue's public_interest_rank (the signal the
-  // app uses), keep only notable venues (rank > 10 — drops K-12 gyms, community
-  // centers, virtual/unranked junk), and lead with the best.
-  const rankByVenue = await venueRankMap();
-  const ranked = deduped
-    .map((r) => ({ r, rank: rankByVenue.get(normVenue(r.venue_name)) ?? null }))
-    .filter((x) => x.rank == null || x.rank > 10) // app floor: drop only explicit <=10
-    .sort((a, b) => {
-      const ra = a.rank == null ? -1 : a.rank, rb = b.rank == null ? -1 : b.rank;
-      return (rb - ra) || (tsOf(a.r.start_at) - tsOf(b.r.start_at)); // ranked first, nulls last
-    });
-  const qualityRows = ranked.map((x) => x.r);
-
-  // TEMP diagnostic — remove after tuning
-  console.log(`[dbg] deduped=${deduped.length} venuesWithRank=${rankByVenue.size}`);
-  for (const r of deduped) {
-    console.log(`[dbg] ${JSON.stringify({ title: r.title, venue: r.venue_name, cat: r.category, sub: r.subcategory, subsub: r.sub_subcategory, tags: r.tags, free: r.is_free, tk: r.time_known, src: r.source })}`);
-  }
+  // Classifier-based quality gate, then chronological order.
+  const qualityRows = deduped
+    .filter(isQuality)
+    .sort((a, b) => tsOf(a.start_at) - tsOf(b.start_at));
 
   const picked = pickDiverse(qualityRows, HEADLINE_CAP[postType]);
 
