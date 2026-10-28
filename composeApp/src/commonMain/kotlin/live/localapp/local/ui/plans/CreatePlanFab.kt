@@ -90,16 +90,12 @@ fun CreatePlanButton(
     val scope = rememberCoroutineScope()
 
     // Chunky 3D "Duolingo" edge — deeper than the gradient's CoralDk so the
-    // 4.dp lip reads as depth beneath the coral-glow face. Pumpkin orange in
-    // October to match pumpkin Bo (see BoSeason).
-    val halloween = live.localapp.local.ui.character.BoSeason.isHalloween
-    val edge = if (halloween) live.localapp.local.ui.character.BoSeason.pumpkinEdge else Color(0xFFC94A4A)
-    val glow = if (halloween) live.localapp.local.ui.character.BoSeason.pumpkin else AppColors.Coral
-    val faceColors = if (halloween) {
-        listOf(Color(0xFFFFB060), live.localapp.local.ui.character.BoSeason.pumpkin, live.localapp.local.ui.character.BoSeason.pumpkinDeep)
-    } else {
-        listOf(Color(0xFFFF8A8A), AppColors.Coral, AppColors.CoralDk)
-    }
+    // 4.dp lip reads as depth beneath the coral-glow face. Follows Bo's
+    // seasonal skin (pumpkin, harvest amber, Santa red, Valentine pink).
+    val surface = live.localapp.local.ui.character.BoSeason.surface
+    val edge = surface?.buttonEdge ?: Color(0xFFC94A4A)
+    val glow = surface?.buttonFace?.get(1) ?: AppColors.Coral
+    val faceColors = surface?.buttonFace ?: listOf(Color(0xFFFF8A8A), AppColors.Coral, AppColors.CoralDk)
     Box(
         modifier = modifier
             .height(52.dp) // 48 face + 4 lip

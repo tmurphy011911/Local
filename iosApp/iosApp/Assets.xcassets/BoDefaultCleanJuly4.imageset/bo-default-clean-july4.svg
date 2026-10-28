@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" width="100" height="100">
+  <ellipse cx="50" cy="88" rx="26" ry="3" fill="#1A1523" opacity="0.18"/>
+  
+  <g id="bo-july4-behind">
+    <path d="M90.2 16 L98 16" fill="none" stroke="#4F7DF0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M89.4 18.47 L95.71 23.05" fill="none" stroke="#4F7DF0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M87.3 19.99 L89.71 27.41" fill="none" stroke="#4F7DF0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M84.7 19.99 L82.29 27.41" fill="none" stroke="#4F7DF0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M82.6 18.47 L76.29 23.05" fill="none" stroke="#4F7DF0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M81.8 16 L74 16" fill="none" stroke="#4F7DF0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M82.6 13.53 L76.29 8.95" fill="none" stroke="#4F7DF0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M84.7 12.01 L82.29 4.59" fill="none" stroke="#4F7DF0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M87.3 12.01 L89.71 4.59" fill="none" stroke="#4F7DF0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M89.4 13.53 L95.71 8.95" fill="none" stroke="#4F7DF0" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M17.5 18 L24 18" fill="none" stroke="#D7263D" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M16.83 20.06 L22.09 23.88" fill="none" stroke="#D7263D" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M15.08 21.33 L17.09 27.51" fill="none" stroke="#D7263D" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M12.92 21.33 L10.91 27.51" fill="none" stroke="#D7263D" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M11.17 20.06 L5.91 23.88" fill="none" stroke="#D7263D" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M10.5 18 L4 18" fill="none" stroke="#D7263D" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M11.17 15.94 L5.91 12.12" fill="none" stroke="#D7263D" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M12.92 14.67 L10.91 8.49" fill="none" stroke="#D7263D" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M15.08 14.67 L17.09 8.49" fill="none" stroke="#D7263D" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M16.83 15.94 L22.09 12.12" fill="none" stroke="#D7263D" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M54.1 8 L58 8" fill="none" stroke="#FFD166" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M53.7 9.23 L56.85 11.53" fill="none" stroke="#FFD166" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M52.65 10 L53.85 13.71" fill="none" stroke="#FFD166" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M51.35 10 L50.15 13.71" fill="none" stroke="#FFD166" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M50.3 9.23 L47.15 11.53" fill="none" stroke="#FFD166" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M49.9 8 L46 8" fill="none" stroke="#FFD166" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M50.3 6.77 L47.15 4.47" fill="none" stroke="#FFD166" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M51.35 6 L50.15 2.29" fill="none" stroke="#FFD166" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M52.65 6 L53.85 2.29" fill="none" stroke="#FFD166" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M53.7 6.77 L56.85 4.47" fill="none" stroke="#FFD166" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  </g>
+  <g id="bo-body">
+    <path d="M50 22
+                C76 22 88 36 88 52
+                C88 64 86 72 86 76
+                Q82 80 78 78
+                Q74 82 70 78
+                Q66 82 62 78
+                Q58 82 54 78
+                Q50 82 46 78
+                Q42 82 38 78
+                Q34 82 30 78
+                Q26 82 22 78
+                Q18 80 14 76
+                C14 72 12 64 12 52
+                C12 36 24 22 50 22 Z"
+          fill="#FF6B6B" stroke="#1A1523" stroke-width="3.5" stroke-linejoin="round"/>
+    
+
+
+    
+  <g id="bo-eyes">
+    <ellipse cx="38" cy="50" rx="5.5" ry="7" fill="#1A1523"/>
+    <ellipse cx="62" cy="50" rx="5.5" ry="7" fill="#1A1523"/>
+    <ellipse cx="40" cy="48" rx="2.2" ry="2.7" fill="#FAF7F2"/>
+    <ellipse cx="64" cy="48" rx="2.2" ry="2.7" fill="#FAF7F2"/>
+    <circle cx="36" cy="52" r="0.9" fill="#FAF7F2"/>
+    <circle cx="60" cy="52" r="0.9" fill="#FAF7F2"/>
+  </g>
+    <path d="M44 64 Q50 68 56 64" stroke="#1A1523" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+  </g>
+  <g id="bo-july4-front">
+    <path d="M28 53 L26.68 56.18 L23.24 56.45 L25.86 58.7 L25.06 62.05 L28 60.25 L30.94 62.05 L30.14 58.7 L32.76 56.45 L29.32 56.18 Z" fill="#FFFFFF" stroke="#1A1523" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M72 53 L70.68 56.18 L67.24 56.45 L69.86 58.7 L69.06 62.05 L72 60.25 L74.94 62.05 L74.14 58.7 L76.76 56.45 L73.32 56.18 Z" fill="#FFFFFF" stroke="#1A1523" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M90 82 L80 64" fill="none" stroke="#8A8A8A" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <path d="M80 57 L78.68 60.18 L75.24 60.45 L77.86 62.7 L77.06 66.05 L80 64.25 L82.94 66.05 L82.14 62.7 L84.76 60.45 L81.32 60.18 Z" fill="#FFD166" stroke="#1A1523" stroke-width="1.2" stroke-linejoin="round" stroke-linecap="round"/>
+  </g>
+</svg>

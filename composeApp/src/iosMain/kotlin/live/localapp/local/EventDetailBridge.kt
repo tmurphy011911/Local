@@ -32,6 +32,16 @@ object EventDetailBridge {
         venueDistanceMiles: Double,
     ) -> Unit)? = null
 
+    /**
+     * JPEG of the tapped card's already-decoded image, taken from Coil's memory
+     * cache just before [showEventDetail]. Swift paints it as the hero on the
+     * first frame so the card→detail expand never shows an empty hero while the
+     * full-size image downloads (the card shows a resized render URL; the detail
+     * loads the original — different URLs, and both are served `no-cache`).
+     * Swift reads it once inside [showEventDetail] and clears it.
+     */
+    var cardHeroImageData: platform.Foundation.NSData? = null
+
     /** Swift sets this. Compose calls it to dismiss the native detail screen. */
     var dismissEventDetail: (() -> Unit)? = null
 

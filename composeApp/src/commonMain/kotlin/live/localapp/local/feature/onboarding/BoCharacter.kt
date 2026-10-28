@@ -28,10 +28,10 @@ import live.localapp.local.ui.character.drawLevelMouth
 import live.localapp.local.ui.character.drawMap
 import live.localapp.local.ui.character.drawPennant
 import live.localapp.local.ui.character.drawPlant
-import live.localapp.local.ui.character.drawPumpkinRibs
-import live.localapp.local.ui.character.drawPumpkinStem
+import live.localapp.local.ui.character.drawSeasonBehindBody
+import live.localapp.local.ui.character.drawSeasonOnBody
+import live.localapp.local.ui.character.drawSeasonOnFace
 import live.localapp.local.ui.character.drawSunglasses
-import live.localapp.local.ui.character.levelWearsHat
 
 /**
  * "Stubby Bo" — the mascot, rendered as a Compose vector from the canonical
@@ -44,7 +44,7 @@ import live.localapp.local.ui.character.levelWearsHat
  */
 enum class BoExpression { Default, Happy, Excited }
 
-// Seasonal — pumpkin orange in October (see BoSeason).
+// Seasonal — pumpkin in October, turkey in November (see BoSeason).
 private val BoCoral: Color get() = BoColors.coral
 private val BoCoralDeep: Color get() = BoColors.coralDeep
 private val BoInk = Color(0xFF1A1523)
@@ -97,13 +97,16 @@ fun BoCharacter(
                     translate(left = 20f, top = 26f) {
                         if (showShadow) ellipse(50f, 88f, 26f, 3f, BoInk, alpha = 0.18f)
                         if (lvl == 8) drawLegendHalo(0f)
-                        drawSeasonalBody(bodyPath, withStem = !levelWearsHat(lvl))
-                        ellipse(28f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
-                        ellipse(72f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
+                        drawSeasonalBody(bodyPath, level = lvl)
+                        if (!BoSeason.hidesCheeks) {
+                            ellipse(28f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
+                            ellipse(72f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
+                        }
                         if (lvl == 4) drawPennant()
                         drawLevelEyesScaled(lvl, eyeOpen)
                         if (lvl == 5) drawSunglasses()
                         drawLevelMouth(lvl)
+                        drawSeasonOnFace(BoInk, level = lvl)
                         if (lvl == 2) drawPlant()
                         if (lvl == 3) drawBinoculars()
                         if (lvl == 1) drawMap()
@@ -130,10 +133,12 @@ fun BoCharacter(
                 ellipse(50f, 88f, 26f, 3f, BoInk, alpha = 0.18f)
             }
             // Body
-            drawSeasonalBody(bodyPath, withStem = true)
+            drawSeasonalBody(bodyPath, level = null)
             // Cheeks
-            ellipse(28f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
-            ellipse(72f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
+            if (!BoSeason.hidesCheeks) {
+                ellipse(28f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
+                ellipse(72f, 58f, 4.5f, 3f, BoCoralDeep, alpha = 0.7f)
+            }
 
             // Eyes — blink collapses them vertically around their center line.
             when (expression) {
@@ -161,8 +166,8 @@ fun BoCharacter(
                 }
             }
 
-            // Mouth
-            when (expression) {
+            // Mouth (the turkey's beak replaces it — see BoSeason.hidesMouth)
+            if (!BoSeason.hidesMouth) when (expression) {
                 BoExpression.Default -> strokePath(mouthDefault, BoInk, 2.5f)
                 BoExpression.Happy -> {
                     drawPath(mouthHappy, BoCoralDeep)
@@ -173,6 +178,7 @@ fun BoCharacter(
                     drawPath(mouthExcited, BoInk, style = Stroke(width = 2.5f, join = StrokeJoin.Round))
                 }
             }
+            drawSeasonOnFace(BoInk, level = null)
         }
     }
 }
@@ -197,10 +203,9 @@ private fun DrawScope.strokePath(path: Path, color: Color, width: Float) {
     drawPath(path, color, style = Stroke(width = width, cap = StrokeCap.Round, join = StrokeJoin.Round))
 }
 
-private fun DrawScope.drawSeasonalBody(bodyPath: Path, withStem: Boolean) {
-    val halloween = BoSeason.isHalloween
-    if (halloween && withStem) drawPumpkinStem(BoInk)
+private fun DrawScope.drawSeasonalBody(bodyPath: Path, level: Int?) {
+    drawSeasonBehindBody(BoInk, level)
     drawPath(bodyPath, BoCoral)
-    if (halloween) drawPumpkinRibs()
+    drawSeasonOnBody()
     drawPath(bodyPath, BoInk, style = Stroke(width = 3.5f, join = StrokeJoin.Round))
 }

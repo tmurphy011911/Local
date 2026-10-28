@@ -22,6 +22,16 @@ struct iOSApp: App {
 
         InitKoinKt.doInitKoin()
 
+        #if DEBUG
+        // Preview a seasonal Bo skin without changing the clock:
+        //   xcrun simctl launch <device> live.localapp.local -BoSeasonOverride thanksgiving
+        // (halloween, thanksgiving, christmas, valentines, newyear, winter,
+        // stpatricks, easter, july4, none). Launch args land in UserDefaults.
+        if let season = UserDefaults.standard.string(forKey: "BoSeasonOverride") {
+            BoSeason.shared.setDebugOverride(name: season)
+        }
+        #endif
+
         // Push super-properties + first lifecycle event through the bridge.
         let bundle = Bundle.main
         let appVersion = bundle.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"

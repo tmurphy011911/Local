@@ -101,6 +101,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.foundation.Image
 import coil3.compose.AsyncImage
 import coil3.compose.AsyncImagePainter
@@ -1889,14 +1890,19 @@ private fun AiConciergeCard(
         }
     }
 
-    // October: night-sky Halloween card with a pumpkin rim, moon and bats
-    // around pumpkin Bo (see BoSeason). Otherwise the standard coral card.
-    val halloween = live.localapp.local.ui.character.BoSeason.isHalloween
+    // Follows Bo's seasonal skin (see BoSeason): each season tints the card
+    // (gradient, rim, lip, "Bo" title) and paints its own backdrop
+    // (drawSeasonBackdrop). Otherwise the standard coral card.
     val season = live.localapp.local.ui.character.BoSeason
+    val current = season.current
+    val surface = season.surface
+    val themed = surface != null
     val cardShape = RoundedCornerShape(20.dp)
-    val lipColor = if (halloween) season.nightLip else AppColors.CoralDk
-    val rimColor = if (halloween) season.pumpkin else AppColors.CoralDk
-    val accent = if (halloween) season.pumpkin else AppColors.Coral
+    val accent = surface?.accent ?: AppColors.Coral
+    val rimColor = surface?.cardRim ?: AppColors.CoralDk
+    val lipColor = surface?.cardLip ?: AppColors.CoralDk
+    val cardGradient = surface?.cardGradient
+    val titleBoColor = surface?.titleBo
 
     Box(
         modifier = Modifier
@@ -1919,11 +1925,8 @@ private fun AiConciergeCard(
                 .fillMaxWidth()
                 .clip(cardShape)
                 .then(
-                    if (halloween) {
-                        Modifier.background(
-                            Brush.verticalGradient(listOf(season.nightTop, season.nightBottom)),
-                            cardShape,
-                        )
+                    if (cardGradient != null) {
+                        Modifier.background(Brush.verticalGradient(cardGradient), cardShape)
                     } else {
                         Modifier.background(AppColors.Coral, cardShape)
                     },
@@ -1932,9 +1935,7 @@ private fun AiConciergeCard(
                 .drawBehind {
                     // Decorative paint, not layout children, so it doesn't force
                     // the card's minimum height.
-                    if (halloween) {
-                        drawHalloweenSky()
-                    } else {
+                    if (themed) drawSeasonBackdrop(current) else {
                         // Shine
                         val r = 65.dp.toPx()
                         drawCircle(
@@ -1968,7 +1969,7 @@ private fun AiConciergeCard(
                         "Bo",
                         style = AppType.AiTitle.copy(
                             fontStyle = FontStyle.Italic,
-                            color = if (halloween) season.pumpkin else AppType.AiTitle.color,
+                            color = titleBoColor ?: AppType.AiTitle.color,
                         ),
                     )
                     Spacer(Modifier.weight(1f))
@@ -2016,7 +2017,7 @@ private fun AiConciergeCard(
                             androidx.compose.foundation.text.selection.LocalTextSelectionColors provides
                                 androidx.compose.foundation.text.selection.TextSelectionColors(
                                     handleColor = AppColors.White,
-                                    backgroundColor = if (halloween) season.pumpkin.copy(alpha = 0.45f)
+                                    backgroundColor = if (themed) accent.copy(alpha = 0.45f)
                                         else androidx.compose.ui.graphics.Color.Black.copy(alpha = 0.28f),
                                 ),
                         ) {
@@ -2091,6 +2092,143 @@ private fun AiConciergeCard(
     }
 }
 
+/** Dispatch to the active season's Ask Bo card backdrop. */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSeasonBackdrop(
+    season: live.localapp.local.ui.character.BoSeason.Season,
+) {
+    when (season) {
+        live.localapp.local.ui.character.BoSeason.Season.Halloween -> drawHalloweenSky()
+        live.localapp.local.ui.character.BoSeason.Season.Thanksgiving -> drawHarvestSky()
+        live.localapp.local.ui.character.BoSeason.Season.Christmas -> drawChristmasSky()
+        live.localapp.local.ui.character.BoSeason.Season.Valentines -> drawValentineSky()
+        live.localapp.local.ui.character.BoSeason.Season.NewYear -> drawCelebrationSky(
+            glow = androidx.compose.ui.graphics.Color(0xFFFFD166),
+            bursts = listOf(androidx.compose.ui.graphics.Color(0xFFFFD166), androidx.compose.ui.graphics.Color(0xFFFF6B9E), androidx.compose.ui.graphics.Color(0xFF4FC3F7)),
+            confetti = true,
+        )
+        live.localapp.local.ui.character.BoSeason.Season.July4 -> drawCelebrationSky(
+            glow = androidx.compose.ui.graphics.Color(0xFFFFFFFF),
+            bursts = listOf(androidx.compose.ui.graphics.Color(0xFFFF5A6E), androidx.compose.ui.graphics.Color(0xFFFFFFFF), androidx.compose.ui.graphics.Color(0xFF8EC5F5)),
+            confetti = false,
+        )
+        live.localapp.local.ui.character.BoSeason.Season.Winter -> drawSnowSky()
+        live.localapp.local.ui.character.BoSeason.Season.StPatricks -> drawShamrockSky()
+        live.localapp.local.ui.character.BoSeason.Season.Easter -> drawEggSky()
+        live.localapp.local.ui.character.BoSeason.Season.None -> Unit
+    }
+}
+
+/** Soft concentric glow tucked behind Bo (top-right of the card). */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBoGlow(color: androidx.compose.ui.graphics.Color) {
+    val c = androidx.compose.ui.geometry.Offset(size.width - 58.dp.toPx(), 26.dp.toPx())
+    drawCircle(color.copy(alpha = 0.08f), radius = 48.dp.toPx(), center = c)
+    drawCircle(color.copy(alpha = 0.15f), radius = 33.dp.toPx(), center = c)
+}
+
+/** New Year's / Fourth of July: firework bursts across the top, optional confetti. */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawCelebrationSky(
+    glow: androidx.compose.ui.graphics.Color,
+    bursts: List<androidx.compose.ui.graphics.Color>,
+    confetti: Boolean,
+) {
+    drawBoGlow(glow)
+    fun burst(cx: Float, cy: Float, r: Float, color: androidx.compose.ui.graphics.Color) {
+        for (i in 0 until 10) {
+            val a = i * kotlin.math.PI.toFloat() / 5f
+            val cos = kotlin.math.cos(a)
+            val sin = kotlin.math.sin(a)
+            drawLine(
+                color.copy(alpha = 0.8f),
+                androidx.compose.ui.geometry.Offset(cx + cos * r * 0.35f, cy + sin * r * 0.35f),
+                androidx.compose.ui.geometry.Offset(cx + cos * r, cy + sin * r),
+                strokeWidth = 1.6.dp.toPx(),
+                cap = androidx.compose.ui.graphics.StrokeCap.Round,
+            )
+        }
+        drawCircle(color, radius = 1.6.dp.toPx(), center = androidx.compose.ui.geometry.Offset(cx, cy))
+    }
+    burst(size.width * 0.42f, 18.dp.toPx(), 13.dp.toPx(), bursts[0])
+    burst(size.width * 0.58f, 38.dp.toPx(), 9.dp.toPx(), bursts[1])
+    burst(size.width * 0.30f, 40.dp.toPx(), 7.dp.toPx(), bursts[2])
+    burst(size.width * 0.93f, 68.dp.toPx(), 8.dp.toPx(), bursts[0])
+    if (confetti) {
+        val bits = listOf(
+            floatArrayOf(0.36f, 8f, 30f), floatArrayOf(0.50f, 26f, -20f), floatArrayOf(0.64f, 12f, 55f),
+            floatArrayOf(0.70f, 44f, -35f), floatArrayOf(0.25f, 28f, 15f), floatArrayOf(0.88f, 52f, 40f),
+        )
+        bits.forEachIndexed { i, (fx, y, deg) ->
+            val c = androidx.compose.ui.geometry.Offset(size.width * fx, y.dp.toPx())
+            rotate(deg, pivot = c) {
+                drawRect(
+                    bursts[i % bursts.size].copy(alpha = 0.85f),
+                    topLeft = androidx.compose.ui.geometry.Offset(c.x - 3.dp.toPx(), c.y - 1.dp.toPx()),
+                    size = androidx.compose.ui.geometry.Size(6.dp.toPx(), 2.dp.toPx()),
+                )
+            }
+        }
+    }
+}
+
+/** Winter: falling snow, a few six-point flakes, cool glow behind Bo. */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawSnowSky() {
+    val white = androidx.compose.ui.graphics.Color.White
+    drawBoGlow(white)
+    listOf(
+        0.36f to 26f, 0.47f to 12f, 0.58f to 34f, 0.30f to 42f, 0.66f to 18f,
+        0.42f to 46f, 0.92f to 62f, 0.85f to 72f, 0.12f to 64f, 0.55f to 54f, 0.22f to 10f,
+    ).forEachIndexed { i, (fx, y) ->
+        drawCircle(white.copy(alpha = 0.75f), radius = (if (i % 3 == 0) 1.9f else 1.2f).dp.toPx(),
+            center = androidx.compose.ui.geometry.Offset(size.width * fx, y.dp.toPx()))
+    }
+    listOf(floatArrayOf(0.40f, 20f, 6f), floatArrayOf(0.62f, 40f, 4.5f), floatArrayOf(0.93f, 66f, 5f)).forEach { (fx, y, r) ->
+        val c = androidx.compose.ui.geometry.Offset(size.width * fx, y.dp.toPx())
+        for (k in 0 until 3) rotate(k * 60f, pivot = c) {
+            drawLine(white.copy(alpha = 0.7f),
+                androidx.compose.ui.geometry.Offset(c.x, c.y - r.dp.toPx()),
+                androidx.compose.ui.geometry.Offset(c.x, c.y + r.dp.toPx()),
+                strokeWidth = 1.2.dp.toPx(), cap = androidx.compose.ui.graphics.StrokeCap.Round)
+        }
+    }
+}
+
+/** St. Patrick's: scattered shamrocks and a gold glow behind Bo. */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawShamrockSky() {
+    drawBoGlow(androidx.compose.ui.graphics.Color(0xFFFFD166))
+    val leaf = androidx.compose.ui.graphics.Color(0xFFA8E6B4)
+    listOf(
+        floatArrayOf(0.40f, 16f, 5f, 0.45f), floatArrayOf(0.55f, 36f, 4f, 0.35f),
+        floatArrayOf(0.64f, 10f, 3.2f, 0.4f), floatArrayOf(0.30f, 40f, 3.2f, 0.3f), floatArrayOf(0.93f, 66f, 4f, 0.35f),
+    ).forEach { (fx, y, r, a) ->
+        val cx = size.width * fx
+        val cy = y.dp.toPx()
+        val rr = r.dp.toPx()
+        listOf(0f to -0.9f, -0.85f to 0.3f, 0.85f to 0.3f).forEach { (dx, dy) ->
+            drawCircle(leaf.copy(alpha = a), radius = rr, center = androidx.compose.ui.geometry.Offset(cx + dx * rr, cy + dy * rr))
+        }
+        drawLine(leaf.copy(alpha = a), androidx.compose.ui.geometry.Offset(cx, cy + rr * 0.6f),
+            androidx.compose.ui.geometry.Offset(cx + rr * 0.6f, cy + rr * 2f), strokeWidth = rr * 0.35f)
+    }
+}
+
+/** Easter: pastel eggs drifting and a soft sunny glow behind Bo. */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawEggSky() {
+    drawBoGlow(androidx.compose.ui.graphics.Color(0xFFFFE08A))
+    val colors = listOf(0xFFFFE08A, 0xFFFFB3C7, 0xFFA8E6E0, 0xFFFFFFFF)
+    listOf(
+        floatArrayOf(0.40f, 16f, 6f, -15f), floatArrayOf(0.55f, 38f, 5f, 12f),
+        floatArrayOf(0.65f, 12f, 4f, 20f), floatArrayOf(0.30f, 40f, 4f, -8f), floatArrayOf(0.93f, 66f, 5f, 10f),
+    ).forEachIndexed { i, (fx, y, r, deg) ->
+        val c = androidx.compose.ui.geometry.Offset(size.width * fx, y.dp.toPx())
+        val rx = r.dp.toPx() * 0.78f
+        val ry = r.dp.toPx()
+        rotate(deg, pivot = c) {
+            drawOval(androidx.compose.ui.graphics.Color(colors[i % colors.size]).copy(alpha = 0.7f),
+                topLeft = androidx.compose.ui.geometry.Offset(c.x - rx, c.y - ry),
+                size = androidx.compose.ui.geometry.Size(rx * 2, ry * 2))
+        }
+    }
+}
+
 /**
  * Halloween backdrop for the Ask Bo card: a glowing moon tucked behind Bo
  * (top-right), a few stars, and a small flight of bats.
@@ -2115,6 +2253,132 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHalloweenSky() 
     drawBat(o(size.width * 0.44f, 16.dp.toPx()), 16.dp.toPx())
     drawBat(o(size.width * 0.56f, 30.dp.toPx()), 11.dp.toPx())
     drawBat(o(size.width - 104.dp.toPx(), 10.dp.toPx()), 9.dp.toPx())
+}
+
+/**
+ * Thanksgiving backdrop for the Ask Bo card: a low golden sun glowing behind
+ * Bo (top-right) and a scatter of falling autumn leaves.
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawHarvestSky() {
+    val season = live.localapp.local.ui.character.BoSeason
+    fun o(x: Float, y: Float) = androidx.compose.ui.geometry.Offset(x, y)
+
+    // Sun glow behind Bo
+    val sunCenter = o(size.width - 58.dp.toPx(), 28.dp.toPx())
+    drawCircle(season.harvestGlow.copy(alpha = 0.10f), radius = 50.dp.toPx(), center = sunCenter)
+    drawCircle(season.harvestGlow.copy(alpha = 0.18f), radius = 36.dp.toPx(), center = sunCenter)
+    drawCircle(season.harvestGlow.copy(alpha = 0.55f), radius = 25.dp.toPx(), center = sunCenter)
+
+    // Falling leaves — (x fraction, y dp, size dp, rotation°, color)
+    listOf(
+        Leaf(0.40f, 12f, 11f, -30f, season.featherOrange),
+        Leaf(0.52f, 30f, 9f, 40f, season.featherYellow),
+        Leaf(0.62f, 9f, 8f, 110f, season.featherRed),
+        Leaf(0.33f, 34f, 7f, 70f, season.featherYellow),
+        Leaf(0.94f, 66f, 9f, -60f, season.featherOrange),
+    ).forEach { drawLeaf(o(size.width * it.fx, it.yDp.dp.toPx()), it.sizeDp.dp.toPx(), it.deg, it.color) }
+}
+
+/**
+ * Christmas backdrop for the Ask Bo card: a soft warm glow behind Bo, a string
+ * of fairy lights swagged along the top edge, and falling snow.
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawChristmasSky() {
+    val season = live.localapp.local.ui.character.BoSeason
+    val white = androidx.compose.ui.graphics.Color.White
+    fun o(x: Float, y: Float) = androidx.compose.ui.geometry.Offset(x, y)
+
+    // Warm glow behind Bo
+    val glowCenter = o(size.width - 58.dp.toPx(), 26.dp.toPx())
+    drawCircle(season.gold.copy(alpha = 0.08f), radius = 46.dp.toPx(), center = glowCenter)
+    drawCircle(season.gold.copy(alpha = 0.14f), radius = 32.dp.toPx(), center = glowCenter)
+
+    // Fairy lights: a sagging wire across the top with coloured bulbs
+    val sag = 9.dp.toPx()
+    val wireY = 3.dp.toPx()
+    val wire = androidx.compose.ui.graphics.Path().apply {
+        moveTo(0f, wireY)
+        val spans = 4
+        val w = size.width / spans
+        for (i in 0 until spans) quadraticBezierTo(w * i + w / 2f, wireY + sag * 2f, w * (i + 1), wireY)
+    }
+    drawPath(wire, androidx.compose.ui.graphics.Color(0xFF0A2416), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.2.dp.toPx()))
+    val bulbs = listOf(season.santaRed, season.gold, androidx.compose.ui.graphics.Color(0xFF4FC3F7), androidx.compose.ui.graphics.Color(0xFF7BD389))
+    val count = 14
+    for (i in 0 until count) {
+        val x = size.width * (i + 0.5f) / count
+        val spanW = size.width / 4
+        val t = (x % spanW) / spanW                     // 0..1 within a span
+        val y = wireY + sag * 2f * 2f * t * (1 - t)     // matches the quad sag
+        val c = bulbs[i % bulbs.size]
+        drawCircle(c.copy(alpha = 0.25f), radius = 5.dp.toPx(), center = o(x, y + 3.dp.toPx()))
+        drawCircle(c, radius = 2.6.dp.toPx(), center = o(x, y + 3.dp.toPx()))
+    }
+
+    // Snow
+    listOf(
+        0.36f to 26f, 0.47f to 14f, 0.58f to 34f, 0.30f to 40f, 0.66f to 20f,
+        0.42f to 44f, 0.92f to 62f, 0.85f to 70f, 0.12f to 62f, 0.55f to 52f,
+    ).forEachIndexed { i, (fx, y) ->
+        drawCircle(white.copy(alpha = 0.7f), radius = (if (i % 3 == 0) 1.8f else 1.2f).dp.toPx(), center = o(size.width * fx, y.dp.toPx()))
+    }
+}
+
+/**
+ * Valentine's backdrop for the Ask Bo card: a soft blush glow behind Bo and a
+ * few hearts drifting across.
+ */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawValentineSky() {
+    val season = live.localapp.local.ui.character.BoSeason
+    fun o(x: Float, y: Float) = androidx.compose.ui.geometry.Offset(x, y)
+
+    val glowCenter = o(size.width - 58.dp.toPx(), 26.dp.toPx())
+    drawCircle(season.blush.copy(alpha = 0.10f), radius = 48.dp.toPx(), center = glowCenter)
+    drawCircle(season.blush.copy(alpha = 0.18f), radius = 34.dp.toPx(), center = glowCenter)
+
+    // (x fraction, y dp, size dp, rotation°, alpha)
+    listOf(
+        floatArrayOf(0.40f, 14f, 6f, -14f, 0.55f),
+        floatArrayOf(0.53f, 34f, 4.5f, 12f, 0.45f),
+        floatArrayOf(0.62f, 10f, 3.5f, -6f, 0.5f),
+        floatArrayOf(0.32f, 38f, 3.5f, 18f, 0.4f),
+        floatArrayOf(0.93f, 66f, 5f, 10f, 0.45f),
+    ).forEach { (fx, y, sz, deg, a) ->
+        val c = o(size.width * fx, y.dp.toPx())
+        rotate(deg, pivot = c) {
+            drawPath(
+                live.localapp.local.ui.character.heartPath(c.x, c.y, sz.dp.toPx()),
+                season.blush.copy(alpha = a),
+            )
+        }
+    }
+}
+
+private class Leaf(val fx: Float, val yDp: Float, val sizeDp: Float, val deg: Float, val color: androidx.compose.ui.graphics.Color)
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawLeaf(
+    c: androidx.compose.ui.geometry.Offset,
+    len: Float,
+    deg: Float,
+    color: androidx.compose.ui.graphics.Color,
+) {
+    val h = len / 2f
+    rotate(deg, pivot = c) {
+        val blade = androidx.compose.ui.graphics.Path().apply {
+            moveTo(c.x, c.y - h)
+            quadraticBezierTo(c.x + h * 0.75f, c.y - h * 0.1f, c.x, c.y + h)
+            quadraticBezierTo(c.x - h * 0.75f, c.y - h * 0.1f, c.x, c.y - h)
+            close()
+        }
+        drawPath(blade, color.copy(alpha = 0.85f))
+        // Midrib + stem
+        drawLine(
+            androidx.compose.ui.graphics.Color(0xFF4E2612).copy(alpha = 0.45f),
+            androidx.compose.ui.geometry.Offset(c.x, c.y - h * 0.8f),
+            androidx.compose.ui.geometry.Offset(c.x, c.y + h * 1.25f),
+            strokeWidth = len * 0.08f,
+        )
+    }
 }
 
 private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawBat(

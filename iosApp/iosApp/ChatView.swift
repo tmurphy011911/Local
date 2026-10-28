@@ -4,15 +4,23 @@ import MapKit
 
 // MARK: - Seasonal Bo art
 //
-// Native screens draw Bo from asset-catalog SVGs. The season is decided once,
-// in shared Kotlin (`BoSeason` — pumpkin Bo all of October), so the SwiftUI
-// and Compose Bos always match.
+// Native screens draw Bo from asset-catalog SVGs (`BoTiny…`, `BoDefaultClean…`).
+// The season — and therefore the asset suffix and accent colour — is decided in
+// shared Kotlin (`BoSeason`), so the SwiftUI and Compose Bos always match and a
+// new season needs no Swift change (just its imagesets, which
+// scripts/gen_bo_season_art.py writes for the generated seasons).
 enum BoArt {
-    static let isHalloween: Bool = BoSeason.shared.isHalloween
-    static var tiny: String { isHalloween ? "BoTinyPumpkin" : "BoTiny" }
-    static var clean: String { isHalloween ? "BoDefaultCleanPumpkin" : "BoDefaultClean" }
+    static var tiny: String { "BoTiny" + BoSeason.shared.assetSuffix }
+    static var clean: String { "BoDefaultClean" + BoSeason.shared.assetSuffix }
     /// Tint for the "Bo" sender label next to the avatar.
-    static var nameColor: Color { isHalloween ? Color(red: 1.0, green: 0.541, blue: 0.122) : Color(red: 1.0, green: 0.42, blue: 0.42) }
+    static var nameColor: Color {
+        let argb = UInt32(bitPattern: BoSeason.shared.accentArgb)
+        return Color(
+            red: Double((argb >> 16) & 0xFF) / 255,
+            green: Double((argb >> 8) & 0xFF) / 255,
+            blue: Double(argb & 0xFF) / 255
+        )
+    }
 }
 
 // MARK: - Typewriter Completion Store

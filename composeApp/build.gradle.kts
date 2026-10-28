@@ -52,8 +52,8 @@ kotlin {
             implementation("com.google.android.play:review-ktx:2.0.2")
             implementation("com.android.installreferrer:installreferrer:2.2")
             implementation("com.google.android.gms:play-services-location:21.3.0")
-            implementation("com.revenuecat.purchases:purchases:8.12.1")
-            implementation("com.revenuecat.purchases:purchases-ui:8.12.1")
+            implementation("com.revenuecat.purchases:purchases:10.27.1")
+            implementation("com.revenuecat.purchases:purchases-ui:10.27.1")
             // Push notifications. OneSignal handles FCM registration itself —
             // no google-services.json / Firebase SDK needed. Version range per
             // OneSignal's official 5.x Android setup docs.
@@ -145,8 +145,9 @@ android {
         // 302 = v1.3.0 RC. 400 = v1.3.0 submission build (round number for the cut).
         // 500 = v1.4.0 submission build. 501 = v1.4.0 iOS plan-context fix.
         // 502 = v1.4.0 resubmission (Apple submission pulled for more fixes).
-        versionCode = 502
-        versionName = "1.4.0"
+        // 503 = v1.5.0 development start.
+        versionCode = 505
+        versionName = "1.5.0"
         // Used by AndroidManifest's <meta-data android:value="${MAPS_API_KEY}" />
         // and read at runtime by the Directions API client.
         manifestPlaceholders["MAPS_API_KEY"] = mapsApiKey
