@@ -1,4 +1,4 @@
-// Supabase Storage — host the rendered PNGs at a public URL so the Instagram
+// Supabase Storage — host the rendered JPEGs at a public URL so the Instagram
 // Graph API can fetch them. Bucket is created on first run if missing.
 
 import { readFile } from "node:fs/promises";
@@ -19,8 +19,8 @@ export async function ensureBucket() {
   }
 }
 
-// Uploads a local PNG to {prefix}/{basename} and returns its public URL.
-export async function uploadPng(localPath, prefix) {
+// Uploads a rendered slide to {prefix}/{basename} and returns its public URL.
+export async function uploadImage(localPath, prefix) {
   const { url, key } = supabaseEnv();
   const objectPath = `${prefix}/${path.basename(localPath)}`;
   const bytes = await readFile(localPath);
@@ -28,7 +28,7 @@ export async function uploadPng(localPath, prefix) {
     method: "POST",
     headers: {
       apikey: key, Authorization: `Bearer ${key}`,
-      "Content-Type": "image/png", "x-upsert": "true", "cache-control": "max-age=86400",
+      "Content-Type": localPath.endsWith(".png") ? "image/png" : "image/jpeg", "x-upsert": "true", "cache-control": "max-age=86400",
     },
     body: bytes,
   });

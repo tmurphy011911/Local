@@ -12,7 +12,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getPost } from "./query.mjs";
 import { renderSlides } from "./render.mjs";
-import { ensureBucket, uploadPng } from "./lib/storage.mjs";
+import { ensureBucket, uploadImage } from "./lib/storage.mjs";
 import { sendEmail, previewHtml } from "./lib/resend.mjs";
 import { heroLine, eyebrow, slideLabel, captionWithTags } from "./caption.mjs";
 import { MIN_EVENTS, MAX_EVENT_CARDS, POST_TYPES, runUrl } from "./lib/config.mjs";
@@ -75,7 +75,7 @@ async function main() {
   if (!DRY) {
     await ensureBucket();
     imageUrls = [];
-    for (const p of pngs) imageUrls.push(await uploadPng(p, `${postType}/${date}`));
+    for (const p of pngs) imageUrls.push(await uploadImage(p, `${postType}/${date}`));
     console.log(`[social] uploaded ${imageUrls.length} images.`);
   }
 

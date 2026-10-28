@@ -36,7 +36,11 @@ async function main() {
 
   console.log(`[social] creating ${imageUrls.length} child containers…`);
   const children = [];
-  for (const u of imageUrls) children.push(await createChild(u));
+  for (const u of imageUrls) {
+    const id = await createChild(u);
+    await waitFinished(id);
+    children.push(id);
+  }
 
   console.log(`[social] creating carousel container…`);
   const carousel = await createCarousel(children, caption);
