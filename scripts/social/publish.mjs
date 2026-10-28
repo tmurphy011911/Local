@@ -12,6 +12,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createChild, createCarousel, waitFinished, publishCarousel } from "./lib/ig.mjs";
 import { sendEmail } from "./lib/resend.mjs";
+import { wasPublished, markPublished } from "./lib/storage.mjs";
 import { POST_TYPES } from "./lib/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -34,6 +35,11 @@ async function main() {
     return;
   }
 
+  if (await wasPublished(postType, date)) {
+    console.log(`[social] ${postType} ${date} already published — skipping.`);
+    return;
+  }
+
   console.log(`[social] creating ${imageUrls.length} child containers…`);
   const children = [];
   for (const u of imageUrls) {
@@ -49,6 +55,7 @@ async function main() {
   console.log(`[social] publishing…`);
   const mediaId = await publishCarousel(carousel);
   console.log(`[social] ✅ published ${postType} ${date} — media id ${mediaId}`);
+  await markPublished(postType, date, mediaId).catch((e) => console.error(`[social] marker write failed: ${e.message}`));
 
   await sendEmail({
     subject: `✅ Local IG ${postType} published — ${date}`,
