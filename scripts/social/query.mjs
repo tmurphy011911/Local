@@ -7,7 +7,7 @@
 // done in America/New_York so "today" / "this weekend" / "this month" mean what
 // a Bostonian means, regardless of the (UTC) runner clock.
 
-import { selectEvents } from "./lib/supabase.mjs";
+import { selectEvents, callRpc } from "./lib/supabase.mjs";
 import { thumbUrl } from "./lib/images.mjs";
 import { BOSTON, RADIUS_MILES, HEADLINE_CAP } from "./lib/config.mjs";
 
@@ -65,11 +65,15 @@ function fmt(iso, opts) {
 function timeLabel(iso) { return fmt(iso, { hour: "numeric", minute: "2-digit", hour12: true }); }
 function etHour(iso) { return +fmt(iso, { hour: "2-digit", hour12: false }); }
 
-function whenLabel(postType, iso) {
+function whenLabel(postType, iso, timeKnown = true) {
   if (!iso) return "Ongoing";
-  if (postType === "daily") return (etHour(iso) < 16 ? "Today · " : "Tonight · ") + timeLabel(iso);
-  if (postType === "weekend") return fmt(iso, { weekday: "short" }) + " · " + timeLabel(iso);
-  return fmt(iso, { month: "short", day: "numeric" }) + " · " + timeLabel(iso); // monthly
+  const at = timeKnown ? " · " + timeLabel(iso) : ""; // skip bogus midnight when time unknown
+  if (postType === "daily") {
+    if (!timeKnown) return "Today";
+    return (etHour(iso) < 16 ? "Today" : "Tonight") + " · " + timeLabel(iso);
+  }
+  if (postType === "weekend") return fmt(iso, { weekday: "short" }) + at;
+  return fmt(iso, { month: "short", day: "numeric" }) + at; // monthly
 }
 
 const ACCENT_BY_CAT = {
@@ -132,6 +136,21 @@ function pickDiverse(sorted, limit) {
   return picked;
 }
 
+function normVenue(s) { return (s || "").trim().toLowerCase(); }
+function tsOf(iso) { return iso ? new Date(iso).getTime() : Infinity; }
+
+// Map of venue name → public_interest_rank, from the app's own
+// get_active_venues_lite RPC (all active venues, rank included). This is the
+// quality signal the carousels use; events carry no rank of their own.
+async function venueRankMap() {
+  const venues = await callRpc("get_active_venues_lite");
+  const m = new Map();
+  for (const v of Array.isArray(venues) ? venues : []) {
+    if (v?.name && v.public_interest_rank != null) m.set(normVenue(v.name), v.public_interest_rank);
+  }
+  return m;
+}
+
 export async function getPost(postType) {
   const { from, to } = windowFor(postType);
   const lat = BOSTON.lat, lng = BOSTON.lng;
@@ -160,13 +179,23 @@ export async function getPost(postType) {
   }
   const deduped = [...seen.values()];
 
-  const picked = pickDiverse(deduped, HEADLINE_CAP[postType]);
+  // Quality: rank events by their venue's public_interest_rank (the signal the
+  // app uses), keep only notable venues (rank > 10 — drops K-12 gyms, community
+  // centers, virtual/unranked junk), and lead with the best.
+  const rankByVenue = await venueRankMap();
+  const ranked = deduped
+    .map((r) => ({ r, rank: rankByVenue.get(normVenue(r.venue_name)) ?? null }))
+    .filter((x) => x.rank != null && x.rank > 10)
+    .sort((a, b) => (b.rank - a.rank) || (tsOf(a.r.start_at) - tsOf(b.r.start_at)));
+  const qualityRows = ranked.map((x) => x.r);
+
+  const picked = pickDiverse(qualityRows, HEADLINE_CAP[postType]);
 
   const events = picked.map((r) => ({
     title: r.title.trim(),
     venueName: (r.venue_name || "Boston").trim(),
     hood: (r.neighborhood || r.venue_neighborhood || r.city || "Boston").trim(),
-    when: whenLabel(postType, r.start_at),
+    when: whenLabel(postType, r.start_at, r.time_known !== false),
     category: categoryLabel(r),
     accent: accentKey(r),
     free: isFree(r),
@@ -174,5 +203,5 @@ export async function getPost(postType) {
     desc: cleanDesc(r.description || r.summary || r.short_description || r.excerpt),
   }));
 
-  return { postType, window: { from: from.toISOString(), to: to.toISOString() }, events, total: deduped.length };
+  return { postType, window: { from: from.toISOString(), to: to.toISOString() }, events, total: qualityRows.length };
 }

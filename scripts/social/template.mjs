@@ -52,7 +52,7 @@ function css(fontCss) {
   .ev-photo .img{ width:100%; height:100%; object-fit:cover; display:block; }
   .ev-pill{ position:absolute; top:4cqw; left:4cqw; font-weight:800; font-size:2.9cqw; letter-spacing:.06em; color:var(--ink); background:rgba(255,255,255,.92); border-radius:6cqw; padding:1.4cqw 3cqw; }
   .ev-free{ position:absolute; top:4cqw; right:4cqw; font-weight:900; font-size:2.9cqw; color:#2E7D32; background:#E8F5E9; border:1px solid #A5D6A7; border-radius:6cqw; padding:1.2cqw 3cqw; }
-  .ev-body{ padding:5.5cqw; display:flex; flex-direction:column; gap:2.2cqw; }
+  .ev-body{ padding:5.5cqw; display:flex; flex-direction:column; gap:2.2cqw; flex:1; justify-content:center; }
   .ev-when{ font-weight:800; letter-spacing:.08em; text-transform:uppercase; font-size:3.4cqw; color:var(--coral); }
   .ev-title{ font-family:var(--serif); font-weight:900; font-size:7.4cqw; line-height:1.04; color:var(--ink); letter-spacing:-.01em; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
   .ev-venue{ display:flex; align-items:center; gap:1.6cqw; font-weight:700; font-size:4cqw; color:var(--ink2); }
