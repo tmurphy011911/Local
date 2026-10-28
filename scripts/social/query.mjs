@@ -1,8 +1,9 @@
 // Event selection for each post type.
 //
 // Pulls the right time window of active Boston-metro events from PostgREST,
-// dedupes recurring rows, ranks by venue rank then start time, and spreads
-// categories so a carousel isn't eight concerts in a row. All date math is
+// dedupes recurring rows, orders them chronologically (events carry no rank
+// column — that's derived from venues), and spreads categories so a carousel
+// isn't eight concerts in a row. All date math is
 // done in America/New_York so "today" / "this weekend" / "this month" mean what
 // a Bostonian means, regardless of the (UTC) runner clock.
 
@@ -146,7 +147,7 @@ export async function getPost(postType) {
     ["venue_lat", `lte.${lat + latD}`],
     ["venue_lng", `gte.${lng - lngD}`],
     ["venue_lng", `lte.${lng + lngD}`],
-    ["order", "rank.asc.nullslast,start_at.asc"],
+    ["order", "start_at.asc"],
     ["limit", "120"],
   ]);
 
