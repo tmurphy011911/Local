@@ -170,16 +170,18 @@ function cleanTitle(s) {
   return cleaned || String(s || "").trim();
 }
 
-// Collapse near-duplicate rows at the same venue where one title is a prefix of
-// the other (e.g. "1972" vs "1972: A Rock Opera"). Keeps the richer row — one
-// with a description, else the longer (more descriptive) title.
+// Collapse same-day rows where one title is a prefix of the other, at any venue
+// (e.g. "1972" vs "1972: A Rock Opera", "Yebba" vs "Yebba Jean Tour" listed
+// under two venue spellings). Keeps the richer row — one with a description,
+// else the longer (more descriptive) title.
+function etDay(iso) { return iso ? fmt(iso, { year: "numeric", month: "2-digit", day: "2-digit" }) : ""; }
 function dedupeByPrefix(rows) {
   const out = [];
   for (const r of rows) {
-    const rt = normTitle(r.title), rv = normTitle(r.venue_name);
+    const rt = normTitle(cleanTitle(r.title)), rd = etDay(r.start_at);
     const i = out.findIndex((k) => {
-      if (normTitle(k.venue_name) !== rv) return false;
-      const kt = normTitle(k.title);
+      if (etDay(k.start_at) !== rd) return false;
+      const kt = normTitle(cleanTitle(k.title));
       return kt === rt || kt.startsWith(rt + " ") || rt.startsWith(kt + " ");
     });
     if (i === -1) { out.push(r); continue; }
