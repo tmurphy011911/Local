@@ -30,6 +30,12 @@ function etInstant(y, m, d, hh = 0, mm = 0, ss = 0) {
   return new Date(naive - tzOffsetMs(new Date(naive)));
 }
 function etNow() {
+  // SOCIAL_DATE=YYYY-MM-DD previews another day's post (manual runs only).
+  const o = /^(\d{4})-(\d{2})-(\d{2})$/.exec(process.env.SOCIAL_DATE || "");
+  if (o) {
+    const y = +o[1], m = +o[2], d = +o[3];
+    return { y, m, d, hour: 11, dow: new Date(Date.UTC(y, m - 1, d)).getUTCDay() };
+  }
   const p = new Intl.DateTimeFormat("en-US", {
     timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hour12: false,
   }).formatToParts(new Date()).reduce((a, x) => (a[x.type] = x.value, a), {});

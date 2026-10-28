@@ -12,6 +12,10 @@ on:
         description: 'Render + stage only; do not upload, email, or publish'
         type: boolean
         default: false
+      date:
+        description: 'Override the post date (YYYY-MM-DD, ET) for previews'
+        type: string
+        required: false
 
 permissions:
   contents: read
@@ -29,6 +33,7 @@ jobs:
       RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
       SOCIAL_ALERT_EMAIL: ${{ secrets.SOCIAL_ALERT_EMAIL }}
       DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && '1' || '' }}
+      SOCIAL_DATE: ${{ inputs.date }}
     outputs:
       should_post: ${{ steps.build.outputs.should_post }}
     steps:
