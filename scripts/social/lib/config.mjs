@@ -53,7 +53,8 @@ export function resendEnv() {
   return {
     key: process.env.RESEND_API_KEY || "",
     to: process.env.SOCIAL_ALERT_EMAIL || "",
-    from: process.env.SOCIAL_FROM_EMAIL || "Local Social <social@localapp.live>",
+    // Same sender as the existing alert emails — localapp.live isn't verified in Resend.
+    from: process.env.SOCIAL_FROM_EMAIL || "Local Social <onboarding@resend.dev>",
   };
 }
 
