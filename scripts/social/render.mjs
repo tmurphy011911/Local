@@ -53,8 +53,9 @@ export async function renderSlides({ heroLine, eyebrow, label, events }, outDir)
     for (let i = 0; i < slideIds.length; i++) {
       const el = await page.$("#" + slideIds[i]);
       if (!el) throw new Error(`slide element missing: ${slideIds[i]}`);
-      const p = path.join(outDir, String(i).padStart(2, "0") + ".png");
-      await el.screenshot({ path: p, type: "png" });
+      const p = path.join(outDir, String(i).padStart(2, "0") + ".jpg");
+      // Instagram publishing only accepts JPEG.
+      await el.screenshot({ path: p, type: "jpeg", quality: 92 });
       out.push(p);
     }
     return out;
