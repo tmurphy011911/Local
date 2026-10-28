@@ -1,9 +1,10 @@
 // Event selection for each post type.
 //
 // Pulls the right time window of active Boston-metro events from PostgREST,
-// dedupes recurring rows, drops unclassified / no-public-interest / virtual
-// junk, orders chronologically, and spreads categories so a carousel isn't
-// eight concerts in a row. All date math is
+// dedupes repeat rows, drops unclassified / no-public-interest / virtual junk,
+// ranks the rest by appeal (shows and one-off nights over classes and weekly
+// repeats), and spreads categories so a carousel isn't eight concerts in a
+// row. All date math is
 // done in America/New_York so "today" / "this weekend" / "this month" mean what
 // a Bostonian means, regardless of the (UTC) runner clock.
 
@@ -30,6 +31,12 @@ function etInstant(y, m, d, hh = 0, mm = 0, ss = 0) {
   return new Date(naive - tzOffsetMs(new Date(naive)));
 }
 function etNow() {
+  // SOCIAL_DATE=YYYY-MM-DD previews another day's post (manual runs only).
+  const o = /^(\d{4})-(\d{2})-(\d{2})$/.exec(process.env.SOCIAL_DATE || "");
+  if (o) {
+    const y = +o[1], m = +o[2], d = +o[3];
+    return { y, m, d, hour: 11, dow: new Date(Date.UTC(y, m - 1, d)).getUTCDay() };
+  }
   const p = new Intl.DateTimeFormat("en-US", {
     timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", hour12: false,
   }).formatToParts(new Date()).reduce((a, x) => (a[x.type] = x.value, a), {});
@@ -119,6 +126,8 @@ function cleanDesc(s) {
     .replace(/&[a-z#0-9]+;/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
+  // Ticketing house-policy text isn't a description; show no blurb instead.
+  if (/seated at the discretion|house manager|latecomers|all sales are final|no refunds|bag policy|clear bag/i.test(t)) return "";
   const MAX = 160;
   if (t.length > MAX) t = t.slice(0, MAX).replace(/\s+\S*$/, "").trim() + "…";
   return t;
@@ -163,16 +172,18 @@ function cleanTitle(s) {
   return cleaned || String(s || "").trim();
 }
 
-// Collapse near-duplicate rows at the same venue where one title is a prefix of
-// the other (e.g. "1972" vs "1972: A Rock Opera"). Keeps the richer row — one
-// with a description, else the longer (more descriptive) title.
+// Collapse same-day rows where one title is a prefix of the other, at any venue
+// (e.g. "1972" vs "1972: A Rock Opera", "Yebba" vs "Yebba Jean Tour" listed
+// under two venue spellings). Keeps the richer row — one with a description,
+// else the longer (more descriptive) title.
+function etDay(iso) { return iso ? fmt(iso, { year: "numeric", month: "2-digit", day: "2-digit" }) : ""; }
 function dedupeByPrefix(rows) {
   const out = [];
   for (const r of rows) {
-    const rt = normTitle(r.title), rv = normTitle(r.venue_name);
+    const rt = normTitle(cleanTitle(r.title)), rd = etDay(r.start_at);
     const i = out.findIndex((k) => {
-      if (normTitle(k.venue_name) !== rv) return false;
-      const kt = normTitle(k.title);
+      if (etDay(k.start_at) !== rd) return false;
+      const kt = normTitle(cleanTitle(k.title));
       return kt === rt || kt.startsWith(rt + " ") || rt.startsWith(kt + " ");
     });
     if (i === -1) { out.push(r); continue; }
@@ -182,13 +193,57 @@ function dedupeByPrefix(rows) {
   return out;
 }
 
+// How post-worthy an event is, from the classifier's tags: shows, concerts and
+// one-off nights up; classes, campus talks, meetups and weekly repeats down.
+// Anything under 0 is left out of the post entirely.
+const TAG_APPEAL = {
+  marquee: 6, "touring-act": 4, festival: 3,
+  "live-performance": 3, concert: 3, "musical-theater": 3, comedy: 2,
+  "theater-venue": 2, screening: 2, immersive: 2, spooky: 2, halloween: 2, "date-night": 2,
+  film: 1, upscale: 1, splurge: 1, "local-artist": 1, ticketed: 1, exhibit: 1, gallery: 1, "one-time": 1, rooftop: 1,
+  "class-workshop": -5, networking: -4, professional: -4, "business-focused": -3, campus: -3,
+  meetup: -3, recurring: -3, fitness: -3, yoga: -3, wellness: -2, seniors: -2, kids: -2,
+  educational: -2, trivia: -2, game: -2, "college-sports": -2, "farmers-market": -2,
+  "drop-in": -1, "open-mic": -1, "beginner-friendly": -1, studio: -1,
+};
+const SUB_APPEAL = { comedy: 3, theatre: 2, music: 1, rock: 1, "for-kids": -2, libraries: -1, civic: -1, sports: -1 };
+
+function appeal(r) {
+  const tags = new Set(Array.isArray(r.tags) ? r.tags.map((t) => String(t).toLowerCase()) : []);
+  let s = SUB_APPEAL[(r.subcategory || "").toLowerCase()] || 0;
+  for (const t of tags) s += TAG_APPEAL[t] || 0;
+  if (r.description) s += 1; // cards read better with a blurb
+  if (r.time_known !== false && r.start_at) {
+    const h = etHour(r.start_at);
+    if (h >= 17) s += 2; else if (h < 12) s -= 1;
+  }
+  return s;
+}
+
+// One card per show: collapse same-title rows across venues and dates (venue
+// aliases like "The Middle East" / "Middle East Restaurant and Club", repeat
+// screenings, nightly runs). Keeps the more appealing row, then the earlier one.
+function dedupeByTitle(rows) {
+  const best = new Map();
+  for (const r of rows) {
+    const k = normTitle(cleanTitle(r.title));
+    const cur = best.get(k);
+    if (!cur) { best.set(k, r); continue; }
+    const d = appeal(r) - appeal(cur);
+    if (d > 0 || (d === 0 && tsOf(r.start_at) < tsOf(cur.start_at))) best.set(k, r);
+  }
+  return [...best.values()];
+}
+
 export async function getPost(postType) {
   const { from, to } = windowFor(postType);
   const lat = BOSTON.lat, lng = BOSTON.lng;
   const latD = RADIUS_MILES / 69.0, lngD = RADIUS_MILES / 50.0;
 
-  const rows = await selectEvents([
-    ["select", "*"],
+  // Fetch the whole window (paged) — a single capped page ordered by start time
+  // dropped every evening event. Only the columns the post uses, to keep egress low.
+  const filters = [
+    ["select", "id,title,description,category,subcategory,sub_subcategory,tags,start_at,time_known,is_free,price_min,image_url,venue_name,venue_city,city,source"],
     ["is_active", "eq.true"],
     ["image_url", "not.is.null"],
     ["start_at", `gte.${from.toISOString()}`],
@@ -197,25 +252,25 @@ export async function getPost(postType) {
     ["venue_lat", `lte.${lat + latD}`],
     ["venue_lng", `gte.${lng - lngD}`],
     ["venue_lng", `lte.${lng + lngD}`],
-    ["order", "start_at.asc"],
-    ["limit", "120"],
-  ]);
-
-  // dedupe recurring rows (same title+venue across the window) — keep earliest
-  const seen = new Map();
-  for (const r of rows) {
-    if (!r.title || !r.image_url) continue;
-    const k = normTitle(r.title) + "|" + normTitle(r.venue_name);
-    if (!seen.has(k)) seen.set(k, r);
+    ["order", "start_at.asc,id.asc"],
+  ];
+  const PAGE = 1000, MAX_PAGES = 5;
+  const rows = [];
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const batch = await selectEvents([...filters, ["limit", String(PAGE)], ["offset", String(page * PAGE)]]);
+    rows.push(...batch);
+    if (batch.length < PAGE) break;
   }
-  const deduped = dedupeByPrefix([...seen.values()]);
 
-  // Classifier-based quality gate, then chronological order.
+  const deduped = dedupeByPrefix(dedupeByTitle(rows.filter((r) => r.title && r.image_url)));
+
+  // Quality gate, drop the unappealing, then lead with the most attractive.
   const qualityRows = deduped
-    .filter(isQuality)
-    .sort((a, b) => tsOf(a.start_at) - tsOf(b.start_at));
+    .filter((r) => isQuality(r) && appeal(r) >= 0)
+    .sort((a, b) => (appeal(b) - appeal(a)) || (tsOf(a.start_at) - tsOf(b.start_at)));
 
   const picked = pickDiverse(qualityRows, HEADLINE_CAP[postType]);
+  console.log(`[social] ${rows.length} rows → ${qualityRows.length} candidates. top: ${qualityRows.slice(0, 15).map((r) => `${appeal(r)} ${cleanTitle(r.title)}`).join(" | ")}`);
 
   const events = picked.map((r) => ({
     title: cleanTitle(r.title),
