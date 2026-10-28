@@ -1,8 +1,9 @@
 // Event selection for each post type.
 //
 // Pulls the right time window of active Boston-metro events from PostgREST,
-// dedupes recurring rows, ranks by venue rank then start time, and spreads
-// categories so a carousel isn't eight concerts in a row. All date math is
+// dedupes recurring rows, drops unclassified / no-public-interest / virtual
+// junk, orders chronologically, and spreads categories so a carousel isn't
+// eight concerts in a row. All date math is
 // done in America/New_York so "today" / "this weekend" / "this month" mean what
 // a Bostonian means, regardless of the (UTC) runner clock.
 
@@ -64,11 +65,15 @@ function fmt(iso, opts) {
 function timeLabel(iso) { return fmt(iso, { hour: "numeric", minute: "2-digit", hour12: true }); }
 function etHour(iso) { return +fmt(iso, { hour: "2-digit", hour12: false }); }
 
-function whenLabel(postType, iso) {
+function whenLabel(postType, iso, timeKnown = true) {
   if (!iso) return "Ongoing";
-  if (postType === "daily") return (etHour(iso) < 16 ? "Today · " : "Tonight · ") + timeLabel(iso);
-  if (postType === "weekend") return fmt(iso, { weekday: "short" }) + " · " + timeLabel(iso);
-  return fmt(iso, { month: "short", day: "numeric" }) + " · " + timeLabel(iso); // monthly
+  const at = timeKnown ? " · " + timeLabel(iso) : ""; // skip bogus midnight when time unknown
+  if (postType === "daily") {
+    if (!timeKnown) return "Today";
+    return (etHour(iso) < 16 ? "Today" : "Tonight") + " · " + timeLabel(iso);
+  }
+  if (postType === "weekend") return fmt(iso, { weekday: "short" }) + at;
+  return fmt(iso, { month: "short", day: "numeric" }) + at; // monthly
 }
 
 const ACCENT_BY_CAT = {
@@ -131,6 +136,52 @@ function pickDiverse(sorted, limit) {
   return picked;
 }
 
+function tsOf(iso) { return iso ? new Date(iso).getTime() : Infinity; }
+
+// Quality gate for a highlights post, using the classifier's own fields —
+// venue rank is unusable here (public_interest_rank is null for nearly every
+// event venue). Drops:
+//  - "no-public-interest" (school sports, junk listings) — the app's own floor
+//  - rows with no real classification (unclassified restaurant "specials", etc.)
+//  - virtual / online events — this is a "go out in Boston" feed
+function isQuality(r) {
+  const sub = (r.subcategory || "").toLowerCase();
+  if (sub === "no-public-interest") return false;
+  if (sub === "" && !(r.sub_subcategory || "")) return false;
+  const tags = Array.isArray(r.tags) ? r.tags.map((t) => String(t).toLowerCase()) : [];
+  if (tags.includes("virtual") || tags.includes("online")) return false;
+  return true;
+}
+
+// Strip a trailing date/time that some crawlers append to titles, e.g.
+// "Laura - 10/27/26 @ 8:45 pm" or "Show @ 8pm". Never returns empty.
+function cleanTitle(s) {
+  const cleaned = String(s || "")
+    .replace(/\s*[-–—]\s*\d{1,2}\/\d{1,2}\/\d{2,4}\b.*$/i, "")
+    .replace(/\s*[-–—@]\s*\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)\b.*$/i, "")
+    .trim();
+  return cleaned || String(s || "").trim();
+}
+
+// Collapse near-duplicate rows at the same venue where one title is a prefix of
+// the other (e.g. "1972" vs "1972: A Rock Opera"). Keeps the richer row — one
+// with a description, else the longer (more descriptive) title.
+function dedupeByPrefix(rows) {
+  const out = [];
+  for (const r of rows) {
+    const rt = normTitle(r.title), rv = normTitle(r.venue_name);
+    const i = out.findIndex((k) => {
+      if (normTitle(k.venue_name) !== rv) return false;
+      const kt = normTitle(k.title);
+      return kt === rt || kt.startsWith(rt + " ") || rt.startsWith(kt + " ");
+    });
+    if (i === -1) { out.push(r); continue; }
+    const score = (x) => (x.description ? 1000 : 0) + String(x.title || "").length;
+    if (score(r) > score(out[i])) out[i] = r;
+  }
+  return out;
+}
+
 export async function getPost(postType) {
   const { from, to } = windowFor(postType);
   const lat = BOSTON.lat, lng = BOSTON.lng;
@@ -146,7 +197,7 @@ export async function getPost(postType) {
     ["venue_lat", `lte.${lat + latD}`],
     ["venue_lng", `gte.${lng - lngD}`],
     ["venue_lng", `lte.${lng + lngD}`],
-    ["order", "rank.asc.nullslast,start_at.asc"],
+    ["order", "start_at.asc"],
     ["limit", "120"],
   ]);
 
@@ -157,15 +208,20 @@ export async function getPost(postType) {
     const k = normTitle(r.title) + "|" + normTitle(r.venue_name);
     if (!seen.has(k)) seen.set(k, r);
   }
-  const deduped = [...seen.values()];
+  const deduped = dedupeByPrefix([...seen.values()]);
 
-  const picked = pickDiverse(deduped, HEADLINE_CAP[postType]);
+  // Classifier-based quality gate, then chronological order.
+  const qualityRows = deduped
+    .filter(isQuality)
+    .sort((a, b) => tsOf(a.start_at) - tsOf(b.start_at));
+
+  const picked = pickDiverse(qualityRows, HEADLINE_CAP[postType]);
 
   const events = picked.map((r) => ({
-    title: r.title.trim(),
+    title: cleanTitle(r.title),
     venueName: (r.venue_name || "Boston").trim(),
-    hood: (r.neighborhood || r.venue_neighborhood || r.city || "Boston").trim(),
-    when: whenLabel(postType, r.start_at),
+    hood: (r.neighborhood || r.venue_neighborhood || r.venue_city || r.city || "Boston").trim(),
+    when: whenLabel(postType, r.start_at, r.time_known !== false),
     category: categoryLabel(r),
     accent: accentKey(r),
     free: isFree(r),
@@ -173,5 +229,5 @@ export async function getPost(postType) {
     desc: cleanDesc(r.description || r.summary || r.short_description || r.excerpt),
   }));
 
-  return { postType, window: { from: from.toISOString(), to: to.toISOString() }, events, total: deduped.length };
+  return { postType, window: { from: from.toISOString(), to: to.toISOString() }, events, total: qualityRows.length };
 }
