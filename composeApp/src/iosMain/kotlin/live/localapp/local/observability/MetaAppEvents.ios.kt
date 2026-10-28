@@ -36,13 +36,6 @@ object IosMetaBridge {
     var completeRegistration: ((String) -> Unit)? = null
 
     /**
-     * Swift sets. Kotlin calls to show the iOS App Tracking Transparency prompt
-     * and report the answer to FBSDK. Deliberately NOT called at launch — see
-     * the call site in Share.ios.kt.
-     */
-    var requestTracking: (() -> Unit)? = null
-
-    /**
      * Swift sets this to true once FBSDK has actually started. A plain Bool
      * rather than a closure so there's no KotlinBoolean boxing on the Swift side.
      */

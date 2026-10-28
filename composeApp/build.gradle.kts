@@ -146,7 +146,7 @@ android {
         // 500 = v1.4.0 submission build. 501 = v1.4.0 iOS plan-context fix.
         // 502 = v1.4.0 resubmission (Apple submission pulled for more fixes).
         // 503 = v1.5.0 development start.
-        versionCode = 503
+        versionCode = 505
         versionName = "1.5.0"
         // Used by AndroidManifest's <meta-data android:value="${MAPS_API_KEY}" />
         // and read at runtime by the Directions API client.
