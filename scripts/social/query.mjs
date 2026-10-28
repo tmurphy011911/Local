@@ -191,20 +191,36 @@ function cleanTitle(s) {
   return cleaned || String(s || "").trim();
 }
 
-// Collapse same-day rows where one title is a prefix of the other, at any venue
-// (e.g. "1972" vs "1972: A Rock Opera", "Yebba" vs "Yebba Jean Tour" listed
-// under two venue spellings). Keeps the richer row — one with a description,
-// else the longer (more descriptive) title.
+// The show's core name, for matching the same show listed by two sources:
+// drops "(Touring)", "The Musical", "Ages 21+", a leading "Concert:" or
+// "Venue's", and a leading "the".
+function coreTitle(s) {
+  const t = cleanTitle(s).toLowerCase()
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/[-–—:,]?\s*the musical\b/g, " ")
+    .replace(/[-–—]?\s*ages?\s*\d+\+?/g, " ")
+    .replace(/^\s*(concert|live|presents?)\s*:\s*/, "")
+    .replace(/^[a-z0-9 .&-]{3,40}?['’]s\s+/, "");
+  return normTitle(t).replace(/^the /, "");
+}
+
+// Collapse same-day rows that are the same show, at any venue: identical core
+// titles, or one core title contained whole-word in the other ("1972" vs
+// "1972: A Rock Opera", "Yebba" vs "Yebba Jean Tour", "Nekrogoblikon" vs
+// "20 Years of Nekrogoblikon…"). Keeps the richer row — one with a
+// description, else the longer (more descriptive) title.
 function etDay(iso) { return iso ? fmt(iso, { year: "numeric", month: "2-digit", day: "2-digit" }) : ""; }
+function sameShow(a, b) {
+  if (a === b) return true;
+  const [short, long] = a.length <= b.length ? [a, b] : [b, a];
+  if (short.length >= 3 && long.startsWith(short + " ")) return true; // "1972" / "1972 a rock opera"
+  return short.length >= 5 && (" " + long + " ").includes(" " + short + " ");
+}
 function dedupeByPrefix(rows) {
   const out = [];
   for (const r of rows) {
-    const rt = normTitle(cleanTitle(r.title)), rd = etDay(r.start_at);
-    const i = out.findIndex((k) => {
-      if (etDay(k.start_at) !== rd) return false;
-      const kt = normTitle(cleanTitle(k.title));
-      return kt === rt || kt.startsWith(rt + " ") || rt.startsWith(kt + " ");
-    });
+    const rt = coreTitle(r.title), rd = etDay(r.start_at);
+    const i = out.findIndex((k) => etDay(k.start_at) === rd && sameShow(coreTitle(k.title), rt));
     if (i === -1) { out.push(r); continue; }
     const score = (x) => (x.description ? 1000 : 0) + String(x.title || "").length;
     if (score(r) > score(out[i])) out[i] = r;
