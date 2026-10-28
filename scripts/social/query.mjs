@@ -187,6 +187,7 @@ function cleanTitle(s) {
     .replace(/\s*[-–—]\s*\d{1,2}\/\d{1,2}\/\d{2,4}\b.*$/i, "")
     .replace(/\s*[-–—@]\s*\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)\b.*$/i, "")
     .replace(/\s*[-–—]\s*available\s+\d.*$/i, "") // "… - Available 6:00 PM or 7:30 PM"
+    .replace(/\s*[-–—]\s*ages?\s*\d+\+?\s*$/i, "") // "… - Ages 21+"
     .trim();
   return cleaned || String(s || "").trim();
 }
@@ -208,7 +209,7 @@ function coreTitle(s) {
 // titles, or one core title contained whole-word in the other ("1972" vs
 // "1972: A Rock Opera", "Yebba" vs "Yebba Jean Tour", "Nekrogoblikon" vs
 // "20 Years of Nekrogoblikon…"). Keeps the richer row — one with a
-// description, else the longer (more descriptive) title.
+// appeal, then one with a description, then the longer title.
 function etDay(iso) { return iso ? fmt(iso, { year: "numeric", month: "2-digit", day: "2-digit" }) : ""; }
 function sameShow(a, b) {
   if (a === b) return true;
@@ -222,7 +223,7 @@ function dedupeByPrefix(rows) {
     const rt = coreTitle(r.title), rd = etDay(r.start_at);
     const i = out.findIndex((k) => etDay(k.start_at) === rd && sameShow(coreTitle(k.title), rt));
     if (i === -1) { out.push(r); continue; }
-    const score = (x) => (x.description ? 1000 : 0) + String(x.title || "").length;
+    const score = (x) => appeal(x) * 10000 + (x.description ? 1000 : 0) + String(x.title || "").length;
     if (score(r) > score(out[i])) out[i] = r;
   }
   return out;
