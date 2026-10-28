@@ -221,6 +221,7 @@ export async function getPost(postType) {
     .filter(isQuality)
     .sort((a, b) => tsOf(a.start_at) - tsOf(b.start_at));
 
+  for (const r of qualityRows) console.log(`[cand] ${JSON.stringify({ t: r.title, v: r.venue_name, sub: r.subcategory, ss: r.sub_subcategory, tags: r.tags, h: r.time_known === false ? null : etHour(r.start_at), free: r.is_free, src: r.source, desc: !!r.description })}`); // TEMP
   const picked = pickDiverse(qualityRows, HEADLINE_CAP[postType]);
 
   const events = picked.map((r) => ({
