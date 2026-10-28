@@ -37,7 +37,7 @@ function eyebrow(post) {
 export function heroLine(post) {
   const n = post.events.length;
   if (post.postType === "daily") return `${n} things happening in Boston today.`;
-  if (post.postType === "weekend") return `Your Boston weekend, sorted.`;
+  if (post.postType === "weekend") return `Your Boston weekend, planned.`;
   return `The ${n} best things in Boston this month.`;
 }
 
