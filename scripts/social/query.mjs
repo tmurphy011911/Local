@@ -193,9 +193,10 @@ export async function getPost(postType) {
   const qualityRows = ranked.map((x) => x.r);
 
   // TEMP diagnostic — remove after tuning
-  const matched = deduped.filter((r) => rankByVenue.get(normVenue(r.venue_name)) != null);
-  console.log(`[dbg] deduped=${deduped.length} venuesWithRank=${rankByVenue.size} matched=${matched.length} gt10=${deduped.filter((r)=>(rankByVenue.get(normVenue(r.venue_name))??-1)>10).length}`);
-  console.log(`[dbg] sample=${JSON.stringify(deduped.slice(0,20).map((r)=>({v:r.venue_name,rank:rankByVenue.get(normVenue(r.venue_name))??null})))}`);
+  console.log(`[dbg] deduped=${deduped.length} venuesWithRank=${rankByVenue.size}`);
+  for (const r of deduped) {
+    console.log(`[dbg] ${JSON.stringify({ title: r.title, venue: r.venue_name, cat: r.category, sub: r.subcategory, subsub: r.sub_subcategory, tags: r.tags, free: r.is_free, tk: r.time_known, src: r.source })}`);
+  }
 
   const picked = pickDiverse(qualityRows, HEADLINE_CAP[postType]);
 
