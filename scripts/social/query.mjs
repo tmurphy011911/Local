@@ -126,6 +126,8 @@ function cleanDesc(s) {
     .replace(/&[a-z#0-9]+;/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
+  // Ticketing house-policy text isn't a description; show no blurb instead.
+  if (/seated at the discretion|house manager|latecomers|all sales are final|no refunds|bag policy|clear bag/i.test(t)) return "";
   const MAX = 160;
   if (t.length > MAX) t = t.slice(0, MAX).replace(/\s+\S*$/, "").trim() + "…";
   return t;
