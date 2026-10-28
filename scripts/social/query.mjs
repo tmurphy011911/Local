@@ -185,9 +185,17 @@ export async function getPost(postType) {
   const rankByVenue = await venueRankMap();
   const ranked = deduped
     .map((r) => ({ r, rank: rankByVenue.get(normVenue(r.venue_name)) ?? null }))
-    .filter((x) => x.rank != null && x.rank > 10)
-    .sort((a, b) => (b.rank - a.rank) || (tsOf(a.r.start_at) - tsOf(b.r.start_at)));
+    .filter((x) => x.rank == null || x.rank > 10) // app floor: drop only explicit <=10
+    .sort((a, b) => {
+      const ra = a.rank == null ? -1 : a.rank, rb = b.rank == null ? -1 : b.rank;
+      return (rb - ra) || (tsOf(a.r.start_at) - tsOf(b.r.start_at)); // ranked first, nulls last
+    });
   const qualityRows = ranked.map((x) => x.r);
+
+  // TEMP diagnostic — remove after tuning
+  const matched = deduped.filter((r) => rankByVenue.get(normVenue(r.venue_name)) != null);
+  console.log(`[dbg] deduped=${deduped.length} venuesWithRank=${rankByVenue.size} matched=${matched.length} gt10=${deduped.filter((r)=>(rankByVenue.get(normVenue(r.venue_name))??-1)>10).length}`);
+  console.log(`[dbg] sample=${JSON.stringify(deduped.slice(0,20).map((r)=>({v:r.venue_name,rank:rankByVenue.get(normVenue(r.venue_name))??null})))}`);
 
   const picked = pickDiverse(qualityRows, HEADLINE_CAP[postType]);
 
