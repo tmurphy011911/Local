@@ -186,6 +186,7 @@ function cleanTitle(s) {
   const cleaned = String(s || "")
     .replace(/\s*[-–—]\s*\d{1,2}\/\d{1,2}\/\d{2,4}\b.*$/i, "")
     .replace(/\s*[-–—@]\s*\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)\b.*$/i, "")
+    .replace(/\s*[-–—]\s*available\s+\d.*$/i, "") // "… - Available 6:00 PM or 7:30 PM"
     .trim();
   return cleaned || String(s || "").trim();
 }
