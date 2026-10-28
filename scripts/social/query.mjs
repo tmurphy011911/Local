@@ -153,6 +153,35 @@ function isQuality(r) {
   return true;
 }
 
+// Strip a trailing date/time that some crawlers append to titles, e.g.
+// "Laura - 10/27/26 @ 8:45 pm" or "Show @ 8pm". Never returns empty.
+function cleanTitle(s) {
+  const cleaned = String(s || "")
+    .replace(/\s*[-–—]\s*\d{1,2}\/\d{1,2}\/\d{2,4}\b.*$/i, "")
+    .replace(/\s*[-–—@]\s*\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)\b.*$/i, "")
+    .trim();
+  return cleaned || String(s || "").trim();
+}
+
+// Collapse near-duplicate rows at the same venue where one title is a prefix of
+// the other (e.g. "1972" vs "1972: A Rock Opera"). Keeps the richer row — one
+// with a description, else the longer (more descriptive) title.
+function dedupeByPrefix(rows) {
+  const out = [];
+  for (const r of rows) {
+    const rt = normTitle(r.title), rv = normTitle(r.venue_name);
+    const i = out.findIndex((k) => {
+      if (normTitle(k.venue_name) !== rv) return false;
+      const kt = normTitle(k.title);
+      return kt === rt || kt.startsWith(rt + " ") || rt.startsWith(kt + " ");
+    });
+    if (i === -1) { out.push(r); continue; }
+    const score = (x) => (x.description ? 1000 : 0) + String(x.title || "").length;
+    if (score(r) > score(out[i])) out[i] = r;
+  }
+  return out;
+}
+
 export async function getPost(postType) {
   const { from, to } = windowFor(postType);
   const lat = BOSTON.lat, lng = BOSTON.lng;
@@ -179,7 +208,7 @@ export async function getPost(postType) {
     const k = normTitle(r.title) + "|" + normTitle(r.venue_name);
     if (!seen.has(k)) seen.set(k, r);
   }
-  const deduped = [...seen.values()];
+  const deduped = dedupeByPrefix([...seen.values()]);
 
   // Classifier-based quality gate, then chronological order.
   const qualityRows = deduped
@@ -189,9 +218,9 @@ export async function getPost(postType) {
   const picked = pickDiverse(qualityRows, HEADLINE_CAP[postType]);
 
   const events = picked.map((r) => ({
-    title: r.title.trim(),
+    title: cleanTitle(r.title),
     venueName: (r.venue_name || "Boston").trim(),
-    hood: (r.neighborhood || r.venue_neighborhood || r.city || "Boston").trim(),
+    hood: (r.neighborhood || r.venue_neighborhood || r.venue_city || r.city || "Boston").trim(),
     when: whenLabel(postType, r.start_at, r.time_known !== false),
     category: categoryLabel(r),
     accent: accentKey(r),
