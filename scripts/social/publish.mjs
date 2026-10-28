@@ -13,7 +13,7 @@ import { fileURLToPath } from "node:url";
 import { createChild, createCarousel, waitFinished, publishCarousel } from "./lib/ig.mjs";
 import { sendEmail } from "./lib/resend.mjs";
 import { wasPublished, markPublished } from "./lib/storage.mjs";
-import { POST_TYPES } from "./lib/config.mjs";
+import { POST_TYPES, cityConfig } from "./lib/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DRY = process.env.DRY_RUN === "1";
@@ -35,8 +35,13 @@ async function main() {
     return;
   }
 
-  if (await wasPublished(postType, date)) {
-    console.log(`[social] ${postType} ${date} already published — skipping.`);
+  const city = cityConfig();
+  if (!process.env.IG_USER_ID) {
+    console.log(`[social] no IG account configured for ${city.key} (IG_USER_ID empty) — built but not posting.`);
+    return;
+  }
+  if (await wasPublished(city, postType, date)) {
+    console.log(`[social] ${city.key} ${postType} ${date} already published — skipping.`);
     return;
   }
 
@@ -54,11 +59,11 @@ async function main() {
 
   console.log(`[social] publishing…`);
   const mediaId = await publishCarousel(carousel);
-  console.log(`[social] ✅ published ${postType} ${date} — media id ${mediaId}`);
-  await markPublished(postType, date, mediaId).catch((e) => console.error(`[social] marker write failed: ${e.message}`));
+  console.log(`[social] ✅ published ${city.key} ${postType} ${date} — media id ${mediaId}`);
+  await markPublished(city, postType, date, mediaId).catch((e) => console.error(`[social] marker write failed: ${e.message}`));
 
   await sendEmail({
-    subject: `✅ Local IG ${postType} published — ${date}`,
+    subject: `✅ Local IG ${city.name} ${postType} published — ${date}`,
     html: `<div style="font-family:Arial;color:#1A1523"><h2>Published to Instagram</h2><p>${postType} · ${date} · media id <code>${mediaId}</code></p></div>`,
   });
 }

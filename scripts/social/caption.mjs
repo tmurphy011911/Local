@@ -23,7 +23,7 @@ function emojiFor(ev) {
 function eyebrow(post) {
   const { from, to } = post.window;
   if (post.postType === "daily") {
-    return `${fmt(from, { weekday: "short" })} · ${fmt(from, { month: "short", day: "numeric" })} · Boston`;
+    return `${fmt(from, { weekday: "short" })} · ${fmt(from, { month: "short", day: "numeric" })} · ${post.city.place}`;
   }
   if (post.postType === "weekend") {
     const fM = fmt(from, { month: "short" }), fD = fmt(from, { day: "numeric" });
@@ -31,14 +31,15 @@ function eyebrow(post) {
     const range = fM === tM ? `${fM} ${fD}–${tD}` : `${fM} ${fD}–${tM} ${tD}`;
     return `This weekend · ${range}`;
   }
-  return `${fmt(from, { month: "long" })} in Boston`; // monthly
+  return `${fmt(from, { month: "long" })} in ${post.city.place}`; // monthly
 }
 
 export function heroLine(post) {
   const n = post.events.length;
-  if (post.postType === "daily") return `${n} things happening in Boston today.`;
-  if (post.postType === "weekend") return `Your Boston weekend, planned.`;
-  return `The ${n} best things in Boston this month.`;
+  const c = post.city.name;
+  if (post.postType === "daily") return `${n} things happening in ${c} today.`;
+  if (post.postType === "weekend") return `Your ${c} weekend, planned.`;
+  return `The ${n} best things in ${c} this month.`;
 }
 
 export function slideLabel(post) {
@@ -50,31 +51,29 @@ export function slideLabel(post) {
 function hook(post) {
   const { from } = post.window;
   if (post.postType === "daily") {
-    return `${fmt(from, { weekday: "long" })} in Boston. Here's what's actually worth leaving the house for 👇`;
+    return `${fmt(from, { weekday: "long" })} in ${post.city.name}. Here's what's actually worth leaving the house for 👇`;
   }
   if (post.postType === "weekend") {
-    return `Three days, one city, zero group-chat debates. Here's your Boston weekend 👇`;
+    return `Three days, one city, zero group-chat debates. Here's your ${post.city.name} weekend 👇`;
   }
-  return `${fmt(from, { month: "long" })} in Boston, ranked. The things we'd clear our calendar for 👇`;
+  return `${fmt(from, { month: "long" })} in ${post.city.name}, ranked. The things we'd clear our calendar for 👇`;
 }
 
-function hoodTag(hood) {
+function hoodTag(hood, city) {
   const t = (hood || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
-  return t && t !== "boston" ? "#" + t : null;
+  return t && !city.tags.includes("#" + t) ? "#" + t : null;
 }
 
 function hashtags(post) {
-  const base = ["#boston", "#bostonma", "#thingstodoinboston", "#bostonevents", "#igersboston", "#bostonlife", "#newengland", "#visitboston"];
+  const { city } = post;
+  const base = city.tags;
   const month = fmt(post.window.from, { month: "long" }).toLowerCase();
-  const extra = {
-    daily: ["#bostontoday", "#whatsgoodboston"],
-    weekend: ["#bostonweekend", "#weekendinboston"],
-    monthly: [`#${month}inboston`, "#bostonthismonth"],
-  }[post.postType];
+  const t = city.typeTags[post.postType];
+  const extra = typeof t === "function" ? t(month) : t;
   const hoods = [];
   for (const ev of post.events) {
-    const t = hoodTag(ev.hood);
-    if (t && !hoods.includes(t) && hoods.length < 3) hoods.push(t);
+    const h = hoodTag(ev.hood, city);
+    if (h && !hoods.includes(h) && hoods.length < 3) hoods.push(h);
   }
   return [...base, ...extra, ...hoods].join(" ");
 }

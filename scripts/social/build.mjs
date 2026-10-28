@@ -15,7 +15,7 @@ import { renderSlides } from "./render.mjs";
 import { ensureBucket, uploadImage } from "./lib/storage.mjs";
 import { sendEmail, previewHtml } from "./lib/resend.mjs";
 import { heroLine, eyebrow, slideLabel, captionWithTags } from "./caption.mjs";
-import { MIN_EVENTS, MAX_EVENT_CARDS, POST_TYPES, runUrl } from "./lib/config.mjs";
+import { MIN_EVENTS, MAX_EVENT_CARDS, POST_TYPES, runUrl, cityPrefix } from "./lib/config.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DRY = process.env.DRY_RUN === "1";
@@ -42,7 +42,8 @@ async function main() {
   await rm(outDir, { recursive: true, force: true });
   await mkdir(outDir, { recursive: true });
 
-  console.log(`[social] ${postType} ${date}: ${post.events.length} events found (window ${post.window.from}…${post.window.to}).`);
+  const { city } = post;
+  console.log(`[social] ${city.key} ${postType} ${date}: ${post.events.length} events found (window ${post.window.from}…${post.window.to}).`);
 
   if (post.events.length < MIN_EVENTS[postType]) {
     const msg = `Only ${post.events.length} qualifying events for the ${postType} post (need ${MIN_EVENTS[postType]}). Skipping.`;
@@ -51,7 +52,7 @@ async function main() {
       JSON.stringify({ postType, date, should_post: false, reason: msg, count: post.events.length }, null, 2));
     if (!DRY) {
       await sendEmail({
-        subject: `⏭️ Local IG ${postType} skipped — ${date}`,
+        subject: `⏭️ Local IG ${city.name} ${postType} skipped — ${date}`,
         html: `<div style="font-family:Arial;color:#1A1523"><h2>${postType} post skipped</h2><p>${msg}</p></div>`,
       });
     }
@@ -65,6 +66,7 @@ async function main() {
     eyebrow: eyebrow(post),
     label: slideLabel(post),
     events: cardEvents,
+    cityName: city.name,
   };
   const caption = captionWithTags(post);
 
@@ -75,12 +77,12 @@ async function main() {
   if (!DRY) {
     await ensureBucket();
     imageUrls = [];
-    for (const p of pngs) imageUrls.push(await uploadImage(p, `${postType}/${date}`));
+    for (const p of pngs) imageUrls.push(await uploadImage(p, `${cityPrefix(city)}${postType}/${date}`));
     console.log(`[social] uploaded ${imageUrls.length} images.`);
   }
 
   const manifest = {
-    postType, date, should_post: true, count: post.events.length,
+    postType, city: city.key, date, should_post: true, count: post.events.length,
     heroLine: content.heroLine, caption, imageUrls,
     builtAt: new Date().toISOString(),
   };
@@ -88,7 +90,7 @@ async function main() {
 
   if (!DRY) {
     await sendEmail({
-      subject: `📸 Local IG ${postType} ready — ${date} (${post.events.length} events)`,
+      subject: `📸 Local IG ${city.name} ${postType} ready — ${date} (${post.events.length} events)`,
       html: previewHtml({ title: `${content.heroLine}`, caption, imageUrls, runUrl: runUrl() }),
     });
   }

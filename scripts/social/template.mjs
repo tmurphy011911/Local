@@ -110,11 +110,11 @@ function eventSlide(id, ev, idx, total, label) {
   </div>`;
 }
 
-function downloadSlide(id, { appiconDataUri, qrSvg }) {
+function downloadSlide(id, { appiconDataUri, qrSvg, cityName }) {
   return `<div class="slide s-dl" id="${id}">
     <img class="mark" src="${appiconDataUri}" alt="Local app icon">
     <h2>The whole city. One app.</h2>
-    <div class="sub">Every event in Boston, in one place. Free.</div>
+    <div class="sub">Every event in ${esc(cityName)}, in one place. Free.</div>
     <div class="badges">
       <span class="badge">${APPLE}<span class="t"><small>Download on the</small><b>App Store</b></span></span>
       <span class="badge">${PLAY}<span class="t"><small>Get it on</small><b>Google Play</b></span></span>
@@ -124,7 +124,7 @@ function downloadSlide(id, { appiconDataUri, qrSvg }) {
 }
 
 // Returns { html, slideIds } — one hero, one card per event, one download card.
-export function renderHtml({ heroLine, eyebrow, label, events, fontCss, boSvg, appiconDataUri, qrSvg }) {
+export function renderHtml({ heroLine, eyebrow, label, events, cityName = "Boston", fontCss, boSvg, appiconDataUri, qrSvg }) {
   const ids = [];
   let body = "";
   ids.push("slide-hero");
@@ -135,7 +135,7 @@ export function renderHtml({ heroLine, eyebrow, label, events, fontCss, boSvg, a
     body += eventSlide(id, ev, i, events.length, label);
   });
   ids.push("slide-dl");
-  body += downloadSlide("slide-dl", { appiconDataUri, qrSvg });
+  body += downloadSlide("slide-dl", { appiconDataUri, qrSvg, cityName });
 
   const html = `<!doctype html><html><head><meta charset="utf-8"><style>${css(fontCss)}</style></head><body>${body}</body></html>`;
   return { html, slideIds: ids };

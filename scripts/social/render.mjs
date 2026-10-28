@@ -38,9 +38,9 @@ export async function buildAssets() {
 }
 
 // Returns an ordered array of PNG paths (hero, events…, download).
-export async function renderSlides({ heroLine, eyebrow, label, events }, outDir) {
+export async function renderSlides({ heroLine, eyebrow, label, events, cityName }, outDir) {
   const assets = await buildAssets();
-  const { html, slideIds } = renderHtml({ heroLine, eyebrow, label, events, ...assets });
+  const { html, slideIds } = renderHtml({ heroLine, eyebrow, label, events, cityName, ...assets });
 
   const browser = await chromium.launch({ args: ["--no-sandbox", "--disable-dev-shm-usage"] });
   try {

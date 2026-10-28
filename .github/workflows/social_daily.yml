@@ -1,8 +1,8 @@
 name: Social — Happening Today
 
-# Builds the daily "X things happening in Boston today" carousel, emails a
-# preview, and waits for approval of the `instagram-publish` environment before
-# posting. 15:00 UTC = 11am EDT / 10am EST.
+# Builds the daily "X things happening in Boston today" carousel, emails a preview,
+# and posts it to @_local.app_. Publishes at most once a day (marker in the
+# social-posts bucket). 15:00 UTC = 11am EDT / 10am EST.
 on:
   schedule:
     - cron: '0 15 * * *'
