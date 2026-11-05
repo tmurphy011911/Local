@@ -15,7 +15,7 @@
  *   LIMIT=100          — max rows to process per run
  */
 
-const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
+const { getSecrets, SUPABASE_URL } = require("../lib/secrets");
 
 const REGION = process.env.REGION || "MA";
 const DRY_RUN = process.env.DRY_RUN === "1";

@@ -1,11 +1,11 @@
-const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
+const { getSecrets, SUPABASE_URL } = require("../lib/secrets");
 
 async function main() {
   const secrets = await getSecrets([]);
   const SUPABASE_SERVICE_KEY = secrets.SUPABASE_SERVICE_KEY;
 
   const fs = require("fs");
-  const raw = JSON.parse(fs.readFileSync(`${__dirname}/crawl_results.json`, "utf8"));
+  const raw = JSON.parse(fs.readFileSync(`${__dirname}/../crawl_results.json`, "utf8"));
   console.log(`Loaded ${raw.length} events from crawl_results.json`);
 
   // Deduplicate by dedupe_hash — keep last occurrence

@@ -60,3 +60,8 @@ hs_err_pid*.log
 # One-off db-op scratch SQL + Python bytecode (do not commit)
 scratch_*.sql
 __pycache__/
+
+# scripts/ scratch output (test_chat*.js results, ad-hoc temp/backup files)
+scripts/chat_test_results*.json
+scripts/_tmp_*
+scripts/_backup_*

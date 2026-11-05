@@ -27,7 +27,7 @@
  * to have been run at least once (so geo_city_cache has city entries).
  */
 
-const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
+const { getSecrets, SUPABASE_URL } = require("../lib/secrets");
 
 const WRITE = process.env.WRITE === "1";
 const LIMIT = parseInt(process.env.LIMIT || "0", 10) || null;

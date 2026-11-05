@@ -20,7 +20,7 @@
  *   SUPABASE_SERVICE_KEY=ey... node scripts/backfill_municipal_coords.js
  */
 
-const { SUPABASE_URL } = require("./lib/secrets");
+const { SUPABASE_URL } = require("../lib/secrets");
 const SERVICE_KEY = (process.env.SUPABASE_SERVICE_KEY || "").replace(/\s/g, "");
 if (!SERVICE_KEY) { console.error("Missing SUPABASE_SERVICE_KEY"); process.exit(1); }
 

@@ -12,7 +12,7 @@
  *   SUPABASE_SERVICE_KEY=ey... WRITE=1 node scripts/backfill_entity_decoding.js  # apply
  */
 
-const { getSecrets, SUPABASE_URL } = require("./lib/secrets");
+const { getSecrets, SUPABASE_URL } = require("../lib/secrets");
 const WRITE = process.env.WRITE === "1";
 const TABLES = [
   { table: "events", cols: ["title", "description", "venue_name"] },

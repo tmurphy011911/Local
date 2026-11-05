@@ -16,7 +16,7 @@
  *   SUPABASE_SERVICE_KEY=ey... WRITE=1 node scripts/fix_ticketmaster_midnight.js  # apply
  */
 
-const { SUPABASE_URL } = require("./lib/secrets");
+const { SUPABASE_URL } = require("../lib/secrets");
 const SERVICE_KEY = (process.env.SUPABASE_SERVICE_KEY || "").replace(/\s/g, "");
 const WRITE = process.env.WRITE === "1";
 
