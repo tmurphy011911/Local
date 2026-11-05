@@ -9,7 +9,7 @@ const TZ = "America/New_York";
 const fmt = (iso, o) => new Intl.DateTimeFormat("en-US", { timeZone: TZ, ...o }).format(new Date(iso));
 
 const EMOJI = [
-  [/theat|broadway|opera|dance|musical/i, "🎭"], [/music|concert|dj|band|\btour\b|rock|pop|indie|jazz|hip.?hop|rap|r&b|country|folk|latin|reggae|punk|metal|electronic|soul|blues|singer/i, "🎸"], [/comedy|stand/i, "🎤"],
+  [/\bdjs?\b|djz|\bedm\b|electronic|techno|house music/i, "🎧"], [/theat|broadway|opera|dance|musical/i, "🎭"], [/music|concert|dj|band|\btour\b|rock|pop|indie|jazz|hip.?hop|rap|r&b|country|folk|latin|reggae|punk|metal|electronic|soul|blues|singer/i, "🎸"], [/comedy|stand/i, "🎤"],
   [/museum/i, "🏛️"], [/art|galler|exhibit/i, "🖼️"], [/food|dining|restaurant|brunch|beer|wine/i, "🍴"],
   [/market|farmers/i, "🛒"], [/outdoor|hike|park|nature|walk/i, "🌳"], [/sport|game|hockey|basket|base|foot/i, "🏟️"],
   [/night|club|bar/i, "🍸"], [/kid|family|child/i, "🎠"], [/film|movie|cinema/i, "🎬"], [/book|librar|read/i, "📚"],

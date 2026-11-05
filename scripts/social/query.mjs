@@ -325,7 +325,7 @@ export async function getPost(postType) {
   }
   const limit = postType === "daily" ? dailyCount(city.key, etDay(from.toISOString())) : HEADLINE_CAP[postType];
   const picked = pickDiverse(pool, limit);
-  console.log(`[social] ${rows.length} rows → ${qualityRows.length} candidates. top: ${qualityRows.slice(0, 15).map((r) => `${appeal(r)} ${cleanTitle(r.title)}`).join(" | ")}`);
+  console.log(`[social] ${rows.length} rows → ${qualityRows.length} candidates, ${pool.length} after repeats. top: ${pool.slice(0, 15).map((r) => `${appeal(r)} ${cleanTitle(r.title)}`).join(" | ")}`);
 
   const events = picked.map((r) => ({
     title: cleanTitle(r.title),
