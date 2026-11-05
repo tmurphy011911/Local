@@ -34,6 +34,13 @@ on:
       - "Seed Trusted Domains for State"
       - "Sync Prod → Dev DB"
       - "Weekly — Crawl Venues & Classify Events"
+      - "Daily — Push Notifications (Bo)"
+      - "Nightly — Taste Profiles & Feature Affinity"
+      - "Monthly — Generate Daily Local Questions"
+      - "Ad-hoc — Classify Events Only"
+      - "Onboard — backfill photos, find events URLs, crawl (per state)"
+      - "Ad-hoc — Migrate Venue Photos to Storage"
+      - "Ad-hoc — Fix Venue URLs (retry-gate catch-up)"
     types: [completed]
 
 permissions:
@@ -44,14 +51,16 @@ jobs:
     runs-on: ubuntu-latest
     # Notify policy:
     #   - Every workflow emails on FAILURE (any non-success conclusion).
-    #   - On SUCCESS, the high-frequency Hourly/Daily jobs are silenced
-    #     (they'd be 25+ emails/day); all other workflows still email on success.
+    #   - On SUCCESS, the high-frequency jobs are silenced (Hourly/Daily, and
+    #     the 10-min carousel refresh — ~140 emails/day that buried real
+    #     failures); all other workflows still email on success.
     # To make a workflow success-silent, add its `name:` to the && chain below.
     # To email on every run, replace the whole expression with:  if: ${{ always() }}
     if: >-
       ${{ github.event.workflow_run.conclusion != 'success' ||
           (github.event.workflow_run.name != 'Hourly — Deactivate Past Events' &&
-           github.event.workflow_run.name != 'Daily — Event Sync, Dedupe & Pattern Prefilter') }}
+           github.event.workflow_run.name != 'Daily — Event Sync, Dedupe & Pattern Prefilter' &&
+           github.event.workflow_run.name != 'Refresh Carousel Cache') }}
     steps:
       - name: Build email
         id: msg
