@@ -10,7 +10,8 @@
 
 import { selectEvents } from "./lib/supabase.mjs";
 import { thumbUrl } from "./lib/images.mjs";
-import { cityConfig, RADIUS_MILES, HEADLINE_CAP } from "./lib/config.mjs";
+import { cityConfig, RADIUS_MILES, HEADLINE_CAP, DAILY_COUNT, REPEAT_COOLDOWN_DAYS } from "./lib/config.mjs";
+import { recentPostedTitles } from "./lib/ig.mjs";
 
 const TZ = "America/New_York";
 
@@ -49,8 +50,9 @@ function ymdAddDays(y, m, d, n) {
 }
 
 export function windowFor(postType, now = etNow()) {
-  if (postType === "daily") {
-    return { from: etInstant(now.y, now.m, now.d, 0, 0, 0), to: etInstant(now.y, now.m, now.d, 23, 59, 59) };
+  if (postType === "daily") { // tomorrow
+    const t = ymdAddDays(now.y, now.m, now.d, 1);
+    return { from: etInstant(t.y, t.m, t.d, 0, 0, 0), to: etInstant(t.y, t.m, t.d, 23, 59, 59) };
   }
   if (postType === "weekend") {
     const daysToFri = (5 - now.dow + 7) % 7; // Thu run -> 1; already Fri -> 0
@@ -75,10 +77,7 @@ function etHour(iso) { return +fmt(iso, { hour: "2-digit", hour12: false }); }
 function whenLabel(postType, iso, timeKnown = true) {
   if (!iso) return "Ongoing";
   const at = timeKnown ? " · " + timeLabel(iso) : ""; // skip bogus midnight when time unknown
-  if (postType === "daily") {
-    if (!timeKnown) return "Today";
-    return (etHour(iso) < 16 ? "Today" : "Tonight") + " · " + timeLabel(iso);
-  }
+  if (postType === "daily") return timeKnown ? fmt(iso, { weekday: "short" }) + at : fmt(iso, { weekday: "long" });
   if (postType === "weekend") return fmt(iso, { weekday: "short" }) + at;
   return fmt(iso, { month: "short", day: "numeric" }) + at; // monthly
 }
@@ -163,6 +162,13 @@ function pickDiverse(sorted, limit) {
   return picked;
 }
 
+// Deterministic 7–15 per city + date (FNV-1a), so a rerun builds the same post.
+function dailyCount(cityKey, day) {
+  let h = 2166136261;
+  for (const ch of `${cityKey}|${day}`) { h ^= ch.charCodeAt(0); h = Math.imul(h, 16777619); }
+  return DAILY_COUNT.min + ((h >>> 0) % (DAILY_COUNT.max - DAILY_COUNT.min + 1));
+}
+
 function tsOf(iso) { return iso ? new Date(iso).getTime() : Infinity; }
 
 // Quality gate for a highlights post, using the classifier's own fields —
@@ -188,6 +194,7 @@ function cleanTitle(s) {
     .replace(/\s*[-–—@]\s*\d{1,2}(:\d{2})?\s*(a\.?m\.?|p\.?m\.?)\b.*$/i, "")
     .replace(/\s*[-–—]\s*available\s+\d.*$/i, "") // "… - Available 6:00 PM or 7:30 PM"
     .replace(/\s*[-–—]\s*ages?\s*\d+\+?\s*$/i, "") // "… - Ages 21+"
+    .replace(/\s*\([^)]{26,}\)?/g, "") // long notes: "(All audience members regardless of age must…"
     .trim();
   return cleaned || String(s || "").trim();
 }
@@ -306,8 +313,19 @@ export async function getPost(postType) {
     .filter((r) => isQuality(r) && appeal(r) >= 0)
     .sort((a, b) => (appeal(b) - appeal(a)) || (tsOf(a.start_at) - tsOf(b.start_at)));
 
-  const picked = pickDiverse(qualityRows, HEADLINE_CAP[postType]);
-  console.log(`[social] ${rows.length} rows → ${qualityRows.length} candidates. top: ${qualityRows.slice(0, 15).map((r) => `${appeal(r)} ${cleanTitle(r.title)}`).join(" | ")}`);
+  // Daily: skip anything the account featured recently (e.g. a show with a
+  // long run would otherwise lead every day), and post a random 7–15.
+  let pool = qualityRows;
+  if (postType === "daily") {
+    const recent = (await recentPostedTitles(REPEAT_COOLDOWN_DAYS)).map(coreTitle);
+    if (recent.length) {
+      pool = qualityRows.filter((r) => { const c = coreTitle(r.title); return !recent.some((h) => sameShow(c, h)); });
+      console.log(`[social] skipped ${qualityRows.length - pool.length} recently posted (${recent.length} titles in the last ${REPEAT_COOLDOWN_DAYS} days)`);
+    }
+  }
+  const limit = postType === "daily" ? dailyCount(city.key, etDay(from.toISOString())) : HEADLINE_CAP[postType];
+  const picked = pickDiverse(pool, limit);
+  console.log(`[social] ${rows.length} rows → ${qualityRows.length} candidates, ${pool.length} after repeats. top: ${pool.slice(0, 15).map((r) => `${appeal(r)} ${cleanTitle(r.title)}`).join(" | ")}`);
 
   const events = picked.map((r) => ({
     title: cleanTitle(r.title),

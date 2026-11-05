@@ -35,10 +35,17 @@ export function cityConfig() {
 // original un-prefixed paths so its existing markers stay valid.
 export function cityPrefix(city) { return city.key === "boston" ? "" : `${city.key}/`; }
 
-// How many event cards each post shows in the carousel. Instagram caps a
-// carousel at 10 images, and every post keeps a hero + a download card, so the
-// event cards are capped at 8. The caption lists any events beyond that.
-export const MAX_EVENT_CARDS = 8;
+// How many event cards a post can show. The Graph API takes up to 20 carousel
+// items (verified 2026-11-04 with an unpublished 17-item carousel); every post
+// keeps a hero + a download card, so events are capped at 18.
+export const MAX_EVENT_CARDS = 18;
+
+// The daily post covers TOMORROW and shows a random 7–15 events, fixed per
+// city + date so a rerun produces the same post.
+export const DAILY_COUNT = { min: 7, max: 15 };
+
+// Daily posts skip any event the account featured in the last N days.
+export const REPEAT_COOLDOWN_DAYS = 7;
 
 // Minimum events required to post. Below this the run is skipped and an email
 // is sent instead — a 2-event "lineup" is worse than no post.
@@ -46,7 +53,7 @@ export const MIN_EVENTS = { daily: 4, weekend: 5, monthly: 6 };
 
 // The "headline count" shown on the hero / in the caption. Capped per type so
 // the number reads naturally even when the DB returns more.
-export const HEADLINE_CAP = { daily: 9, weekend: 12, monthly: 10 };
+export const HEADLINE_CAP = { weekend: 12, monthly: 10 }; // daily: see DAILY_COUNT
 
 export const STORAGE_BUCKET = "social-posts";
 export const IG_API_VERSION = "v21.0";

@@ -9,7 +9,7 @@ const TZ = "America/New_York";
 const fmt = (iso, o) => new Intl.DateTimeFormat("en-US", { timeZone: TZ, ...o }).format(new Date(iso));
 
 const EMOJI = [
-  [/theat|broadway|opera|dance|musical/i, "🎭"], [/music|concert|dj|band|\btour\b|rock|pop|indie|jazz|hip.?hop|rap|r&b|country|folk|latin|reggae|punk|metal|electronic|soul|blues|singer/i, "🎸"], [/comedy|stand/i, "🎤"],
+  [/\bdjs?\b|djz|\bedm\b|electronic|techno|house music/i, "🎧"], [/theat|broadway|opera|dance|musical/i, "🎭"], [/music|concert|dj|band|\btour\b|rock|pop|indie|jazz|hip.?hop|rap|r&b|country|folk|latin|reggae|punk|metal|electronic|soul|blues|singer/i, "🎸"], [/comedy|stand/i, "🎤"],
   [/museum/i, "🏛️"], [/art|galler|exhibit/i, "🖼️"], [/food|dining|restaurant|brunch|beer|wine/i, "🍴"],
   [/market|farmers/i, "🛒"], [/outdoor|hike|park|nature|walk/i, "🌳"], [/sport|game|hockey|basket|base|foot/i, "🏟️"],
   [/night|club|bar/i, "🍸"], [/kid|family|child/i, "🎠"], [/film|movie|cinema/i, "🎬"], [/book|librar|read/i, "📚"],
@@ -20,30 +20,30 @@ function emojiFor(ev) {
   return "📍";
 }
 
+// The hero's date block: a small coral kicker over a big date.
 function eyebrow(post) {
   const { from, to } = post.window;
   if (post.postType === "daily") {
-    return `${fmt(from, { weekday: "short" })} · ${fmt(from, { month: "short", day: "numeric" })} · ${post.city.place}`;
+    return { kicker: fmt(from, { weekday: "long" }), big: fmt(from, { month: "short", day: "numeric" }) };
   }
   if (post.postType === "weekend") {
     const fM = fmt(from, { month: "short" }), fD = fmt(from, { day: "numeric" });
     const tM = fmt(to, { month: "short" }), tD = fmt(to, { day: "numeric" });
-    const range = fM === tM ? `${fM} ${fD}–${tD}` : `${fM} ${fD}–${tM} ${tD}`;
-    return `This weekend · ${range}`;
+    return { kicker: "This weekend", big: fM === tM ? `${fM} ${fD}–${tD}` : `${fM} ${fD}–${tM} ${tD}` };
   }
-  return `${fmt(from, { month: "long" })} in ${post.city.place}`; // monthly
+  return { kicker: `This month in ${post.city.name}`, big: fmt(from, { month: "long" }) }; // monthly
 }
 
 export function heroLine(post) {
   const n = post.events.length;
   const c = post.city.name;
-  if (post.postType === "daily") return `${n} things happening in ${c} today.`;
+  if (post.postType === "daily") return `${n} things happening in ${c} tomorrow.`;
   if (post.postType === "weekend") return `Your ${c} weekend, planned.`;
   return `The ${n} best things in ${c} this month.`;
 }
 
 export function slideLabel(post) {
-  if (post.postType === "daily") return "Happening today";
+  if (post.postType === "daily") return `${fmt(post.window.from, { weekday: "short" })} · ${fmt(post.window.from, { month: "short", day: "numeric" })}`;
   if (post.postType === "weekend") return "This weekend";
   return "This month · ranked";
 }
@@ -51,7 +51,7 @@ export function slideLabel(post) {
 function hook(post) {
   const { from } = post.window;
   if (post.postType === "daily") {
-    return `${fmt(from, { weekday: "long" })} in ${post.city.name}. Here's what's actually worth leaving the house for 👇`;
+    return `Tomorrow in ${post.city.name} — ${fmt(from, { weekday: "long", month: "long", day: "numeric" })}. Here's what's actually worth leaving the house for 👇`;
   }
   if (post.postType === "weekend") {
     return `Three days, one city, zero group-chat debates. Here's your ${post.city.name} weekend 👇`;
