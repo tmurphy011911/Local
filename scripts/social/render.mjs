@@ -37,7 +37,7 @@ export async function buildAssets() {
   return { fontCss: faces.join("\n"), boSvg, appiconDataUri, qrSvg };
 }
 
-// Returns an ordered array of PNG paths (hero, events…, download).
+// Returns an ordered array of JPEG paths (hero, events…, download).
 export async function renderSlides({ heroLine, eyebrow, label, events, cityName }, outDir) {
   const assets = await buildAssets();
   const { html, slideIds } = renderHtml({ heroLine, eyebrow, label, events, cityName, ...assets });
@@ -48,6 +48,33 @@ export async function renderSlides({ heroLine, eyebrow, label, events, cityName 
     await page.setContent(html, { waitUntil: "load", timeout: 60000 });
     await page.waitForLoadState("networkidle", { timeout: 20000 }).catch(() => {});
     await page.evaluate(() => (document.fonts ? document.fonts.ready : null)).catch(() => {});
+
+    // Fit text before capture: the hero date shrinks to one line; each event
+    // title shrinks until it's ≤3 lines, then if the card body still overflows,
+    // the blurb loses lines (3→2→1→gone) before the title shrinks further.
+    // Nothing is clipped or ellipsized.
+    await page.evaluate(() => {
+      const px = (el) => parseFloat(getComputedStyle(el).fontSize);
+      for (const big of document.querySelectorAll(".datebig")) {
+        let s = px(big);
+        while (big.scrollWidth > big.clientWidth + 1 && s > 40) { s -= 4; big.style.fontSize = s + "px"; }
+      }
+      for (const slide of document.querySelectorAll(".s-event")) {
+        const W = slide.clientWidth, title = slide.querySelector(".ev-title"), body = slide.querySelector(".ev-body");
+        const desc = slide.querySelector(".ev-desc");
+        const min = 0.045 * W, step = 0.002 * W;
+        let s = px(title);
+        const lines = () => Math.round(title.getBoundingClientRect().height / parseFloat(getComputedStyle(title).lineHeight));
+        const over = () => body.scrollHeight > body.clientHeight + 1;
+        while (lines() > 3 && s > min) { s -= step; title.style.fontSize = s + "px"; }
+        let clamp = 3;
+        while (over() && desc && desc.isConnected && clamp > 0) {
+          clamp -= 1;
+          if (clamp === 0) desc.remove(); else desc.style.webkitLineClamp = String(clamp);
+        }
+        while (over() && s > min) { s -= step; title.style.fontSize = s + "px"; }
+      }
+    });
 
     const out = [];
     for (let i = 0; i < slideIds.length; i++) {

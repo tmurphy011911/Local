@@ -35,8 +35,9 @@ function css(fontCss) {
       var(--snow); padding:9cqw; display:flex; flex-direction:column; }
   .s-hero .bo{ flex:1; min-height:0; display:flex; align-items:center; justify-content:flex-end; margin:3cqw 0 1cqw; }
   .s-hero .bo svg{ height:100%; width:auto; max-height:46cqw; max-width:46cqw; filter:drop-shadow(0 3cqw 5cqw rgba(26,21,35,.18)); }
-  .s-hero .eyebrow{ font-weight:800; letter-spacing:.3em; text-transform:uppercase; font-size:3.3cqw; color:var(--ink3); margin-top:7cqw; }
-  .s-hero h2{ font-family:var(--serif); font-weight:900; font-size:12.2cqw; line-height:1.0; color:var(--ink); margin:3cqw 0 0; letter-spacing:-.02em; }
+  .s-hero .datekick{ font-weight:900; letter-spacing:.16em; text-transform:uppercase; font-size:5.6cqw; color:var(--coral); margin-top:7cqw; line-height:1; }
+  .s-hero .datebig{ font-family:var(--serif); font-weight:900; font-size:21cqw; line-height:.95; color:var(--ink); letter-spacing:-.03em; margin-top:1.6cqw; white-space:nowrap; }
+  .s-hero h2{ font-family:var(--serif); font-weight:900; font-size:8.6cqw; line-height:1.05; color:var(--ink); margin:5cqw 0 0; letter-spacing:-.015em; }
   .s-hero .rule{ height:1.4cqw; width:20cqw; background:var(--coral); border-radius:2cqw; margin-top:5cqw; }
   .s-hero .foot{ display:flex; align-items:center; justify-content:space-between; }
   .s-hero .foot .swipe{ font-weight:800; font-size:4cqw; color:var(--ink2); display:flex; align-items:center; gap:2cqw; }
@@ -45,16 +46,17 @@ function css(fontCss) {
   /* EVENT */
   .s-event{ background: radial-gradient(130% 70% at 0% 0%, #FFF0EE 0%, rgba(255,240,238,0) 60%), var(--snow); padding:6.5cqw; display:flex; flex-direction:column; }
   .ev-top{ display:flex; align-items:center; justify-content:space-between; }
-  .ev-top .label{ font-weight:800; letter-spacing:.2em; text-transform:uppercase; font-size:3.2cqw; color:var(--ink3); }
+  .ev-top .label{ font-weight:900; letter-spacing:.16em; text-transform:uppercase; font-size:4cqw; color:var(--coral); }
   .ev-top .count{ font-family:var(--serif); font-weight:900; font-size:3.4cqw; color:var(--coral); background:#fff; border:1px solid var(--pebble); border-radius:10cqw; padding:1.2cqw 3cqw; }
   .ev-card{ margin:5cqw 0; background:#fff; border-radius:6cqw; overflow:hidden; flex:1; display:flex; flex-direction:column; box-shadow:0 4cqw 10cqw rgba(26,21,35,.10); }
   .ev-photo{ position:relative; height:52cqw; overflow:hidden; }
   .ev-photo .img{ width:100%; height:100%; object-fit:cover; display:block; }
   .ev-pill{ position:absolute; top:4cqw; left:4cqw; font-weight:800; font-size:2.9cqw; letter-spacing:.06em; color:var(--ink); background:rgba(255,255,255,.92); border-radius:6cqw; padding:1.4cqw 3cqw; }
   .ev-free{ position:absolute; top:4cqw; right:4cqw; font-weight:900; font-size:2.9cqw; color:#2E7D32; background:#E8F5E9; border:1px solid #A5D6A7; border-radius:6cqw; padding:1.2cqw 3cqw; }
-  .ev-body{ padding:5.5cqw; display:flex; flex-direction:column; gap:2.2cqw; flex:1; justify-content:center; }
+  .ev-body{ padding:5.5cqw; display:flex; flex-direction:column; gap:2.2cqw; flex:1; min-height:0; justify-content:center; }
   .ev-when{ font-weight:800; letter-spacing:.08em; text-transform:uppercase; font-size:3.4cqw; color:var(--coral); }
-  .ev-title{ font-family:var(--serif); font-weight:900; font-size:7.4cqw; line-height:1.04; color:var(--ink); letter-spacing:-.01em; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  /* No clamp: render.mjs shrinks the size until the title fits in ≤3 lines. */
+  .ev-title{ font-family:var(--serif); font-weight:900; font-size:7.4cqw; line-height:1.1; padding-bottom:.06em; color:var(--ink); letter-spacing:-.01em; overflow-wrap:anywhere; }
   .ev-venue{ display:flex; align-items:center; gap:1.6cqw; font-weight:700; font-size:4cqw; color:var(--ink2); }
   .ev-venue svg{ width:4cqw; height:4cqw; flex:0 0 auto; }
   .ev-desc{ font-weight:600; font-size:3.5cqw; line-height:1.42; color:var(--ink2); margin-top:1.4cqw;
@@ -78,9 +80,10 @@ function css(fontCss) {
 }
 
 function heroSlide(id, { eyebrow, heroLine, boSvg }) {
+  const d = eyebrow && typeof eyebrow === "object" ? eyebrow : { kicker: String(eyebrow || ""), big: "" };
   return `<div class="slide s-hero" id="${id}">
     <div class="wordmark"><b>l</b>oca<b>l</b></div>
-    <div class="eyebrow">${esc(eyebrow)}</div>
+    <div class="datekick">${esc(d.kicker)}</div>${d.big ? `<div class="datebig">${esc(d.big)}</div>` : ""}
     <h2>${esc(heroLine)}</h2>
     <div class="rule"></div>
     <div class="bo">${boSvg}</div>

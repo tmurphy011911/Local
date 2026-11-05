@@ -51,6 +51,34 @@ export async function waitFinished(containerId, { tries = 20, delayMs = 3000 } =
   throw new Error(`IG container ${containerId} not FINISHED after ${tries} polls`);
 }
 
+// Event titles this account posted in the last `days` days, read back from the
+// captions ("🎭 Wicked (Touring) — Boston" / "1. Title — Hood"). Instagram is
+// the record of what actually went out. Returns [] if not configured or on error.
+export async function recentPostedTitles(days) {
+  if (!process.env.IG_USER_ID || !process.env.IG_ACCESS_TOKEN) return [];
+  const { userId, token } = igEnv();
+  const since = Date.now() - days * 86400000;
+  try {
+    const res = await fetch(`${BASE}/${userId}/media?fields=caption,timestamp&limit=50&access_token=${token}`);
+    const json = await res.json();
+    if (!res.ok) throw new Error(JSON.stringify(json.error || json));
+    const titles = [];
+    for (const m of json.data || []) {
+      if (new Date(m.timestamp).getTime() < since) continue;
+      for (const line of String(m.caption || "").split("\n")) {
+        const cut = line.lastIndexOf(" — ");
+        if (cut <= 0 || /^\s*get local/i.test(line)) continue;
+        const title = line.slice(0, cut).replace(/^\s*(\d+\.\s+|[^\p{L}\p{N}"'(]+)/u, "").trim();
+        if (title) titles.push(title);
+      }
+    }
+    return titles;
+  } catch (e) {
+    console.error(`[social] couldn't read recent posts (${e.message}) — repeats not filtered this run`);
+    return [];
+  }
+}
+
 export async function publishCarousel(creationId) {
   const { userId } = igEnv();
   const { id } = await post(`${userId}/media_publish`, { creation_id: creationId });
