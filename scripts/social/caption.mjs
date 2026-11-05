@@ -24,7 +24,7 @@ function emojiFor(ev) {
 function eyebrow(post) {
   const { from, to } = post.window;
   if (post.postType === "daily") {
-    return { kicker: fmt(from, { weekday: "long" }), big: fmt(from, { month: "short", day: "numeric" }) };
+    return { kicker: fmt(from, { month: "short", day: "numeric" }), big: fmt(from, { weekday: "long" }) };
   }
   if (post.postType === "weekend") {
     const fM = fmt(from, { month: "short" }), fD = fmt(from, { day: "numeric" });
